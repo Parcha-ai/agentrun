@@ -235,3 +235,42 @@ test("runner: a cancel during the interval wait still reports the finished check
   assert.equal(calls, 1);
   assert.deepEqual(pollSettlements(events), [[1, null]]);
 });
+
+test("runner: a check whose tool fails ends the poll with that error and no deadline event", async () => {
+  // The second check's tool throws. Only a poll timeout settles "deadline"; any other failure of a
+  // check ends the poll with its own error, and the poll events stop at the first check's null.
+  let calls = 0;
+  const events = [];
+  const broke = new EffectFailure("the tool broke", null);
+  const error = await runWorkflow(wf([planNode, statusCall(), assemble]), { question: "q" }, {
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: async () => { calls += 1; if (calls === 2) throw broke; return { status: "IN_PROGRESS" }; },
+  }).then(() => undefined, (rejection) => rejection);
+  assert.equal(error, broke);
+  assert.equal(calls, 2);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
+});
+
+test("runner: a cancel during a check's effect ends the poll with the host's reason and no deadline event", async () => {
+  // The host cancels the run 50 ms into the second check's effect, which rejects when its signal
+  // aborts. The run rejects with the host's reason, and no check settles "deadline".
+  let calls = 0;
+  const events = [];
+  const controller = new AbortController();
+  const reason = new Error("the host cancelled the run");
+  const error = await runWorkflow(wf([planNode, statusCall(), assemble]), { question: "q" }, {
+    signal: controller.signal,
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: ({ signal }) => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve({ status: "IN_PROGRESS" });
+      setTimeout(() => controller.abort(reason), 50);
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+    },
+  }).then(() => undefined, (rejection) => rejection);
+  assert.equal(error, reason);
+  assert.equal(calls, 2);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
+});
