@@ -310,7 +310,10 @@ test('RECORD_STARTED gives a fresh recording directory its clock (an existing on
   const lines = names.flatMap((name) => readFileSync(join(dir, '.spool', name), 'utf8').split('\n').filter(Boolean)).map((entry) => JSON.parse(entry));
   assert.deepEqual(lines.map((line) => line.data.index).sort(), [0, 1, 2, 3, 4, 5, 6, 7]);
   assert.ok(names.every((name) => statSync(join(dir, '.spool', name)).size <= 600), 'each segment is small');
-  // A second process counts the first as one process, not one per segment.
+  // A second process counts the first as one process, not one per segment. A stream is named for its process's pid and the
+  // millisecond it opened; a second process never shares both, so this one, in the same process, opens in a later millisecond.
+  const firstOpened = Number(/^live-\d+-(\d+)\./.exec(names[0])[1]);
+  while (Date.now() <= firstOpened) await new Promise((resolve) => setTimeout(resolve, 1));
   const second = openRecorder({ dir, segmentBytes: 300 });
   second.live('workflow', 'x', { index: 'second' });
   await second.detach();

@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-transport",
-  "version": "0.1.0-beta.26",
+  "version": "0.1.0-beta.27",
   "description": "A pi agent's tools on the machine each step needs: this machine, Docker, or a Daytona or Modal sandbox, behind one Box interface; Jev places each step.",
   "keywords": [
     "pi",
