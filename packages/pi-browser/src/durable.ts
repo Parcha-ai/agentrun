@@ -13,10 +13,11 @@ import { browserFailure, classifyBrowserError } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
 import type { RepeatGuard } from "./core/guard.js";
 import { drivingGuarded } from "./core/driving-guard.js";
-import { drivingGates, keptReason, personOn, rearmWhenLeft, type DrivingGate } from "./core/driving.js";
+import { drivingGates, keptFor, keptReason, personOn, rearmWhenLeft, type DrivingGate } from "./core/driving.js";
+import { captureFor, planRestore, untilQuiet, vaultRuntime, type VaultOptions, type VaultRuntime } from "./vault-session.js";
 import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type BrowserToolImpls, type PageDriver, type ToolImpl } from "./core/tools.js";
-import type { BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
+import type { AttachTarget, BrowserConfig, BrowserProvider, ChildRunner, InventoryRow, ObserverRow, PriceState, PriceTable, ReconcileReport, ReleaseReason, SessionChange, SessionRecord, SessionRow, SessionsState, SiteInfo, SiteRunPort, ToolUsage, HandoffPort, WorkspaceFiles } from "./core/host.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, hostLiveView, redactContent, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
@@ -29,7 +30,7 @@ import { resolvePrices, sessionCharge, withEstimate } from "./core/usage.js";
 export type { BrowserToolArgs, BrowserToolImpls, PageDriver, ToolCall, ToolImpl } from "./core/tools.js";
 export type { DriverFactory, DriverOptions } from "./core/custody.js";
 
-export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = {
+export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOptions & {
   /** Default "browser"; a second plane installs a second extension under another name. */
   name?: string;
   /** Called per use: the provider for this conversation's plane. Holds the credentials in its closure; nothing it
@@ -145,6 +146,8 @@ type Custody<D extends PageDriver> = Readers<D> & {
   store: ReturnType<typeof custodyStore>;
   meter(spent: SessionRecord["spent"], at: string, final?: boolean): { spent: SessionRecord["spent"]; usage: ToolUsage };
   held: Attachments<D>;
+  /** The host's session vault, when it gave one. */
+  vault: VaultRuntime | null;
   fences: Map<string, FenceMark>;
   serial: KeyedSerializer;
   /** Children whose provider shares one browser run one at a time. */
@@ -176,10 +179,18 @@ class Attachments<D extends PageDriver> {
     return this.observers.get(tag);
   }
 
-  attach(tag: string, driver: D, observer: EffectObserver | null): void {
+  private readonly captures = new Map<string, () => Promise<void>>();
+
+  attach(tag: string, driver: D, observer: EffectObserver | null, capture: (() => Promise<void>) | null = null): void {
     this.observers.set(tag, observer);
     this.drivers.set(tag, driver);
+    if (capture && !this.captures.has(tag)) this.captures.set(tag, capture);
   }
+
+  /** The vault capture of this session, if it has one: run while its browser still exists. It outlives the driver's attachment (a session held for a person has none) and ends with the session's release. */
+  async capture(tag: string): Promise<void> { await this.captures.get(tag)?.(); }
+
+  dropCapture(tag: string): void { this.captures.delete(tag); }
 
   async detach(tag: string): Promise<void> {
     const driver = this.drivers.get(tag);
@@ -274,11 +285,13 @@ async function attachLive<D extends PageDriver>(c: Custody<D>, scope: Scope, rec
   }
 }
 
-async function connect<D extends PageDriver>(c: Custody<D>, scope: Scope, provider: BrowserProvider, ref: LeaseRef): Promise<D> {
+async function connect<D extends PageDriver>(c: Custody<D>, scope: Scope, provider: BrowserProvider, ref: LeaseRef, afterAttach: ((target: AttachTarget) => Promise<void>) | null = null, vaulted = true, holdBack?: string): Promise<D> {
   const config = await scopeConfig(c, scope);
   const { actions: policy, batchTimeoutMs } = config.policy;
   c.owned.set(ref.tag, { cid: scope.cid, provider, ref });
   const target = await provider.attach(ref, scope.signal);
+  // A kept sign-in is put back before the driver, and so before any page, attaches.
+  if (afterAttach) await afterAttach(target);
   const driver = await c.options.driver(target, scope.signal, { batchTimeoutMs });
   let unattached: unknown = null;
   // A healthy observer that outlived its driver's connection is kept, not opened a second time.
@@ -290,7 +303,13 @@ async function connect<D extends PageDriver>(c: Custody<D>, scope: Scope, provid
     await closeDriver(driver);
     throw new BrowserFailureError(browserFailure("browser_unavailable", "The browser's request observer could not attach, and this run's action policy needs it to hold requests; the browser is not used without it.", { retryable: true }));
   }
-  c.held.attach(ref.tag, driver, observer);
+  // The capture reads the conversation's CURRENT vault target when it runs, not the one at create: a host may set it mid-run, once it knows the site, and may take it away
+  // (a read that succeeds and finds none means "do not keep this session"). Only a read that fails falls back to the target the session was created with.
+  const currentVault = async () => {
+    if (!c.opened) return config.vault;
+    try { return (await c.opened.harness.snapshot(c.Config, scope.cid, c.opened.context))?.vault; } catch { return config.vault; }
+  };
+  c.held.attach(ref.tag, driver, observer, c.vault ? captureFor(c.vault, currentVault, provider, ref, { vaulted, ...(holdBack ? { holdBack } : {}), gate: () => personOn(c.options.gates ?? drivingGates, ref.tag) }) : null);
   if (policy === "allow" && !observer) await emitObserver(c, { conversationId: scope.cid, label: config.label, tag: ref.tag, session_id: ref.id, policy, code: observerFailure(unattached) });
   return driver;
 }
@@ -320,6 +339,8 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
   const spec = sessionSpec(config, tag, overrides);
   const unsupported = profileRefusal(spec, provider.caps) ?? navigationRefusal(spec, provider);
   if (unsupported) throw new BrowserFailureError(unsupported);
+  // The vault may name a context or profile for the provider; the record stored below is made from the spec WITHOUT it, so no context id reaches the store.
+  const plan = await planRestore(c.vault, config.vault, provider, spec);
   const record = newSessionRecord({ plane: scope.plane, tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
   const row = rowOf(scope.cid, record);
   await scope.commit(async (tx) => {
@@ -329,7 +350,7 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
     await c.store.begin(tx, row);
   });
   // An answer lost on the way back is not a session that never started: it is settled by its tag.
-  const ref = await provider.create(spec, scope.signal).then(
+  const ref = await provider.create(plan.spec, scope.signal).then(
     async (made) => {
       // Owned before it is recorded: a store that cannot record it still lets close release it.
       c.owned.set(tag, { cid: scope.cid, provider, ref: made });
@@ -345,7 +366,9 @@ async function create<D extends PageDriver>(c: Custody<D>, scope: Scope, overrid
     });
   const live: SessionRecord = { ...record, state: "live", resourceId: ref.id };
   try {
-    const driver = await connect(c, scope, provider, ref);
+    const driver = await connect(c, scope, provider, ref, plan.afterAttach, plan.vaulted, plan.holdBack);
+    // A context made for this session is given to the vault now, so a restart that loses the provider's memory of it still finds it.
+    if (plan.fresh) await c.held.capture(ref.tag);
     await emit(c, scope.cid, config.label, live, "launched", provider);
     return { record: live, driver };
   } catch (error) { throw failure(error, scope, c.redact); }
@@ -397,8 +420,18 @@ function replacedOf(state: SessionsState, plane: string, current: SessionRecord)
 }
 
 async function releaseRecord<D extends PageDriver>(c: Custody<D>, scope: Scope, record: SessionRecord, reason: ReleaseReason): Promise<void> {
+  await captureSession(c, record.tag);
   await scope.commit((tx) => c.store.requestRelease(tx, rowOf(scope.cid, record), reason, now()));
   await c.held.detach(record.tag);
+}
+
+/** The vault capture of one session while its browser exists, skipped while a person is driving it (a capture reads only once they have handed back). Never throws. */
+async function captureSession<D extends PageDriver>(c: Custody<D>, tag: string, wait = false): Promise<void> {
+  if (!c.vault) return;
+  const gate = personOn(c.options.gates ?? drivingGates, tag);
+  // At a handoff's end the person has just let go: their last input is within the driving window, so it is waited out (bounded) before the browser is read.
+  if (!(wait ? await untilQuiet(gate) : !gate || keptFor(gate) !== "person_driving")) return;
+  await c.held.capture(tag);
 }
 
 const editState = <D extends PageDriver>(c: Custody<D>, scope: Scope, edit: (state: SessionsState) => void) =>
@@ -593,6 +626,9 @@ function portFor<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, con
         const { state } = await api.waitForTask(task, context);
         if (state.outcome.status === "completed" && state.outcome.result) {
           const { outcome } = state.outcome.result;
+          // A sign-in just happened and the person has handed back: kept now, so a crash after it does not lose it.
+          const current = currentRecord(await stateOf(c, scope), scope.plane);
+          if (current) await captureSession(c, current.tag, true);
           const told = notices.handedBack(outcome, ask.completionCondition);
           if ((await stateOf(c, scope)).notice?.includes(told)) {
             await editState(c, scope, (sessions) => { sessions.notice = sessions.notice?.replace(told, "").replace(/\s+/g, " ").trim() || null; });
@@ -654,6 +690,8 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
   const kept: { gate: DrivingGate | null; tag: string } = { gate: null, tag: "" };
   const released = await c.serial.run(key, async () => {
     const mine = () => c.held.tags().filter((tag) => c.owned.get(tag)?.cid === conversation.id);
+    // Kept before anything closes: the browser is still there, and a release that is cancelled (a call since) only made one capture more.
+    await Promise.all(leasesOf(c, conversation.id).map((tag) => captureSession(c, tag)));
     // Closing a driver needs nothing from the store, so a release other than idle's starts closing the conversation's
     // drivers first and never waits for the commit to do it; the commit runs alongside, so the release task starts as
     // early as before. An idle release leaves it to the commit, which can find a call since or a person on the live view.
@@ -832,7 +870,10 @@ function endingOf(harness: Harness): Custody<PageDriver>["ending"] {
 
 export function createBrowserExtension<D extends PageDriver>(options: BrowserExtensionOptions<D>): BrowserExtensionHandle {
   const name = options.name ?? "browser";
-  const redact = createRedactor(() => providerKeyValues(process.env, options.redact?.values));
+  // Secrets the package itself comes to hold (a vault's provider context id): registered as they are seen, so no output can carry one.
+  const tracked = new Set<string>();
+  const redact = createRedactor(() => [...providerKeyValues(process.env, options.redact?.values), ...tracked]);
+  const vault = vaultRuntime(options, (secret) => { tracked.add(secret); }, (message) => process.emitWarning(`pi-browser: ${redact(message)}`, { code: "PI_BROWSER_VAULT" }));
   const Config = defineDoc<BrowserConfig>({ kind: `${name}.config`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => structuredClone(UNCONFIGURED) });
   const Children = defineDoc<{ byRequest: Record<string, number> }>({ kind: `${name}.children`, version: 1, scope: "conversation", history: "latest", fork: "current", initial: () => ({ byRequest: {} }) });
   // A fork starts with no sessions: it never shares a live browser.
@@ -857,7 +898,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     providerOf: (read, cid, plane, context) => providerOf(readers, read, cid, plane, context),
     emit: (cid, label, record, change) => {
       // A released session's poll ends with it, whatever released it, and nothing is left to release directly.
-      if (change === "released") { leaving.get(record.tag)?.(); leaving.delete(record.tag); owned.delete(record.tag); }
+      if (change === "released") { leaving.get(record.tag)?.(); leaving.delete(record.tag); owned.delete(record.tag); c.held.dropCapture(record.tag); }
       return emit(readers, cid, label, record, change);
     },
     handoff: options.handoff,
@@ -865,7 +906,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   });
 
   const c: Custody<D> = {
-    ...readers, name, Sessions, Children, store, meter, held: new Attachments<D>(), fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), owned, failed: false, ending: null, opened: null, incarnation: randomUUID(),
+    ...readers, name, Sessions, Children, store, meter, held: new Attachments<D>(), vault, fences: new Map(), leaving, serial: keyedSerializer(), childTurns: oneAtATime(), guards: new Map(), owned, failed: false, ending: null, opened: null, incarnation: randomUUID(),
     idle: idleTracker<ConversationId>({ idleMs: DEFAULT_BROWSER_POLICY.idleReleaseS * 1000, onIdle: (cid, fired, idleMs) => void releaseIdle(c, cid, fired, idleMs).catch(() => undefined) }),
   };
   // Every browser tool is a model call on its session's driving gate: refused while a person drives the live view, and the viewer's input is held while it runs. The host's own

@@ -80,7 +80,7 @@ test("a page the agent visits cannot open the browser's DevTools socket, and Sta
   // web page's Origin is refused.
   assert.deepEqual({
     none: await upgradeStatus(target.sdkCdpUrl, null),
-    extension: await upgradeStatus(target.sdkCdpUrl, extensionOrigin()),
+    extension: await upgradeStatus(target.sdkCdpUrl, `chrome-extension://${target.extensionId}`),
     page: await upgradeStatus(target.sdkCdpUrl, page.url.replace(/\/$/, "")),
   }, { none: 101, extension: 101, page: 403 });
   // Stagehand's own connections are unaffected: the same driver still reads the page.
