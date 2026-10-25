@@ -212,6 +212,7 @@ test("every feature declared off answers 501 unsupported_here naming it, before 
     ["runs.kill", "POST", "/runs/x/kill", {}],
     ["home.export", "GET", "/agents/x/home", undefined, { accept: "application/json" }],
     ["home.import", "PUT", "/agents/x/home", {}],
+    ["home.check", "PUT", "/agents/x/home?check=1", {}],
     ["files.upload", "POST", "/files", { path: "a.txt", size_bytes: 1 }],
     ["files.upload", "PUT", "/files/x", {}],
   ];
