@@ -563,7 +563,9 @@ steps; the root never imports it, and only these functions load `@parcha/agentru
    what the durable runner refuses before any step, and that `tools` lists every tool a call node uses.
 2. To run it, open a Harness on the run's `storePath` with agentrun-pi's `createWorkflowExtension` installed (it holds
    your tools), and call `runWorkflowRevision({ harness, workflows, context, run, input, tools })`. It returns the DSL's
-   `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`.
+   `outcome` and a `carry`, `{ state, summary }`, for the store's `carryBack`. Inside a `pi-durable-disk run`, whose
+   process holds the store file until it exits, call `startWorkflowRevision` (the same options) in the app, and
+   `workflowCarry(run, outcome)` on the host after the run releases and its process exits.
 3. `readWorkflowRun(run)` reads the run back for a page, read-only: the workflow's graph, each node's state, and, once
    the run ended, how it ended, where it escalated and its output.
 4. `revisionGraph(revision, parent?)` draws a revision's graph, and what changed from a parent that is a workflow too.
@@ -607,7 +609,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
-| `openStore(dir)` | The agent store in `dir`, created if missing: `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent? })`, `setCurrent(agent, revision)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id |
+| `openStore(dir)` | The agent store in `dir`, created if missing: `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
 | `openStoreReader(dir)` | The same reads on a read-only handle (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
 | `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
@@ -665,8 +667,10 @@ Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `Ti
 |---|---|---|
 | `serveHome(home, { port?, signal? })` | Serves `home.dir` ([Looking at a home](#looking-at-a-home)) on `127.0.0.1` and resolves to `{ url, close() }` once it is listening; `close()` stops it, and so does aborting `signal`. It takes no lock and opens the home's stores read-only. `home` is anything with a `dir`, an `AgentHome` included | `missing`: the directory is not a home. `invalid`: a `port` that is not an integer from 0 to 65535 |
 | `serveStore(store, { port?, signal? })` | Serves the agent store at `store.dir` ([Looking at a store](#looking-at-a-store)) as `serveHome` serves a home | `missing`: the directory has no `store.sqlite`. `invalid`: a `port` that is not an integer from 0 to 65535 |
+| `storeApi(store)` | The read-only JSON behind the store's page, for a server of another package to answer its `/api/*` paths: a function of a path and its query that resolves to `{ status, value }`, opening `store.dir`'s reader for each read. A read that fails resolves to its status and `{ error }` | |
+| `STORE_PAGE_FILES` | The store page's files by the path the page asks for each (`/`, `/page.css`, `/page.js`, `/graph.js`): `{ path, type }`, `path` absolute. A page that loads its own script before `page.js` can set `window.agentStoreHost(parts)`, which answers `{ name, route(hash, token), agent(agent, revisions), revision(agent, revision) }`: the page's name in the tab's title, the views it draws itself, and what it adds to an agent's card and to a revision's head | |
 
-Its types: `ServeOptions` and `ServeHandle`. The package's bin,
+Its types: `ServeOptions`, `ServeHandle`, `Api` (what `storeApi` returns) and `Answer` (`{ status, value }`). The package's bin,
 `pi-durable-agent serve <dir> [--port <n>]`, calls `serveStore` for a directory holding a `store.sqlite` and `serveHome`
 otherwise, and prints `url`; it exits 1 for a directory that is neither and 2 for a command or port it does not know.
 
@@ -677,7 +681,9 @@ It loads `@parcha/agentrun-dsl` and `@parcha/agentrun-pi` only when one of its f
 | Export | Does |
 |---|---|
 | `checkWorkflowBody(body)` | Refuses, as `invalid`, a workflow revision's body a store must not commit, naming the node's path and never a value from the body |
-| `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`) |
+| `runWorkflowRevision(options)` | Runs the revision's workflow as one durable workflow task on the run's store and waits: `{ outcome, carry }`, `startWorkflowRevision` then `workflowCarry` |
+| `startWorkflowRevision(options)` | The first half: starts the run's workflow task and waits for its `outcome`, reading no file. A workflow that uses a tool the host does not register, or does not take the input, is refused with no task; the run reopened under another revision is refused (`RUN_STORE_BINDING_MISMATCH`); reopened as itself it resumes, or answers how it ended |
+| `workflowCarry(run, outcome)` | The second half: `{ state, summary }` for the store's `carryBack`, read with `readWorkflowRun`. It fails while another connection holds the store file exclusively, as a `pi-durable-disk run` process does until it exits |
 | `readWorkflowRun(run)` | The run as its store shows it, read-only: no write, no lock, no Harness. With `run.state` (the runs row's) ended and no write-ahead log beside the store, it opens the store as an immutable file and makes no file in the run's directory. Working means live: an ended run's interrupted nodes read `stopped`, or `failed` when the run failed. A run in the driver's keyed layout is refused as `format` |
 | `revisionGraph(revision, parent?)` | The revision's graph (the DSL's `workflowGraph`), and the DSL's `graphDiff` from its parent when the parent is a workflow revision; an agentic parent, or none, gives no diff |
 
@@ -699,7 +705,7 @@ throws an `AggregateError` holding both.
 | `missing` | A home, a run, a run's store or a pack file is not there |
 | `busy` | Another writer held the home for more than 5 seconds. The lock is an exclusive SQLite lock the kernel drops when its holder dies, so a crashed writer never leaves it |
 | `format` | A store or a skill this version cannot read: no identity or definition, another format version, no readable head commit, a store that does not accept `synchronous = FULL`, a skill that does not match its SHA-256, or an import journal that cannot be settled |
-| `stale` | The home moved since the caller read it: `ifRevision`, `from`, or a `sha` that is not the cache's |
+| `stale` | The home moved since the caller read it: `ifRevision`, `from`, or a `sha` that is not the cache's; or an agent store's agent has another current revision than a commit's `ifCurrent` |
 | `too_large` | A pack over `maxBytes` or `maxMembers`, from `packHome` |
 | `check` | A pack or an import failed a check: `checks` lists them all |
 | `key` | A host key that does not open the session vault: another key id, or the right id with other bytes |

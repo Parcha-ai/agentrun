@@ -89,8 +89,11 @@
     var s = Math.round(ms / 1000);
     return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m " + pad(s % 60) + "s" : Math.floor(s / 3600) + "h " + pad(Math.floor((s % 3600) / 60)) + "m";
   }
+  /** Dollars: under a cent, two significant digits, so a run that cost $0.00014 does not read as free. */
   function usd(n) {
-    return typeof n === "number" && isFinite(n) ? "$" + n.toFixed(n < 1 ? 3 : 2) : "";
+    if (typeof n !== "number" || !isFinite(n)) return "";
+    if (n === 0) return "$0";
+    return "$" + n.toFixed(n < 0.01 ? Math.min(20, 1 - Math.floor(Math.log10(n))) : n < 1 ? 3 : 2);
   }
   function bytes(n) {
     if (typeof n !== "number") return "";
@@ -643,7 +646,7 @@
 
   function picker(token) {
     crumb([]);
-    doc.title = "Agent store";
+    titled(null);
     get("api/store").then(
       function (data) {
         if (token !== view) return;
@@ -765,11 +768,11 @@
     );
   }
 
-  function revisionBlock(r) {
+  function revisionBlock(r, agent) {
     return el(
       "article",
       { class: "revision" + (r.current ? " current" : "") },
-      el("div", { class: "rev-head" }, el("b", { class: "rev-id", title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null),
+      el("div", { class: "rev-head" }, el("b", { class: "rev-id", title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null, host && host.revision ? host.revision(agent, r) : null),
       el("p", { class: "facts" }, el("span", null, "created " + when(r.createdAt)), el("span", null, r.parent ? "from " + short(r.parent) : "the first revision")),
       r.kind === "workflow" ? workflowBody(r) : agenticBody(r)
     );
@@ -826,7 +829,7 @@
         var revisions = both[0].revisions || [];
         var current = revisions.filter(function (revision) { return revision.current; })[0];
         crumb([[agent.name, agentHref(agentId)]]);
-        doc.title = agent.name + " · agent store";
+        titled(agent.name);
         show([
           el(
             "section",
@@ -834,10 +837,11 @@
             kicker("Agent"),
             el("h1", null, agent.name),
             el("p", { class: "facts" }, kindPill(current && current.kind), el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null),
-            agent.description ? el("p", { class: "lede" }, agent.description) : null
+            agent.description ? el("p", { class: "lede" }, agent.description) : null,
+            host && host.agent ? host.agent(agent, revisions) : null
           ),
           runsCard(agentId, revisions, both[1], filter),
-          el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(revisions.length, "revision") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(revisionBlock) : el("p", { class: "none" }, "No revisions yet.")),
+          el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(revisions.length, "revision") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(function (r) { return revisionBlock(r, agent); }) : el("p", { class: "none" }, "No revisions yet.")),
         ]);
       },
       function (error) {
@@ -899,7 +903,7 @@
         if (token !== view) return;
         var run = data.run;
         crumb([[data.agent, agentHref(run.agent)], ["Run", "#/runs/" + encodeURIComponent(id)]]);
-        doc.title = "Run " + short(run.id) + " · " + data.agent + " · agent store";
+        titled("Run " + short(run.id) + " · " + data.agent);
         var rows = Array.isArray(data.rows) ? data.rows : [];
         var open = openCalls();
         var y = window.scrollY || 0;
@@ -920,6 +924,7 @@
   }
 
   function storeRoute(hash, token) {
+    if (host && host.route && host.route(hash, token)) return;
     var m = /^#\/runs\/([^/?#]+)$/.exec(hash);
     if (m) return storeRunPage(decoded(m[1]), token);
     m = /^#\/agents\/([^/?#]+)(?:\?revision=([^&#]*))?$/.exec(hash);
@@ -936,6 +941,12 @@
   }
 
   // ---- routing ------------------------------------------------------------------------------------------------------------
+  /** The tab's title: what the view shows, then the store page's name, or the host's when it gives one. */
+  function titled(what) {
+    var name = host && host.name;
+    doc.title = what ? what + " · " + (name || "agent store") : name || "Agent store";
+  }
+
   function crumb(parts) {
     clear(crumbs);
     add(crumbs, el("a", { href: "#/" }, STORE ? "Agents" : "Home"));
@@ -997,6 +1008,19 @@
       }
     });
   }
+
+  // ---- a host's script ------------------------------------------------------------------------------------------------
+  // A server of another package may serve the store's page with a script of its own, loaded before this one, that sets
+  // window.agentStoreHost. Given this page's parts (`route` among them, which draws the address's view again) it answers
+  // { name: the page's name in the tab's title; route(hash, token): true when it drew that view itself;
+  // agent(agent, revisions) and revision(agent, revision): what it adds to the agent card and to a revision's head }.
+  var host = STORE && typeof window.agentStoreHost === "function"
+    ? window.agentStoreHost({
+        el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },
+        kicker: kicker, pill: pill, kindPill: kindPill, when: when, ago: ago, took: took, usd: usd, cost: cost, clip: clip, short: short, plural: plural,
+        agentHref: agentHref, timeline: timeline, storeRunPage: storeRunPage, openCalls: openCalls, reopen: reopen, route: route, titled: titled,
+      }) || null
+    : null;
 
   window.addEventListener("hashchange", route);
   route();
