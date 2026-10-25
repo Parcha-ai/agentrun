@@ -1,7 +1,22 @@
 # AgentRun
 
-**AgentRun Server** runs your agents and keeps everything they do. Create an agent, change it (every change is a
-revision you can go back to), run it on a real model, and open any run of any agent from one page.
+**AgentRun is an open platform to manage your agents.**
+
+Create an agent, change it, and run it. Every change is a revision you can go back to, and every run names the
+revision it ran, so you can open any run of any agent and see what it did. Host it yourself with AgentRun Server, on
+your machine or your own server, or with us when hosted AgentRun opens.
+
+1. **The platform.** Your agents, each one's revisions, and every run, behind one API (`/v2`) and one page. You run
+   it yourself today; hosted by us is coming.
+2. **[AgentRun Server](packages/serve/README.md).** The part you host: one container, `ghcr.io/parcha-ai/agentrun-server`,
+   that serves the `/v2` API and the page and keeps everything in one data directory. Apache-2.0.
+3. **[Building blocks](#building-blocks).** The open packages underneath, each usable on its own in your pi agent:
+   `@parcha/agentrun-dsl` and `@parcha/agentrun-jev` (typed workflows and the decisions in them),
+   `@parcha/agentrun-pi` (workflows inside pi), `@parcha/pi-durable-agent` (the agent store),
+   `@parcha/pi-durable-disk` and `@parcha/pi-transport` (where an agent and its tools run),
+   `@parcha/pi-browser` and `@parcha/pi-vision` (what an agent can see and do). On npm, Apache-2.0.
+
+## Host it
 
 1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker run` on your own machine or server, with your own model key. An OpenRouter key with a credit limit caps what your agents can spend.
 
@@ -27,11 +42,9 @@ revision you can go back to), run it on a real model, and open any run of any ag
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
 a run may reach, and the container.
 
-## The packages
+## Building blocks
 
-Open-source packages for your pi agent. Install the ones you need.
-
-This repository holds the AgentRun harness: the workflow DSL and the pi extensions around it.
+The open packages underneath the platform, each usable on its own in your pi agent. Install the ones you need.
 
 **pi-vision** lets a pi agent answer questions about documents, images and video, and show the page, second or region each answer rests on. Try it free, with no key (the models are scripted), in a checkout built as under [Run the support example](#run-the-support-example): `npm run demo:vision -- examples/document-check`. It needs ffmpeg, ffprobe, pdftoppm and pdftotext (`brew install ffmpeg poppler`, or `sudo apt-get install ffmpeg poppler-utils`). See [pi-vision](packages/pi-vision/README.md).
 

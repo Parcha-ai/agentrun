@@ -1,19 +1,21 @@
 # AgentRun Server with Docker Compose. From the repository root:
 #   docker compose -f packages/serve/docker/compose.yaml up --build
-# Then open the link it prints. The port is published on this machine's loopback only; put a reverse proxy
-# with TLS in front of it before you publish it anywhere else.
+# Then open the link it prints. The port (AGENTRUN_PORT, 7340 by default) is published on this machine's loopback only;
+# put a reverse proxy with TLS in front of it before you publish it anywhere else.
 services:
   agentrun:
     build:
       context: ../../..
       dockerfile: packages/serve/docker/Dockerfile
     ports:
-      - "127.0.0.1:7340:7340"
+      - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340"
     volumes:
       - agentrun-data:/data
     environment:
       # The server's token. Left empty, the server makes one at first start and keeps it in the volume.
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}
+      # The address people open, so the printed link names the published port, not the container's.
+      AGENTRUN_PUBLIC_URL: ${AGENTRUN_PUBLIC_URL:-http://127.0.0.1:${AGENTRUN_PORT:-7340}}
       # The model a revision runs on when it names none, as provider/model-id, and the models of a workflow node's fast
       # and strong tiers (each falls back to AGENT_MODEL).
       AGENT_MODEL: ${AGENT_MODEL:-}

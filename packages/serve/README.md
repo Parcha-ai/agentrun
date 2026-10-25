@@ -56,20 +56,36 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
-place: a token from the environment stays out of the logs.
+place: a token from the environment stays out of the logs. `AGENTRUN_PUBLIC_URL`, when set, is the address people open (a
+container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL` use it.
 
 ## In a container
 
-`packages/serve/docker/Dockerfile` builds one image of the server and the open packages it runs. Everything it keeps is
-under `/data`: the agent store, the runs and the token. From a checkout:
+The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
+With no checkout:
 
 ```sh
-export AGENT_MODEL=anthropic/<model-id> ANTHROPIC_API_KEY=...
+export OPENROUTER_API_KEY=...
+docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
+  -e AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 -e OPENROUTER_API_KEY \
+  ghcr.io/parcha-ai/agentrun-server:beta
+docker logs agentrun | grep Open
+```
+
+On another port, publish it and say so, so the printed link names it: `-p 127.0.0.1:8080:7340
+-e AGENTRUN_PUBLIC_URL=http://127.0.0.1:8080`.
+
+`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs. Everything it keeps is
+under `/data`: the agent store, the runs and the token. From a checkout, with compose:
+
+```sh
+export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
 docker compose -f packages/serve/docker/compose.yaml up --build -d
 docker compose -f packages/serve/docker/compose.yaml logs agentrun
 ```
 
-The log ends with the `Open` line. Compose publishes the port on this machine's loopback only (`127.0.0.1:7340`), and
+The log ends with the `Open` line. Compose publishes the port on this machine's loopback only (`127.0.0.1:7340`, or
+`AGENTRUN_PORT`, which the printed link follows), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
 every route but `GET /v2/capabilities` still needs the token.
 
