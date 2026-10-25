@@ -335,13 +335,16 @@ test("a run the store gained in the same tick of the file clock as the server's 
   const { home, json, get } = await app(t);
   // The server read the home as it started. A commit inside the same clock tick leaves the store's mtime as it was, and
   // its size does not move: put the mtime back to show the server a write that changed neither.
+  // `cp -p` keeps the store's times to the nanosecond in a reference file, and `touch -r` puts them back (both POSIX, so
+  // the test runs on macOS as well as Linux).
   const store = join(home.dir, "agent.sqlite");
+  const reference = join(home.dir, "..", "store-times.ref");
+  execFileSync("cp", ["-p", store, reference]);
   const before = statSync(store, { bigint: true });
   await makeRun(home, "r1", { status: "done", files: { "notes.md": "# Notes" } });
   assert.equal(statSync(store, { bigint: true }).size, before.size, "the store keeps its size across the run's commit");
-  const ns = before.mtimeNs;
-  execFileSync("touch", ["-m", "-d", `@${ns / 1_000_000_000n}.${String(ns % 1_000_000_000n).padStart(9, "0")}`, store]);
-  assert.equal(statSync(store, { bigint: true }).mtimeNs, ns, "the store's mtime is the one the server read");
+  execFileSync("touch", ["-r", reference, store]);
+  assert.equal(statSync(store, { bigint: true }).mtimeNs, before.mtimeNs, "the store's mtime is the one the server read");
   assert.equal((await get("/runs/r1")).status, 200);
   assert.deepEqual((await json("/runs/r1/files")).files.map((f) => f.path), ["notes.md"]);
 });
