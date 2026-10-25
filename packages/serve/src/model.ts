@@ -56,8 +56,9 @@ export type ModelRef = { provider: string; modelId: string };
 
 /**
  * The model a revision runs on here, or why it cannot: `ref` is an agentic revision's "provider/model-id", absent for
- * the host's model of `tier`. Through the gateway the model id is the part after the provider, and `namedProvider` is
- * that provider, whose catalog entry prices the model. `host` says a setting of this host (a key, a default model) could
+ * the host's model of `tier`. Through the gateway the ref goes whole, as a gateway such as OpenRouter names its models
+ * `vendor/model` (with `AGENT_MODEL_GATEWAY_IDS=bare`, only the part after the provider), and `namedProvider` is that
+ * provider, whose catalog entry prices the model. `host` says a setting of this host (a key, a default model) could
  * make it reachable; a model the revision names that pi-ai does not know is not.
  */
 export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default"): Promise<{ model: ModelRef; namedProvider?: string } | { why: string; host: boolean }> {
@@ -67,7 +68,8 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   if (env.AGENT_MODEL_BASE_URL) {
     if (!named) return { why: `${none}: set AGENT_MODEL, or name a model in the definition.`, host: true };
     const slash = ref?.indexOf("/") ?? -1;
-    return { model: { provider: MODEL_PROVIDER, modelId: ref ? ref.slice(slash + 1) : named }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
+    const sent = ref && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? ref.slice(slash + 1) : named;
+    return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
   }
   if (!named) return { why: `${none}: set AGENT_MODEL to a provider/model-id, start agentrun-serve with --faux MODULE, or name a model in the definition.`, host: true };
   const slash = named.indexOf("/");
@@ -170,7 +172,14 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
   const priceOf = (id: string): ModelCost => {
     const { given, named } = prices.get(id)!;
-    if (given === undefined) return listedPrice(catalog.get(id) ?? [], named);
+    if (given === undefined) {
+      // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
+      if (named !== undefined) return listedPrice(catalog.get(id.startsWith(`${named}/`) ? id.slice(named.length + 1) : id) ?? [], named);
+      // A host model set whole (`vendor/model`) the catalog does not list as it is: priced as its model, the vendor named.
+      const slash = id.indexOf("/");
+      if (catalog.has(id) || slash < 1) return listedPrice(catalog.get(id) ?? [], undefined);
+      return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
+    }
     const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
     return { input, output, cacheRead, cacheWrite };
   };
