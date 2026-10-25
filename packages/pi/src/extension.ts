@@ -40,6 +40,13 @@ const mutatingTools = new Set(['bash', 'edit', 'write']);
 /** The extension's own tool's name, which a host tool may not take. */
 const toolName = 'agentrun';
 const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Dry run: /agentrun dry-run · SOP text: /agentrun sop <file> · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
+/** What a result says when it ends no run, and the label on what the host says about a turn. */
+const NO_RUN = 'no workflow ran';
+const STAMP_LABEL = 'AgentRun host notice (not written by the model):';
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+const stampText = (runs: { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number } }[]): string => runs.length === 0
+  ? `${STAMP_LABEL} ${NO_RUN} in this turn. A result, verification or support the model reports for this turn came from its own work, not from a workflow.`
+  : runs.map(run => `${STAMP_LABEL} receipt ${run.id}, ${run.status}, ${run.name}; ${plural(run.calls.agent, 'model step')}, ${plural(run.calls.judge, 'Jev decision')}, ${plural(run.calls.tool, 'tool call')}.`).join('\n');
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
 function singleTextInput(workflow: unknown): string | undefined {
   const source = workflow as { input?: { schemaId?: string }; schemas?: Record<string, any> } | undefined;
@@ -121,6 +128,10 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     maxJudgeCalls: limits.judgeCalls, maxToolCalls: limits.toolAttempts };
   let current: Session | undefined;
   let runOrdinal = 0;
+  // What the host tells the user about a turn is its own entry, never text in the model's message. A session is engaged once the
+  // author skill has loaded in it or the agentrun tool has been called; the runs that ended since the prompt began are its record.
+  let engaged = false;
+  let turnRuns: { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number } }[] = [];
   const toolSet = (ctx: ExtensionContext, trusted = false): PiToolDefinition[] => {
     if (configuration.hostTools) {
       const supplied = configuration.hostTools(ctx);
@@ -380,11 +391,12 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         if (unknown.length) report.uncertainEffects = unknown.map(effect => ({ idempotencyKey: effect.id, outcome: 'unknown' as const }));
       }
       s.report = report;
+      turnRuns.push({ id: runId, status: report.status, name: inspectWorkflow(s.draft).name, calls: report.calls });
       persist(s);
       const summary = formatRunReport(report, scripted);
       const { events: _events, ...modelReport } = report;
       const mode = scripted ? 'scripted' : 'live';
-      return textResult(options.modelResult ? modelJson({ mode, ...modelReport }) : summary + (s.persistenceWarning ? `\n${s.persistenceWarning}` : ''), { mode, ...report,
+      return textResult(options.modelResult ? modelJson({ mode, receipt: runId, ...modelReport }) : summary + (s.persistenceWarning ? `\n${s.persistenceWarning}` : ''), { mode, receipt: runId, ...report,
         // Failure diagnostics must not echo rejected raw arguments. The operator
         // can inspect the retained draft explicitly; the error receipt stays sanitized.
         ...(report.error ? {} : { view: workflowView(s.draft, { input: s.input, observation: s.observation, report, mode }) }) });
@@ -445,6 +457,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       return new Text(safe(text), 0, 0);
     },
     async execute(_id, args, signal, onUpdate, ctx) {
+      engaged = true;
       const s = await state(ctx);
       const store = new WorkflowStore(ctx.cwd);
       if (args.action === 'save') {
@@ -458,7 +471,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         const saved = await store.load(args.name ?? '', args.digest);
         const result = inspect(ctx, s, saved.workflow, args.input); s.input = structuredClone(args.input ?? {}); s.savedName = saved.name; s.demo = undefined; clearRun(s); persist(s);
         const preview = view(ctx, s);
-        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input }), { ...result, saved, view: preview });
+        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input, note: NO_RUN }), { ...result, saved, view: preview });
       }
       if (args.action === 'describe') {
         const details = { tools: describeTools(toolSet(ctx)),
@@ -468,7 +481,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       if (args.action === 'dry-run') {
         if (args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then dry-run without a workflow argument.');
         const report = await dryRun(ctx, s, args.input, false, signal);
-        return textResult(modelJson({ dryRun: report }), { dryRun: report });
+        return textResult(modelJson({ dryRun: report, note: NO_RUN }), { dryRun: report });
       }
       if (args.action === 'run' && args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then run without a workflow argument.');
       if (args.action === 'inspect') {
@@ -476,7 +489,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         const preview = view(ctx, s);
         // The author needs the exact definition when editing a restored procedure.
         // Pi's renderer shows the readable view, not this model-facing JSON.
-        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input }), { ...result, view: preview, tools: toolSet(ctx).map(t => t.name) });
+        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input, note: NO_RUN }), { ...result, view: preview, tools: toolSet(ctx).map(t => t.name) });
       }
       return execute(ctx, s, args.input ?? s.input, { signal, update: onUpdate, modelResult: true });
     },
@@ -631,9 +644,18 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (retainFinal && wasRunning && old.report) persist(old, false, true);
     if (current === old) current = undefined;
   };
-  pi.on('session_shutdown', () => closeSession(true));
-  pi.on('session_before_switch', () => closeSession(true));
-  pi.on('session_before_fork', () => closeSession(true));
+  pi.on('session_shutdown', () => { engaged = false; return closeSession(true); });
+  pi.on('session_before_switch', () => { engaged = false; return closeSession(true); });
+  pi.on('session_before_fork', () => { engaged = false; return closeSession(true); });
+  pi.on('before_agent_start', event => {
+    turnRuns = [];
+    if (event.prompt.includes(`<skill name="${AUTHOR_SKILL_NAME}"`)) engaged = true;
+  });
+  pi.on('agent_end', () => {
+    if (!engaged) return;
+    const runs = turnRuns; turnRuns = [];
+    pi.sendMessage({ customType: 'agentrun:stamp', content: safe(stampText(runs)), display: true, details: { runs } }, { triggerTurn: false });
+  });
   pi.on('session_start', async (_event, ctx) => {
     if (current && current.key !== `${ctx.sessionManager.getSessionId()}:${ctx.cwd}`) await closeSession();
     await state(ctx);
