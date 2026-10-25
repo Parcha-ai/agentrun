@@ -118,8 +118,8 @@ test("a run records the variant the host chose, only when given; an unknown vari
     [{ id: "public", reason: " " }, /reason is not a non-empty string/],
     [{ id: "public", reason: "x".repeat(2_001) }, /at most 2000 characters/],
     [{ id: "has space", reason: "x" }, /prompt id "has space" is not a variant id/],
-    [{ id: "public", reason: "x", text: "an overlay of my own" }, /the prompt is not \{ id, reason \}/],
-    ["public", /the prompt is not \{ id, reason \}/],
+    [{ id: "public", reason: "x", text: "an overlay of my own" }, /the prompt is not \{ id, reason, confidence\? \}/],
+    ["public", /the prompt is not \{ id, reason, confidence\? \}/],
   ];
   for (const [index, [prompt, pattern]] of bad.entries()) {
     await assert.rejects(startRun(h, { runId: `bad-${index}`, host: "laptop", prompt }), refused("invalid", pattern), JSON.stringify(prompt));
@@ -326,4 +326,26 @@ test("choosePrompt: an error's message is cut, so a reason with a 10,000-charact
     await startRun(h, { runId, host: "laptop", prompt: { id: choice.variant, reason: choice.reason } });
     assert.deepEqual((await readAgentHome(h)).runs[runId].prompt, { id: "generic", reason: choice.reason });
   }
+});
+
+test("a run's prompt may carry a confidence from 0 to 1, recorded as given; one outside it, or not a number, is refused and starts nothing", async () => {
+  const h = await home();
+  await setPrompts(h, SET);
+  for (const [runId, confidence] of [["c-low", 0], ["c-mid", 0.62], ["c-high", 1]]) {
+    assert.equal((await startRun(h, { runId, host: "t", prompt: { id: "public", reason: "r", confidence } })).runId, runId);
+  }
+  await startRun(h, { runId: "plain", host: "t", prompt: { id: "public", reason: "r" } });
+  const { runs } = await readAgentHome(h);
+  assert.deepEqual(runs["c-mid"].prompt, { id: "public", reason: "r", confidence: 0.62 });
+  assert.deepEqual([runs["c-low"], runs["c-high"]].map((run) => run.prompt.confidence), [0, 1]);
+  assert.equal("confidence" in runs.plain.prompt, false, "no confidence given is none recorded");
+  for (const [at, confidence] of [-0.01, 1.01, Infinity, -Infinity, Number.NaN, "0.5", null, true, [0.5], {}].entries()) {
+    await assert.rejects(startRun(h, { runId: `bad-${at}`, host: "t", prompt: { id: "public", reason: "r", confidence } }), refused("invalid", /confidence/), JSON.stringify(confidence) ?? String(confidence));
+  }
+  await assert.rejects(startRun(h, { host: "t", prompt: { id: "public", reason: "r", confidence: 0.5, extra: 1 } }), refused("invalid", /not \{ id, reason, confidence\? \}/));
+  await prepareRun(h, { runId: "prep", host: "t", prompt: { id: "nonprofit", reason: "r", confidence: 0.8 } });
+  assert.equal((await readAgentHome(h)).runs.prep.prompt.confidence, 0.8, "the home's half of a start records it too");
+  await assert.rejects(prepareRun(h, { runId: "prep2", host: "t", prompt: { id: "nonprofit", reason: "r", confidence: 2 } }), refused("invalid", /confidence/));
+  const left = Object.keys((await readAgentHome(h)).runs);
+  assert.deepEqual(left.filter((id) => id.startsWith("bad-") || id === "prep2"), [], "a refused start leaves no run behind");
 });

@@ -30,6 +30,8 @@ const DEFAULT_CHUNK_BYTES = 32 * 1024 * 1024;
 const PACK_TIMEOUT_MS = 1_800_000;
 const MAKE_PARENT_SCRIPT = 'mkdir -p -- "$(dirname -- "$1")"';
 const RECEIVE_SCRIPT = 'cat > "$1"';
+/** A sealed file of no bytes sends none: the receiver reads /dev/null, never an exec stdin whose end `docker exec -i` can lose. */
+const EMPTY_INPUT = "exec </dev/null; ";
 // Hashed through standard input: with a name on the command line, GNU sha256sum escapes a newline or backslash in it.
 const HASH_ONE_SCRIPT = 'sha256sum < "$1" && wc -c < "$1"';
 const PLACE_SCRIPT = 'mv -f -- "$1" "$2"';
@@ -1094,7 +1096,7 @@ export async function moveFile(
 		undefined,
 		toPipe.kind === "files"
 			? filesSink(to, JOIN_FILE_SCRIPT, [partial], toPipe.chunkBytes)
-			: streamStarter(to, ["sh", "-c", RECEIVE_SCRIPT, "sh", partial]),
+			: streamStarter(to, ["sh", "-c", (seal.bytes === 0 ? EMPTY_INPUT : "") + RECEIVE_SCRIPT, "sh", partial]),
 		{
 			stallMs: options?.stallMs ?? DEFAULT_STALL_MS,
 			deadlineMs: options?.deadlineMs ?? BASE_DEADLINE_MS + (seal.bytes / ASSUMED_FLOOR_BYTES_PER_SECOND) * 1000,

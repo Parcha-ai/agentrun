@@ -9,7 +9,8 @@ import { ModelRuntime, ModelRegistry, VERSION as PI_VERSION } from '@earendil-wo
 import { fauxProvider, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import agentRunExtension, { createAgentRunExtension } from '../dist/extension.js';
 import { demoWorkflow } from '../dist/demo.js';
-import { authorSkillDirectory } from '@parcha/agentrun-dsl';
+import { WorkflowExtensionService } from '../dist/extension-service.js';
+import { authorSkillDirectory, runWorkflow } from '@parcha/agentrun-dsl';
 import { supportTriageWorkflow, supportTriageInputs, scriptedSupportTriageDeps } from '../dist/triage-demo.js';
 import { tempCwd } from './fixtures/temp-cwd.mjs';
 
@@ -153,6 +154,15 @@ test('history is read-only and branch navigation cannot restore sibling history'
     await app.events.get('session_tree')({}, app.ctx);
     await app.command('history'); assert.match(app.messages.at(-1).content, /No retained runs/);
     await app.command('inspect'); assert.match(app.messages.at(-1).content, /Describe a task/);
+  } finally { await app.shutdown(); }
+});
+
+test('the agentrun tool tells the model that a run left interrupted or failed resumes from its journal', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    const { description } = app.tools.get('agentrun');
+    assert.doesNotMatch(description, /no checkpoint resume|always restarts/, 'a run can resume');
+    assert.match(description, /interrupted or failed resumes from its journal when its draft, input, SOP and tools are unchanged/);
   } finally { await app.shutdown(); }
 });
 
@@ -1069,6 +1079,104 @@ test('a runtime limit given as undefined keeps its default, as an omitted one do
   try {
     assert.deepEqual((await unset.tool({ action: 'describe' })).details.limits, (await omitted.tool({ action: 'describe' })).details.limits);
   } finally { await omitted.shutdown(); await unset.shutdown(); }
+});
+
+test('an error that only reads like an operator message is not shown: what reaches the operator is decided by its type', async () => {
+  // A host callback's own error, whose text happens to start as the extension's operator messages do. It answers the
+  // session's setup and fails once the command is under way.
+  let calls = 0;
+  const app = await harness({ withModel: false, extensionOptions: { hostTools: () => { if (calls++ === 0) return []; throw new Error('Workflow host detail PRIVATE_HOST_DETAIL'); } } });
+  try {
+    await app.command('demo');
+    const shown = app.messages.map(message => message.content).join('\n');
+    assert.doesNotMatch(shown, /PRIVATE_HOST_DETAIL/, 'the host error text is not shown');
+    assert.match(shown, /AgentRun could not complete this operation/);
+  } finally { await app.shutdown(); }
+});
+
+// The extension's own refusals reach the operator through /agentrun as written, each naming what to do next.
+const shownAsWritten = (app, text) => {
+  const shown = app.messages.at(-1).content;
+  assert.doesNotMatch(shown, /AgentRun could not complete this operation/);
+  assert.equal(shown, text);
+};
+const noDraft = 'Inspect a workflow first. Try /agentrun demo, or describe a task with /agentrun <task>.';
+
+test('/agentrun run with no inspected workflow tells the operator to inspect one first', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await app.command('run');
+    shownAsWritten(app, noDraft);
+  } finally { await app.shutdown(); }
+});
+
+test('/agentrun dry-run with no inspected workflow tells the operator to inspect one first', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await app.command('dry-run');
+    shownAsWritten(app, noDraft);
+  } finally { await app.shutdown(); }
+});
+
+test('/agentrun run while a run is under way tells the operator to stop it first', { timeout: 5000 }, async () => {
+  const entered = deferred(), release = deferred();
+  const app = await harness({ hasUI: true, withModel: false, extensionOptions: {
+    hostTools: () => [hostTool(async () => { entered.resolve(); await release.promise; return corpusResult('Late result'); })],
+  } });
+  try {
+    await app.tool({ action: 'inspect', workflow: toolWorkflow() });
+    await app.command('run'); await entered.promise;
+    await app.command('run');
+    shownAsWritten(app, 'A workflow is already running. Use /agentrun stop first.');
+    release.resolve();
+    await waitUntil(() => app.messages.some(message => message.details?.status));
+  } finally { release.resolve(); await app.shutdown(); }
+});
+
+test('/agentrun run of a workflow naming SOP sections with no SOP text tells the operator to supply it', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    const definition = workflow(); definition.root.sopSection = ['Blockers'];
+    await app.tool({ action: 'inspect', workflow: definition });
+    await app.command('run');
+    shownAsWritten(app, 'Workflow requires SOP text for "Blockers". Supply it with /agentrun sop <file>.');
+  } finally { await app.shutdown(); }
+});
+
+test('the DSL refusing a run state it cannot clone ends the run in its report, never as the command error', async () => {
+  // A tool answers with a function in its details, so the parallel after it cannot snapshot the state: the DSL throws.
+  const answer = async () => ({ ...corpusResult('source'), details: { text: 'source', later: () => 1 } });
+  const definition = toolWorkflow();
+  definition.root = { node: 'chain', steps: [definition.root, { node: 'parallel', label: 'again', branches: ['again', 'once more'].map(label => ({ ...definition.root, label, as: label.replace(' ', '_') })) }] };
+  await assert.rejects(runWorkflow(definition, {}, { runEffect: answer }), { message: 'Workflow state must be structured-cloneable' });
+  // The service, which every run of the extension goes through, makes that throw the report's failure, its text not kept.
+  const service = new WorkflowExtensionService({ allowedTools: ['corpus_search'] });
+  service.prepare(definition);
+  const report = await service.run({}, { deps: { runEffect: answer } });
+  assert.deepEqual([report.status, report.error.code], ['failed', 'execution_failed']);
+  assert.doesNotMatch(report.error.message, /structured-cloneable/);
+  // The extension runs it on a journal, which refuses the answer at the call first: either way the run ends in its report.
+  const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [hostTool(answer)] } });
+  try {
+    await app.tool({ action: 'inspect', workflow: definition });
+    await app.command('run');
+    assert.equal(app.messages.at(-1).details.error.stage, 'read-corpus');
+    assert.doesNotMatch(app.messages.map(message => message.content).join('\n'), /structured-cloneable|could not complete this operation/);
+  } finally { await app.shutdown(); }
+});
+
+test("the durable host's workflow tool is no part of the /agentrun extension, so nothing it throws reaches the command's error", async () => {
+  const dist = new URL('../dist/', import.meta.url), seen = new Set();
+  const visit = async (file) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const match of (await readFile(new URL(file, dist), 'utf8')).matchAll(/\bfrom\s*["'](\.[^"']+)["']|\bimport\s*\(?\s*["'](\.[^"']+)["']/g)) {
+      await visit(new URL(match[1] ?? match[2], new URL(file, dist)).href.slice(dist.href.length));
+    }
+  };
+  await visit('extension.js');
+  assert.ok(seen.has('workflow-tool.js') && seen.size > 10, 'the closure was read');
+  assert.deepEqual([...seen].filter(file => file.startsWith('durable/')), []);
 });
 
 // A dry run: the inspected draft on synthetic values (or the given input), with no model, Jev or tool call.
