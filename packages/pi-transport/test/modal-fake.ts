@@ -15,6 +15,8 @@ class FakeSandbox implements ModalSandbox {
 	readonly execs: { command: string[]; params: ExecParams }[] = [];
 	readonly writes: number[] = [];
 	exitCode: number | null = null;
+	/** Makes every `stdin.close()` of this sandbox's programs fail, as a broken command-router call would. */
+	failClose = false;
 	/** What the box's probe of its own disk, Yama setting and FUSE prints (the real script reads this host's /proc). */
 	probeOutput = "disk=104857600\nptrace=1\nfuse_dev=1\n";
 	#children = new Set<ChildProcess>();
@@ -36,6 +38,7 @@ class FakeSandbox implements ModalSandbox {
 		});
 		this.#children.add(child);
 		child.stdin.on("error", () => {});
+		let inputClosed = false;
 		const exited = new Promise<number>((resolve, reject) => {
 			child.once("error", reject);
 			child.once("close", (code, signal) => {
@@ -48,10 +51,27 @@ class FakeSandbox implements ModalSandbox {
 			stdin: {
 				writeBytes: (bytes) =>
 					new Promise<void>((resolve, reject) => {
+						if (inputClosed)
+							return reject(
+								Object.assign(new TypeError("Invalid state: WritableStream is closed"), {
+									code: "ERR_INVALID_STATE",
+								}),
+							);
 						this.writes.push(bytes.length);
 						child.stdin.write(bytes, (error) => (error ? reject(error) : resolve()));
 					}),
-				close: () => new Promise<void>((resolve) => child.stdin.end(resolve)),
+				// As the SDK's WritableStream does: a second close() of a closed stream rejects (ERR_INVALID_STATE), and so does a write.
+				close: () => {
+					if (this.failClose) return Promise.reject(new Error("the input could not be closed"));
+					if (inputClosed)
+						return Promise.reject(
+							Object.assign(new TypeError("Invalid state: WritableStream is closed"), {
+								code: "ERR_INVALID_STATE",
+							}),
+						);
+					inputClosed = true;
+					return new Promise<void>((resolve) => child.stdin.end(resolve));
+				},
 			},
 			stdout: child.stdout,
 			stderr: child.stderr,
