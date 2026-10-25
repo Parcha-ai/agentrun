@@ -81,6 +81,7 @@ jobs:
           [ -n "$layers" ] || { echo 'empty layer set' >&2; exit 1; }
           while read -r layer; do
             published=()
+            publish_failed=''
             for package in $layer; do
               if node scripts/verify-published.mjs --package "$package" --allow-absent; then
                 echo "Verified existing $package@$version; resuming without republishing."
@@ -94,7 +95,12 @@ jobs:
               archive="$(node -p 'JSON.parse(require("node:fs").readFileSync(".release/release-plan.json", "utf8")).packages.find(entry => entry.directory === process.argv[1]).filename' "$package")"
               # Published as latest: npm's package page shows the README of the publish that carried the latest tag, and moving
               # latest later with dist-tag carries no README. A maintainer moves beta to the same version afterwards.
-              npm publish ".release/packages/$archive" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/
+              # A failed publish stops the layer, but the packages it already published are still verified below, so their
+              # receipts say what the registry holds; the release then stops before the next layer.
+              if ! npm publish ".release/packages/$archive" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/; then
+                publish_failed="$package"
+                break
+              fi
               published+=("$package")
             done
             # Each verification writes its own receipt (.release/published-<package>.json), so they run side by side.
@@ -105,6 +111,7 @@ jobs:
             done
             failed=0
             for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+            [ -z "$publish_failed" ] || { echo "publishing $publish_failed failed; the packages this layer published before it were verified, later layers were not published" >&2; exit 1; }
             [ "$failed" -eq 0 ] || { echo "a package of the layer '$layer' failed verification; later layers were not published" >&2; exit 1; }
           done <<< "$layers"
       - name: Verify a fresh installation from the registry
