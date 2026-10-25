@@ -18,7 +18,12 @@ export default function reply(context, faux) {
   const [first = "", last = ""] = [users[0], users.at(-1)];
   const answered = context.messages.at(-1)?.role === "toolResult";
   // A workflow's model node: it delivers its record through `submit`, slowly when its input says so.
+  const results = context.messages.filter((m) => m.role === "toolResult").length;
+  // Browses with the `browser` tool: a snapshot of the page, then (an agent) its text as the answer, or (a node) the record.
+  const browse = first.includes("Browse the example page");
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+    if (browse && results === 0) return faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
+    if (browse && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
     const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
@@ -34,6 +39,7 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  if (browse) return results === 0 ? faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" }) : faux.message(`Seen: ${textOf(context.messages.at(-1))}`);
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");

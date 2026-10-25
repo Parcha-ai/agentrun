@@ -2,10 +2,17 @@
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
 // `bash` is not in it: a run gets no shell on this machine.
 import type { TSchema } from "@earendil-works/pi-ai";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
+import { FAUX_ENV } from "./model.js";
 
 export const ASK_TOOL = "ask_person";
+/** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
+ *  Browserbase's (the tests' fake backend). */
+export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
 export const asked = (question: string) => `Asked the person: ${question.slice(0, 500)}. Waiting for their answer.`;
@@ -41,7 +48,12 @@ export type ToolHost = {
   onConversation(write: (tx: Tx, conversationId: number) => void | Promise<void>): void;
   /** Runs once the run's Harness is open, before anything in it resumes. */
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
+  /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
+  beforeRelease(stop: (harness: Harness) => void | Promise<void>): void;
 };
+
+/** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
+export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -50,16 +62,68 @@ export type ToolEntry = {
   needs: readonly string[];
   /** Whether a workflow's model node may name it. */
   nodes: boolean;
-  /** The pi tools the name stands for, bound in the run's process once. */
-  bind(host: ToolHost): Promise<readonly ToolRegistration[]>;
+  /** What the name stands for, bound in the run's process once. */
+  bind(host: ToolHost): Promise<ToolBinding>;
 };
 
 const fileTool = (name: string, summary: string): ToolEntry => ({
   summary,
   needs: [],
   nodes: true,
-  bind: async () => (CodingTools.tools ?? []).filter((tool) => tool.name === name),
+  bind: async () => ({ tools: (CodingTools.tools ?? []).filter((tool) => tool.name === name), extensions: [CodingTools] }),
 });
+
+/** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
+ *  text body follows one line of the read's facts; a capture's bytes go beside its facts. */
+const evidenceIn = (work: string) => ({
+  file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
+    const name = `${Date.now().toString(36)}-${record.tool}`;
+    await mkdir(join(work, "evidence"), { recursive: true });
+    const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
+    if (typeof record.body === "string") {
+      await writeFile(join(work, "evidence", `${name}.md`), `${facts}\n\n${record.body}`);
+      return { path: `evidence/${name}.md`, bodyLine: 3 };
+    }
+    await writeFile(join(work, "evidence", `${name}.${record.ext ?? "bin"}`), record.body);
+    await writeFile(join(work, "evidence", `${name}.json`), `${facts}\n`);
+    return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
+  },
+});
+
+/** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
+ *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go. */
+const browserTool: ToolEntry = {
+  summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
+  needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
+  nodes: true,
+  bind: async (host) => {
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
+      import("@earendil-works/chord/context"),
+      import("@parcha/pi-browser/durable"),
+      import("@parcha/pi-browser"),
+    ]);
+    const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
+    const parts = faux
+      ? ((await import(pathToFileURL(faux).href)) as { default: () => { provider: unknown; driver: unknown } }).default()
+      : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
+    const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
+    const extension = browser.extension as unknown as Extension;
+    host.install(extension);
+    host.onConversation(async (tx, conversationId) => {
+      Object.assign(await tx.doc(browser.docs.Config, conversationId as never), { label: "run", run: host.where.ref.id, policy: DEFAULT_BROWSER_POLICY });
+    });
+    host.beforeResume(async (harness) => void (await browser.reconcile(harness as never, () => true, context)));
+    host.beforeRelease(async (harness) => {
+      const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+      for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
+        const conversation = await harness.conversation(id as never, context);
+        if (conversation) await browser.release(conversation as never, "close", context);
+      }
+      await browser.drain(harness as never, context);
+    });
+    return { tools: browser.tools as unknown as readonly ToolRegistration[], extensions: [extension] };
+  },
+};
 
 export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   read: fileTool("read", "Read a file in the run's work/."),
@@ -70,10 +134,12 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     needs: [],
     nodes: false,
     bind: async (host) => {
-      host.install(defineExtension({ name: "person", tools: [askPerson] }));
-      return [askPerson as ToolRegistration];
+      const person = defineExtension({ name: "person", tools: [askPerson] });
+      host.install(person);
+      return { tools: [askPerson as ToolRegistration], extensions: [person] };
     },
   },
+  browser: browserTool,
 });
 
 /** Every name a revision may name, and those a workflow's model node may. */

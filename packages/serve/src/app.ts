@@ -9,12 +9,12 @@
 //     it back once this process has exited: this process holds the run's store until then.
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { createRegistry, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
+import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { readJson, RUN_META } from "./files.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
-import { CodingTools, type ToolHost, toolOf } from "./tools.js";
+import { CodingTools, type ToolBinding, type ToolHost, toolOf } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
 
 /** The workflow adapters this host gives a run: model nodes only. */
@@ -48,12 +48,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const registry = createRegistry();
   registry.install(CodingTools);
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
-  // each conversation's creating commit, and what it settles at open done before anything resumes.
+  // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
+  // the run is released.
   const writes: Array<(tx: Tx, conversationId: number) => void | Promise<void>> = [];
   const settles: Array<(harness: Harness) => void | Promise<void>> = [];
-  const host: ToolHost = { where, env: process.env, install: (extension) => registry.install(extension), onConversation: (write) => void writes.push(write), beforeResume: (settle) => void settles.push(settle) };
-  const bound = new Map<string, Promise<readonly ToolRegistration[]>>();
-  const bind = (name: string, nodes = false): Promise<readonly ToolRegistration[]> => {
+  const stops: Array<(harness: Harness) => void | Promise<void>> = [];
+  const host: ToolHost = {
+    where, env: process.env, install: (extension) => registry.install(extension),
+    onConversation: (write) => void writes.push(write), beforeResume: (settle) => void settles.push(settle), beforeRelease: (stop) => void stops.push(stop),
+  };
+  const letGo = async (harness: Harness) => { for (const stop of stops) await stop(harness); };
+  const bound = new Map<string, Promise<ToolBinding>>();
+  const bind = (name: string, nodes = false): Promise<ToolBinding> => {
     const entry = toolOf(name);
     if (!entry || (nodes && !entry.nodes)) throw new Error(`the revision names the tool ${name}, which agentrun-serve does not bind${nodes ? " for a workflow's model node" : ""}`);
     let tools = bound.get(name);
@@ -64,10 +70,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     conversationCreated: async (tx: Tx, conversation: { id: number }) => { for (const write of writes) await write(tx, conversation.id); },
     beforeResume: async ({ harness }: BeforeResume) => { for (const settle of settles) await settle(harness); },
   };
+  // A SIGTERM lets the run go: what a tool holds is let go there, then the wake is recorded as pi-durable-disk records it
+  // by default (sleeping, due at `at`).
+  const wake = async (durable: DurableRun, at: number | null) => {
+    await letGo(durable.harness);
+    await durable.setStatus("sleeping", { reason: "drained" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
+  };
   if (revision.kind === "agentic") {
-    const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flat();
+    const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
     const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
-    return { models, registry, ...hooks, root: { agent: { model, thinkingLevel, instructions, tools } } } as unknown as AppOptions;
+    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } } } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
@@ -78,11 +90,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     import("@parcha/agentrun-dsl/recovery"),
     import("@parcha/pi-durable-agent/workflow"),
   ]);
-  const nodeTools = new Map<string, readonly ToolRegistration[]>();
+  const nodeTools = new Map<string, ToolBinding>();
   for (const name of inspectWorkflow(revision.body.workflow).requires.tools) nodeTools.set(name, await bind(name, true));
-  const nodes = nodeRunner({
-    agent: (node) => ({ model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [CodingTools], tools: (node.tools ?? []).flatMap((name) => nodeTools.get(name) ?? []) }) as never,
-  });
+  /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
+  const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
+    const bindings = (node.tools ?? []).flatMap((name) => nodeTools.get(name) ?? []);
+    return { model: byTier.get((node.tier as Tier | undefined) ?? "default")!, thinkingLevel, extensions: [...new Set([CodingTools, ...bindings.flatMap((b) => b.extensions)])], tools: bindings.flatMap((b) => b.tools) };
+  };
+  const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(where.work) }),
     run: ({ runtime, context }) => ({ adapters: { runNode: nodes.on(taskScope(runtime), context).runNode }, durableNodes: true }),
@@ -92,8 +107,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const onOpen = async (durable: DurableRun) => {
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: [...nodeTools.keys()] });
+    await letGo(durable.harness);
     await durable.setStatus(outcome.status === "complete" ? "done" : "failed", { workflow: outcome.status, ...(outcome.status === "refused" ? { code: outcome.code, message: outcome.message.slice(0, 500) } : {}) });
     await durable.release();
   };
-  return { models, registry, ...hooks, onOpen } as unknown as AppOptions;
+  return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), onOpen } as unknown as AppOptions;
 }

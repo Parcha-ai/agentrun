@@ -22,10 +22,12 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.deepEqual(body.features.agents, { create: true, list: true, update: true, revisions: true });
   assert.equal(body.features.messages.steer_workflow_runs, false);
   assert.equal(body.features.timeline.live_workflow_rows, false);
-  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes]), [["read", true, true], ["write", true, true], ["edit", true, true], ["ask_person", true, false]], "the table, in order: what a revision may name, and what a workflow's model node may");
-  assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary && !("missing" in t)));
-  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit"]);
-  assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit"], adapters: ["runNode"] });
+  const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]);
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes]), [["read", true, true], ["write", true, true], ["edit", true, true], ["ask_person", true, false], ["browser", keyed.length === 0, true]], "the table, in order: what a revision may name, and what a workflow's model node may");
+  assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
+  assert.deepEqual(body.tools.find((t) => t.name === "browser").missing, keyed.length ? keyed : undefined, "what browser lacks here, by name");
+  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "browser"]);
+  assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "browser"], adapters: ["runNode"] });
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
   assert.equal(body.features.files.upload, false);
   assert.deepEqual(body.regions, [{ id: "local", jurisdiction: null, state: "live" }]);
@@ -256,5 +258,6 @@ test("the tool table is closed: a name outside it is refused by name, and a tool
   assert.equal(toolRefusal(["read", "ask_person"], {}), undefined);
   assert.deepEqual(toolRefusal(["read", "bash", "constructor"], {}).unbound, ["bash", "constructor"], "nothing outside the table, not even a name every object has");
   assert.deepEqual(toolRefusal(["ask_person"], {}, true).unbound, ["ask_person"], "a workflow's model node cannot ask the person");
-  assert.deepEqual(toolsView({}).map((t) => t.name), ["read", "write", "edit", "ask_person"]);
+  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["ask_person", undefined], ["browser", ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]]]);
+  assert.deepEqual(toolRefusal(["browser"], { BROWSERBASE_API_KEY: "fake-test-key" }).missing, { browser: ["BROWSERBASE_PROJECT_ID"] });
 });

@@ -117,8 +117,15 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `write` | Write a file in the run's `work/` | nothing | yes |
 | `edit` | Edit a file in the run's `work/` | nothing | yes |
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no |
+| `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes |
 
 There is no `bash`: a run gets no shell (see [Safety](#safety)).
+
+The `browser` tool runs Browserbase sessions, never a Chrome on this machine. The keys come from the server's
+environment and reach the run's process as the rest of it does. A session's custody (its lease, its tag, what it was
+doing) is kept in the run's own store, so a run opened again on its directory reconciles the sessions it held. Each
+page it reads is filed under the run's `work/evidence/`. There is no recording and no live view. When the run is let go
+(its work done, or a SIGTERM) the sessions it still holds are released at Browserbase.
 
 ## What it serves
 
@@ -223,6 +230,10 @@ export default function reply(context, faux) {
 }
 ```
 
+`startServe({ faux, fauxBrowser })` (the tests', not the CLI's) also names a module whose default export gives the
+`browser` tool's `{ provider, driver }` in place of Browserbase's: the tests pass pi-browser's fake backend
+(`test/fixtures/faux-browser.mjs`). It is honored only with `faux`.
+
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and
 delivers its record by calling it. A module may also export `cost` (`{input, output, cacheRead, cacheWrite}` in USD per
@@ -231,6 +242,9 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 
 ## Safety
 
+- A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
+  network, so what the model may reach there is the operator's choice of keys and project. Its downloads and uploads stay
+  in the run's `work/`.
 - It binds 127.0.0.1 by default, and there refuses a request whose `Host` is not a loopback name (DNS rebinding). On
   another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.
