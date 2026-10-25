@@ -3,11 +3,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/server.js";
-import { FAUX, scratch, serve } from "./support.mjs";
+import { FAUX, client, follow, scratch, serve, startRun } from "./support.mjs";
+
+/** The error startServe refused with, or null after closing the server it should not have started. */
+const refusal = (options) => startServe(options).then(async (server) => (await server.close(), null), (error) => error);
 
 const oldHome = async (data, id) => {
   await mkdir(join(data, id, "runs"), { recursive: true });
@@ -18,13 +21,12 @@ test("a data directory with beta.26 agent homes is refused at start, each home n
   const data = join(await scratch(t), "agents");
   await oldHome(data, "old");
   await oldHome(data, "triage");
-  await assert.rejects(startServe({ data, port: 0, faux: FAUX }), (error) => {
-    assert.match(error.message, /0\.1\.0-beta\.26 or earlier/);
-    assert.ok(error.message.includes(join(data, "old", "agent.sqlite")) && error.message.includes(join(data, "triage", "agent.sqlite")), error.message);
-    assert.match(error.message, /upgrad/i);
-    return true;
-  });
-  assert.equal(existsSync(join(data, "store.sqlite")), false, "no store is made beside the old homes");
+  const error = await refusal({ data, port: 0, faux: FAUX });
+  assert.ok(error, "refused");
+  assert.match(error.message, /0\.1\.0-beta\.26 or earlier/);
+  assert.ok(error.message.includes(join(data, "old", "agent.sqlite")) && error.message.includes(join(data, "triage", "agent.sqlite")), error.message);
+  assert.match(error.message, /upgrad/i);
+  assert.deepEqual((await readdir(data)).sort(), ["old", "triage"], "nothing is made beside the old homes: no store, no token");
 });
 
 test("a volume already started on this version is refused too while an old home is in it", async (t) => {
@@ -32,7 +34,31 @@ test("a volume already started on this version is refused too while an old home 
   await close();
   assert.ok(existsSync(join(data, "store.sqlite")));
   await oldHome(data, "old");
-  await assert.rejects(startServe({ data, port: 0, faux: FAUX }), /agent homes from AgentRun Server 0\.1\.0-beta\.26 or earlier/);
+  assert.match((await refusal({ data, port: 0, faux: FAUX }))?.message ?? "started", /agent homes from AgentRun Server 0\.1\.0-beta\.26 or earlier/);
+});
+
+test("a healthy volume of this version starts again on its own data, its agents and runs there", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(first.baseUrl, first.token);
+  const runId = (await startRun(api, "kept", "What is six times seven?")).run_id;
+  await follow(api, runId, ["completed"]);
+  await first.close();
+  const { api: again } = await serve(t, { data });
+  assert.deepEqual((await again("GET", "/agents")).body.agents.map((a) => a.agent_id), ["kept"]);
+  assert.equal((await again("GET", `/runs/${runId}`)).body.status, "completed");
+});
+
+test("an old home under any name is refused: an agent named runs, and a symlinked home", async (t) => {
+  const root = await scratch(t);
+  const named = join(root, "named");
+  await oldHome(named, "runs");
+  assert.match((await refusal({ data: named, port: 0, faux: FAUX }))?.message ?? "started", new RegExp(join(named, "runs", "agent.sqlite").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  const linked = join(root, "linked");
+  await oldHome(join(root, "elsewhere"), "kept");
+  await mkdir(linked, { recursive: true });
+  await symlink(join(root, "elsewhere", "kept"), join(linked, "kept"));
+  assert.ok(await refusal({ data: linked, port: 0, faux: FAUX }), "a symlinked home is refused too");
 });
 
 test("this version's own runs/ and a directory with no agent.sqlite start as before", async (t) => {

@@ -169,14 +169,14 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
-/** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`), which this
- *  version's store does not read: their agents and runs would not show. */
+/** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
+ *  `runs` or a symlinked home included), which this version's store does not read: their agents and runs would not
+ *  show. This version keeps no `agent.sqlite` under the data directory. */
 async function oldHomes(data: string): Promise<string[]> {
   const found: string[] = [];
-  for (const entry of await readdir(data, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === "runs") continue;
-    const file = join(data, entry.name, "agent.sqlite");
-    if (await lstat(file).then((info) => info.isFile(), () => false)) found.push(file);
+  for (const name of await readdir(data)) {
+    const file = join(data, name, "agent.sqlite");
+    if (await stat(file).then((info) => info.isFile(), () => false)) found.push(file);
   }
   return found.sort();
 }
