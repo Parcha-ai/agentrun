@@ -16,9 +16,11 @@ const spec = JSON.parse(readFileSync(process.env.DEMO_SPEC!, 'utf8'));
 const judgeCost = Number(process.env.DEMO_JUDGE_COST ?? 0);
 // Another: a slow step after the judge, so a cap can stop a run that is still going.
 const linger = Number(process.env.DEMO_LINGER_MS ?? 0);
-const lingering = linger ? {
+// Or a step held until a file exists, so a test can keep the run going until the supervisor has done something (the test writes the file).
+const lingerUntil = process.env.DEMO_LINGER_UNTIL;
+const lingering = linger || lingerUntil ? {
   job: { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Waited: { type: 'object' } }, root: { ...job.workflow.root, steps: [...(job.workflow.root as { steps: unknown[] }).steps.slice(0, 3), { node: 'call', label: 'linger', via: 'tool', tool: 'linger', args: {}, out: 'Waited', as: 'waited', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(3)] } } } as unknown as typeof job,
-  tools: { linger: async () => { await new Promise((resolve) => setTimeout(resolve, linger)); return {}; } },
+  tools: { linger: async () => { if (lingerUntil) while (!existsSync(lingerUntil)) await new Promise((resolve) => setTimeout(resolve, 20)); else await new Promise((resolve) => setTimeout(resolve, linger)); return {}; } },
 } : undefined;
 // And a tool that installs in a box of its own, as the audit's install does: it makes a box, runs a command in it, and when the box is lost makes another and runs it again.
 const boxTool = process.env.DEMO_BOX_TOOL ? {

@@ -91,3 +91,47 @@ jobs:
           path: .release/
           include-hidden-files: true
           if-no-files-found: ignore
+
+  # AgentRun Server's container image, built from the same reviewed tag once the packages are published and verified.
+  # It runs only after the approved publish job and pushes with this run's GITHUB_TOKEN, so it needs no environment.
+  # Every action is pinned by commit, and the images buildx runs (binfmt for QEMU, BuildKit) by digest.
+  image:
+    needs: publish
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/parcha-ai/agentrun-server
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          cache-image: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver-opts: image=docker.io/moby/buildkit:buildx-stable-1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: packages/serve/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE }}:${{ inputs.tag }}
+            ${{ env.IMAGE }}:beta
