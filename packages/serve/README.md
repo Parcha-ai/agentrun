@@ -272,8 +272,9 @@ An agentic revision that lists `learn` in `tools` gives its runs the `learn` too
 [`@parcha/pi-agent-learn`](../pi-agent-learn/README.md): the agent notes a general lesson, fact or correction while it
 works, at no cost, and the note waits in the run's own store (`runs/<id>/store/run.sqlite`). Each call is checked by
 pi-agent-learn's guard first, with this host's secrets (the values of the variables whose names end in `_KEY`, `_TOKEN`,
-`_SECRET` or `_PASSWORD`; a value under 8 characters is not checked) and the run's input, so the model can restate a
-refused note at once. A run is not seeded from
+`_SECRET` or `_PASSWORD`; a value under 8 characters is a placeholder or no secret, such as a gateway's
+`AGENT_MODEL_API_KEY=none`, and is not checked, since checking it would refuse ordinary words like "none") and the run's
+input, so the model can restate a refused note at once. A run is not seeded from
 a git repository: what earlier runs learned reaches it as its revision's skills.
 
 `POST /agents/{id}/learn` with `{"run_id": "<run>"}` reads what the run noted from its store once the run is final

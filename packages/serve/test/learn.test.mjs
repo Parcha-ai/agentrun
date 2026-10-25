@@ -202,6 +202,46 @@ test("the guard checks each learn call in the run: a lesson that repeats the run
   assert.deepEqual([answer.status, answer.body.error.message], [409, "the run learned nothing"], "a refused call stored nothing");
 });
 
+test("the host's secrets are the values of its keys, tokens, secrets and passwords of 8 characters or more: a shorter value is a placeholder", async () => {
+  const { secretsOf } = await import("../dist/learn.js");
+  const env = { AGENT_MODEL_API_KEY: "none", OPENAI_API_KEY: "fake-test-key", DB_PASSWORD: "not-a-secret", SHORT_TOKEN: " ab cd ", NODE_ENV: "production", PATH: "/usr/bin" };
+  assert.deepEqual(secretsOf(env, ["ar_local_the-server-token"]), ["fake-test-key", "not-a-secret", "ar_local_the-server-token"]);
+});
+
+/** A test's own variable in the server's environment, which its run processes inherit; put back after the test. */
+function setEnv(t, name, value) {
+  const saved = process.env[name];
+  process.env[name] = value;
+  t.after(() => (saved === undefined ? delete process.env[name] : (process.env[name] = saved)));
+}
+
+test("a placeholder key under 8 characters does not refuse a lesson that holds the same word: AGENT_MODEL_API_KEY=none", async (t) => {
+  setEnv(t, "AGENT_MODEL_API_KEY", "none");
+  const { api } = await serve(t);
+  const file = join(await scratch(t), "word.txt");
+  await writeFile(file, "none\n");
+  const runId = await ran(api, "placeholder", `Learn what ${file} holds.`, { tools: ["learn"] });
+  const preview = await api("POST", "/agents/placeholder/learn", { run_id: runId, dry_run: true });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.match(preview.body.learned[0].text, /The registry key is none\./);
+  assert.equal((await api("POST", "/agents/placeholder/learn", { run_id: runId, base: preview.body.base })).status, 201);
+});
+
+test("a key of 8 characters or more in the run's environment is refused at the learn call, never echoed, and nothing is learned", async (t) => {
+  const secret = "probe-secret-0123456789";
+  setEnv(t, "LEARN_PROBE_API_KEY", secret);
+  const { api } = await serve(t);
+  const file = join(await scratch(t), "key.txt");
+  await writeFile(file, `${secret}\n`);
+  const runId = await ran(api, "keyed", `Learn what ${file} holds.`, { tools: ["learn"] });
+  const answer = (await api("GET", `/runs/${runId}`)).body.result.final_answer;
+  assert.match(answer, /^Not noted: it holds a value the host keeps secret/);
+  assert.ok(!answer.includes(secret));
+  const learned = await api("POST", "/agents/keyed/learn", { run_id: runId });
+  assert.deepEqual([learned.status, learned.body.error.message], [409, "the run learned nothing"]);
+  assert.ok(!JSON.stringify(learned.body).includes(secret));
+});
+
 test("a lesson the guard refuses is 422 naming the rule, never the value, and commits nothing", async (t) => {
   const { api, token } = await serve(t);
   const file = join(await scratch(t), "key.txt");
