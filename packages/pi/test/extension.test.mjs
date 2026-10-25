@@ -1323,3 +1323,88 @@ test('in an interactive session /agentrun dry-run returns at once, as /agentrun 
     assert.equal(app.calls.length, 0);
   } finally { await app.shutdown(); }
 });
+
+// A first-run tester saw the outer model answer "Complete" and "Supported, High confidence" with no workflow run and no Jev call.
+// What the host says about the turn is its own entry under the reply, never text in the model's message.
+const SKILL_PROMPT = '<skill name="agentrun-author" location="/skills/author/SKILL.md">\nAuthor an AgentRun workflow\n</skill>\n\nCheck whether the cited files support the findings.';
+const prompted = (app, prompt) => app.events.get('before_agent_start')?.({ type: 'before_agent_start', prompt, systemPrompt: '', systemPromptOptions: {} }, app.ctx);
+const ended = (app, text = 'Complete.') => app.events.get('agent_end')?.({ type: 'agent_end', messages: [fauxAssistantMessage(text)] }, app.ctx);
+const stamps = app => app.messages.filter(message => message.customType === 'agentrun:stamp');
+
+test('a run that ends carries its receipt id in the model-facing result, the id /agentrun history lists', async () => {
+  const app = await harness({ responses: [fauxAssistantMessage(fauxToolCall('submit', { value: { content: 'cedar' } }))] });
+  try {
+    await app.tool({ action: 'inspect', workflow: workflow() });
+    const result = await app.tool({ action: 'run' });
+    const answered = JSON.parse(result.content[0].text);
+    await app.command('history');
+    const listed = app.messages.at(-1).details.runs[0].runId;
+    assert.equal(answered.receipt, listed, 'the result names the run it ends');
+  } finally { await app.shutdown(); }
+});
+
+test('a turn under the author skill that ends with no run call gets a host entry saying no workflow ran', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    assert.ok(app.events.get('before_agent_start') && app.events.get('agent_end'), 'the extension watches the turn it was asked to author in');
+    await prompted(app, SKILL_PROMPT);
+    const reply = fauxAssistantMessage('Supported, High confidence. I read the files myself.');
+    const returned = await app.events.get('agent_end')({ type: 'agent_end', messages: [reply] }, app.ctx);
+    assert.equal(returned, undefined, 'the model\'s own reply is left as it wrote it');
+    assert.equal(stamps(app).length, 1);
+    assert.match(stamps(app)[0].content, /no workflow ran/i);
+    assert.match(stamps(app)[0].content, /AgentRun/);
+    assert.equal(stamps(app)[0].display, true);
+  } finally { await app.shutdown(); }
+});
+
+test('a turn after a run gets a host entry with that run\'s receipt and its real call counts, and does not say no workflow ran', async () => {
+  const app = await harness({ responses: [fauxAssistantMessage(fauxToolCall('submit', { value: { content: 'cedar' } }))] });
+  try {
+    await prompted(app, SKILL_PROMPT);
+    await app.tool({ action: 'inspect', workflow: workflow() });
+    const ran = await app.tool({ action: 'run' });
+    const receipt = JSON.parse(ran.content[0].text).receipt;
+    assert.ok(receipt, 'the run result has a receipt id');
+    await ended(app);
+    assert.equal(stamps(app).length, 1);
+    assert.ok(stamps(app)[0].content.includes(receipt));
+    assert.match(stamps(app)[0].content, /1 model step/);
+    assert.match(stamps(app)[0].content, /0 Jev decisions/);
+    assert.doesNotMatch(stamps(app)[0].content, /no workflow ran/i);
+  } finally { await app.shutdown(); }
+});
+
+test('the next prompt of the same session is stamped too, and a refused run does not count as a run', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await prompted(app, SKILL_PROMPT); await ended(app);
+    await prompted(app, 'Yes, run it.');
+    await assert.rejects(app.tool({ action: 'run' }), /Inspect a workflow first/);
+    await ended(app);
+    assert.equal(stamps(app).length, 2);
+    assert.match(stamps(app)[1].content, /no workflow ran/i);
+  } finally { await app.shutdown(); }
+});
+
+test('calling the agentrun tool counts as asking for AgentRun, as loading the skill does; a /agentrun command alone does not', async () => {
+  const called = await harness({ withModel: false });
+  const commanded = await harness({ withModel: false });
+  try {
+    await called.tool({ action: 'list' });
+    await prompted(called, 'Is the answer supported?'); await ended(called);
+    assert.equal(stamps(called).length, 1);
+    assert.match(stamps(called)[0].content, /no workflow ran/i);
+    await commanded.command('triage billing');
+    await prompted(commanded, 'Is the answer supported?'); await ended(commanded);
+    assert.equal(stamps(commanded).length, 0, 'a command shows its own receipt');
+  } finally { await called.shutdown(); await commanded.shutdown(); }
+});
+
+test('a session that never asked for AgentRun gets no entry', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await prompted(app, 'Rename the helper.'); await ended(app, 'Done.');
+    assert.equal(stamps(app).length, 0);
+  } finally { await app.shutdown(); }
+});
