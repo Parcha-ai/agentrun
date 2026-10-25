@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -190,4 +191,15 @@ test("pi-durable and chord are bounded from the version a leg measured to below 
     const pin = manifest.devDependencies?.[name];
     if (pin) assert.ok(compare(pin, floor) >= 0 && compare(pin, "1.4.0") < 0, `${name} is developed on ${pin}, outside ${range}`);
   }
+});
+
+test("the undici the package loads is 6.29.1 or later, and its range admits nothing older (GHSA-xjj6-f33q-929c)", () => {
+  const parts = (version) => version.split(".").map(Number);
+  const atLeast = (version, floor) => { const [x, y] = [parts(version), parts(floor)]; return (x[0] - y[0] || x[1] - y[1] || x[2] - y[2]) >= 0; };
+  const range = manifestOf().dependencies.undici;
+  const floor = range.match(/^\^(\d+\.\d+\.\d+)$/)?.[1];
+  assert.ok(floor && atLeast(floor, "6.29.1"), `the range ${range} starts at 6.29.1 or later`);
+  // Resolved from the built file that loads it, so a copy installed anywhere else in the tree does not answer.
+  const loaded = createRequire(path.join(SRC, "..", "dist", "providers", "http.js"))("undici/package.json").version;
+  assert.ok(atLeast(loaded, "6.29.1"), `the package loads undici ${loaded}`);
 });
