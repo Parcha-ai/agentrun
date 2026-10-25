@@ -123,7 +123,7 @@ it is never off, and a model node that names its own thinking level keeps it.
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop. A finished run is `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run whose cost is unknown adds $0, so no total or line is ever null. |
+| `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
@@ -210,11 +210,16 @@ input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last 
 per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
 catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
 restart, plus each response since; a request in flight holds its worst case until it answers. A model priced at $0 (a
-gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap.
+gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap. Pricing the whole output
+ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
+so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
 The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
 Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
 newest answer it received, beside its `error`; one stopped before any answer has `result: null`.
+
+A run's `cost.usd` is $0 before its first model request (a run cancelled before one included), and `null` when a
+response reported no price: no request costs nothing, but a request of unknown price is unknown, never $0.
 
 ## The faux model
 
@@ -232,7 +237,8 @@ export default function reply(context, faux) {
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and
 delivers its record by calling it. A module may also export `cost` (`{input, output, cacheRead, cacheWrite}` in USD per
-million tokens) to price the faux usage; unpriced, every run's estimate is $0. The tests' module is
+million tokens) to price the faux usage; unpriced, every run's estimate is $0, and with `cost = "unknown"` its usage
+carries no cost at all, as from a provider that does not price the model. The tests' module is
 `test/fixtures/faux-model.mjs`.
 
 ## Safety

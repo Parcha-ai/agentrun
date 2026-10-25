@@ -187,5 +187,43 @@ test("/usage sums the runs whose cost is known: one run with no recorded cost do
   for (const usage of await usages(api)) {
     assert.ok(Math.abs(usage.total_usd - paid.cost.usd) < 1e-9, JSON.stringify(usage));
     assert.ok(usage.lines.every((line) => typeof line.usd === "number"), JSON.stringify(usage));
+    assert.equal(usage.unpriced_runs, 1, "the run with no recorded cost is counted, not passed off as $0");
+    assert.equal(usage.lines.reduce((n, line) => n + line.unpriced_runs, 0), 1);
   }
+});
+
+test("a response of unknown price leaves the run's cost unknown (null), not $0, and /usage counts it as unpriced; a run with no request costs $0", async (t) => {
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-unpriced.mjs", import.meta.url).pathname });
+  const run = await ended(api, (await start(api, "unpriced", "What is six times seven?")).run_id);
+  assert.deepEqual([run.status, run.cost.usd], ["completed", null], JSON.stringify(run.cost));
+  assert.equal((await api("GET", "/runs?agent=unpriced")).body.runs[0].cost.usd, null);
+  const none = await start(api, "none", "Take your time.");
+  await api("POST", `/runs/${none.run_id}/cancel`);
+  assert.equal((await ended(api, none.run_id, ["cancelled"])).cost.usd, 0, "no request: $0");
+  for (const usage of await usages(api)) {
+    assert.deepEqual([usage.total_usd, usage.unpriced_runs], [0, 1], JSON.stringify(usage));
+    assert.equal(usage.lines.reduce((n, line) => n + line.unpriced_runs, 0), 1, JSON.stringify(usage));
+  }
+});
+
+test("a refused request is final: one refusal, never retried, and the model is never called for it", async (t) => {
+  // $0.015625 per million output tokens and 32,000 of them: the worst case reads $0.000500, digits pi-ai's retry takes
+  // for a server error unless the refusal says it is final.
+  const { api, posts } = await gateway(t, { price: "0,0.015625" });
+  const from = Date.now();
+  const { run_id } = await start(api, "final", "What is six times seven?", { max_cost_usd: 0.0001 });
+  const { rows } = await follow(api, run_id, ["failed"]);
+  const run = (await api("GET", `/runs/${run_id}`)).body;
+  assert.equal(run.error.code, "spend_cap_reached");
+  assert.match(run.error.message, /\$0\.000500/, "the amount that reads as a 500");
+  assert.equal(rows.filter((r) => r.kind === "error").length, 1, "one refusal: the request was not tried again");
+  assert.equal(posts(), 0);
+  assert.ok(Date.now() - from < 10_000, "no retry backoff");
+});
+
+test("a cap in the server's own environment never reaches a run that names none", async (t) => {
+  withEnv(t, { AGENTRUN_SERVE_MAX_COST_USD: "0.000001" });
+  const { api } = await serve(t, { faux: OUTPUT_PRICED });
+  const run = await ended(api, (await start(api, "uncapped", "What is six times seven?")).run_id);
+  assert.deepEqual([run.status, run.error, run.cost.cap_usd], ["completed", null, null], JSON.stringify(run));
 });
