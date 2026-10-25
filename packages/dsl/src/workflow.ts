@@ -2122,7 +2122,7 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
     if (!a || a.type !== "choice" || !names.includes(a.choice)) throw new Error(`route node "${node.label}": the choice "${String((a as any)?.choice)}" names no branch`);
     const unsure = Boolean(node.unsure && a.confidence < node.unsure.gte);
     const value = { branch: a.choice, taken: unsure ? node.unsure!.branch : a.choice, unsure };
-    return { rule: { kind: "route", unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null }, action: value, value };
+    return { rule: { kind: "route", branches: [...names], unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null }, action: value, value };
   });
   const value = decided.value; const taken = value.taken; const sidecar = answersSidecar(decided.answers);
   deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });
