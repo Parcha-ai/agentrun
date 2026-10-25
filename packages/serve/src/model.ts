@@ -154,16 +154,19 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   }
   const baseUrl = env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "");
   const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
-  // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price; unset, it is $0. A
-  // tier's own price (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a
-  // model two tiers share takes the default's.
-  const prices = new Map<string, string>();
+  // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price. A tier's own price
+  // (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a model two tiers
+  // share takes the default's. With none set, a model id pi-ai's catalog knows takes the catalog's list price; else $0.
+  const prices = new Map<string, string | undefined>();
   for (const tier of ["default", "fast", "strong"] as const) {
     const id = byTier.get(tier)?.modelId;
-    if (id !== undefined && !prices.has(id)) prices.set(id, (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || "0");
+    if (id !== undefined && !prices.has(id)) prices.set(id, (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || undefined);
   }
-  const priceOf = (id: string) => {
-    const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = prices.get(id)!.split(",").map(Number);
+  const listed = [...prices.values()].some((price) => price === undefined) ? await catalogPrices() : new Map<string, ModelCost>();
+  const priceOf = (id: string): ModelCost => {
+    const given = prices.get(id);
+    if (given === undefined) return listed.get(id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
     return { input, output, cacheRead, cacheWrite };
   };
   models.setProvider(createProvider({
@@ -177,4 +180,17 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     api: openAIResponsesApi(),
   }));
   return { models, model, byTier };
+}
+
+type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
+/** pi-ai's catalog list prices by model id: the first entry of any provider that prices that id. */
+async function catalogPrices(): Promise<Map<string, ModelCost>> {
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const out = new Map<string, ModelCost>();
+  for (const model of builtinModels().getModels()) {
+    const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0 } = (model as { cost?: Partial<ModelCost> }).cost ?? {};
+    if (!out.has(model.id) && (input > 0 || output > 0)) out.set(model.id, { input, output, cacheRead, cacheWrite });
+  }
+  return out;
 }
