@@ -3,7 +3,7 @@
 // validator resolves poll paths inside the declared result shape and admits the `in` predicate.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { runWorkflow, validateWorkflow, dryRunWorkflow } from "../dist/index.js";
+import { runWorkflow, validateWorkflow, dryRunWorkflow, EffectFailure } from "../dist/index.js";
 
 const SCHEMAS = {
   Plan: { type: "object", required: ["request_id"], properties: { request_id: { type: "string" } } },
@@ -112,4 +112,76 @@ test("runner: a check that starts near the poll deadline is cut at the poll dead
   const wall = Date.now() - started;
   assert.equal(calls, 2);
   assert.ok(wall < 4000, `cut at the poll deadline (${wall}ms)`);
+});
+
+// A slow runner wakes a timer late. This holds every timer of exactly `ms` until `heldMs`, so only
+// the wait of that length is late; the caller restores the real setTimeout.
+const holdTimer = (ms, heldMs) => {
+  const real = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, delay, ...args) => real(fn, delay === ms ? heldMs : delay, ...args);
+  return () => { globalThis.setTimeout = real; };
+};
+
+// One poll timeout reads one way, wherever the deadline lands: the same message with the check
+// count, and exactly one effect.poll that settles "deadline", last, with no iteration reported twice.
+const pollSettlements = (events) => events.filter((e) => e.type === "effect.poll").map((e) => [e.detail.iteration, e.detail.settled]);
+const assertOneDeadline = (events) => {
+  const polls = pollSettlements(events);
+  assert.equal(polls.filter(([, settled]) => settled === "deadline").length, 1, `one deadline event (${JSON.stringify(polls)})`);
+  assert.equal(polls.at(-1)?.[1], "deadline", `the deadline event is last (${JSON.stringify(polls)})`);
+  const iterations = polls.map(([iteration]) => iteration);
+  assert.equal(new Set(iterations).size, iterations.length, `no iteration twice (${JSON.stringify(polls)})`);
+};
+
+test("runner: a poll wait that wakes past the poll deadline gives up with the counted message and one deadline event", async () => {
+  // poll deadline 1s, interval 0.2s: the first check settles nothing, and its 200 ms wait is held
+  // until 1.2s, past the poll deadline. The poll gives up as its own deadline check does.
+  let calls = 0;
+  const events = [];
+  const restore = holdTimer(200, 1200);
+  let error;
+  try {
+    error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.2 })), assemble]), { question: "q" }, {
+      runNode: async () => ({ request_id: "req-1" }),
+      onEvent: (e) => events.push(e),
+      runEffect: async () => { calls += 1; return { status: "IN_PROGRESS" }; },
+    }).then(() => undefined, (reason) => reason);
+  } finally { restore(); }
+  assert.match(String(error), /poll exceeded its 1s deadline after 1 check\(s\)/);
+  assert.equal(calls, 1);
+  assertOneDeadline(events);
+});
+
+test("runner: a retry wait that wakes past the poll deadline gives up with the counted message and one deadline event", async () => {
+  // The first check fails with a retryable 5xx, and its 300 ms backoff is held until 1.3s, past the
+  // poll deadline, so its retry never starts.
+  let calls = 0;
+  const events = [];
+  const restore = holdTimer(300, 1300);
+  let error;
+  try {
+    error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1, retry: { attempts: 2, backoff_s: 0.3, on: ["http_5xx"] } }, poll({ deadline_s: 1, interval_s: 0.2 })), assemble]), { question: "q" }, {
+      runNode: async () => ({ request_id: "req-1" }),
+      onEvent: (e) => events.push(e),
+      runEffect: async () => { calls += 1; throw new EffectFailure("jobs.status answered 503", "http_5xx"); },
+    }).then(() => undefined, (reason) => reason);
+  } finally { restore(); }
+  assert.match(String(error), /poll exceeded its 1s deadline after 1 check\(s\)/);
+  assert.equal(calls, 1);
+  assertOneDeadline(events);
+});
+
+test("runner: a check cut by the poll deadline gives up with the counted message and one deadline event", async () => {
+  // poll deadline 1s, node deadline 1s, interval 0.1s: the second check starts with about 0.9s of the
+  // poll left and never answers, so the poll deadline cuts it before its own 1s node deadline.
+  let calls = 0;
+  const events = [];
+  const error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.1 })), assemble]), { question: "q" }, {
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: ({ signal }) => { calls += 1; if (calls === 1) return Promise.resolve({ status: "IN_PROGRESS" }); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))); },
+  }).then(() => undefined, (reason) => reason);
+  assert.match(String(error), /poll exceeded its 1s deadline after 2 check\(s\)/);
+  assert.equal(calls, 2);
+  assertOneDeadline(events);
 });
