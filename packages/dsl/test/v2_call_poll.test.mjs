@@ -123,15 +123,8 @@ const holdTimer = (ms, heldMs) => {
 };
 
 // One poll timeout reads one way, wherever the deadline lands: the same message with the check
-// count, and exactly one effect.poll that settles "deadline", last, with no iteration reported twice.
+// count, and one effect.poll per check, the last settling "deadline".
 const pollSettlements = (events) => events.filter((e) => e.type === "effect.poll").map((e) => [e.detail.iteration, e.detail.settled]);
-const assertOneDeadline = (events) => {
-  const polls = pollSettlements(events);
-  assert.equal(polls.filter(([, settled]) => settled === "deadline").length, 1, `one deadline event (${JSON.stringify(polls)})`);
-  assert.equal(polls.at(-1)?.[1], "deadline", `the deadline event is last (${JSON.stringify(polls)})`);
-  const iterations = polls.map(([iteration]) => iteration);
-  assert.equal(new Set(iterations).size, iterations.length, `no iteration twice (${JSON.stringify(polls)})`);
-};
 
 test("runner: a poll wait that wakes past the poll deadline gives up with the counted message and one deadline event", async () => {
   // poll deadline 1s, interval 0.2s: the first check settles nothing, and its 200 ms wait is held
@@ -149,7 +142,7 @@ test("runner: a poll wait that wakes past the poll deadline gives up with the co
   } finally { restore(); }
   assert.match(String(error), /poll exceeded its 1s deadline after 1 check\(s\)/);
   assert.equal(calls, 1);
-  assertOneDeadline(events);
+  assert.deepEqual(pollSettlements(events), [[1, "deadline"]]);
 });
 
 test("runner: a retry wait that wakes past the poll deadline gives up with the counted message and one deadline event", async () => {
@@ -168,7 +161,7 @@ test("runner: a retry wait that wakes past the poll deadline gives up with the c
   } finally { restore(); }
   assert.match(String(error), /poll exceeded its 1s deadline after 1 check\(s\)/);
   assert.equal(calls, 1);
-  assertOneDeadline(events);
+  assert.deepEqual(pollSettlements(events), [[1, "deadline"]]);
 });
 
 test("runner: a check cut by the poll deadline gives up with the counted message and one deadline event", async () => {
@@ -183,5 +176,5 @@ test("runner: a check cut by the poll deadline gives up with the counted message
   }).then(() => undefined, (reason) => reason);
   assert.match(String(error), /poll exceeded its 1s deadline after 2 check\(s\)/);
   assert.equal(calls, 2);
-  assertOneDeadline(events);
+  assert.deepEqual(pollSettlements(events), [[1, null], [2, "deadline"]]);
 });
