@@ -159,7 +159,7 @@ function createError(stderr: string): BoxError {
  *
  * A spec that names a `snapshot`, a `region` or an `isolation` other than `container` is refused with `unsupported`.
  * Docker cannot choose a GPU model: any `gpu` gives the container every GPU of the host, and `facts().gpu` repeats
- * the name the spec gave. The container's first process is a `sleep` of the lifetime in place of the image's own
+ * the name the spec gave (not measured: nothing reads the host's cards in the box). The container's first process is a `sleep` of the lifetime in place of the image's own
  * entrypoint, so Docker ends the box when the lifetime has passed.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {

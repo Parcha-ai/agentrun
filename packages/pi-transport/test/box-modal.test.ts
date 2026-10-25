@@ -88,13 +88,14 @@ describe("modal boxes", () => {
 	it("reports gvisor without a runtime, and caps the lifetime at 24 hours", async () => {
 		await withRoot(async (root) => {
 			const sdk = new FakeModal();
+			sdk.served = ["Tesla T4"];
 			const box = unwrap(
 				await modalBoxes(sdk, { appName: "a" }).create(
 					{ ...SPEC, gpu: "T4", workspace: root, maxLifetimeMs: 48 * 3_600_000 },
 					context,
 				),
 			);
-			expect(box.facts()).toMatchObject({ isolation: "gvisor", gpu: "T4", maxLifetimeMs: 24 * 3_600_000 });
+			expect(box.facts()).toMatchObject({ isolation: "gvisor", gpu: "Tesla T4", maxLifetimeMs: 24 * 3_600_000 });
 			expect(sdk.sandboxList[0]?.params).toMatchObject({ gpu: "T4" });
 			expect(sdk.sandboxList[0]?.params).not.toHaveProperty("runtime");
 			unwrap(await box.destroy(context));
@@ -235,7 +236,7 @@ describe("modal boxes", () => {
 				const probe = sdk.sandboxList[0]?.execs.find(
 					(e) => e.command[0] === "sh" && e.command[2]?.includes("fuse"),
 				);
-				expect(probe?.command.slice(3)).toEqual(["sh", root, "fuse"]);
+				expect(probe?.command.slice(3)).toEqual(["sh", root, "fuse", "-"]);
 				const again = unwrap(await provider(sdk).attach(box.id, context));
 				expect(again?.facts().fuse).toBe(true);
 				const plain = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
@@ -417,6 +418,143 @@ describe("modal boxes", () => {
 					const attached = unwrap(await provider(sdk).attach(box.id, context));
 					expect(attached?.facts()).toMatchObject({ fuse: true, diskGb: 100, ptraceScope: 1 });
 					await end(sdk, attached);
+				});
+			});
+		});
+
+		describe("the GPU served", () => {
+			const GPU_MEASURED = "pi-transport.measured";
+			const isProbe = (command: string[]) => command[0] === "sh" && command[2]?.includes("ptrace_scope") === true;
+			const gpuBox = async (root: string, served: string[], gpu = "H100") => {
+				const sdk = new FakeModal();
+				sdk.served = served;
+				const box = unwrap(await provider(sdk).create({ ...SPEC, gpu, workspace: root }, context));
+				const sandbox = sdk.sandboxList[0];
+				if (sandbox === undefined) throw new Error("no sandbox");
+				return { sdk, box, sandbox };
+			};
+			const failProbe = (
+				sandbox: { exec: (command: string[], params: never) => Promise<unknown> },
+				times: number,
+			) => {
+				const exec = sandbox.exec.bind(sandbox);
+				let left = times;
+				sandbox.exec = async (command: string[], params: never) => {
+					if (isProbe(command) && left-- > 0) throw new Error("the connection went away");
+					return exec(command, params);
+				};
+			};
+
+			it("is the model nvidia-smi names, not the request, and the request stays in the create call", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box } = await gpuBox(root, ["NVIDIA H200"]);
+					expect(box.facts().gpu).toBe("NVIDIA H200");
+					expect(sdk.sandboxList[0]?.params.gpu).toBe("H100");
+					unwrap(await box.destroy(context));
+				});
+			});
+
+			it("is one name for identical cards, and every model, in the order first seen and joined by ' + ' (the panel joins its label with ', '), for a mixed box", async () => {
+				await withRoot(async (root) => {
+					const same = await gpuBox(
+						root,
+						Array.from({ length: 8 }, () => "NVIDIA H100 80GB HBM3"),
+						"H100!:8",
+					);
+					const mixed = await gpuBox(root, ["NVIDIA A100", "NVIDIA H100 80GB HBM3", "NVIDIA A100"], "any:3");
+					expect([same.box.facts().gpu, mixed.box.facts().gpu]).toEqual([
+						"NVIDIA H100 80GB HBM3",
+						"NVIDIA A100 + NVIDIA H100 80GB HBM3",
+					]);
+					unwrap(await same.box.destroy(context));
+					unwrap(await mixed.box.destroy(context));
+				});
+			});
+
+			it("fails the create, and ends the sandbox, when a box that asked for a GPU reports none", async () => {
+				await withRoot(async (root) => {
+					const sdk = new FakeModal();
+					const result = await provider(sdk).create({ ...SPEC, gpu: "H100", workspace: root }, context);
+					expect(result.ok ? "ok" : result.error.code).toBe("unknown");
+					expect(!result.ok && result.error.message).toMatch(/H100/);
+					expect(sdk.running()).toEqual([]);
+				});
+			});
+
+			it("is not read for a box that asked for none, and its fact stays null", async () => {
+				await withRoot(async (root) => {
+					const sdk = new FakeModal();
+					sdk.served = ["NVIDIA H200"];
+					const box = unwrap(await provider(sdk).create({ ...SPEC, workspace: root }, context));
+					expect(box.facts().gpu).toBeNull();
+					const probe = sdk.sandboxList[0]?.execs.find((e) => isProbe(e.command));
+					expect(probe?.command[6]).toBe("-");
+					unwrap(await box.destroy(context));
+				});
+			});
+
+			it("stores the model measured at create in the box's tag, beside the other hardware facts", async () => {
+				await withRoot(async (root) => {
+					const { box, sandbox } = await gpuBox(root, ["NVIDIA H200"]);
+					const stored = JSON.parse((await sandbox.getTags())[GPU_MEASURED] ?? "null") as Record<string, unknown>;
+					expect(stored).toMatchObject({ gpu: "NVIDIA H200", fuse: false });
+					unwrap(await box.destroy(context));
+				});
+			});
+
+			it("attach reads it again: a definitive answer is the model, or null when none is named, and the box keeps running", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await gpuBox(root, ["NVIDIA H200"]);
+					sandbox.served = ["NVIDIA H100 80GB HBM3"];
+					const fresh = unwrap(await provider(sdk).attach(box.id, context));
+					expect(fresh?.facts().gpu).toBe("NVIDIA H100 80GB HBM3");
+					sandbox.served = [];
+					const none = unwrap(await provider(sdk).attach(box.id, context));
+					expect(none?.facts().gpu).toBeNull();
+					expect(sdk.running().map((each) => each.sandboxId)).toEqual([box.id]);
+					// The caller sees the mismatch and ends the box through the handle.
+					unwrap(await (none as NonNullable<typeof none>).destroy(context));
+					expect(sdk.running()).toEqual([]);
+				});
+			});
+
+			it("attach joins a mixed box's models with ' + ' too (the panel joins its label with ', '), not only create", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await gpuBox(root, ["NVIDIA H100 80GB HBM3"], "any:2");
+					sandbox.served = ["NVIDIA A100", "NVIDIA H100 80GB HBM3", "NVIDIA A100"];
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(attached?.facts().gpu).toBe("NVIDIA A100 + NVIDIA H100 80GB HBM3");
+					unwrap(await (attached as NonNullable<typeof attached>).destroy(context));
+				});
+			});
+
+			it("attach keeps the model measured at create when every try errs, and no security fact", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await gpuBox(root, ["NVIDIA H200"]);
+					failProbe(sandbox, 100);
+					const attached = unwrap(await provider(sdk).attach(box.id, context));
+					expect(attached?.facts().gpu).toBe("NVIDIA H200");
+					for (const key of ["ptraceScope", "network", "ports"]) expect(attached?.facts()).not.toHaveProperty(key);
+					expect(sdk.running().map((each) => each.sandboxId)).toEqual([box.id]);
+					unwrap(await (attached as NonNullable<typeof attached>).destroy(context));
+					expect(sdk.running()).toEqual([]);
+				});
+			});
+
+			it("attach of a GPU box whose tag holds no measured model is an ERROR when the read errs (never the request given as the model), and the box runs on", async () => {
+				await withRoot(async (root) => {
+					const { sdk, box, sandbox } = await gpuBox(root, ["NVIDIA H200"]);
+					// A tag from before the model was kept: the other hardware facts are there, the model is not.
+					const tags = { ...(await sandbox.getTags()) };
+					const kept = JSON.parse(tags[GPU_MEASURED] ?? "{}") as Record<string, unknown>;
+					delete kept.gpu;
+					tags[GPU_MEASURED] = JSON.stringify(kept);
+					sandbox.params.tags = tags;
+					failProbe(sandbox, 100);
+					const attached = await provider(sdk).attach(box.id, context);
+					expect(attached.ok ? "ok" : attached.error.code).toBe("unknown");
+					expect(sdk.running().map((each) => each.sandboxId)).toEqual([box.id]);
+					expect(sdk.sandboxList).toHaveLength(1);
 				});
 			});
 		});
