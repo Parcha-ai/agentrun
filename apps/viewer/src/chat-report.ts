@@ -38,8 +38,51 @@ export function reportInline(text: string): (Node | string)[] {
   return out;
 }
 
-/** Text in paragraphs (a blank line between), each with its inline markdown. */
-export const reportParagraphs = (text: string) => text.split(/\n\s*\n/).filter((part) => part.trim() !== '').map((part) => reportEl('p', {}, ...reportInline(part.trim())));
+/** Past this many characters in its header or any cell, a column wraps at a reading width; any other keeps each cell on
+ *  one line. */
+const REPORT_CELL = 24;
+
+/** A table in a box of its own, which scrolls sideways when the table is wider than it: a header row, then the rows, each
+ *  cell drawn by `cell`, else as its text. */
+function reportTable(head: readonly string[], rows: readonly (readonly string[])[], cell?: (text: string) => (Node | string)[]): HTMLElement {
+  const long = head.map((text, at) => [text, ...rows.map((row) => row[at] ?? '')].some((each) => each.length > REPORT_CELL));
+  const drawn = (tag: 'th' | 'td', text: string, at: number) => reportEl(tag, { class: long[at] ? 'long' : undefined, ...(cell ? {} : { text }) }, ...(cell ? cell(text) : []));
+  return reportEl('div', { class: 'table-box' }, reportEl('table', {},
+    reportEl('thead', {}, reportEl('tr', {}, ...head.map((text, at) => drawn('th', text, at)))),
+    reportEl('tbody', {}, ...rows.map((row) => reportEl('tr', {}, ...head.map((_, at) => drawn('td', row[at] ?? '', at)))))));
+}
+
+const REPORT_PIPE = /(?<!\\)\|/;
+
+/** A pipe table's line as its cells: split at each pipe not escaped, its outer pipes dropped, an escaped pipe kept as one. */
+const reportCells = (line: string) => line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(REPORT_PIPE).map((cell) => cell.trim().replace(/\\\|/g, '|'));
+
+/** A pipe table's header: a line with a pipe, then a separator line of as many cells, each dashes with or without
+ *  alignment colons. */
+const reportHeader = (line: string, next: string | undefined) => next !== undefined && REPORT_PIPE.test(line) && REPORT_PIPE.test(next)
+  && reportCells(next).every((cell) => /^:?-+:?$/.test(cell)) && reportCells(next).length === reportCells(line).length;
+
+/** A row of the table `header` heads: a line with a pipe and as many cells as the header, starting with a pipe when the
+ *  header does. Any other line (more cells than the header, prose with a pipe in it) ends the table and stays words, so
+ *  nothing the agent wrote is dropped or split into cells. */
+const reportRow = (line: string, header: string) => REPORT_PIPE.test(line) && reportCells(line).length === reportCells(header).length
+  && (!header.trim().startsWith('|') || line.trim().startsWith('|'));
+
+/** One paragraph's text: a pipe table in it (its header, its separator, then its rows) as a table, the words around it
+ *  as paragraphs, each with its inline markdown. A header with no row under it heads no table: it stays words. */
+function reportBlock(text: string): HTMLElement[] {
+  const lines = text.split('\n');
+  const at = lines.findIndex((line, n) => reportHeader(line, lines[n + 1]) && lines[n + 2] !== undefined && reportRow(lines[n + 2]!, line));
+  if (at < 0) return [reportEl('p', {}, ...reportInline(text))];
+  let end = at + 2;
+  while (end < lines.length && reportRow(lines[end]!, lines[at]!)) end += 1;
+  const before = lines.slice(0, at).join('\n').trim();
+  const after = lines.slice(end).join('\n').trim();
+  return [...(before ? [reportEl('p', {}, ...reportInline(before))] : []), reportTable(reportCells(lines[at]!), lines.slice(at + 2, end).map(reportCells), reportInline), ...(after ? reportBlock(after) : [])];
+}
+
+/** Text in paragraphs (a blank line between), each with its inline markdown; a pipe table drawn as a table. */
+export const reportParagraphs = (text: string) => text.split(/\n\s*\n/).filter((part) => part.trim() !== '').flatMap((part) => reportBlock(part.trim()));
 
 /** A citation address's fragment as parameters: `page=3&xywh=percent:1,2,3,4`, `t=1260,1280`. A fragment written
  *  without its file or its '#' (`xywh=...`) reads the same. */
@@ -330,9 +373,10 @@ function reportAnswer(pane: HTMLElement, model: ChatModel, recording: Recording,
     return { scroller, cited: new Set<string>() };
   }
   const cited = new Set<string>();
-  const rows = reportRowsShown(answer).map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : 'arow' },
+  // A table takes the row's whole width, its label above it; its cells are plain text, never markdown.
+  const rows = reportRowsShown(answer).map((row) => reportEl('li', { class: row.label === '' ? 'arow wide' : row.table ? 'arow full' : 'arow' },
     row.label !== '' && reportEl('span', { class: 'alabel', text: row.label }),
-    reportEl('div', {}, ...reportParagraphs(row.text), row.note && reportEl('p', { class: 'anote', text: row.note }), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
+    reportEl('div', {}, ...(row.table ? [reportTable(row.table.columns, row.table.rows)] : reportParagraphs(row.text)), row.note && reportEl('p', { class: 'anote', text: row.note }), row.cites.some(reportCites) && reportEl('div', { class: 'cites' }, ...row.cites.filter(reportCites).map((cite) => {
       if (cite.look) cited.add(cite.look);
       if (cite.item) cited.add(cite.item);
       const chip = reportEl('button', { class: 'cite', type: 'button', 'data-look': cite.look, 'data-item': cite.item, title: cite.href || undefined, text: cite.label ?? (reportCiteLabel(cite.href) || 'the look it cites') });
