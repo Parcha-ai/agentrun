@@ -56,7 +56,8 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
   which cleans a dead mount), `setpriv` (util-linux) and `sudo`, near the disk's region: a commit is one round trip to the
   region (3 to 6 ms p50 from a VM next to it; [where the figures come from](#the-failure-table)).
 - Node 22.19 or later, to run the package and its unit tests.
-- The [`archil` client](https://docs.archil.com/mounting/linux) 0.8.40 or later (0.8.42 tested):
+- The [`archil` client](https://docs.archil.com/mounting/linux) 0.10.0 or later, with the operating system CA bundle
+  installed (`ca-certificates` on Debian/Ubuntu):
   `curl -s https://archil.com/install | sh`.
 - Root for the mounts: every `archil` verb needs it on client 0.8.42. The package reaches root only through
   `sudo -n` of `bin/archil-scoped` (below), so the instance and the agent's tools run unprivileged.

@@ -1364,7 +1364,9 @@ class BoxEnv implements ExecutionEnv {
 		context: Context,
 		read: (finished: Finished) => T,
 	): Promise<Result<T, FileError>> {
-		const command = ["sh", "-c", PRELUDE + script, "sh", ...args];
+		// No bytes to send: the script reads its input from /dev/null, never from an exec stdin whose end `docker exec -i` can lose.
+		const none = input !== undefined && input.length === 0 ? "exec </dev/null; " : "";
+		const command = ["sh", "-c", PRELUDE + none + script, "sh", ...args];
 		const finished = await this.#call(command, input, this.#opTimeoutMs, context);
 		if (!finished.ok) {
 			const { code, message } = finished.error;

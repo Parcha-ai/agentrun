@@ -35,6 +35,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       # The gate reads a recording's report page with an HTML parser (htmlparser2, a dependency of the reference package): installed from the lockfile, without running any package's scripts.
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Install the gate's dependencies
         run: npm ci --ignore-scripts
       # The recordings are not in git: they are one tar on the release tagged gallery, which the lock names with its

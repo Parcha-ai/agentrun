@@ -391,7 +391,10 @@ export const declaredWrites = (node: WorkflowNode | undefined): Set<string> => {
   const visit = (n: any) => {
     if (!n || typeof n !== "object") return;
     if (n.node === "report") out.add("report_markdown");
-    else if (typeof n.as === "string" && n.as.trim()) out.add(n.as);
+    // The key a generative node writes under is `as || label`, the one the interpreter uses (mergeStageDelta); a code
+    // node's patch keys are known only when it runs. The validator rejects a blank `as` or label, so the key is non-blank.
+    else if (typeof n.as === "string" && n.as !== "") out.add(n.as);
+    else if ((n.node === "agent" || n.node === "decide" || n.node === "extract") && typeof n.label === "string" && n.label !== "") out.add(n.label);
     if (n.node === "map") { if (typeof n.failedAs === "string" && n.failedAs.trim()) out.add(n.failedAs); return; }
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
     if (Array.isArray(n.branches)) n.branches.forEach(visit);
@@ -409,8 +412,8 @@ const loopBodyWrites = (body: WorkflowNode | undefined): Set<string> | null => {
     if (!n || typeof n !== "object" || !known) return;
     if (n.node === "code" && n.as === undefined) { known = false; return; }
     if (n.node === "report") out.add("report_markdown");
-    else if (typeof n.as === "string" && n.as.trim()) out.add(n.as);
-    else if (["agent", "decide", "extract"].includes(n.node) && typeof n.label === "string") out.add(n.label);
+    else if (typeof n.as === "string" && n.as !== "") out.add(n.as);
+    else if (["agent", "decide", "extract"].includes(n.node) && typeof n.label === "string" && n.label !== "") out.add(n.label);
     if (n.node === "map" && typeof n.failedAs === "string" && n.failedAs.trim()) out.add(n.failedAs);
     if (n.node === "map" || n.node === "workflow") return;
     if (Array.isArray(n.steps)) n.steps.forEach(visit);
@@ -949,6 +952,13 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       // Only an unaliased generative or code node writes under its label; every other label is a name, not a key.
       const labelIsKey = ((node as any).node === "agent" || (node as any).node === "decide" || (node as any).node === "extract" || (node as any).node === "code") && (node as any).as === undefined;
       if (labelIsKey && typeof (node as any).label === "string" && holdsDollar((node as any).label)) fail("STATE_KEY_RESERVED", ptrOf(path), `${path} (${(node as any).label}): label must not contain "$" — an unaliased ${(node as any).node} node writes under its label, and "$" keys are engine-owned`);
+      // A generative or code node's write key must be a real state key, never blank: the interpreter writes under
+      // `as || label` (`as` wins when it is any non-empty string, whitespace included), so a blank or whitespace-only
+      // `as`, or a label that is the key and is whitespace-only, would write under a key no other node can name and hide
+      // a disjointness collision. (Other nodes' `as` is checked "required" in their own case.)
+      const writesUnderKey = (node as any).node === "agent" || (node as any).node === "decide" || (node as any).node === "extract" || (node as any).node === "code";
+      if (writesUnderKey && typeof (node as any).as === "string" && !(node as any).as.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must be a non-empty state key, not blank`);
+      if (labelIsKey && typeof (node as any).label === "string" && !(node as any).label.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${(node as any).node}): label must be a non-empty state key when the node writes under it (no "as")`);
     }
     switch (node.node) {
       case "chain":
