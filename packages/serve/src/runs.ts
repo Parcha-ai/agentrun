@@ -783,13 +783,14 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       cost: this.cost(run),
+      archived_at: this.store.readRun(run.id)?.archivedAt ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -811,6 +812,7 @@ export class Runs {
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
+      archived_at: row.archivedAt ?? null,
     };
   }
 

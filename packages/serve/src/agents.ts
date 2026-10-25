@@ -200,6 +200,7 @@ export function agentView(entry: AgentEntry) {
     runs: entry.runs,
     region: "local",
     home_etag: etagOf(entry),
+    archived_at: agent.archivedAt ?? null,
     created_at: agent.createdAt,
     updated_at: revision && revision.createdAt > agent.createdAt ? revision.createdAt : agent.createdAt,
   };

@@ -105,10 +105,11 @@
     }
 
     // ---- every run -----------------------------------------------------------------------------------------------------
-    function runsHref(agent, status) {
+    function runsHref(agent, status, archived) {
       var query = [];
       if (agent) query.push("agent=" + enc(agent));
       if (status) query.push("status=" + enc(status));
+      if (archived) query.push("archived=1");
       return "#/runs" + (query.length ? "?" + query.join("&") : "");
     }
 
@@ -128,7 +129,8 @@
     function allRuns(filter, token) {
       kit.crumb([["All runs", "#/runs"]]);
       kit.titled("All runs");
-      var query = "runs?limit=100" + (filter.agent ? "&agent=" + enc(filter.agent) : "") + (filter.status ? "&status=" + enc(filter.status) : "");
+      var archived = filter.archived === "1";
+      var query = "runs?limit=100" + (filter.agent ? "&agent=" + enc(filter.agent) : "") + (filter.status ? "&status=" + enc(filter.status) : "") + (archived ? "&archived=true" : "");
       Promise.all([v2("GET", query), kit.get("api/store")]).then(
         function (both) {
           if (!kit.live(token)) return;
@@ -142,7 +144,7 @@
           var more = el("div", { class: "more" });
           var out = el("div");
           var link = function (agent, status, label, on) {
-            return el("a", { class: "filter" + (on ? " on" : ""), href: runsHref(agent, status), "aria-current": on ? "true" : null }, label);
+            return el("a", { class: "filter" + (on ? " on" : ""), href: runsHref(agent, status, archived), "aria-current": on ? "true" : null }, label);
           };
           var showMore = function () {
             while (more.firstChild) more.removeChild(more.firstChild);
@@ -165,8 +167,9 @@
               kit.kicker("Every run, newest first"),
               count,
               el("nav", { class: "filters", "aria-label": "Runs of one agent" }, link(null, filter.status, "All agents", !filter.agent), agents.map(function (agent) { return link(agent.id, filter.status, agent.name, filter.agent === agent.id); })),
-              el("nav", { class: "filters", "aria-label": "Runs in one state" }, link(filter.agent, null, "Any state", !filter.status), STATUSES.map(function (status) { return link(filter.agent, status, status.replace("_", " "), filter.status === status); })),
-              runs.length ? rows : el("p", { class: "none" }, filter.agent || filter.status ? "No run matches." : "No runs yet."),
+              el("nav", { class: "filters", "aria-label": "Runs in one state" }, link(filter.agent, null, "Any state", !filter.status), STATUSES.map(function (status) { return link(filter.agent, status, status.replace("_", " "), filter.status === status); }),
+                el("a", { class: "filter archived" + (archived ? " on" : ""), href: runsHref(filter.agent, filter.status, !archived), "aria-current": archived ? "true" : null }, "Show archived")),
+              runs.length ? rows : el("p", { class: "none" }, filter.agent || filter.status || archived ? "No run matches." : "No runs yet."),
               more,
               out
             )
@@ -222,9 +225,25 @@
       return el("div", { class: "run-form" }, el("h3", null, "Start a run"), field("Input", input, "For a workflow revision, a JSON object its input schema takes."), el("div", { class: "actions" }, field("Revision", pick), start), out);
     }
 
+    /** Archive or Unarchive for `path` ("agents/<id>" or "runs/<id>"), then `done` with what /v2 answers. Archiving hides
+     *  it from the lists and keeps it, with its history. */
+    function archiveButton(path, archivedAt, done) {
+      var out = el("span");
+      var press = button(archivedAt ? "Unarchive" : "Archive", "quiet", function () {
+        press.disabled = true;
+        say(out, null);
+        v2("POST", path + (archivedAt ? "/unarchive" : "/archive"), {}).then(done, function (error) {
+          press.disabled = false;
+          say(out, error);
+        });
+      });
+      press.title = archivedAt ? "Show it in the lists again" : "Hide it from the lists; its history is kept";
+      return [press, out];
+    }
+
     function agentActions(agent, revisions) {
       return [
-        el("div", { class: "actions" }, el("a", { class: "btn quiet", href: "#/agents/" + enc(agent.id) + "/edit" }, revisions.length ? "Edit: commit a new revision" : "Write its first revision")),
+        el("div", { class: "actions" }, el("a", { class: "btn quiet", href: "#/agents/" + enc(agent.id) + "/edit" }, revisions.length ? "Edit: commit a new revision" : "Write its first revision"), archiveButton("agents/" + enc(agent.id), agent.archivedAt, function () { kit.route(); })),
         revisions.length ? runForm(agent, revisions) : el("p", { class: "none" }, "It has no revision to run yet."),
       ];
     }
@@ -415,7 +434,9 @@
         (page.drop || []).forEach(function (id) { delete rows[id]; });
         (page.rows || []).forEach(function (row) { rows[row.id] = row; });
       }
+      var shown = null;
       function draw(page) {
+        shown = page;
         var list = Object.keys(rows).map(function (id) { return rows[id]; }).filter(function (row) { return !QUIET.test(row.id); });
         var waiting = page.status === "input_required" && page.state === "waiting";
         var asked = list.filter(function (row) { return row.kind === "waiting"; }).pop();
@@ -428,7 +449,11 @@
           kit.kicker("Run"),
           el("h1", { class: "id" }, run.run_id),
           el("p", { class: "facts" }, statusPill(page.status, run.error), el("span", null, "started " + kit.when(run.created_at)), spent === null ? null : el("span", null, kit.usd(spent) + " so far"), el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")), el("span", { class: "live-note" }, "live")),
-          el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: kit.agentHref(run.agent_id) }, agentName), run.revision ? [el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, kit.short(run.revision))] : null, run.kind ? kit.kindPill(run.kind) : null)
+          el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: kit.agentHref(run.agent_id) }, agentName), run.revision ? [el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, kit.short(run.revision))] : null, run.kind ? kit.kindPill(run.kind) : null, run.archived_at ? kit.pill("archived") : null),
+          el("div", { class: "actions" }, archiveButton("runs/" + enc(run.run_id), run.archived_at, function (view) {
+            run = view;
+            if (kit.live(token) && !controller.signal.aborted) draw(shown);
+          }))
         );
         var open = kit.openCalls();
         var y = window.scrollY || 0;
@@ -474,6 +499,11 @@
       return false;
     }
 
-    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions };
+    /** A stored run's head: Archive or Unarchive. */
+    function runActions(run) {
+      return el("div", { class: "actions" }, archiveButton("runs/" + enc(run.id), run.archivedAt, function () { kit.route(); }));
+    }
+
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, run: runActions };
   };
 })();

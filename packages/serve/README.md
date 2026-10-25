@@ -116,12 +116,14 @@ it is never off, and a model node that names its own thinking level keeps it.
 | `PUT /agents/{id}/definition` | The same body: a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
+| `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
-| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it. A failed run's summary carries its `error`. |
+| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop. A finished run is `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
+| `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, day or region. |
 
@@ -129,16 +131,35 @@ Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` an
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
 browser sign-ins (`sign_ins: false`).
 
+## Archiving
+
+An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes are this server's own, outside the
+`/v2` contract, like `GET /runs` and an agent's revisions; capabilities list them in `features.archive`.
+
+- `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
+  `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
+  idempotent (archiving again keeps the first time), takes no body, and answers what it changed.
+- Each list takes `archived=true` to list only archived ones (`false`, the default, lists the others).
+- Every read by id still answers, with `archived_at` (null when it is not archived; a run's is its own, else its
+  agent's): `GET /agents/{id}`, `GET /runs/{id}`, its timeline and its files. `/usage` still counts archived runs: the
+  spend happened.
+- A new run of an archived agent is `409 agent_not_runnable`, saying it is archived (`details.archived_at`); a run
+  already going when its agent is archived keeps going.
+- The store keeps each change as one row of `archive_changes` in `store.sqlite`, written once
+  ([the store](../pi-durable-agent/README.md#agents-in-a-folder-the-agent-store)). A data directory an earlier version
+  wrote opens as it is, with nothing archived.
+
 ## The page
 
 Open the link the server prints, once, in a browser. The page at `/`, AgentRun Server, is
 [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page over the agent store in the
 data directory, with this server's own views beside it:
 
-- **Agents**: each agent with its current revision's kind and its runs; an agent's revisions, newest first, an agentic
-  one's prompt diffed against its parent's and a workflow's graph; its runs, filtered by revision.
+- **Agents**: each agent with its current revision's kind and its runs, archived ones behind **Show archived**; an
+  agent's revisions, newest first, an agentic one's prompt diffed against its parent's and a workflow's graph; its runs,
+  filtered by revision. **Archive** (or **Unarchive**) on an agent's page and a run's page.
 - **All runs**: every run of every agent, newest first, with its agent, revision, kind, state, cost and start, filtered by
-  agent and by state. A row opens the run. A run `/v2` reports as `failed` with `error.code` `escalated` reads escalated,
+  agent and by state; archived runs behind **Show archived**. A row opens the run. A run `/v2` reports as `failed` with `error.code` `escalated` reads escalated,
   here and on its live page, as the store's page draws it.
 - **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, for a prompt a model
   (`provider/model-id`, or none for the server's own) and a thinking level, and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the

@@ -84,6 +84,7 @@ const ROUTES: Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/(archive|unarchive)$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
@@ -94,6 +95,7 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, name: "cancelRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/(archive|unarchive)$/, name: "archiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
@@ -120,6 +122,9 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
+      /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
+       *  lists only those) and kept, with its history; a run of an archived agent is refused. */
+      archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
@@ -304,6 +309,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = needAgent(agentId);
+    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
       const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
@@ -330,13 +336,21 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 
   /** A page of runs from the store, newest first: `agent`, `revision` and `status` narrow it. */
+  /** A list's `archived`: true lists only what is archived, false (the default) only what is not. */
+  function archivedParam(url: URL): boolean {
+    const value = url.searchParams.get("archived");
+    if (value !== null && value !== "true" && value !== "false") throw new ApiError("bad_request", "archived is true or false");
+    return value === "true";
+  }
+
   async function runsPage(url: URL, filter: { agent?: string; revision?: string }) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
-    let rows = agents.store.listRuns(filter);
+    const archived = archivedParam(url);
+    let rows = agents.store.listRuns(filter).filter((row) => Boolean(row.archivedAt) === archived);
     if (status !== null) {
       const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
@@ -495,7 +509,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "listAgents": {
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
-        const all = agents.list();
+        const archived = archivedParam(url);
+        const all = agents.list().filter((entry) => Boolean(entry.agent.archivedAt) === archived);
         return send(res, 200, { agents: all.slice(offset, offset + limit).map((entry) => agentView(entry)), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
@@ -530,6 +545,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = agents.setCurrent(entry, revision);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
+      }
+      case "archiveAgent": {
+        needAgent(id);
+        agents.store.setArchived("agent", id, second === "archive");
+        const entry = needAgent(id);
+        return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
       case "createRun": {
         const answer = await createRun(req, id);
@@ -574,6 +595,11 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const requested = await runs.cancel(run);
         const view = await runs.view(run);
         return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
+      }
+      case "archiveRun": {
+        const run = await needRun(id);
+        agents.store.setArchived("run", run.id, second === "archive");
+        return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {
         const run = await needRun(id);
