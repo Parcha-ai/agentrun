@@ -17,7 +17,7 @@ const here = new URL('.', import.meta.url).pathname;
 const IN_CHROME = { skip: existsSync(chrome) ? false : `no Chrome at ${chrome}`, timeout: 120_000 };
 const GOLDEN = join(here, 'fixtures', 'default-view.golden.html');
 // SHA-256 of the page's own rules and markup, the Muse layout's rules left out (updated, with a reason, when the default view itself deliberately changes: the fork folds' and the move card's CSS, and the tables' CSS).
-const PAGE_SHA = '028092d016e097ceaccf4a51e1cb21d939e780d11e3384726acb2b2560079ee2';
+const PAGE_SHA = 'e98b67d22b299d3f04a156387f305316cfe9c307b39b2a2194751529b4c4abe8';
 after(async () => { assert.deepEqual(await closeLeftBrowsers(), [], 'every browser a test started was closed by that test'); });
 
 test('the page without the Muse layout\'s rules is byte for byte the page it was before: the default view\'s styles and markup are untouched', { timeout: 5_000 }, () => {

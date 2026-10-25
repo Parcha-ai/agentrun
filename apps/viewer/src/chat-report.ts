@@ -38,14 +38,15 @@ export function reportInline(text: string): (Node | string)[] {
   return out;
 }
 
-/** Past this many characters a column's cells wrap at a reading width; a column of shorter cells keeps each on one line. */
+/** Past this many characters in its header or any cell, a column wraps at a reading width; any other keeps each cell on
+ *  one line. */
 const REPORT_CELL = 24;
 
 /** A table in a box of its own, which scrolls sideways when the table is wider than it: a header row, then the rows, each
  *  cell drawn by `cell`, else as its text. */
 function reportTable(head: readonly string[], rows: readonly (readonly string[])[], cell?: (text: string) => (Node | string)[]): HTMLElement {
-  const long = head.map((_, at) => rows.some((row) => (row[at] ?? '').length > REPORT_CELL));
-  const drawn = (tag: 'th' | 'td', text: string, at: number) => reportEl(tag, { class: tag === 'td' && long[at] ? 'long' : undefined, ...(cell ? {} : { text }) }, ...(cell ? cell(text) : []));
+  const long = head.map((text, at) => [text, ...rows.map((row) => row[at] ?? '')].some((each) => each.length > REPORT_CELL));
+  const drawn = (tag: 'th' | 'td', text: string, at: number) => reportEl(tag, { class: long[at] ? 'long' : undefined, ...(cell ? {} : { text }) }, ...(cell ? cell(text) : []));
   return reportEl('div', { class: 'table-box' }, reportEl('table', {},
     reportEl('thead', {}, reportEl('tr', {}, ...head.map((text, at) => drawn('th', text, at)))),
     reportEl('tbody', {}, ...rows.map((row) => reportEl('tr', {}, ...head.map((_, at) => drawn('td', row[at] ?? '', at)))))));
