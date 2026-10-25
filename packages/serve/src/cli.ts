@@ -3,9 +3,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { banner } from "./print.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--drain-timeout D]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -13,11 +14,15 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --port N          the port (default ${DEFAULT_PORT}; 0 is any free port)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
+  --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
+                    Docker's 10 s grace); a run cut off resumes at the next start
 
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
-it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed.`;
+it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
+printed only by the start that made it. stdout gets one line per request, per run start and end, and per refused
+credential; AGENTRUN_LOG=quiet leaves out the request lines.`;
 
 let values;
 try {
@@ -28,6 +33,7 @@ try {
       port: { type: "string" },
       faux: { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
+      "drain-timeout": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -46,19 +52,21 @@ if (!Number.isInteger(port) || port < 0 || port > 65_535) {
 }
 const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
 const given = process.env.AGENTRUN_TOKEN || undefined;
+// A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
+process.stdout.on("error", () => undefined);
 let serve: Serve;
 try {
-  serve = await startServe({ data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"] });
+  serve = await startServe({
+    data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
+    ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+  });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
   process.exit(1);
 }
-// A token from the environment is the operator's already, and is kept out of the logs.
-const shown = given ? "$AGENTRUN_TOKEN" : serve.token;
-console.log(`agentrun-serve on ${serve.baseUrl} (agent store in ${data}${values.listen ? `, listening on ${values.listen}` : ""})`);
-console.log(`AGENTRUN_BASE_URL=${serve.baseUrl}`);
-console.log(`AGENTRUN_API_KEY=${shown}`);
-console.log(`Open ${serve.url}/?token=${shown}`);
+// A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
+const source = given ? "env" : serve.tokenMade ? "made" : "file";
+for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, ...(values.listen ? { listen: values.listen } : {}) })) console.log(line);
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

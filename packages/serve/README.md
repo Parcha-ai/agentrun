@@ -21,7 +21,7 @@ JS
 node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
-It prints where it listens and the token:
+It prints where it listens and, at the start that made it, the token:
 
 ```
 agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentrun/agents)
@@ -54,9 +54,27 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
-place: a token from the environment stays out of the logs.
+place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
+it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>` and `?token=<in DIR/.token>`, to read it there. The link
+encodes the token, and the page also takes one whose `+` arrived as a space.
+
+## Logs
+
+stdout gets one line per event, `at=<time> event=<name> key=value ...` (a value with a space is quoted):
+
+```
+at=2026-10-25T21:04:05.120Z event=request method=POST path=/v2/agents/calc/runs status=202 ms=41
+at=2026-10-25T21:04:05.121Z event=run_started run=01a1... agent=calc kind=agentic
+at=2026-10-25T21:04:06.802Z event=run_ended run=01a1... agent=calc status=completed cost_usd=0.0012
+at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
+```
+
+A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
+`wrong_link_token`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
+run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 
 ## In a container
 
@@ -69,13 +87,17 @@ docker compose -f packages/serve/docker/compose.yaml up --build -d
 docker compose -f packages/serve/docker/compose.yaml logs agentrun
 ```
 
-The log ends with the `Open` line. Compose publishes the port on this machine's loopback only (`127.0.0.1:7340`), and
+The banner's `Open` line is in the log of the start that made the token. On a stop the server gives a busy run 6 s
+(`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s grace, and Compose's `stop_grace_period` is
+15 s; a turn cut off resumes at the next start. Compose publishes the port on this machine's loopback only (`127.0.0.1:7340`), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
 every route but `GET /v2/capabilities` still needs the token.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
 `/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
-`https://<service>.onrender.com/?token=<the token>`. Set `AGENT_MODEL` and the provider's key there too.
+`https://<service>.onrender.com/?token=<the token>`, as it is or URL-encoded: a `+` in it works either way. Set
+`AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
+let a service with a disk change that.
 
 ## Models
 

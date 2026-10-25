@@ -26,5 +26,7 @@ services:
       AGENT_MODEL_BASE_URL: ${AGENT_MODEL_BASE_URL:-}
       AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}
     restart: unless-stopped
+    # Above the image's 6 s drain, so a stop never ends in SIGKILL.
+    stop_grace_period: 15s
 volumes:
   agentrun-data:
