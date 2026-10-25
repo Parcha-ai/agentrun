@@ -1,5 +1,33 @@
 # AgentRun
 
+**AgentRun Server** runs your agents and keeps everything they do. Create an agent, change it (every change is a
+revision you can go back to), run it on a real model, and open any run of any agent from one page.
+
+1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker run` on your own machine or server, with your own model key. An OpenRouter key with a credit limit caps what your agents can spend.
+
+   ```sh
+   docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
+     -e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY=... \
+     ghcr.io/parcha-ai/agentrun-server:beta
+   docker logs agentrun | grep Open
+   ```
+
+   Open the link it prints. The volume `agentrun` keeps every agent and run. For OpenRouter, pass
+   `-e AGENT_MODEL=openrouter/<its model id> -e OPENROUTER_API_KEY=...` instead; any OpenAI Responses gateway works through
+   `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
+
+2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. Each run takes its own memory, so its 512 MB holds a few runs at a time. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
+
+   [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
+   then set `AGENT_MODEL` and its key (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, ..., or a gateway's
+   `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`) in the service's Environment. Render generates the token,
+   `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
+
+Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
+a run may reach, and the container.
+
+## The packages
+
 Open-source packages for your pi agent. Install the ones you need.
 
 This repository holds the AgentRun harness: the workflow DSL and the pi extensions around it.

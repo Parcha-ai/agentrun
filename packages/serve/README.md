@@ -87,9 +87,10 @@ from:
 
 - `--faux MODULE`: every model is the module's (below), with no key and no network: `faux-1`, or for a tier the model
   id its variable names.
-- `AGENT_MODEL_BASE_URL`: every model id goes to that one OpenAI Responses endpoint, a gateway: a revision's
-  `provider/model-id` is sent as `model-id`, and `AGENT_MODEL`, `AGENT_MODEL_FAST` and `AGENT_MODEL_STRONG` are sent as
-  they are. `AGENT_MODEL_API_KEY` is its key when it needs one. `AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]`
+- `AGENT_MODEL_BASE_URL`: every model id goes to that one OpenAI Responses endpoint, a gateway (OpenRouter's is
+  `https://openrouter.ai/api/v1`): a revision's `provider/model-id` is sent whole, as a gateway like OpenRouter names its
+  models `vendor/model`, and `AGENT_MODEL`, `AGENT_MODEL_FAST` and `AGENT_MODEL_STRONG` are sent as they are. For a
+  gateway that wants the id alone, `AGENT_MODEL_GATEWAY_IDS=bare` sends a revision's model without its provider. `AGENT_MODEL_API_KEY` is its key when it needs one. `AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]`
   in USD per million tokens, so a run's cost estimate has a price; `AGENT_MODEL_FAST_PRICE` and `AGENT_MODEL_STRONG_PRICE`
   price their tier's model, and default to it. With no price set, a model id pi-ai's catalog knows (`gpt-6-luna`, say)
   takes the catalog's list price, and any other is priced at $0. A revision's `provider/model-id` takes that provider's

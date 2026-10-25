@@ -22,6 +22,7 @@ services:
       # Provider keys, read by pi-ai: set the ones your agents' models need.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       # Or one OpenAI Responses gateway for every model, with its key.
       AGENT_MODEL_BASE_URL: ${AGENT_MODEL_BASE_URL:-}
       AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}

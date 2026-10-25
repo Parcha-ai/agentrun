@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+Through a gateway (`AGENT_MODEL_BASE_URL`), a revision's `provider/model-id` is now sent whole, so a gateway that names its models `vendor/model`, as OpenRouter does, gets the model it was asked for; it was sent as `model-id` alone. `AGENT_MODEL_GATEWAY_IDS=bare` keeps the old behaviour for a gateway that wants the id alone. The price is unchanged: the named provider's catalog entry for the model, else the highest. The README's first screen shows the two ways to host AgentRun Server, `docker run` with the public image and Render's Starter with a disk, and `render.yaml` and the compose example take `OPENROUTER_API_KEY` (pi-ai's OpenRouter provider, `AGENT_MODEL=openrouter/<model>`) and the gateway's `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
