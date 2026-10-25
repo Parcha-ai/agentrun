@@ -36,7 +36,7 @@ test("a gateway model the catalog knows takes its list price; a set price wins; 
   assert.deepEqual(own.fast, luna);
 });
 
-test("an id several providers price: the ref's own provider's entry when the catalog lists one, else the highest whole entry, never a $0 one over a paid one", async () => {
+test("an id several providers price: the ref's own provider's paid entry when the catalog lists one, else the highest whole entry, never a $0 one over a paid one", async () => {
   for (const id of ["gpt-4o", "deepseek-v4-pro"]) {
     assert.ok(new Set(entries(id).map(({ cost }) => total(cost))).size > 1, `the catalog prices ${id} differently by provider`);
     const bare = (await costOf({ AGENT_MODEL: id })).default;
@@ -50,6 +50,11 @@ test("an id several providers price: the ref's own provider's entry when the cat
     assert.notDeepEqual(own, highest(id), `${provider} does not list the highest price for ${id}`);
     assert.deepEqual((await costOf({}, ["default"], `${provider}/${id}`)).default, own, `${provider}/${id}: its own entry`);
   }
+  // A named provider the catalog lists at $0 for an id others price is a hint, not who answers: the highest paid entry.
+  const free = entries("deepseek-v4-pro").find(({ cost }) => total(cost) === 0) ?? builtinModels().getModels().find((model) => total(model.cost) === 0 && total(highest(model.id)) > 0);
+  assert.ok(free, "the catalog lists some provider at $0 for an id others price");
+  assert.ok(total(highest(free.id)) > 0);
+  assert.deepEqual((await costOf({}, ["default"], `${free.provider}/${free.id}`)).default, highest(free.id), `${free.provider}/${free.id}: listed at $0, priced at the highest paid entry`);
   // An id listed at $0 first and at several paid prices: bare, it takes the highest paid one, never the $0 entry and
   // never merely the first paid one.
   const mixed = [...new Set(builtinModels().getModels().map((model) => model.id))].find((id) => {

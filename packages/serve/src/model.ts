@@ -200,12 +200,12 @@ async function catalogPrices(): Promise<Map<string, Listed[]>> {
   return out;
 }
 
-/** A gateway model's catalog price: the entry of the provider its ref names, when the catalog lists one. Else, as the
- *  gateway does not say whose model answers, the highest any provider lists, so the estimate and a cap on it err high:
- *  one entry's whole price, the one with the most input plus output (the first of equals), so a $0 entry never wins over
- *  a paid one. An id no entry prices is $0. */
+/** A gateway model's catalog price: the paid entry of the provider its ref names, when the catalog lists one. Else, as
+ *  the gateway does not say whose model answers (a named provider is a hint), the highest any provider lists, so the
+ *  estimate and a cap on it err high: one entry's whole price, the one with the most input plus output (the first of
+ *  equals), so a $0 entry never wins over a paid one, a named provider's included. An id no entry prices is $0. */
 function listedPrice(entries: readonly Listed[], named: string | undefined): ModelCost {
   const own = named === undefined ? undefined : entries.find((entry) => entry.provider === named);
-  if (own) return own.cost;
+  if (own && own.cost.input + own.cost.output > 0) return own.cost;
   return entries.reduce<ModelCost>((top, { cost }) => (cost.input + cost.output > top.input + top.output ? cost : top), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 }
