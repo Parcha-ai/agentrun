@@ -74,8 +74,12 @@ if (process.env.PI_TRANSPORT_LIVE_DOCKER === "1") {
 					for (let step = 0; step < STEPS; step++) {
 						const operation = randomOperation(next);
 						const expected = normalize(await operation.run(node), nodeRoot);
-						const actual = normalize(await operation.run(env), boxRoot);
-						expect(actual, `seed ${seed} step ${step} ${operation.label}`).toEqual(expected);
+						const raw = await operation.run(env);
+						const actual = normalize(raw, boxRoot);
+						// normalize keeps only the code of a failure: the box's own message goes into the failure line, so a flake says why.
+						const failure = raw as { ok?: unknown; error?: { message?: unknown } };
+						const why = failure?.ok === false ? ` [box said: ${String(failure.error?.message)}]` : "";
+						expect(actual, `seed ${seed} step ${step} ${operation.label}${why}`).toEqual(expected);
 					}
 				}
 			});
