@@ -1422,3 +1422,42 @@ test('a node that reaches its turn limit makes one attempt, and the run fails sa
     assert.match(result.details.error.message, /not tried again/);
   } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
+
+// A node that names no tools is given the run's whole tool set: a trusted run adds bash, edit and write, so the
+// node can change files and gets the ordinary default; an untrusted run gives it read-only tools and the read-only one.
+const toollessWorkflow = () => { const definition = workflow(); delete definition.root.tools; return definition; };
+test('a node that names no tools gets 8 turns in a trusted run, which gives it bash, edit and write', async () => {
+  const cwd = await turnCwd();
+  const app = await harness({ cwd, activeTools: ['read', 'bash', 'edit', 'write'], responses: turnScript(11) });
+  try {
+    await app.tool({ action: 'inspect', workflow: toollessWorkflow() });
+    await app.command('run --trusted');
+    const run = app.messages.at(-1).details;
+    assert.equal(run.status, 'failed', JSON.stringify(run.error));
+    assert.equal(run.error.code, 'pi_turn_limit');
+    assert.equal(app.calls.length, 8, 'one session of 8 turns');
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('a node that names no tools gets the read-only default in an untrusted run', async () => {
+  const cwd = await turnCwd();
+  const app = await harness({ cwd, activeTools: ['read', 'bash', 'edit', 'write'], responses: turnScript(11) });
+  try {
+    await app.tool({ action: 'inspect', workflow: toollessWorkflow() });
+    await app.command('run');
+    const run = app.messages.at(-1).details;
+    assert.equal(run.status, 'complete', JSON.stringify(run.error));
+    assert.equal(app.calls.length, 12);
+  } finally { await app.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('/agentrun limits says what a node that names no tools gets in a trusted run too', async () => {
+  const app = await harness({ activeTools: ['read', 'bash', 'edit', 'write'] });
+  try {
+    await app.tool({ action: 'inspect', workflow: toollessWorkflow() });
+    await app.command('limits');
+    const line = app.messages.at(-1).content.split('\n').find(text => text.includes('read-note'));
+    assert.match(line, /20 turns \(the read-only default; 8 in a trusted run, which adds bash, edit and write\)/);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
