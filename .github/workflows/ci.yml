@@ -22,9 +22,10 @@ jobs:
     # names them; `rest` takes every workspace no other shard names, `examples-<n>` every third example file). `checks`
     # keeps the generated-file, package and source checks and the version-specific steps.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
-    # Merge-queue candidates run on Blacksmith, where a shard measured about 3x faster; pull requests, forks included, stay
-    # on GitHub's runners.
-    runs-on: ${{ github.event_name == 'merge_group' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
+    # included, stay on GitHub's runners. The viewer shard stays too: its Chromes starved a 4-vCPU Blacksmith runner until it
+    # lost contact, and it is not the long pole.
+    runs-on: ${{ github.event_name == 'merge_group' && matrix.shard != 'viewer' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
