@@ -1,8 +1,51 @@
 # AgentRun
 
-Open-source packages for your pi agent. Install the ones you need.
+**AgentRun is an open platform to manage your agents.**
 
-This repository holds the AgentRun harness: the workflow DSL and the pi extensions around it.
+Create an agent, change it, and run it. Every change is a revision you can go back to, and every run names the
+revision it ran, so you can open any run of any agent and see what it did. Host it yourself with AgentRun Server, on
+your machine or your own server, or with us when hosted AgentRun opens.
+
+1. **The platform.** Your agents, each one's revisions, and every run, behind one API (`/v2`) and one page. You run
+   it yourself today; hosted by us is coming. Bring your own agent: Codex, the Claude Agent SDK and any agent in a
+   container, each run in its own sandbox. Coming.
+2. **[AgentRun Server](packages/serve/README.md).** The part you host: one container, `ghcr.io/parcha-ai/agentrun-server`,
+   that serves the `/v2` API and the page and keeps everything in one data directory. Apache-2.0.
+3. **[Building blocks](#building-blocks).** The open packages underneath, each usable on its own in your pi agent:
+   `@parcha/agentrun-dsl` and `@parcha/agentrun-jev` (typed workflows and the decisions in them),
+   `@parcha/agentrun-pi` (workflows inside pi), `@parcha/pi-durable-agent` (the agent store),
+   `@parcha/pi-durable-disk` and `@parcha/pi-transport` (where an agent and its tools run),
+   `@parcha/pi-browser` and `@parcha/pi-vision` (what an agent can see and do). On npm, Apache-2.0.
+
+## Host it
+
+1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker run` on your own machine or server, with your own model key. An OpenRouter key with a credit limit caps what your agents can spend.
+
+   ```sh
+   docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
+     -e AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 -e OPENROUTER_API_KEY \
+     ghcr.io/parcha-ai/agentrun-server:beta
+   docker logs agentrun | grep Open
+   ```
+
+   With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
+   limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
+   run. For a provider's own key, pass `-e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY` instead; any
+   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
+
+2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. Each run takes its own memory, so its 512 MB holds a few runs at a time. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
+
+   [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
+   then set `AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5` and `OPENROUTER_API_KEY` in the service's Environment (or
+   another provider's model and key, or a gateway's `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`). Render generates the token,
+   `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
+
+Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
+a run may reach, and the container.
+
+## Building blocks
+
+The open packages underneath the platform, each usable on its own in your pi agent. Install the ones you need.
 
 **pi-vision** lets a pi agent answer questions about documents, images and video, and show the page, second or region each answer rests on. Try it free, with no key (the models are scripted), in a checkout built as under [Run the support example](#run-the-support-example): `npm run demo:vision -- examples/document-check`. It needs ffmpeg, ffprobe, pdftoppm and pdftotext (`brew install ffmpeg poppler`, or `sudo apt-get install ffmpeg poppler-utils`). See [pi-vision](packages/pi-vision/README.md).
 

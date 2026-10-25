@@ -22,7 +22,13 @@ services:
         generateValue: true
       - key: AGENT_MODEL
         sync: false
+      - key: AGENT_MODEL_BASE_URL
+        sync: false
+      - key: AGENT_MODEL_API_KEY
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
         sync: false

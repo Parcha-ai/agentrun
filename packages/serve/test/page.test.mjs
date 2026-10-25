@@ -148,6 +148,32 @@ test("the bin prints the page's link once, with the token, beside the base URL a
   assert.match(links[0], new RegExp(`^Open http://127\\.0\\.0\\.1:\\d+/\\?token=${key}$`));
 });
 
+test("with AGENTRUN_PUBLIC_URL, the bin prints the link and base URL a person opens (a container's published port), not the one it listens on", { timeout: 20_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123/" } });
+  t.after(() => child.kill("SIGTERM"));
+  let out = "";
+  for await (const chunk of child.stdout) {
+    out += chunk;
+    if (/\?token=.*\n/.test(out)) break;
+  }
+  const key = /^AGENTRUN_API_KEY=(.+)$/m.exec(out)?.[1];
+  assert.match(out, new RegExp(`^Open http://127\\.0\\.0\\.1:8123/\\?token=${key}$`, "m"), out);
+  assert.match(out, /^AGENTRUN_BASE_URL=http:\/\/127\.0\.0\.1:8123\/v2$/m, out);
+});
+
+test("an AGENTRUN_PUBLIC_URL that is not an http(s) URL stops the bin before it serves", { timeout: 20_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "javascript:alert(1)" } });
+  const killer = setTimeout(() => child.kill("SIGTERM"), 10_000);
+  t.after(() => (clearTimeout(killer), child.kill("SIGTERM")));
+  let err = "";
+  for await (const chunk of child.stderr) err += chunk;
+  const code = await new Promise((resolve) => (child.exitCode === null ? child.once("exit", resolve) : resolve(child.exitCode)));
+  assert.equal(code, 2, err);
+  assert.match(err, /AGENTRUN_PUBLIC_URL/);
+});
+
 test("with AGENTRUN_TOKEN and --listen 0.0.0.0, the bin requires that token, prints a loopback link and never prints the token", { timeout: 20_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   const token = `env_${"0123456789abcdef".repeat(3)}`;
