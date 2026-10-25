@@ -333,6 +333,14 @@ export async function cutBrowserAction(when: 'applying' | 'applied') {
   } finally { await served.close(); await rm(scratch, { recursive: true, force: true }); }
 }
 
+/** One created session is released once. A scan-only answer may use no session or page operations. */
+export function balancedBrowserSession(browser: Record<string, number>, reducedRecord: boolean): boolean {
+  const created = browser.create ?? 0;
+  const released = browser.release ?? 0;
+  return (created === 1 && released === 1) ||
+    (reducedRecord && created === 0 && released === 0 && Object.entries(browser).every(([op, count]) => !op.startsWith('page.') || count === 0));
+}
+
 /** The answers a lead gives when it cites the scan alone (the reference job's own wording). */
 const REDUCED_ANSWERS = ['Whether the registry page was opened is not known, so the filing scan is cited alone.', 'The registry page could not be opened, so the filing scan is cited alone.'];
 
@@ -439,7 +447,6 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         { what: 'browser read', times: times(counted.browser, 'page.read'), allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) browser_read|supervisor browser\.applied driver\.page)$/), pids: [] },
         { what: 'vision look', times: counted.looks, allowed: 1, causes: cutAt(/^(child receipt\.(filing|filed) look|child event vision\.look)$/), pids: [] },
       ]);
-    const eq1 = (n: number) => n === 1;
     // After a cut page action the lead takes a snapshot and decides from what the browser says. A lead that cannot tell whether
     // the action happened does not ask again: its record cites the scan alone and says the page's outcome is unknown. That
     // reduced record is accepted exactly when a page action was cut and the record cites no browser read, whether or not the
@@ -454,7 +461,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
       { name: 'the last process completed the run', ok: last?.outcome?.status === 'complete', detail: last?.outcome ?? last?.stderr },
       { name: 'the delivered record equals the uninterrupted run\'s', ok: record !== null && (eq(record, wanted) || reduced), detail: reduced ? 'the reduced record: the scan alone, the page action cut' : undefined },
       { name: 'every effect (the search) was made exactly once', ok: eq(counted.effects, ref.effects), detail: counted.effects },
-      { name: 'the browser session was created once and released once', ok: eq1(times(counted.browser, 'create')) && eq1(times(counted.browser, 'release')), detail: counted.browser },
+      { name: 'every created browser session was released once; no session only for a scan-only answer', ok: balancedBrowserSession(counted.browser, reduced), detail: counted.browser },
       { name: 'the browser\'s page action ran at most once; not at all only where a kill cut it before it was applied and the lead went on without it', ok: times(counted.browser, 'page.run') === 1 || (times(counted.browser, 'page.run') === 0 && erroredRuns > 0), detail: { 'page.run': times(counted.browser, 'page.run'), 'errored run results': erroredRuns, pageRuns } },
       { name: 'every committed model turn exactly once, in order; after a cut page action the lead takes one snapshot, and nothing else is added', ok: eq(turnsSeen, turnsWanted) && snapshots === (erroredRuns > 0 ? 1 : 0), detail: counted.committedTurns },
       { name: 'the same receipts, each filed once', ok: eq(counted.receipts, reduced ? without(['browser_read'], ref.receipts) : ref.receipts), detail: counted.receipts },

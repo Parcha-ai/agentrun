@@ -66,6 +66,10 @@ registerLabel("web_fetch", (a) => `Fetched ${where(str(a.url) ?? "a page")}`, {
   many: (n) => `Fetched ${n} pages`,
   subject: (input) => (input ? where(input) : undefined),
 });
+registerLabel("web_search", (a) => {
+  const query = str(a.query);
+  return query ? `Searched the web for "${cut(scrubUrls(query), 60)}"` : "Searched the web";
+}, { many: (n) => `Searched the web ${n} times`, subject: (input) => (input ? `"${cut(input, 40)}"` : undefined) });
 registerLabel(
   "browser_read",
   (_a, result) => {

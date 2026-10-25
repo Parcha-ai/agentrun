@@ -1,6 +1,9 @@
-// The small JSON files the server reads and writes beside the agent homes.
+// The small JSON files the server reads and writes beside the agent store.
 import { readFile, rename, writeFile } from "node:fs/promises";
 import type { Json } from "./validate.js";
+
+/** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
+export const RUN_META = "serve.json";
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>
