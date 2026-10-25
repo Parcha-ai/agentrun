@@ -61,14 +61,23 @@ test('in Chrome: the dark palette goes only over a page that declares dark; any 
   const page = await drivenPage(`${base}/chat.html?r=light`, join(out, 'profile'), { signal: t.signal });
   held.page = page;
   const seen: Record<string, { th?: [string, string]; body: [string, string, string] }> = {};
+  /** The value of `read` once it is a string, polled within `ms`. */
+  const settled = async (read: string, ms: number, what: string): Promise<string> => {
+    for (const until = Date.now() + ms; Date.now() < until; await page.sleep(100)) {
+      const value = await page.evaluate(read);
+      if (typeof value === 'string') return value;
+    }
+    throw new Error(`${what}: not so after ${ms / 1000} s`);
+  };
   try {
     for (const id of Object.keys(PAGES)) {
       await page.evaluate(`location.href = '${base}/chat.html?r=${id}'`);
-      // Setting the address does not wait for the navigation: until it commits, the previous page's report is still there.
-      const report = `document.querySelector('.report-frame')?.contentDocument`;
-      await page.once(`location.href === '${base}/chat.html?r=${id}' && ${report}?.title === '${id}' && ${report}?.readyState === 'complete'`, 'true', 20_000, `${id}: the agent's page drawn`);
-      seen[id] = JSON.parse(String(await page.evaluate(`(() => { const d = document.querySelector('.report-frame').contentDocument; const css = (n) => getComputedStyle(n);
-        const th = d.querySelector('th'); return JSON.stringify({ ...(th ? { th: [css(th).color, css(th).backgroundColor] } : {}), body: [css(d.documentElement).colorScheme, css(d.body).backgroundColor, css(d.body).color] }); })()`)));
+      // Setting the address does not wait for the navigation, and the report frame's document can change between two
+      // evaluates. So one evaluate checks that this id's page is drawn and reads it; any other answer is read again.
+      const read = `(() => { const d = document.querySelector('.report-frame')?.contentDocument; const css = (n) => getComputedStyle(n);
+        if (location.href !== '${base}/chat.html?r=${id}' || d?.title !== '${id}' || d.readyState !== 'complete') return undefined;
+        const th = d.querySelector('th'); return JSON.stringify({ ...(th ? { th: [css(th).color, css(th).backgroundColor] } : {}), body: [css(d.documentElement).colorScheme, css(d.body).backgroundColor, css(d.body).color] }); })()`;
+      seen[id] = JSON.parse(await settled(read, 20_000, `${id}: the agent's page drawn`));
     }
   } finally {
     await page.close();
