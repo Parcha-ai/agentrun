@@ -90,6 +90,26 @@ test('a submitted result record is the answer: one row per field, its evidence p
   assert.ok(cites.some((cite) => cite.item && tools(m).some((card) => card.id === cite.item)), 'the look cited is found on its card');
 });
 
+test('an answer field that is a list of flat records is a table: its columns as the records first name them, each cell in plain form, never markdown', async () => {
+  const { recording } = opened(referenceJob);
+  const listed: Json[] = [
+    { ref: 'A-1', summary: 'The `parse()` call throws on **marked** input', urgent: true, tags: ['parser', 'v2'] },
+    { ref: 'A-2', urgent: false, tags: [], owner: null },
+    { summary: 'A later record names a column of its own', ref: 'A-3', urgent: false, tags: ['docs'], owner: 'ops' },
+  ];
+  const record: { [key: string]: Json } = { found: listed, nested: [{ ref: 'B-1', parts: [{ at: 1 }] }], mixed: [{ ref: 'C-1' }, 'loose'], none: [], blank: [{}], count: 3 };
+  const m = await extractChat(recording, async (sha) => (sha === recording.manifest.result?.blob ? record : undefined));
+  const rows = Object.fromEntries((m.answer?.rows ?? []).map((row) => [row.label, row]));
+  assert.deepEqual(rows.found?.table, {
+    columns: ['ref', 'summary', 'urgent', 'tags', 'owner'],
+    rows: [['A-1', 'The `parse()` call throws on **marked** input', 'yes', 'parser, v2', ''], ['A-2', '', 'no', '', 'null'], ['A-3', 'A later record names a column of its own', 'no', 'docs', 'ops']],
+  }, 'a field a record lacks is an empty cell; a yes-or-no in words; a list of words joined; the words as written');
+  for (const name of ['nested', 'mixed', 'none', 'blank', 'count']) assert.equal(rows[name]?.table, undefined, `${name}: no table`);
+  assert.equal(rows.nested?.text, JSON.stringify(record.nested), 'a list whose records hold records keeps its JSON');
+  assert.equal(rows.mixed?.text, JSON.stringify(record.mixed), 'a list of records and words keeps its JSON');
+  assert.equal(rows.count?.text, '3');
+});
+
 test('with no result, the answer is the final assistant text', async () => {
   const { recording, readJson } = opened(referenceJob, editFirst('pi.assistant', (data) => { (data.model[0]!.content as Json[]).push({ type: 'text', text: 'Incorporated on 2019-03-04.' }); }));
   delete (recording.manifest as { result?: unknown }).result;
