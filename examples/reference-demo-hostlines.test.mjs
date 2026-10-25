@@ -253,11 +253,15 @@ test('recording.carry.failed: a tick that fails is retried, a final failure refu
   // (a step that waits on a file) until the first one has happened: a child that finishes inside one tick would have no tick to fail.
   const tick = join(tmp, 'tick');
   const released = join(tmp, 'tick-released');
+  let retried;
   process.env.DEMO_LINGER_UNTIL = released;
-  const { options: held } = await import(`${FIXTURE}?options=held-${Date.now()}`);
-  let ticked = false;
-  const retried = await demo({ ...held, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final }) => { if (final || ticked) return undefined; ticked = true; writeFileSync(released, ''); return 'CARRY_FAILED'; } }) });
-  delete process.env.DEMO_LINGER_UNTIL;
+  try {
+    const { options: held } = await import(`${FIXTURE}?options=held-${Date.now()}`);
+    let ticked = false;
+    retried = await demo({ ...held, argv: ['--json', '--record', tick], place: boxed(join(tmp, 'b1'), { failOn: ({ final }) => { if (final || ticked) return undefined; ticked = true; writeFileSync(released, ''); return 'CARRY_FAILED'; } }) });
+  } finally {
+    delete process.env.DEMO_LINGER_UNTIL;
+  }
   assert.equal(retried.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(failed(tick).map((line) => [line.data.gen, line.data.code, 'lost' in line.data]), [[1, 'CARRY_FAILED', false]]);
   assert.ok(!failed(tick)[0].data.message.includes(tmp) && failed(tick)[0].data.message.includes('<path>'), 'paths in the message are <path>');
