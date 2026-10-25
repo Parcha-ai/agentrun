@@ -123,7 +123,10 @@ describe("moveWorkspace on local boxes", () => {
 		const socket = join(src, "live.sock");
 		// A unix socket's path holds at most 103 bytes on macOS and 107 on Linux; a longer one binds cut short, outside the tree.
 		const bytes = Buffer.byteLength(socket);
-		test.skip(bytes > 103, `the socket's path is ${bytes} bytes, more than a unix socket holds: a shorter TMPDIR runs this`);
+		test.skip(
+			bytes > 103,
+			`the socket's path is ${bytes} bytes, more than a unix socket holds: a shorter TMPDIR runs this`,
+		);
 		const server = createServer();
 		await new Promise<void>((resolve) => server.listen(socket, resolve));
 		try {
