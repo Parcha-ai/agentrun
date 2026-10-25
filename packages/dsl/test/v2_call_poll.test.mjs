@@ -178,3 +178,21 @@ test("runner: a check cut by the poll deadline gives up with the counted message
   assert.equal(calls, 2);
   assert.deepEqual(pollSettlements(events), [[1, null], [2, "deadline"]]);
 });
+
+test("runner: under a recovery driver, a check cut by the poll deadline keeps its text without a count and sends no deadline event", async () => {
+  // The recovery path does not change: its loop runs no deadline check of its own, reports a check
+  // that does not settle before the driver's wait, and the cut keeps the text without a count.
+  let calls = 0;
+  const events = [];
+  const startedAt = Date.now();
+  const recovery = { resume: async () => undefined, commit: async () => {}, pollStartedAt: () => startedAt, wait: async () => {} };
+  const error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.1 })), assemble]), { question: "q" }, {
+    recovery,
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => events.push(e),
+    runEffect: ({ signal }) => { calls += 1; if (calls === 1) return Promise.resolve({ status: "IN_PROGRESS" }); return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")))); },
+  }).then(() => undefined, (reason) => reason);
+  assert.match(String(error), /poll exceeded its 1s deadline$/);
+  assert.equal(calls, 2);
+  assert.deepEqual(pollSettlements(events), [[1, null]]);
+});
