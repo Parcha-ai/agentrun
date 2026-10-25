@@ -80,6 +80,27 @@ test("an id several providers price: the ref's own provider's paid entry when th
   assert.deepEqual((await costOf({ AGENT_MODEL: mixed })).default, highest(mixed), mixed);
 });
 
+test("through a gateway a revision's provider/model-id is sent whole (OpenRouter names its models so); AGENT_MODEL_GATEWAY_IDS=bare sends the part after the provider", async () => {
+  const sent = async (env, ref) => (await runModels({ ...GATEWAY, AGENT_MODEL: "host-default", ...env }, ref, ["default"])).byTier.get("default").modelId;
+  assert.equal(await sent({}, "openai/gpt-4o"), "openai/gpt-4o");
+  assert.equal(await sent({}, "anthropic/claude-sonnet-5-5"), "anthropic/claude-sonnet-5-5");
+  assert.equal(await sent({ AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-4o"), "gpt-4o");
+  assert.equal(await sent({}, undefined), "host-default", "the host's own model goes as it is set");
+  // Priced either way as the named provider's entry for the model.
+  const own = entries("gpt-4o").find((entry) => entry.provider === "cloudflare-ai-gateway").cost;
+  assert.deepEqual((await costOf({}, ["default"], "cloudflare-ai-gateway/gpt-4o")).default, own);
+  assert.deepEqual((await costOf({ AGENT_MODEL_GATEWAY_IDS: "bare" }, ["default"], "cloudflare-ai-gateway/gpt-4o")).default, own);
+  // The host's own model goes as it is set, bare or not; only the exact value "bare" changes a revision's.
+  assert.equal(await sent({ AGENT_MODEL_GATEWAY_IDS: "bare", AGENT_MODEL: "openai/gpt-4o" }, undefined), "openai/gpt-4o");
+  for (const value of ["whole", "1", "BARE", "true"]) assert.equal(await sent({ AGENT_MODEL_GATEWAY_IDS: value }, "openai/gpt-4o"), "openai/gpt-4o", value);
+  // A host model set whole, as OpenRouter names it, that the catalog lists only bare: priced as that vendor's entry.
+  const ids = new Set(builtinModels().getModels().map((model) => model.id));
+  const bare = builtinModels().getModels().find((model) => total(model.cost) > 0 && !ids.has(`${model.provider}/${model.id}`) && total(model.cost) !== total(highest(model.id)));
+  assert.ok(bare, "the catalog has a model listed only bare whose provider prices it below the highest");
+  const vendorCost = entries(bare.id).find((entry) => entry.provider === bare.provider).cost;
+  assert.deepEqual((await costOf({ AGENT_MODEL: `${bare.provider}/${bare.id}` })).default, vendorCost, `${bare.provider}/${bare.id}`);
+});
+
 test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know is still $0 and never reaches its cap", async (t) => {
   const tokens = 1_000_000;
   const endpoint = await responsesEndpoint(t, "42", tokens);
@@ -99,6 +120,7 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
     return (await api("GET", `/runs/${started.body.run_id}`)).body;
   };
   const priced = await run("priced", "openai/gpt-4o");
+  assert.ok(endpoint.models.length > 0 && endpoint.models.every((model) => model === "openai/gpt-4o"), `the gateway is asked for the revision's model whole: ${endpoint.models}`);
   assert.deepEqual([priced.status, priced.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(priced.error));
   const usage = { input: tokens, output: tokens, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const expected = calculateCost(builtinModels().getModel("openai", "gpt-4o"), usage).total;

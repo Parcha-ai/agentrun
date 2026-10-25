@@ -100,16 +100,18 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
 }
 
 /** An OpenAI Responses endpoint on loopback: every turn answers `text` and reports `tokens` input and output tokens.
- *  `asked` lists every request's method and path, `bodies` each POST's JSON body. */
+ *  `asked` lists every request's method and path, `bodies` each POST's JSON body, `models` the model each asked for. */
 export async function responsesEndpoint(t, text, tokens) {
   const asked = [];
   const bodies = [];
+  const models = [];
   const server = createServer((req, res) => {
     asked.push(`${req.method} ${req.url}`);
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       if (req.method === "POST") bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "null"));
+      if (req.method === "POST") models.push(bodies.at(-1)?.model);
       const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] };
       res.writeHead(200, { "content-type": "text/event-stream" });
       for (const event of [
@@ -124,7 +126,7 @@ export async function responsesEndpoint(t, text, tokens) {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies };
+  return { url: `http://127.0.0.1:${server.address().port}`, asked, bodies, models };
 }
 
 /** Sets `vars` in this process's environment, which a server's runs inherit, for test `t`; the rest of `names` unset. */
