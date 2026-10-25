@@ -34,6 +34,10 @@
       "types": "./dist/internals.d.ts",
       "default": "./dist/internals.js"
     },
+    "./box": {
+      "types": "./dist/box-host.d.ts",
+      "default": "./dist/box-host.js"
+    },
     "./bin/archil-scoped": "./bin/archil-scoped",
     "./package.json": "./package.json"
   },
@@ -50,7 +54,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
+    "build": "rm -rf dist && (test -f ../pi-transport/dist/index.d.ts || npm --prefix ../pi-transport run build) && tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs dist",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p examples",
     "test": "node --test --test-timeout=240000 'test/*.test.ts' 'test/examples/*.test.ts'",
@@ -65,11 +69,13 @@
     "test:live:supervise-slow": "node --test --test-concurrency=1 test/live/supervise-slow.live.test.ts",
     "test:live:with-claim": "node --test --test-concurrency=1 test/live/with-claim.live.test.ts",
     "test:live:docker": "PDA_LIVE_DOCKER=1 node --test --test-concurrency=1 test/live/docker.live.test.ts test/live/docker-park.live.test.ts",
-    "verify:tarball": "node scripts/verify-tarball.mjs"
+    "verify:tarball": "node scripts/verify-tarball.mjs",
+    "test:live:box": "PDA_LIVE_MODAL_BOX=1 node --test --test-concurrency=1 test/live/box-host.live.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.0.4 <1.4.0",
-    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0"
+    "@earendil-works/pi-durable": ">=1.0.4 <1.4.0",
+    "@parcha/pi-transport": "0.1.0-beta.27"
   },
   "dependencies": {
     "disk": "1.9.0"
@@ -77,7 +83,8 @@
   "devDependencies": {
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0"
+    "@earendil-works/pi-durable": "1.1.0",
+    "@parcha/pi-transport": "0.1.0-beta.27"
   },
   "repository": {
     "type": "git",
@@ -91,5 +98,10 @@
   "publishConfig": {
     "access": "public",
     "tag": "beta"
+  },
+  "peerDependenciesMeta": {
+    "@parcha/pi-transport": {
+      "optional": true
+    }
   }
 }

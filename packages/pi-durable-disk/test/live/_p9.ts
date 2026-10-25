@@ -207,10 +207,10 @@ export const MOUNT_ROOT = "/mnt/pda/p9";
 export const PDA_ID = 1500;
 /** Where the e2e app writes what it sees, outside the mount, writable by the run user. */
 export const APP_OUT = "/var/tmp/pda-out";
-const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
-const NODE_SHA256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6";
-const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.10.0-1792692895_amd64.deb";
-const ARCHIL_SHA256 = "7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba";
+export const NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz";
+export const NODE_SHA256 = "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6";
+export const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.10.0-1792692895_amd64.deb";
+export const ARCHIL_SHA256 = "7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba";
 const REPO = new URL("../../", import.meta.url).pathname;
 
 /** This checkout's working tree (no node_modules, .git or .tmp) as a gzipped tar. */

@@ -54,6 +54,8 @@ export type StartAttempt = { attempt: number; env?: Record<string, string> };
  */
 export type HostBox = {
   provider: string;
+  /** The box's key, minted per box at its create and carried on its provider label (boxHost's agentrun-host-key). */
+  key?: string;
   kind: string;
   from: string;
   to: string | null;

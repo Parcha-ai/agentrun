@@ -266,5 +266,15 @@
       "unmountClaim"
     ],
     "types": []
+  },
+  "./box": {
+    "values": [
+      "BoxHostError",
+      "boxHost"
+    ],
+    "types": [
+      "BoxHostErrorCode",
+      "BoxHostOptions"
+    ]
   }
 }

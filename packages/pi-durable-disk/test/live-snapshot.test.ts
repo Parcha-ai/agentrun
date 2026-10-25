@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "pda-live-snapshot-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -63,7 +63,13 @@ it("the demo variant: one more layer with the packs' stand-ins and pi-codemode o
   const decoded = [...layer.matchAll(/echo ([A-Za-z0-9+/=]+) \| base64 -d > ([^\s;]+)/g)].map(([, b64, to]) => ({ to, json: JSON.parse(Buffer.from(b64!, "base64").toString()) as Record<string, Record<string, string>> }));
   const root = decoded.find((d) => d.to.endsWith("pi-durable-disk/package.json"))!.json;
   const disk = committed("packages/pi-durable-disk/package.json");
-  for (const [name, spec] of Object.entries({ ...disk.dependencies, ...disk.devDependencies })) assert.equal(root.dependencies![name], spec, `the package's own ${name} stays as declared`);
+  // A pack's stand-in is layered over the package's dependencies: where the package declares that pack itself (boxHost's
+  // optional peer, pi-transport), the stand-in wins, so npm never installs the registry's beside it.
+  const standIns = new Map(decoded.filter((d) => d.to.startsWith("/opt/pda-demo/stubs/")).map((d) => [String(d.json.name), `file:${dirname(d.to)}`]));
+  for (const [name, spec] of Object.entries({ ...disk.dependencies, ...disk.devDependencies })) {
+    if (standIns.has(name)) assert.equal(root.dependencies![name], standIns.get(name), `the pack's stand-in over the package's own ${name}`);
+    else assert.equal(root.dependencies![name], spec, `the package's own ${name} stays as declared`);
+  }
   assert.equal(root.dependencies!["@earendil-works/pi-codemode"], DEMO_EXTRA[0]!.split("@").at(-1));
   for (const dir of DEMO_PACKS) assert.ok(Object.values(root.dependencies!).includes(`file:/opt/pda-demo/stubs/${dir}`), dir);
   assert.ok(Object.keys(root.overrides!).every((name) => !(name in root.dependencies!)), "npm refuses an override of a direct dependency");

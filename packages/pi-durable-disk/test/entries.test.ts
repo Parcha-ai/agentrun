@@ -10,9 +10,9 @@ import ts from "typescript";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "src");
-const ENTRIES: Record<string, string> = { ".": "src/index.ts", "./lease": "src/lease.ts", "./internals": "src/internals.ts" };
+const ENTRIES: Record<string, string> = { ".": "src/index.ts", "./lease": "src/lease.ts", "./internals": "src/internals.ts", "./box": "src/box-host.ts" };
 // Besides the entry itself, what its caller imports from: `./internals` is used beside the root entry.
-const BESIDE: Record<string, string[]> = { ".": [], "./lease": [], "./internals": ["."] };
+const BESIDE: Record<string, string[]> = { ".": [], "./lease": [], "./internals": ["."], "./box": ["."] };
 const pinned = JSON.parse(readFileSync(join(ROOT, "test/fixtures/entries.json"), "utf8")) as Record<string, { values: string[]; types: string[] }>;
 
 const program = ts.createProgram(
