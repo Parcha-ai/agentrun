@@ -1643,8 +1643,9 @@ async function runCallNode(node: CallNode, state: Record<string, unknown>, workf
   const attempts = Math.max(1, node.retry?.attempts ?? 1);
   const retryOn = new Set<string>(node.retry?.on ?? ["timeout", "http_5xx", "http_429", "connection", "exit"]);
   // A poll timeout reads one way wherever its deadline lands: the loop's own check, the start of an
-  // attempt after a late wait, or an attempt the poll budget cuts. `check` counts the checks started;
-  // a recovery run passes none and keeps the text without a count.
+  // attempt after a late wait, or an attempt the poll budget cuts. `check` counts the checks started,
+  // including a last check that the deadline stops before its effect begins; a recovery run passes
+  // none and keeps the text without a count.
   let pollTimeout: EffectFailure | undefined;
   const pollExceeded = (check?: number) => (pollTimeout = new EffectFailure(`call node "${node.label}" poll exceeded its ${node.poll?.deadline_s}s deadline${check === undefined ? "" : ` after ${check} check(s)`}`, "timeout"));
   const executeOnce = async (budgetUntilMs?: number, check?: number): Promise<unknown> => {

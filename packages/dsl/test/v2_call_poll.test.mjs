@@ -196,3 +196,24 @@ test("runner: under a recovery driver, a check cut by the poll deadline keeps it
   assert.equal(calls, 2);
   assert.deepEqual(pollSettlements(events), [[1, null]]);
 });
+
+test("runner: a deadline that passes after a wait ends in time, before the next check's effect, counts that check", async () => {
+  // poll deadline 1s, interval 0.1s: the first check's wait ends in time, then the host's onEvent for
+  // its null event holds the thread until the poll deadline has passed. The deadline stops check 2
+  // before its effect begins; check 2 is counted, and it is the one that settles "deadline".
+  let calls = 0;
+  const events = [];
+  let firstAttemptAt;
+  const error = await runWorkflow(wf([planNode, statusCall({ deadline_s: 1 }, poll({ deadline_s: 1, interval_s: 0.1 })), assemble]), { question: "q" }, {
+    runNode: async () => ({ request_id: "req-1" }),
+    onEvent: (e) => {
+      events.push(e);
+      if (e.type === "effect.attempt") firstAttemptAt ??= Date.now();
+      if (e.type === "effect.poll" && e.detail.iteration === 1 && e.detail.settled === null) while (Date.now() <= firstAttemptAt + 1000) { /* hold the thread past the poll deadline */ }
+    },
+    runEffect: async () => { calls += 1; return { status: "IN_PROGRESS" }; },
+  }).then(() => undefined, (reason) => reason);
+  assert.match(String(error), /poll exceeded its 1s deadline after 2 check\(s\)/);
+  assert.equal(calls, 1);
+  assert.deepEqual(pollSettlements(events), [[1, null], [2, "deadline"]]);
+});
