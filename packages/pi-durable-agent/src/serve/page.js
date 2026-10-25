@@ -892,7 +892,8 @@
       el("p", { class: "facts" }, runState(run.state), facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
       el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, short(run.revision)), kindPill(run.kind), data.note ? el("span", null, data.note) : null),
       run.summary ? el("div", { class: "lede summary" }, md(run.summary)) : null,
-      data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null
+      data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null,
+      host && host.run ? host.run(data) : null
     );
   }
 
@@ -1015,8 +1016,8 @@
   // window.agentStoreHost. Given this page's parts (`route` among them, which draws the address's view again) it answers
   // { name: the page's name in the tab's title; route(hash, token): true when it drew that view itself;
   // agent(agent, revisions) and revision(agent, revision): what it adds to the agent card and to a revision's head;
-  // cards(agent, revisions, filter): cards between the agent card and its runs; empty(): what the picker shows when the
-  // store holds no agent }.
+  // cards(agent, revisions, filter): cards between the agent card and its runs; run(data): what it adds to a stored run's
+  // head; empty(): what the picker shows when the store holds no agent }.
   var host = STORE && typeof window.agentStoreHost === "function"
     ? window.agentStoreHost({
         el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },

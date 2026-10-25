@@ -192,6 +192,10 @@ data directory, with this server's own views beside it:
   or escalated, their total cost, the cost per completed run (every run's cost over the completed ones, the cheapest
   marked) and the median time of those that ended. It reads the store's runs of the agent; a row filters the runs to
   its revision.
+- **Learn from this run**: on a completed run whose revision names the `learn` tool, a button previews what the run
+  learned (`POST /v2/agents/{id}/learn {run_id, dry_run: true}`), each lesson's file whole as text, then **Commit as a
+  new revision** commits exactly that (`{run_id, base}` from the preview) and links the revision it made. A 412 (the
+  agent's current revision moved since the preview) clears it and asks for a new one.
 
 The link sets a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
 and sends the browser to the same address without the token. The cookie's value is derived from the token, never the

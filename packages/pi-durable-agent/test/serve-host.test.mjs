@@ -70,6 +70,7 @@ function recordingHost() {
       revision: (agent, revision) => (revision.current ? null : kit.el("span", { class: "host-revision" }, `${agent.id}:${kit.short(revision.id)}`)),
       cards: (agent, revisions, filter) => kit.el("section", { class: "card host-card" }, `${agent.id}: ${revisions.length} revisions, filter ${filter ?? "none"}`),
       empty: () => kit.el("p", { class: "host-empty" }, "Nothing here: make one"),
+      run: (data) => kit.el("p", { class: "host-run" }, `${data.run.id} ${data.run.state}`),
     };
   };
   return { seen, host };
@@ -116,13 +117,22 @@ test("a host adds to the agent card and to each revision's head, given the agent
   assert.equal(plain.document.title, "Calc · agent store");
 });
 
-test("a host adds cards after the agent card, given the revision filter", async () => {
+test("a host adds cards after the agent card, given the revision filter, and adds to a stored run's head", async () => {
   const { host } = recordingHost();
   const page = mount({ ...API, [`api/runs?agent=calc&revision=${"a".repeat(64)}`]: [] }, `#/agents/calc?revision=${"a".repeat(64)}`, { serve: "store", window: { agentStoreHost: host } });
   await page.settle();
   const cards = all(page.app).filter((el) => el.tagName === "SECTION").map(classOf);
   assert.deepEqual(cards, ["card agent", "card host-card", "card runs", "card revs"], "the host's cards sit between the agent card and its runs");
   assert.equal(all(page.app).find((el) => classOf(el) === "card host-card").textContent, `calc: 2 revisions, filter ${"a".repeat(64)}`);
+
+  const stored = { run: { id: "run-1", agent: "calc", revision: "b".repeat(64), kind: "agentic", state: "completed", startedAt: "2026-10-22T10:00:00.000Z", endedAt: "2026-10-22T10:01:00.000Z", costUsd: 0.01 }, agent: "Calc", rows: [] };
+  const run = mount({ "api/runs/run-1": stored }, "#/runs/run-1", { serve: "store", window: { agentStoreHost: host } });
+  await run.settle();
+  const head = all(run.app).find((el) => classOf(el) === "card run-head");
+  assert.equal(all(head).find((el) => classOf(el) === "host-run").textContent, "run-1 completed");
+  const plain = mount({ "api/runs/run-1": stored }, "#/runs/run-1", { serve: "store" });
+  await plain.settle();
+  assert.equal(all(plain.app).filter((el) => /^host-/.test(classOf(el))).length, 0);
 });
 
 test("an agent home's page takes no host: the script is the store page's only", async () => {
