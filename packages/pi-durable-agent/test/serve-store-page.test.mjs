@@ -220,6 +220,19 @@ test("an agentic run's page: its state, cost, agent, revision and summary, then 
   assert.equal(all(noCost.app).filter((el) => classOf(el) === "card timeline").length, 0);
 });
 
+test("a run's result box renders its markdown as the timeline's answer does: links, bold and code as elements, markup as text, and no link but http(s)", async () => {
+  const summary = `Read on the [Your bills page](https://example.com/bills?id=7) and **pay** \`now\`. ${HOSTILE} [x](javascript:alert(1))\n- one\n- two`;
+  const page = mount({ "api/runs/run-3": { ...AGENTIC_RUN, run: { ...RUNS[2], summary } } }, "#/runs/run-3", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  const box = all(page.app).find((el) => classOf(el) === "lede summary");
+  assert.ok(box, "the result box");
+  assert.deepEqual(all(box).filter((el) => el.tagName === "A").map((el) => [el.textContent, el.getAttribute("href")]), [["Your bills page", "https://example.com/bills?id=7"]]);
+  assert.deepEqual(all(box).filter((el) => ["B", "CODE", "LI"].includes(el.tagName)).map((el) => [el.tagName, el.textContent]), [["B", "pay"], ["CODE", "now"], ["LI", "one"], ["LI", "two"]]);
+  assert.ok(box.textContent.includes(HOSTILE) && box.textContent.includes("[x](javascript:alert(1))"), "markup and a script link stay text");
+  assert.ok(!box.textContent.includes("[Your bills page]"), "no raw markdown");
+});
+
 test("a running run's page is read again every 2 s, says what it spent so far, and keeps itself through a failed refresh", async () => {
   const api = { "api/runs/run-5": { ...AGENTIC_RUN, run: RUNS[0] } };
   const page = mount(api, "#/runs/run-5", { serve: STORE });

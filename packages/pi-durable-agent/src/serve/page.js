@@ -891,7 +891,7 @@
       el("h1", { class: "id" }, run.id),
       el("p", { class: "facts" }, runState(run.state), facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
       el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, short(run.revision)), kindPill(run.kind), data.note ? el("span", null, data.note) : null),
-      run.summary ? el("p", { class: "lede summary" }, run.summary) : null,
+      run.summary ? el("div", { class: "lede summary" }, md(run.summary)) : null,
       data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null
     );
   }
