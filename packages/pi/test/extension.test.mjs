@@ -1509,14 +1509,14 @@ test('/agentrun history does not let a workflow name add a row', async () => {
   } finally { await app.shutdown(); }
 });
 
-test('an ordinary workflow name is printed as it is, a long one is not', async () => {
+test('an ordinary workflow name is printed as a quoted workflow name, a long one is not', async () => {
   const app = await harness({ responses: [fauxAssistantMessage(fauxToolCall('submit', { value: { content: 'cedar' } })), fauxAssistantMessage(fauxToolCall('submit', { value: { content: 'cedar' } }))] });
   try {
     await prompted(app, SKILL_PROMPT);
     await app.tool({ action: 'inspect', workflow: workflow() });
     await app.tool({ action: 'run' });
     await ended(app);
-    assert.match(stamps(app)[0].content, /complete, Read a local note; /);
+    assert.match(stamps(app)[0].content, /complete, workflow "Read a local note"; /);
     const long = workflow(); long.name = 'x'.repeat(300);
     await prompted(app, 'again');
     await app.tool({ action: 'inspect', workflow: long });

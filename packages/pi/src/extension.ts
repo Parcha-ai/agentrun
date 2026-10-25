@@ -44,10 +44,11 @@ const help = 'Describe a task: /agentrun <what you want done>\nTry support triag
 /** What a result says when it ends no run, and the label on what the host says about a turn. */
 const NO_RUN = 'no workflow ran';
 const STAMP_LABEL = 'AgentRun host notice (not written by the model):';
-/** A workflow's name is written by the model, so the host prints it only when it is a plain name; any other is "a workflow".
- *  A name with a line break in it would otherwise add a line that reads as the host's own. */
+/** A workflow's name is written by the model, so the host prints it only when it is a plain name, and inside quotes (the pattern has no
+ *  double quote, so a name cannot close them); any other is "a workflow". A name with a line break, or one that spells the host's own
+ *  words, would otherwise read as the host's. */
 const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._:()/-]{0,79}$/;
-const plainName = (name: unknown): string => typeof name === 'string' && PLAIN_NAME.test(name) ? name : 'a workflow';
+const plainName = (name: unknown): string => typeof name === 'string' && PLAIN_NAME.test(name) ? `workflow "${name}"` : 'a workflow';
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 type TurnRun = { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number }; scripted: boolean; resumed: boolean };
 const stampText = (runs: TurnRun[]): string => runs.length === 0
