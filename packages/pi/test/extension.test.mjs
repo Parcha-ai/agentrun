@@ -14,6 +14,8 @@ import { authorSkillDirectory, runWorkflow } from '@parcha/agentrun-dsl';
 import { supportTriageWorkflow, supportTriageInputs, scriptedSupportTriageDeps } from '../dist/triage-demo.js';
 import { tempCwd } from './fixtures/temp-cwd.mjs';
 
+// The file Pi lists for the author skill's command: a model that reads it has loaded the skill by itself.
+const AUTHOR_SKILL_FILE = '/home/user/.pi/npm/node_modules/@parcha/agentrun-pi/dist/skills/author/SKILL.md';
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const waitUntil = async predicate => { while (!predicate()) await new Promise(resolve => setImmediate(resolve)); };
 const resultSchema = { type: 'object', additionalProperties: false, required: ['content'], properties: { content: { type: 'string' } } };
@@ -37,7 +39,7 @@ async function harness({ cwd = tempCwd, responses = [], activeTools = ['read'], 
     registerEntryRenderer: () => {}, appendEntry: (customType, data) => branch.push({ type: 'custom', customType, data }),
     on: (name, handler) => events.set(name, handler),
     getActiveTools: () => activeTools,
-    getCommands: () => [{name: 'skill:agentrun-author', source: 'skill'}],
+    getCommands: () => [{name: 'skill:agentrun-author', source: 'skill', sourceInfo: { path: AUTHOR_SKILL_FILE }}],
     getAllTools: () => [...['read', 'grep', 'find', 'ls', 'bash', 'edit', 'write'].map(name => ({ name, sourceInfo: { source: 'builtin' } })), { name: 'custom_search', sourceInfo: { source: 'extension' } }],
     getThinkingLevel: () => 'low',
     sendMessage: message => messages.push(message), sendUserMessage: (text, options) => prompts.push({ text, options }),
@@ -1405,6 +1407,30 @@ test('a session that never asked for AgentRun gets no entry', async () => {
   const app = await harness({ withModel: false });
   try {
     await prompted(app, 'Rename the helper.'); await ended(app, 'Done.');
+    assert.equal(stamps(app).length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('a model that loads the author skill itself, by reading its SKILL.md, is stamped when it answers with no run', async () => {
+  const app = await harness({ withModel: false });
+  const read = path => app.events.get('tool_call')?.({ type: 'tool_call', toolCallId: 'r1', toolName: 'read', input: { path } }, app.ctx);
+  try {
+    assert.ok(app.events.get('tool_call'), 'the extension sees the reads of a turn');
+    await prompted(app, 'Is the answer supported by the files?');
+    assert.equal(await read(AUTHOR_SKILL_FILE), undefined, 'the read itself is not blocked or changed');
+    await ended(app, 'Supported, High confidence.');
+    assert.equal(stamps(app).length, 1);
+    assert.match(stamps(app)[0].content, /no workflow ran/i);
+  } finally { await app.shutdown(); }
+});
+
+test('reading any other file does not engage the session', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await prompted(app, 'Is the answer supported by the files?');
+    await app.events.get('tool_call')?.({ type: 'tool_call', toolCallId: 'r1', toolName: 'read', input: { path: '/home/user/.pi/npm/node_modules/@parcha/agentrun-pi/dist/skills/author/references/language.md' } }, app.ctx);
+    await app.events.get('tool_call')?.({ type: 'tool_call', toolCallId: 'r2', toolName: 'grep', input: { path: AUTHOR_SKILL_FILE, pattern: 'x' } }, app.ctx);
+    await ended(app, 'Done.');
     assert.equal(stamps(app).length, 0);
   } finally { await app.shutdown(); }
 });
