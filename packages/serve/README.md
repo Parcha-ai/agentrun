@@ -178,7 +178,9 @@ data directory, with this server's own views beside it:
   current definition, keeps the agent's name and description, and sends `PUT /v2/agents/{id}/definition` with
   `If-Match` set to the revision it started from, which commits a revision and makes it current (or answers 412 when
   another revision came first). **Make current** on an older revision sends `POST /v2/agents/{id}/current`.
-- **Start a run**: an input (for a workflow revision, a JSON object its input schema takes), on the current revision or
+- **Start a run**: when the current revision names a tool capabilities marks unavailable, the agent's card says which
+  and what it needs (`browser needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID`); the form stays, since another
+  revision may run. An input (for a workflow revision, a JSON object its input schema takes), on the current revision or
   another one, sent to `POST /v2/agents/{id}/runs` with that revision's id, so a revision made current elsewhere in the
   meantime does not change what runs. A run the page opens while it is not final follows
   `GET /v2/runs/{id}/timeline` with a long poll; while it waits on `ask_person`, an answer box sends

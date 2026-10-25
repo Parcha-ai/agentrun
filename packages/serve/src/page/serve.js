@@ -224,9 +224,26 @@
       return el("div", { class: "run-form" }, el("h3", null, "Start a run"), field("Input", input, "For a workflow revision, a JSON object its input schema takes."), el("div", { class: "actions" }, field("Revision", pick), start), out);
     }
 
+    /** What keeps the current revision from running here: each tool it names that capabilities marks unavailable, with
+     *  the variables that tool needs. Start run stays, since another revision may run and the 409 says why. */
+    function cantRun(current) {
+      var box = el("div");
+      var named = (current && current.body && current.body.tools) || [];
+      if (!named.length) return box;
+      v2("GET", "capabilities").then(
+        function (caps) {
+          var why = ((caps && caps.tools) || []).filter(function (tool) { return tool && tool.available === false && named.indexOf(tool.name) >= 0; }).map(function (tool) { return tool.name + " needs " + (tool.missing || []).join(" and "); });
+          if (why.length) box.appendChild(el("p", { class: "cant-run" }, "This server can't run this agent's current revision: " + why.join("; ") + "."));
+        },
+        function () {}
+      );
+      return box;
+    }
+
     function agentActions(agent, revisions) {
       return [
         el("div", { class: "actions" }, el("a", { class: "btn quiet", href: "#/agents/" + enc(agent.id) + "/edit" }, revisions.length ? "Edit: commit a new revision" : "Write its first revision")),
+        cantRun(revisions.filter(function (r) { return r.current; })[0]),
         revisions.length ? runForm(agent, revisions) : el("p", { class: "none" }, "It has no revision to run yet."),
       ];
     }

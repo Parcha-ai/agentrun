@@ -226,7 +226,7 @@ test("an agent's page: Edit, a run form on its revisions, and Make current on ea
   all(heads[1]).find((el) => el.tagName === "BUTTON").click();
   await page.settle();
   assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/current", { revision: REV_A }]]);
-  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc", "api/runs?agent=calc"], "the page is read again, its comparison of revisions too");
+  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc", "v2/capabilities", "api/runs?agent=calc"], "the page is read again, with what this server can run and its comparison of revisions");
 });
 
 test("start a run: its input, on the revision the form shows picked (the current one unless another is), always named, POSTed to the agent's runs, a workflow's as a JSON object; then the run's page", async () => {
@@ -490,4 +490,31 @@ test("an empty store says what to do: make a new agent, or seed the showcase wit
   await full.page.settle();
   assert.equal(all(full.page.app).filter((el) => classOf(el) === "empty-store").length, 0);
   assert.equal(all(full.page.app).filter((el) => classOf(el) === "agent-tile").length, 2);
+});
+
+test("an agent whose current revision names a tool this server cannot bind says so above the run form, naming the variables it needs; Start run stays", async () => {
+  const browserRev = { ...revision(REV_B, true, "Reads the bills"), body: { instructions: "Fetch the bills.", tools: ["read", "browser", "vault"], skills: {} } };
+  const page = { agent: AGENT_PAGE.agent, revisions: [browserRev, revision(REV_A, false, "Files only")] };
+  const capabilities = {
+    ...CAPABILITIES,
+    tools: [
+      ...CAPABILITIES.tools,
+      { name: "browser", summary: "", nodes: true, available: false, missing: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"] },
+      { name: "vault", summary: "", nodes: false, available: false, missing: ["VAULT_KEY"] },
+      { name: "fetch_page", summary: "", nodes: true, available: false, missing: ["UNUSED_KEY"] },
+    ],
+  };
+  const { page: shown, api } = open("#/agents/calc", { "api/agents/calc": page, "api/runs?agent=calc": [], "v2/capabilities": capabilities });
+  await shown.settle();
+  assert.ok(api.calls.some((c) => c.path === "v2/capabilities"));
+  const card = all(shown.app).find((el) => classOf(el) === "card agent");
+  const notice = all(card).find((el) => classOf(el) === "cant-run");
+  assert.equal(notice.textContent, "This server can't run this agent's current revision: browser needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID; vault needs VAULT_KEY.");
+  const order = all(card).filter((el) => ["cant-run", "run-form"].includes(classOf(el))).map(classOf);
+  assert.deepEqual(order, ["cant-run", "run-form"], "above the run form");
+  assert.equal(buttonNamed(shown, "Start run").disabled, undefined, "Start run stays: another revision may run, and the 409 still explains");
+
+  const runnable = open("#/agents/calc", { "api/agents/calc": { ...page, revisions: [revision(REV_B, true, "Files only")] }, "api/runs?agent=calc": [], "v2/capabilities": capabilities });
+  await runnable.page.settle();
+  assert.equal(all(runnable.page.app).find((el) => classOf(el) === "cant-run")?.textContent ?? "", "", "a revision this server can run says nothing");
 });

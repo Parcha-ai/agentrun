@@ -32,6 +32,7 @@ input[type="checkbox"]:checked{background:var(--accent);border-color:var(--accen
 .agent-form h1{margin-bottom:16px}
 .agent-form .lede{margin:-8px 0 18px}
 .actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:16px 0 0}
+.cant-run{margin:16px 0 0;padding:8px 14px;border:1px solid var(--accent);background:var(--accent-soft);font-size:13.5px;overflow-wrap:anywhere}
 .run-form{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
 .run-form .field{margin-bottom:12px}
 .run-form .actions{margin-top:0;align-items:flex-end}
