@@ -13,6 +13,19 @@ For a durable pi host that also runs a browser and vision, see [what a host supp
 
 Your application controls credentials, tools, budgets and delivery. An accepted model answer or completed workflow does not prove that an external action succeeded.
 
+## Browser dependency pins
+
+Applications using `@parcha/pi-browser` need Zod 4.6.6 or later for every installed copy, including Stagehand's dependency. Set the dependency and override in the application's root `package.json`:
+
+```json
+{
+  "dependencies": { "zod": "4.6.6" },
+  "overrides": { "zod": "$zod" }
+}
+```
+
+Merge these entries with the application's other dependencies and overrides, then reinstall with npm 11. `npm ls zod --all` must show only patched versions. npm applies overrides from the application root; a library's own override does not control its consumers. The workspace's own install uses the same override. The package check's consumer does not: it audits what an application gets without one.
+
 ## Admit a workflow before running it
 
 Use `inspectWorkflow` to read structure and required capabilities without running authored code. `validateWorkflow` can execute JavaScript probes. Code nodes run with process privileges, so untrusted authors require isolation supplied by your application.
@@ -78,7 +91,9 @@ Every typed question (`judge`, `pick`, `sift`, `route`, an `ask` predicate, a `v
 
 To make decisions durable across a restart, also supply `recovery.decision(id)`. When it returns an `answered` receipt, its answers are used and the judge is not asked again: a resumed run decides what the interrupted run decided, including a loop's `until: ask` and a route whose branch had already started. Such a decision is not recorded again and its event carries `replayed: true`. Any other receipt, or none, means the request is asked. A receipt is evidence of what was decided, not of what was committed: the node's commit is still `recovery.commit`.
 
-A pi-durable host keeps a run's typed-question decisions as rows of the session document `agentrun.decisions`, from `@parcha/agentrun-pi/durable`. `createDecisionWriter({ open })` commits rows in the order they are recorded and opens the run's Session only when the first row needs it. `settled()` reports the first commit that failed and keeps the Session; `flush()` also commits any row recorded while it runs, releases every Session the writer opened, then reports the first failed commit (or, when none failed, a failed release). `readDecisions(read)` returns the rows in commit order from a Session or a Harness. A row (`DecisionRow`, version 1) is a stored format and does not change with the interpreter: the host fills it, including the request's size and metering, which the interpreter does not know.
+A pi-durable host keeps a run's typed-question decisions as rows of `agentrun.decisions`, from `@parcha/agentrun-pi/durable`: one keyed document per row, written once (a store that already holds the older single document, a `receipts` list, keeps writing that form to the end of its run, and a reader reads either). The recording of a run therefore grows with its questions, not with their square.
+
+A host that folds cost, or counts asks, from a recording's lines or a run's store itself (a spend cap, a dashboard, an audit) must read both forms of `agentrun.decisions` since this release: the single document (`value.receipts`, a list) and the keyed documents (a line with a `key`, whose `value` is one row; read the rows in key order, or from the store with `durableDecisions(file)`). A reader of the list alone finds no row in a keyed run, and a cost fold that does so counts nothing: a run past its cap looks like a run under it. A recording holds one form, never both, and `scripts/recording/validate.mjs` refuses a mix. `createDecisionWriter({ open })` commits rows in the order they are recorded and opens the run's Session only when the first row needs it; the session `open` returns needs `commit` and `snapshot` (a `Harness` has both), since the form the store holds is read from it. `settled()` reports the first commit that failed and keeps the Session; `flush()` also commits any row recorded while it runs, releases every Session the writer opened, then reports the first failed commit (or, when none failed, a failed release). `readDecisions(read)` returns the rows in commit order from a Session or a Harness. A row (`DecisionRow`, version 1) is a stored format and does not change with the interpreter: the host fills it, including the request's size and metering, which the interpreter does not know.
 
 Inside a workflow task (`createWorkflowExtension`), `decisionRecovery(invocation)` gives both hooks over the task's own commit, from the invocation the host's `run` is handed. `recordDecision` commits each receipt as a row, in the order receipts are recorded, and resolves once that row is durable; the task's state is untouched. `decision(id)` rebuilds the receipt from the last answered row this run recorded under `id`. A row it writes also carries the receipt's `decision_id`, its `request` position, its `state_sha256` and the run's key (`run_key`), so the row is the whole receipt again for that run. Every run in a Session shares the rows' document and a receipt's id does not name its run, so another run's row never answers, and neither does a row without these fields. Wire them in the host's `run`:
 
@@ -90,7 +105,7 @@ run: (invocation) => {
 },
 ```
 
-A run's store can be recorded for a viewer as durable lines (`agentrun.recording/1`): one line per document revision, conversation entry and task record, with the store's commit and the line's order inside it. A disk run's store admits one connection, so the recorder runs inside each of the run's processes: after the run is opened and before it resumes, write `snapshotLines(storage, { at, context })` (every document as it stands, `at` the store's latest commit), then `recordCommits(harness, { from: snapshot, write })`, which writes each later commit's lines as pi adopts it. `from` carries the snapshot's generation and its node attempts' conversations into the recorder, so a node the run resumes keeps its path on the records of its conversation. `recordingLines(file)` reads a store no process holds; it sees only the revisions pi kept, since pi deletes a current-only document's older revisions when it writes a new base.
+A run's store can be recorded for a viewer as durable lines (`agentrun.recording/1`): one line per document revision, conversation record (`pi.conversation`: its id, fork parent and owner, no content), conversation entry and task record, with the store's commit and the line's order inside it. A disk run's store admits one connection, so the recorder runs inside each of the run's processes: after the run is opened and before it resumes, write `snapshotLines(storage, { at, context })` (every document as it stands, `at` the store's latest commit), then `recordCommits(harness, { from: snapshot, write })`, which writes each later commit's lines as pi adopts it. `from` carries the snapshot's generation and its node attempts' conversations into the recorder, so a node the run resumes keeps its path on the records of its conversation. `recordingLines(file)` reads a store no process holds; it sees only the revisions pi kept, since pi deletes a current-only document's older revisions when it writes a new base.
 
 ## Host policy around generative nodes
 

@@ -1,59 +1,99 @@
 name: Package checks
 
 on:
+  # A branch with a pull request runs on pull_request; a push run of the same commit was a second copy of every job.
   push:
+    branches: [main]
   pull_request:
   merge_group:
 
 permissions:
   contents: read
 
+# A new push to a pull request replaces its running checks. Merge-queue candidates and main keep every run: each head
+# needs its own verdict.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 40 # a run on main takes 17 to 24 min today (npm test 11 to 14, the examples 2 to 3); a runner at half speed takes more, and a job cut at the limit fails the check
+  test:
+    # The checks and suites `verify` used to run in one job, split into shards that run at once (scripts/ci-shard.mjs
+    # names them; `rest` takes every workspace no other shard names, `examples-<n>` every third example file). `checks`
+    # keeps the generated-file, package and source checks and the version-specific steps.
+    name: test (${{ matrix.node }}, ${{ matrix.shard }})
+    # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
+    # included, stay on GitHub's runners. The viewer shard stays too: its Chromes starved a 4-vCPU Blacksmith runner until it
+    # lost contact, and it is not the long pole.
+    runs-on: ${{ github.event_name == 'merge_group' && matrix.shard != 'viewer' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         # 22.19 = the supported floor, 22.23 = release toolchain, 24.21 = the active LTS line.
         node: ['22.19.0', '22.23.2', '24.21.0']
+        shard: [checks, transport, browser, durable, core, viewer, rest, examples-1, examples-2, examples-3]
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ matrix.shard == 'checks' && '0' || '1' }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: Changelog fragments
+        if: matrix.shard == 'checks'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: node scripts/changes.mjs --check --base "$BASE_SHA"
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - run: npm run typecheck
+      - if: matrix.shard == 'checks'
+        run: npm run typecheck
       - name: Demo setup prompts match their specs
+        if: matrix.shard == 'checks'
         run: node scripts/check-setup-prompts.mjs
-      - run: node scripts/generate-schema.mjs --check
-      - run: npm run export:source
-      - run: node scripts/check-generated.mjs
-      - run: npm test
-      - run: npm run test:release
-      - run: npm run test:examples
-      - run: npm run test:viewer
-      - run: node scripts/verify-packages.mjs
-      - if: matrix.node == '22.23.2'
+      - if: matrix.shard == 'checks'
+        run: node scripts/generate-schema.mjs --check
+      - if: matrix.shard == 'checks'
+        run: npm run export:source
+      - if: matrix.shard == 'checks'
+        run: node scripts/check-generated.mjs
+      - if: matrix.shard == 'checks'
+        run: node scripts/verify-packages.mjs
+      - if: matrix.shard == 'checks' && matrix.node == '22.23.2'
         run: npm run verify:source
-      - if: matrix.node == '22.19.0'
+      - if: matrix.shard == 'checks' && matrix.node == '22.19.0'
         run: node scripts/check-typescript-floor.mjs
+      - if: matrix.shard != 'checks'
+        run: node scripts/ci-shard.mjs ${{ matrix.shard }}
       - name: Retain package verification evidence
-        if: always()
+        if: always() && matrix.shard == 'checks'
         uses: actions/upload-artifact@v4
         with:
           name: package-verification-${{ matrix.node }}
           path: .release/
           include-hidden-files: true
           if-no-files-found: ignore
+
+  verify:
+    # The required checks keep their names: verify (<node>) passes when every test shard passed. It reads `needs`, not
+    # the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x) too.
+    name: verify (${{ matrix.node }})
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '22.23.2', '24.21.0']
+    steps:
+      - name: Every test shard passed
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success
 
   pi-durable-disk-pi-floor:
     # @parcha/pi-durable-disk's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its
@@ -69,6 +109,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
@@ -91,6 +132,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/agentrun-pi,@parcha/pi-durable-disk --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
@@ -118,6 +160,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: The clean consumer and the reference example at the leg's pi
@@ -151,6 +194,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: node scripts/pi-cross-version.mjs --from 1.1.0 --to 1.2.0 --npm "npx --yes npm@11.21.0"
@@ -168,6 +212,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-vision --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
@@ -188,6 +233,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install ffmpeg and poppler
         run: |
+          printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg poppler-utils
           ffmpeg -version | head -1
@@ -196,6 +242,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build -w @parcha/pi-vision
       - run: npm run test:binaries -w @parcha/pi-vision
@@ -213,6 +260,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: node scripts/pi-leg.mjs --pi 1.0.4 --scratch --only @parcha/pi-transport --npm "npx --yes npm@11.21.0" --out .release/pi-leg.json
       - name: Retain the leg's resolved versions
@@ -235,6 +283,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run lint -w @parcha/pi-transport
       - run: docker pull debian:bookworm-slim
@@ -269,6 +318,7 @@ jobs:
         # Ubuntu 24.04 runners confine unprivileged user namespaces with AppArmor, so Chrome for Testing (unpackaged, no profile)
         # exits with SIGABRT at startup. This is the runner's documented switch; the sandbox stays on for the tests.
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npm run test:chrome -w @parcha/pi-browser
@@ -284,13 +334,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, agentrun-harness]
+        spec: [agentrun-dsl, agentrun-jev, agentrun-pi, pi-durable-disk, pi-browser, pi-vision, pi-transport, pi-transport-docker, pi-durable-agent, pi-git-remote, pi-agent-learn, agentrun-harness]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Run the stranger test
@@ -313,6 +364,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: The local run's tests
@@ -329,21 +381,28 @@ jobs:
         run: node scripts/stranger.mjs pi-durable-disk
 
   stranger-readme-line:
-    # The README's own install line, as a stranger types it, against what the registry serves now (--readme-line):
-    # `packed` puts this tree's package in the line, so it says whether the next release installs; `registry` runs the line
-    # as written, so it says whether the published package installs today. Unlike `stranger`, the peers are not pinned to
-    # the developed versions. A mode that is not `blocking` reports a failure as a warning on the run and passes, so a
-    # known failure does not turn every pull request red. Both are blocking: 0.1.0-beta.14, whose peer ranges accept pi
-    # below 1.4, installs with the README's own line as written (0.1.0-beta.13, below 1.3, did not once pi 1.3.0 shipped).
+    # A README's own install line (its spec's readmeInstall), as a stranger types it, against what the registry serves now
+    # (--readme-line): `packed` puts this tree's package in the line, so it says whether the next release installs; `registry`
+    # runs the line as written, so it says whether the published package installs today. Unlike `stranger`, the peers are not
+    # pinned to the developed versions. A mode that is not `blocking` reports a failure as a warning on the run and passes, so
+    # a known failure does not turn every pull request red. pi-durable-disk's two are blocking: 0.1.0-beta.14, whose peer
+    # ranges accept pi below 1.4, installs with the README's own line as written (0.1.0-beta.13, below 1.3, did not once pi
+    # 1.3.0 shipped). pi-durable-agent runs `packed` only until a release publishes it: its line installs `@beta`, which the
+    # registry does not serve for it yet.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         include:
-          - mode: packed
+          - spec: pi-durable-disk
+            mode: packed
             blocking: true
-          - mode: registry
+          - spec: pi-durable-disk
+            mode: registry
+            blocking: true
+          - spec: pi-durable-agent
+            mode: packed
             blocking: true
     steps:
       - uses: actions/checkout@v4
@@ -351,23 +410,25 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Run the README's install line
         shell: bash
         env:
+          SPEC: ${{ matrix.spec }}
           MODE: ${{ matrix.mode }}
           BLOCKING: ${{ matrix.blocking }}
         run: |
           flags=(--readme-line)
           if [ "$MODE" = registry ]; then flags+=(--registry); fi
           out="$RUNNER_TEMP/readme-line.out"
-          if node scripts/stranger.mjs pi-durable-disk "${flags[@]}" > "$out" 2>&1; then cat "$out"; exit 0; fi
+          if node scripts/stranger.mjs "$SPEC" "${flags[@]}" > "$out" 2>&1; then cat "$out"; exit 0; fi
           cat "$out"
           # The first line that says why (npm's ERESOLVE, an assertion, the spec's verdict), else the last line.
           reason=$(grep -m1 -iE 'ERESOLVE|error|failed|not ok' "$out" || tail -n 1 "$out")
-          if [ "$BLOCKING" = true ]; then echo "::error title=pi-durable-disk README install line ($MODE)::${reason:-no output}"; exit 1; fi
-          echo "::warning title=pi-durable-disk README install line ($MODE, not blocking yet)::${reason:-no output}"
+          if [ "$BLOCKING" = true ]; then echo "::error title=$SPEC README install line ($MODE)::${reason:-no output}"; exit 1; fi
+          echo "::warning title=$SPEC README install line ($MODE, not blocking yet)::${reason:-no output}"
 
   receipts-spec:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.
@@ -446,6 +507,7 @@ jobs:
         with:
           node-version: '22.23.2'
           cache: npm
+      - run: npm install --global npm@11.21.0 --ignore-scripts
       - name: Build the TypeScript packages
         working-directory: .
         run: npm ci --ignore-scripts && npm run build

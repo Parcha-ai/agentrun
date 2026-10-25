@@ -5,7 +5,10 @@ const [rec, run] = process.argv.slice(2);
 const L = fs.readFileSync(`${rec}/events.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const spent = fs.readFileSync(`${run}/judge-spent.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 const requests = spent.reduce((a, r) => a + r.requests, 0), tokens = spent.reduce((a, r) => a + r.tokens, 0);
-const hashes = new Set(); for (const l of L.filter((l) => l.kind === 'agentrun.decisions')) for (const r of l.data.value.receipts || []) hashes.add(r.request_sha256);
+// `agentrun.decisions` is one single document (a `receipts` list) or one keyed document per row (the value is the row): read both; a recording that holds decision lines and no receipt is a reader that does not know the form, never zero.
+const hashes = new Set(); const decisionLines = L.filter((l) => l.kind === 'agentrun.decisions');
+for (const l of decisionLines) for (const r of Array.isArray(l.data.value?.receipts) ? l.data.value.receipts : l.data.key !== undefined ? [l.data.value] : []) hashes.add(r.request_sha256);
+if (decisionLines.length > 0 && hashes.size === 0) throw new Error('agentrun.decisions lines hold no receipt this reader understands');
 const answered = {}; for (const l of L.filter((l) => l.kind === 'judge.answered')) answered[l.gen] = (answered[l.gen] || 0) + 1;
 const led = fs.readFileSync(`${run}/ledger.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l)); const handled = {}; for (const r of led) if (r.kind === 'tool') handled[r.name] = (handled[r.name] || 0) + 1;
 // The ledger has one row for each call the host handled (a send that was retried counts once); the effects' own records say how each send ended, so a repeated send shows there.

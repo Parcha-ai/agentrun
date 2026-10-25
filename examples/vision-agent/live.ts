@@ -20,25 +20,27 @@ import { falTranscriber } from '@parcha/pi-vision/transcribers';
 import type { LiveParts } from '@parcha/agentrun-harness';
 import spec from './demo.json' with { type: 'json' };
 
-export type PublicModel = { provider: string; modelId: string };
-export const publicName = (model: PublicModel) => `${model.provider}/${model.modelId}`;
+type PublicModel = { provider: string; modelId: string };
+type Named = { lead?: string; eyes?: string };
+const publicName = (model: PublicModel) => `${model.provider}/${model.modelId}`;
 
 /** Each provider's key, its lead and eyes when it is the only one a run has, and whether its eyes take video. */
-export const PROVIDERS: Record<string, { make: () => Provider; key: string; lead: string; eyes: string; video: boolean }> = {
+const PROVIDERS: Record<string, { make: () => Provider; key: string; lead: string; eyes: string; video: boolean }> = {
   openai: { make: openaiProvider as () => Provider, key: 'OPENAI_API_KEY', lead: 'gpt-6-luna', eyes: 'gpt-6-sol', video: false },
   google: { make: googleProvider as () => Provider, key: 'GEMINI_API_KEY', lead: 'gemini-3.8-flash', eyes: 'gemini-3.8-flash', video: true },
   anthropic: { make: anthropicProvider as () => Provider, key: 'ANTHROPIC_API_KEY', lead: 'claude-haiku-5-5', eyes: 'claude-haiku-5-5', video: false },
 };
 const byName = (name: string): PublicModel => { const [provider, ...id] = name.split('/'); return { provider: provider!, modelId: id.join('/') }; };
 /** The lead and the eyes by default: one value each in demo.json (`models.lead.default`, `models.eyes.default`). */
-export const LEAD: PublicModel = byName(spec.models.lead.default);
-export const EYES: PublicModel = byName(spec.models.eyes.default);
+const LEAD: PublicModel = byName(spec.models.lead.default);
+const EYES: PublicModel = byName(spec.models.eyes.default);
 /** Jev's price as TypeSafe lists it, per million input tokens. */
 const JEV_PRICE = { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 };
 
 /** No model key and no gateway: the one failure of `chooseModels` that is a missing key, told apart from a model named wrongly. */
 class NoModelKey extends Error {}
-const NO_MODEL_KEY = `a model key (${Object.values(PROVIDERS).map((each) => each.key).join(', ')}) or a gateway (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY)`;
+const PROVIDER_KEYS = Object.values(PROVIDERS).map((each) => each.key).join(', ');
+const KEY_OR_GATEWAY = `a model key (${PROVIDER_KEYS}) or a gateway (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY)`;
 
 const parse = (name: string): PublicModel => {
   const [provider, ...id] = name.split('/');
@@ -48,7 +50,7 @@ const parse = (name: string): PublicModel => {
 
 /** The lead and the eyes: those named, else the defaults when a gateway serves them or their keys are set, else the
  *  defaults of the providers whose keys are set (the eyes preferring Google's, which take video). */
-export function chooseModels(env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): { lead: PublicModel; eyes: PublicModel } {
+function chooseModels(env: NodeJS.ProcessEnv, named: Named = {}): { lead: PublicModel; eyes: PublicModel } {
   return { lead: chooseModel(env, 'lead', named.lead), eyes: chooseModel(env, 'eyes', named.eyes) };
 }
 
@@ -60,7 +62,7 @@ function chooseModel(env: NodeJS.ProcessEnv, role: 'lead' | 'eyes', name: string
   const fallback = role === 'lead' ? LEAD : EYES;
   if (has(fallback.provider)) return fallback;
   const provider = (role === 'lead' ? ['openai', 'anthropic', 'google'] : ['google', 'openai', 'anthropic']).find(has);
-  if (!provider) throw new NoModelKey(`--live needs ${NO_MODEL_KEY}. SETUP-PROMPT.md says where to get one.`);
+  if (!provider) throw new NoModelKey(`--live needs ${KEY_OR_GATEWAY}. SETUP-PROMPT.md says where to get one.`);
   return { provider, modelId: PROVIDERS[provider]![role] };
 }
 
@@ -102,7 +104,7 @@ const gatewayRoot = (env: NodeJS.ProcessEnv) => env.VIDEO_MODEL_BASE_URL!.replac
 
 /** Scribe v2 on fal: fal's own queue with FAL_KEY, else the gateway's pass-through with its key as a bearer token; none
  *  without either, and a question that needs no speech runs without it. */
-export function transcriberOf(env: NodeJS.ProcessEnv) {
+function transcriberOf(env: NodeJS.ProcessEnv) {
   if (env.FAL_KEY) return falTranscriber({ apiKey: () => env.FAL_KEY });
   if (env.VIDEO_MODEL_BASE_URL && env.VIDEO_MODEL_API_KEY) return falTranscriber({ apiKey: () => env.VIDEO_MODEL_API_KEY, queueUrl: `${gatewayRoot(env)}/fal-queue`, auth: 'bearer' });
   return undefined;
@@ -120,7 +122,7 @@ export function jevOptionsOf(env: NodeJS.ProcessEnv) {
 }
 
 /** The lead and the eyes the flags name: `--model` alone names the lead, `--provider` with a bare id makes it provider/id. */
-export function namedModels(models: { provider?: string; model?: string; eyesModel?: string }): { lead?: string; eyes?: string } {
+export function namedModels(models: { provider?: string; model?: string; eyesModel?: string }): Named {
   const lead = models.model && models.provider && !models.model.includes('/') ? `${models.provider}/${models.model}` : models.model;
   return { ...(lead ? { lead } : {}), ...(models.eyesModel ? { eyes: models.eyesModel } : {}) };
 }
@@ -129,7 +131,7 @@ export function namedModels(models: { provider?: string; model?: string; eyesMod
  *  serves the lead, the eyes and Jev under VIDEO_MODEL_API_KEY, so it is the only key then, TYPESAFE_API_KEY being Jev's
  *  own when given; without one, Jev needs TYPESAFE_API_KEY and each provider the run uses needs its own key. A model named
  *  in a way that is not provider/id is not a missing key: it throws. */
-export function missingKeys(env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): string[] {
+export function missingKeys(env: NodeJS.ProcessEnv, named: Named = {}): string[] {
   const missing: string[] = [];
   if (env.VIDEO_MODEL_BASE_URL) {
     chooseModels(env, named);
@@ -149,13 +151,13 @@ export function missingKeys(env: NodeJS.ProcessEnv, named: { lead?: string; eyes
     }
   }
   for (const [provider, roles] of uses) if (!env[PROVIDERS[provider]!.key]) missing.push(`${PROVIDERS[provider]!.key} (${roles.join(' and ')})`);
-  if (unchosen.length === 2) missing.push(NO_MODEL_KEY);
-  else if (unchosen.length) missing.push(`a key for the ${unchosen[0]} (${Object.values(PROVIDERS).map((each) => each.key).join(', ')}) or a gateway (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY)`);
+  if (unchosen.length === 2) missing.push(KEY_OR_GATEWAY);
+  else if (unchosen.length) missing.push(`a key for the ${unchosen[0]} (${PROVIDER_KEYS}) or a gateway (VIDEO_MODEL_BASE_URL and VIDEO_MODEL_API_KEY)`);
   return missing;
 }
 
 /** The error a live run that lacks keys stops with, naming each; none when it has what it needs. */
-export const keysError = (env: NodeJS.ProcessEnv, named: { lead?: string; eyes?: string } = {}): Error | undefined => {
+const keysError = (env: NodeJS.ProcessEnv, named: Named = {}): Error | undefined => {
   const missing = missingKeys(env, named);
   return missing.length ? new Error(`--live is missing ${missing.join('; ')}. SETUP-PROMPT.md says where to get ${missing.length === 1 ? 'it' : 'them'}.`) : undefined;
 };

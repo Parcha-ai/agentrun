@@ -56,7 +56,8 @@ machine. A Cloudflare Durable Object gives it both. This package gives it both o
   which cleans a dead mount), `setpriv` (util-linux) and `sudo`, near the disk's region: a commit is one round trip to the
   region (3 to 6 ms p50 from a VM next to it; [where the figures come from](#the-failure-table)).
 - Node 22.19 or later, to run the package and its unit tests.
-- The [`archil` client](https://docs.archil.com/mounting/linux) 0.8.40 or later (0.8.42 tested):
+- The [`archil` client](https://docs.archil.com/mounting/linux) 0.10.0 or later, with the operating system CA bundle
+  installed (`ca-certificates` on Debian/Ubuntu):
   `curl -s https://archil.com/install | sh`.
 - Root for the mounts: every `archil` verb needs it on client 0.8.42. The package reaches root only through
   `sudo -n` of `bin/archil-scoped` (below), so the instance and the agent's tools run unprivileged.
@@ -228,6 +229,18 @@ The supervisor passes the app on (`--app MODULE`, made absolute), other flags fo
 and the instance's environment as `--env KEY=VALUE`. The API key is read from the environment variable named by
 `--api-key-env` (default `ARCHIL_API_KEY`) by the supervisor commands only; `run` never needs it.
 
+A duration flag takes a number and its unit: `ms`, `s`, `m` or `h`, decimals allowed (`500ms`, `30s`, `1.5m`, `1h`). A
+bare number is refused with exit 2 and a hint (`not a duration: "90": give a unit, e.g. 90s or 90ms`), so `90` is never
+silently 90 milliseconds. Every duration flag of every command is checked before the command acts. Two exceptions:
+- Flags named `-ms` (`--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`) keep bare milliseconds; their name
+  carries the unit, and units are still accepted.
+- A bare `0` turns a feature off where 0 means off:
+  - `--park-threshold 0`: no parking.
+  - `--start-grace 0`: no start grace, and so no backoff.
+  - `--start-backoff-max 0`: no backoff; the grace stays at `--start-grace`.
+
+  Anywhere else, `0` takes a unit (`0s`) and behaves as before.
+
 An instance's exit code tells the host's process supervisor what to do:
 
 | Exit | Meaning | Restarted? |
@@ -301,8 +314,9 @@ throws `KILL_FAILED`.
 
 `localHost()` runs instances on this machine as systemd transient units with `KillMode=control-group`, so stopping or
 restarting the unit kills every command the instance started, pi's detached ones included. The unit restarts on failure,
-except after exit 65, 70, 75 or 76. `localHost({ mode: "child" })` runs a detached child process instead, for development,
-without that guarantee.
+except after exit 65, 70, 75 or 76; `restart: false` (`supervise --no-restart`) turns that off, so an instance that exits
+stays down until the supervisor's next pass. `localHost({ mode: "child" })` runs a detached child process instead, for
+development, without that guarantee.
 
 `daytonaHost({ client, snapshot, ... })` runs each instance in a Daytona sandbox of its own (library only: `supervise`
 starts local units, so pass the driver to `ensureRunning`). Its `box(handle)` is that sandbox's receipt: its size
@@ -523,6 +537,10 @@ and a takeover whose start was slowed 5 s before its first `run.json` write star
   boundary is the disk (Archil's own advice): give each tenant its own disk.
 - **The API key stays with the supervisor.** Hosts and instances never hold it, and the local driver never copies its own
   environment into a unit.
+- **The instance's environment is never on a command line.** `localHost`'s `env` and a start's own (`StartAttempt.env`) reach
+  the unit through a root-only file (`EnvironmentFile=`, mode 0600, beside the mount token's), not through `systemd-run
+  --setenv`: `sudo` logs a command line, and a unit's `Environment=` property is readable by every local user. The file is
+  removed when the unit stops or ends for good. A value with a newline is refused rather than mangled.
 - **No privilege for the agent.** The instance, pi's tools and the agent's commands run as an unprivileged user. Every
   command starts under `setpriv --no-new-privs` (on Linux; macOS has no equivalent, see [On macOS](#on-macos)), so a
   command cannot use the run user's sudo rule (sudo refuses: "The no new privileges flag is set"). An app that turns
@@ -763,6 +781,35 @@ SQLite (`sqlite: true`), its `-wal` must also be absent or empty, so its writer 
 held path is `CLAIM_HELD`, retryable as above, and a WAL with content is `NOT_RELEASED`. A file that changed during every
 one of `attempts` reads (default 3) is `CLAIM_HELD`. Open the bytes as a local file, read-only (`?immutable=1`).
 
+### Reading a run's own files
+
+`readRunFile(control, ref, path, { signal })` returns the bytes of `runs/<id>/<path>`, or `null` when there is no such
+file yet. `listRunFiles(control, ref, dir, { signal })` returns the names directly under `runs/<id>/<dir>/` (`""` for the
+run's root), sorted: files and directories alike, names only, never a claim about what each one is. `control` is
+`archilControl(...)`, or anything with its `getObject`, `headObject` and `listObjects`.
+
+- **Read-only.** Both use S3 GET, HEAD and LIST only. They never mount, never write, and never take or wait on the
+  claim, so they read a run another host holds. A read sees what the holder has synced (its last barrier). A file the
+  holder writes whole (a temp file, then a link or a rename) is never seen half-written.
+- **Polling is yours.** `null` means "not written yet", and the caller bounds its own wait (`signal`, its own retries).
+  An aborted `signal` ends the wait at once and makes no further request.
+- **Refusals** (`RunFileError`). Messages name the path, never what a file holds.
+  - `INVALID_PATH`: an empty path, an absolute one, a `.` or `..` segment, a character outside `[A-Za-z0-9._-]` in a
+    segment, or a path under `.archil/`. Checked before any request, so nothing resolves outside `runs/<id>/`.
+  - `RUN_MISSING`: no such run on the disk.
+  - `NOT_A_FILE`: a directory, or a symlink.
+  - `CONTROL_API_FAILED`: any other failure of the control, with its cause.
+- **The same reads through a place.** A place offers them for its own run: `place.readRunFile(path)` and
+  `place.listRunFiles(dir)`, both optional members of `Place`, with the same answers. `archilPlace` reads over its
+  control and run ref (when the control can list, as `archilControl`'s can). `localPlace` reads its run directory on this
+  machine, with the same path rules. There, a symlink anywhere on the way is `NOT_A_FILE`, never followed, so nothing
+  outside the run is read. A place never parses what it reads.
+- **`INVALID_PATH` names the fault only** (empty, absolute, an empty, `.` or `..` segment, an unsafe character at index
+  N, under `.archil/`), never the path it was given.
+- **Symlinks.** Archil's S3 API lists a symlink as an ordinary zero-byte key, so a listing can't tell it from an empty
+  file. Its HEAD and GET answer 501 NotImplemented, and S3 never follows a link. So `readRunFile` decides `NOT_A_FILE` on
+  that 501, never from a listing. A real empty file reads as an empty array. Measured on archil 0.8.42.
+
 ### Places: where a run's instance starts and ends
 
 A place is where one run lives and how its instance starts, ends and comes back, for a supervisor of your own. Each factory takes its options and returns `(ctx) => Place`; `ctx.paths` is the run's
@@ -788,6 +835,46 @@ id and directory as the supervisor computed them.
     has the provider, the kind, `from` and `to` (null while it lives). It also has the published list price per second
     (`usdPerSecond`), the page that price was read from (`source`) and the ISO date it was read (`priced`). A box with
     no price has none of those three, never a price of 0. No field holds the provider's id of the box.
+  - When its driver makes boxes and names their provider (`HostDriver.provider`; `daytonaHost` names `daytona`), and
+    the place can read the label back (its control lists, so it has `readRunFile` and `listRunFiles`), each start puts
+    `HOST_BOX` in its order's environment, JSON `{ provider, key, run }`. `key` is the box's index in
+    `status().boxes`, and `run` is the order's `RUN_LABEL`. The runner claims that box's label first; without
+    `RUN_LABEL`, no `HOST_BOX`. A box's position is then its key, so a box the driver gives no receipt for fails
+    `status()` (`STATUS_FAILED`) instead of shifting the boxes after it. A box the place already started and its
+    driver adopts again (`adopted: true`, the same attempt started twice) keeps its key: one receipt, stopped once.
+    Only the driver can say an adopted handle is that box: `HostDriver.instanceOf(handle)` names the instance a
+    handle is for, the same for its fresh and its adopted handle (`dockerHost`: the daemon and the container's name;
+    `localHost`: the host, the boot and the unit or tag; `daytonaHost`: the sandbox id). A driver without it, a handle
+    it names no instance for, and every fresh handle are a new entry, so a box is never left untracked.
+  - `unheld(run, start)`, optional: a hook in each start's window while nobody holds the run. It runs after
+    ensureRunning's revoke and start mark and after the run's directories are made, before the driver starts
+    anything, once per start (a takeover's included). It needs `ensure.create` and a control that lists; without
+    them `archilPlace` throws `INVALID_ARGUMENT`.
+    - `start` is `{ attempt, box? }`. `box` is exactly the `HOST_BOX` that start carries, absent when the place hands
+      no label over.
+    - `run` holds the run's own files, `runs/<id>/` only, with the paths `readRunFile` takes: `read(path)`,
+      `list(dir)`, `signal` (aborted at the hook's bound, `unheldTimeoutMs`, default 30 s), and `put(path, text)`.
+    - `put` creates a file owned by the run user, mode 0644, after making each missing parent directory (the run
+      user's, 0755). A path that is already there is `EXISTS`, and nothing is written. It is a check, then a write, not
+      a conditional create (Archil's client has none). Two supervisors can be in one window at once, since the mount,
+      not the window, admits one of their instances, so a put is not exclusive between them: put names unique to the
+      start, and bind a shared name in the process that holds the run. `put` is for non-secret run files such as
+      labels; a secret never goes through it, since a put file is readable in the run.
+    - A put the server refuses because a delegation holds the run (409 `OperationAborted`), and any put after the
+      hook returned or overran, is `WINDOW_CLOSED`. Any other failure is `CONTROL_API_FAILED`. Both are `RunFileError`.
+      A put the hook starts and does not await still settles inside the window: the driver starts only once every
+      put has settled, within the hook's bound, so none is written or refused after the box starts.
+    - What the hook returns is added to that start's environment, which the instance can read, so plain values only.
+      A name the start already sets (`PATH`, `PDA_HOLDER`, `HOST_BOX`, or one in the order's environment), a name that
+      is not a variable name, a value that is not a string without NUL, or a key-shaped name fails the start with
+      `INVALID_ARGUMENT`, naming the variable and never its value. A name is key-shaped when one of its
+      `_`-separated segments, in any case, is `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or
+      `CREDENTIALS`.
+    - A start fails, and the driver starts no box, when any put was refused because the run is held (`WINDOW_CLOSED`,
+      even if the hook caught it), when the hook throws a `CONTROL_API_FAILED` (`CONTROL_API_FAILED`), or when it
+      throws anything else or overruns its bound (`UNHELD_FAILED`). The token is removed and the start mark goes back
+      to the previous start's. The caller sees ensureRunning's `HOST_START_FAILED`, with that `PlaceError` as its
+      `cause`, as with `DIRS_REFUSED`.
   - `recordHome` (when the control can list, as `archilControl`'s can): an attempt's runner records into
     `recordHome.dir(attempt)`, `<root>/record/<attempt>`, in the run's directory, so its delegation covers it and
     `deleteRunTree` removes it. `bringHome(into, { final })` reads that directory through the control (S3 list and get:

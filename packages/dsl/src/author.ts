@@ -65,7 +65,7 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 - The input contract: the run starts from the input object and nothing else. ${code("input.schemaId")}, when present, is enforced before the first node. A node may read only input keys and keys an earlier node wrote.
 - ${code("output.schemaId")} validates the final value; ${code("output.path")} selects it from state and must name an input key or a key an earlier node wrote.
 - State is one object. Each step writes its result under one key: its ${code("as")}, or, for an agent, decide, extract or code node without ${code("as")}, its label. A report writes ${code("report_markdown")}. A code node without ${code("as")} that returns an object merges that object's top-level fields instead.
-- Keys that begin with ${code("$")} are engine-owned: ${code("$host")} (host state), ${code("<as>$answers")} (raw judge answers and confidences) and ${code("<as>$verify")} (verifier results). Read them; never write one. No ${code("as")} may begin with ${code("$")}, and neither may the label of an agent, decide, extract or code node without ${code("as")}.
+- Keys that hold a ${code("$")} are engine-owned: ${code("$host")} (host state), ${code("<as>$answers")} (raw judge answers and confidences) and ${code("<as>$verify")} (verifier results). Read them; never write one. No ${code("as")} may hold a ${code("$")}, and neither may the label of an agent, decide, extract or code node without ${code("as")}.
 - ${code("{dot.path}")} placeholders are replaced from state in ${code("state")} maps (including ${code("verify.state")} and ${code("ask.state")}), call ${code("args")}, ${code("input")}, ${code("env")} and ${code("produces")}, a child workflow's ${code("input")}, and ${code("escalate.summary")}; ${code("pick")} and ${code("sift")} ${code("describe")} templates also see ${code("{item...}")}. A placeholder that is the whole string keeps its value's type. Every key a state map, call or child input interpolates must be produced upstream. ${code("instructions")}, ${code("code")} and ${code("command")} are literal and never interpolated.
 
 ## Node kinds
@@ -181,7 +181,8 @@ export function authorContract(options: { host?: AuthorHostAddendum } = {}): str
 export interface CandidatePolicyOptions {
   /** Authoritative rubric text by section name. Every generative node must name every section. */
   rubricSections?: Record<string, string>;
-  /** Admits code, call and artifact nodes. */
+  /** Admits code, call and artifact nodes. A candidate's code is syntax-checked before acceptance and run only after
+   *  its host accepts it; in-process code is not a sandbox (see the README's `code` node note). */
   allowExecutableCandidates?: boolean;
   /** Direct tool calls admitted without executable authorization. */
   allowedEffectTools?: readonly string[];
@@ -256,6 +257,8 @@ export function applyHostOutputTypes(candidate: Workflow, host: AuthorHostAddend
     if (node.node === "parallel") return { ...node, branches: (node.branches || []).map(visit) };
     if (node.node === "map" || node.node === "loop") return { ...node, body: visit(node.body) };
     if (node.node === "route") return { ...node, branches: Object.fromEntries(Object.entries(node.branches || {}).map(([name, branch]) => [name, { ...branch, body: visit(branch?.body) }])) };
+    // Unlike desugarWorkflow, this does not descend into a child workflow: a child may not hold an artifact node
+    // (validateWorkflow rejects it, see containsReportNode), so there is nothing for the prose-type rewrite to reach there.
     return node;
   };
   return { ...candidate, root: visit(candidate.root) };
@@ -270,6 +273,8 @@ export interface AuthorWorkflowOptions {
   /** Keys available to a candidate without an input schema; defaults to the host's initial state keys. */
   inputKeys?: string[];
   rubricSections?: Record<string, string>;
+  /** Admits code, call and artifact nodes. A candidate's code is syntax-checked before acceptance and run only after
+   *  its host accepts it; in-process code is not a sandbox (see the README's `code` node note). */
   allowExecutableCandidates?: boolean;
   maxCandidates?: number;
   /** Host acceptance over a structurally valid candidate, in the interpreter's view (`applyHostOutputTypes`):
@@ -319,7 +324,9 @@ export async function authorWorkflow(options: AuthorWorkflowOptions): Promise<Au
         const errors = candidatePolicyErrors(value, options);
         if (!errors.length) {
           try {
-            const verdict = validateWorkflow(applyHostOutputTypes(value as Workflow, options.host), { inputKeys });
+            // executeCode: false — a candidate's code is syntax-checked here, never run, so a candidate runs nothing
+            // until its host accepts it. Runs and dry runs after acceptance still probe the code.
+            const verdict = validateWorkflow(applyHostOutputTypes(value as Workflow, options.host), { inputKeys, executeCode: false });
             if (!verdict.ok) errors.push(...verdict.errors);
           } catch (error) { errors.push(`Invalid workflow: ${error instanceof Error ? error.message : String(error)}`); }
         }

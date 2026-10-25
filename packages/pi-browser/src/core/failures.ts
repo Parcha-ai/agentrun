@@ -17,16 +17,30 @@ export type BrowserFailure = {
   message: string;
   /** Provider or page text, at most 2,000 characters; redacted before it reaches the model. */
   detail?: string;
+  /** The one step that gets past this failure, when there is one. */
+  next?: Next;
+  /** The receipt filed for the page that failed (a wall a browser page showed), or null when none was filed. */
+  evidence?: string | null;
 };
+
+export type Next = { action: "drive_page" | "other_source" | "browser_relaunch"; note: string };
 
 export const browserFailure = (code: FailureCode, message: string, options: { retryable?: boolean; effect?: BrowserFailure["effect"]; detail?: string } = {}): BrowserFailure =>
   ({ ok: false, code, retryable: options.retryable ?? false, effect: options.effect ?? "none", message, ...(options.detail === undefined ? {} : { detail: options.detail }) });
 
-/** `timedOut`: the call ran to the driver's batch deadline, which Stagehand reports as a plain Error. */
-/** `action`: what an effectful call ran, named when it threw; "Your browser code" when unset. */
-/** `redact` removes the run's registered values from the error text; it runs over the whole text before any cut below, so no fragment of a value survives a cut point. */
-export type FailureFacts = { sessionEnded?: boolean; aborted?: boolean; timedOut?: boolean; action?: string; redact?: (text: string) => string };
+export type FailureFacts = {
+  sessionEnded?: boolean;
+  aborted?: boolean;
+  /** The call ran to the driver's batch deadline, which Stagehand reports as a plain Error. */
+  timedOut?: boolean;
+  /** What an effectful call ran, named when it threw; "Your browser code" when unset. */
+  action?: string;
+  /** Removes the run's registered values from the error text; it runs over the whole text before any cut below, so no fragment of a value survives a cut point. */
+  redact?: (text: string) => string;
+};
 
+/** The vendored facade's refusal texts (vendor/stagehand-facade/contract.ts), copied so the root entry does not load the facade; a test pins
+ *  them to the facade's own. */
 export const NO_HYDRATED_SNAPSHOT_ERROR = "No hydrated snapshot exists for the active page; call snapshot first.";
 export const NAVIGATED_SNAPSHOT_ERROR = "The active page navigated after its snapshot; call snapshot again.";
 export const STALE_SNAPSHOT_ID_ERROR = 'Snapshot ID "${id}" is stale or not actionable; call snapshot again.';
@@ -39,9 +53,12 @@ const isStaleSnapshot = (message: string): boolean => message === NO_HYDRATED_SN
  *  host rethrows it with the extension's JSON-RPC internal error (-32603) as the cause. The driver is gone, not the session. */
 export const STAGEHAND_LOOPBACK_DISCONNECTED = "Stagehand loopback CDP is disconnected";
 const JSONRPC_INTERNAL_ERROR = -32603;
+/** A property of a thrown value when it is an object: errors carry facts (a cause, a code, a status) no type declares. */
+const field = (value: unknown, key: string): unknown => (value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined);
+
 const lostLoopback = (error: unknown): boolean => {
-  const cause = (error as any)?.cause;
-  return !!cause && typeof cause === "object" && cause.code === JSONRPC_INTERNAL_ERROR && cause.message === STAGEHAND_LOOPBACK_DISCONNECTED;
+  const cause = field(error, "cause");
+  return field(cause, "code") === JSONRPC_INTERNAL_ERROR && field(cause, "message") === STAGEHAND_LOOPBACK_DISCONNECTED;
 };
 
 const UNREACHABLE_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "ECONNRESET", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
@@ -53,15 +70,16 @@ export type TransportFact = { status?: number; errorName?: string; causeCode?: s
 /** A throw site's `transport` record, else class name, `code` and `status` down the cause chain; first found wins. */
 export function transportFactOf(error: unknown): TransportFact {
   const out: TransportFact = {};
-  let current: any = error;
-  for (let depth = 0; current && typeof current === "object" && depth < 6; depth += 1, current = current.cause) {
-    const attached = current.transport;
+  const found = out as Record<string, unknown>;
+  for (let depth = 0, current = error; current && typeof current === "object" && depth < 6; depth += 1, current = field(current, "cause")) {
+    const attached = field(current, "transport");
     if (attached && typeof attached === "object") {
-      for (const [key, value] of Object.entries(attached as TransportFact)) if (value !== undefined && (out as any)[key] === undefined) (out as any)[key] = value;
+      for (const [key, value] of Object.entries(attached)) if (value !== undefined && found[key] === undefined) found[key] = value;
     }
-    if (out.errorName === undefined && typeof current.name === "string" && current.name !== "Error") out.errorName = current.name;
-    if (out.causeCode === undefined && typeof current.code === "string" && current.code) out.causeCode = current.code;
-    if (out.status === undefined && Number.isInteger(current.status)) out.status = current.status;
+    const name = field(current, "name"), code = field(current, "code"), status = field(current, "status");
+    if (out.errorName === undefined && typeof name === "string" && name !== "Error") out.errorName = name;
+    if (out.causeCode === undefined && typeof code === "string" && code) out.causeCode = code;
+    if (out.status === undefined && typeof status === "number" && Number.isInteger(status)) out.status = status;
   }
   return out;
 }
@@ -80,16 +98,17 @@ function withCause(own: string, cause: unknown): string {
 
 export function classifyBrowserError(error: unknown, effectful: boolean, facts: FailureFacts = {}): BrowserFailure {
   // Stagehand wraps SDK failures with { cause }: the HTTP status and the real message live on the cause.
-  const cause = (error as any)?.cause;
+  const cause = field(error, "cause");
   const own = error instanceof Error ? error.message : String(error);
   const message = (facts.redact ?? ((text: string) => text))(withCause(own, cause));
   const fact = transportFactOf(error);
-  const status = fact.status ?? Number((error as any)?.statusCode ?? cause?.statusCode ?? NaN);
+  const status = fact.status ?? Number(field(error, "statusCode") ?? field(cause, "statusCode") ?? NaN);
   const effect = effectful ? "possibly_effected" : "none";
   const detail = message.slice(0, 2_000);
   if (facts.aborted || fact.errorName === "AbortError") return browserFailure("aborted", "The browser call was cancelled by the run.", { effect, detail });
   if (status === 401) return browserFailure("auth", "The browser provider refused the credential (401). The browser plane is unavailable for this run; use fetch (executor tools).", { detail });
   if (status === 403) return browserFailure("auth", "The browser provider refused this session type (403). Retry without `verified`, or use web_fetch.", { detail });
+  if (status === 429) return browserFailure("rate_limited", `The browser provider is rate limiting this run (429). ${effectful ? "Your call may have acted: take a snapshot before you act again." : "Wait a moment, then try again."}`, { retryable: !effectful, effect, detail });
   if (facts.sessionEnded) return browserFailure("session_ended", "The browser session ended (the provider closed it at its timeout, or the browser died). Your next browser call opens a fresh session automatically; the old tabs, page state and cookies are gone — navigate to the page again with run, then continue from there.", { retryable: true, effect, detail });
   if (facts.timedOut || fact.errorName === "TimeoutError") return browserFailure("timeout", "The browser call timed out. Take a fresh snapshot before acting again; split a long `run` into smaller batches; if the page never loads, use web_fetch or another source.", { retryable: true, effect, detail });
   if (isStaleSnapshot(own)) return browserFailure("stale_snapshot", message, { retryable: true, detail });

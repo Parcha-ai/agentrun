@@ -1,0 +1,37 @@
+{
+  "description": "Validation rejects an as that holds a $ after its first character: a typed question's answers sidecar is engine-owned.",
+  "workflow": {
+    "v": 2,
+    "name": "bad-sidecar-as",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      },
+      "V": {
+        "type": "object",
+        "properties": {
+          "v": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "agent",
+      "label": "a",
+      "instructions": "Do it.",
+      "out": "V",
+      "as": "a$answers"
+    }
+  },
+  "input": {
+    "q": 1
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}

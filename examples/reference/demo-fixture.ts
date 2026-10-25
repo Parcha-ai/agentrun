@@ -3,6 +3,7 @@ import type { Message } from '@earendil-works/pi-ai';
 import { fauxAssistantMessage, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
 import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fakeEyes, fakeTranscriptionFetch } from '@parcha/pi-vision/testing';
 import { openAiTranscriber } from '@parcha/pi-vision/transcribers';
 import { demo } from '@parcha/agentrun-harness';
@@ -15,9 +16,11 @@ const spec = JSON.parse(readFileSync(process.env.DEMO_SPEC!, 'utf8'));
 const judgeCost = Number(process.env.DEMO_JUDGE_COST ?? 0);
 // Another: a slow step after the judge, so a cap can stop a run that is still going.
 const linger = Number(process.env.DEMO_LINGER_MS ?? 0);
-const lingering = linger ? {
+// Or a step held until a file exists, so a test can keep the run going until the supervisor has done something (the test writes the file).
+const lingerUntil = process.env.DEMO_LINGER_UNTIL;
+const lingering = linger || lingerUntil ? {
   job: { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Waited: { type: 'object' } }, root: { ...job.workflow.root, steps: [...(job.workflow.root as { steps: unknown[] }).steps.slice(0, 3), { node: 'call', label: 'linger', via: 'tool', tool: 'linger', args: {}, out: 'Waited', as: 'waited', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(3)] } } } as unknown as typeof job,
-  tools: { linger: async () => { await new Promise((resolve) => setTimeout(resolve, linger)); return {}; } },
+  tools: { linger: async () => { if (lingerUntil) while (!existsSync(lingerUntil)) await new Promise((resolve) => setTimeout(resolve, 20)); else await new Promise((resolve) => setTimeout(resolve, linger)); return {}; } },
 } : undefined;
 // And a tool that installs in a box of its own, as the audit's install does: it makes a box, runs a command in it, and when the box is lost makes another and runs it again.
 const boxTool = process.env.DEMO_BOX_TOOL ? {
@@ -37,6 +40,60 @@ const boxTool = process.env.DEMO_BOX_TOOL ? {
     throw new Error('the install failed twice');
   },
 } : undefined;
+// And tool-made boxes on two providers of the demo's own (`DEMO_PROVIDERS`): the harness taps them and hands them to the tools as `context.providers`. Two fake providers, `alpha` and `beta`, are directories of this
+// machine under the run's root. The tool runs two commands in an alpha box (role `worker`) and one in a beta box, ends the alpha box, and ends the beta box too unless `DEMO_PROVIDERS=leave`; it answers each box's label.
+const named = (name: string, provider: BoxProvider): BoxProvider => ({ name, create: (spec, context) => provider.create(spec, context), attach: (id, context) => provider.attach(id, context), list: (labels, context) => provider.list(labels, context) });
+const providers = process.env.DEMO_PROVIDERS ? async (context: { root: string }) => {
+  const { localBoxes } = await import('@parcha/pi-transport/box/local');
+  return { alpha: named('alpha', localBoxes({ root: join(context.root, 'alpha') })), beta: named('beta', localBoxes({ root: join(context.root, 'beta') })) };
+} : undefined;
+const providersTool = process.env.DEMO_PROVIDERS && process.env.DEMO_PROVIDERS !== 'ext' ? {
+  boxes2: async (_args: Record<string, unknown>, context?: ToolContext) => {
+    const { finish } = await import('@parcha/pi-transport');
+    const { BACKGROUND_CONTEXT: ctx } = await import('@earendil-works/chord/context');
+    const given = (context as { providers?: Record<string, BoxProvider> } | undefined)?.providers;
+    if (!given?.alpha || !given.beta) throw new Error('the harness handed the tool no providers');
+    const make = async (provider: BoxProvider, labels: Record<string, string>) => { const made = await provider.create({ maxLifetimeMs: 60_000, labels }, ctx); if (!made.ok) throw made.error; return made.value; };
+    const run = async (box: Awaited<ReturnType<typeof make>>, text: string) => { const ran = await box.exec([process.execPath, '-e', `console.log(${JSON.stringify(text)})`], undefined, ctx); if (!ran.ok) throw ran.error; const done = await finish(ran.value, undefined); if (!done.ok || done.value.exitCode !== 0) throw new Error('a command failed'); };
+    const alpha = await make(given.alpha, { role: 'worker' });
+    const beta = await make(given.beta, {});
+    await run(alpha, 'one');
+    await run(alpha, 'two');
+    await run(beta, 'three');
+    await alpha.destroy(ctx);
+    if (process.env.DEMO_PROVIDERS !== 'leave') await beta.destroy(ctx);
+    return { alpha: (alpha as { label?: string }).label ?? null, beta: (beta as { label?: string }).label ?? null };
+  },
+} : undefined;
+// And an agent's own tool on those providers (`DEMO_PROVIDERS=ext`): `providerExtensions` gets the tapped providers, and its `make_boxes` tool (an extension tool the lead calls before it submits,
+// not a call node) makes an alpha box (role `ext`), runs one command in it and ends it, answering the box's label. `DEMO_EXT_ALONE` passes the hook with no providers, which the entry refuses.
+const providerExtensions = process.env.DEMO_PROVIDERS === 'ext' || process.env.DEMO_EXT_ALONE ? async (context: { providers: Readonly<Record<string, unknown>> }) => {
+  const { defineExtension, defineTool } = await import('@earendil-works/pi-durable');
+  const { Type } = await import('typebox');
+  const alpha = context.providers.alpha as BoxProvider | undefined;
+  return [defineExtension({ name: 'fixture-boxes', tools: [defineTool({
+    name: 'make_boxes', description: 'Makes a box, runs one command in it and ends it.', parameters: Type.Object({}),
+    execute: async () => {
+      const { finish } = await import('@parcha/pi-transport');
+      const { BACKGROUND_CONTEXT: ctx } = await import('@earendil-works/chord/context');
+      if (!alpha) throw new Error('the extension was handed no alpha provider');
+      const made = await alpha.create({ maxLifetimeMs: 60_000, labels: { role: 'ext' } }, ctx);
+      if (!made.ok) throw made.error;
+      const ran = await made.value.exec([process.execPath, '-e', 'console.log("made")'], undefined, ctx);
+      if (ran.ok) await finish(ran.value, undefined);
+      await made.value.destroy(ctx);
+      const box = (made.value as { label?: string }).label ?? null;
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ box }) }], details: { box } };
+    },
+  })] })];
+} : undefined;
+const extLead = (messages: readonly Message[]) => {
+  const isExt = (message: Message) => (message.role === 'toolResult' && message.toolName === 'make_boxes') || (message.role === 'assistant' && message.content.some((block) => block.type === 'toolCall' && block.name === 'make_boxes'));
+  const next = baseLead(messages.filter((message) => !isExt(message)));
+  const submitting = next.content.some((block) => block.type === 'toolCall' && block.name === 'submit');
+  return submitting && !messages.some(isExt) ? fauxAssistantMessage([fauxToolCall('make_boxes', {})], { stopReason: 'toolUse' }) : next;
+};
+const withProviders = providersTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Boxed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'boxes2', via: 'tool', tool: 'boxes2', args: {}, out: 'Boxed', as: 'boxed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 const withBox = boxTool ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Installed: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'call', label: 'install', via: 'tool', tool: 'install', args: {}, out: 'Installed', as: 'installed', deadline_s: 60 }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
 // And `use_website`: the parent hands the registry check to a site, whose child agent opens the page, reads it and reports with the receipt's path; the parent cites it.
 const siteText = (message: { content: unknown }) => (typeof message.content === 'string' ? message.content : (message.content as Array<{ type: string; text?: string }>).map((block) => (block.type === 'text' ? block.text ?? '' : '')).join(''));
@@ -89,7 +146,7 @@ const withLeak = leaking ? { ...job, workflow: { ...job.workflow, schemas: { ...
 // And a fan-out (DEMO_FANOUT): six branches, four at a time, each a slow tool call. Crossings at the nodes' starts are often taken while another branch's call is in flight, so they are often not eligible kill points.
 const fanning = process.env.DEMO_FANOUT ? { slow: async () => { await new Promise((resolve) => setTimeout(resolve, 120)); return {}; } } : undefined;
 const withFan = fanning ? { ...job, workflow: { ...job.workflow, schemas: { ...job.workflow.schemas, Slow: { type: 'object' } }, root: { ...job.workflow.root, steps: [(job.workflow.root as { steps: unknown[] }).steps[0], { node: 'code', label: 'items', as: 'items', code: '(s) => [1, 2, 3, 4, 5, 6]' }, { node: 'map', label: 'fan', itemsPath: 'items', as: 'fanned', resultPath: 'row', maxConcurrency: 4, body: { node: 'call', label: 'slow', via: 'tool', tool: 'slow', args: {}, out: 'Slow', as: 'row', deadline_s: 30 } }, ...(job.workflow.root as { steps: unknown[] }).steps.slice(1)] } } } as unknown as typeof job : undefined;
-const scripted = { ...fakes, ...(fanning ? { tools: { ...fakes.tools, ...fanning } } : {}), ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_BASH ? { model: bashLead as typeof fakes.model } : process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
+const scripted = { ...fakes, ...(fanning ? { tools: { ...fakes.tools, ...fanning } } : {}), ...(leaking ? { tools: { ...fakes.tools, ...leaking } } : {}), ...(process.env.DEMO_SITES ? { model: sitesLead as typeof fakes.model } : {}), ...(process.env.DEMO_PROVIDERS === 'ext' ? { model: extLead as typeof fakes.model } : process.env.DEMO_BASH ? { model: bashLead as typeof fakes.model } : process.env.DEMO_CODE ? { model: codeLead as typeof fakes.model } : {}), ...(lingering ? { tools: { ...fakes.tools, ...lingering.tools } } : {}), ...(boxTool ? { tools: { ...fakes.tools, ...(lingering?.tools ?? {}), ...boxTool } } : {}), ...(providersTool ? { tools: { ...fakes.tools, ...providersTool } } : {}), ...(judgeCost ? { judge: async (request: Parameters<typeof fakes.judge>[0]) => ({ ...(await fakes.judge(request)), cost_usd: judgeCost }) } : {}) };
 // A test knob: DEMO_OPERATOR_HOLD names the operator's control file. The first process holds the lead's first model call (blocking, in the child) until the control file has appeared and been consumed, then waits for the supervisor's kill: the run cannot
 // finish before the operator's kill lands. A marker beside it lets the process that resumes after the kill go on.
 const holdFile = process.env.DEMO_OPERATOR_HOLD;
@@ -146,5 +203,72 @@ const reportFiles = (dir: string, base = '', out: Record<string, Uint8Array> = {
   return out;
 };
 const withReport = (chosen: typeof job): typeof job => (process.env.DEMO_REPORT ? { ...chosen, files: { ...chosen.files, ...reportFiles(process.env.DEMO_REPORT) } } : chosen);
-export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}) };
+// And a place of the demo's own beside its tools' boxes (`DEMO_WITH_PLACE`). `labelled` is the local place that also starts a home box (it reports one in `status()`), hands the run's
+// process its identity (`HOST_BOX`), which that process claims first, and lets the supervisor read the run's files (`readRunFile` and `listRunFiles`, disk's K8 shape, here over
+// its own root): the supervisor reads the label itself. `unclaimed` reports the home box and has the reads but never hands it over, so no process claims it. `unreadable` hands it
+// over but its reads fail; `slow` hands it over but its reads answer only after 40 s, past the supervisor's bound on a read. `reporting` reports the home box with no reads and no
+// handover; `handing` hands it over with no reads. `disk-local` is the disk package's own `localPlace` (each process `pi-durable-disk run --app` with the harness's
+// child app, on the run's directory), with its own run-file reads and no host box. Any other value is the local place, which has neither.
+// And a run process that prints a credential-shaped line to its stderr and dies at once (`DEMO_STDERR_SECRET`, in the run's process only): the final-read
+// refusal, which names a failed process's own text, must never carry it.
+if (process.env.DEMO_STDERR_SECRET && process.env.DEMO_ENTRY) { process.stderr.write(`the tool printed token ${process.env.DEMO_STDERR_SECRET}\nand a plain line after it\n`); process.exit(3); }
+
+const withPlace = process.env.DEMO_WITH_PLACE ? async (context: { paths: { id: string; root: string }; self: string; requestFile: (attempt: number) => string }) => {
+  const { localPlace } = await import('@parcha/agentrun-harness');
+  const { readFile, readdir } = await import('node:fs/promises');
+  const inner = localPlace({ self: context.self, paths: context.paths as never, requestFile: context.requestFile });
+  const mode = process.env.DEMO_WITH_PLACE;
+  if (mode === 'disk-local') {
+    const { localPlace: diskLocalPlace } = await import('@parcha/pi-durable-disk');
+    return diskLocalPlace({ app: fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app')) })({ ...context, paths: context.paths as never });
+  }
+  const from = new Date().toISOString();
+  const status = async () => ({ boxes: [{ provider: 'home', kind: 'host', from, to: null }] });
+  if (mode === 'reporting') return { ...inner, status };
+  // `start-fails` refuses to start a process, with DEMO_START_FAILS_TEXT as its error (a provider's error carries its command's stderr).
+  if (mode === 'start-fails') return { ...inner, start: async () => { throw new Error(process.env.DEMO_START_FAILS_TEXT ?? 'the place could not start the process'); } };
+  // `start-fails-cause` throws pi-transport's own BoxError, whose CAUSE (a library's original error) holds DEMO_START_FAILS_TEXT; `start-fails-property`
+  // throws an error carrying it in a string property of its own (`stderr`).
+  if (mode === 'start-fails-cause') {
+    const { BoxError } = await import('@parcha/pi-transport');
+    return { ...inner, start: async () => { throw new BoxError('unknown', 'the box could not start', new Error(process.env.DEMO_START_FAILS_TEXT ?? 'the library failed')); } };
+  }
+  // Error shapes a library hands over, each thrown from start with DEMO_START_FAILS_TEXT inside: an error in a nested array (`nested`), a Map as the
+  // cause (`map-cause`), a DOMException (`timeout`, as AbortSignal.timeout throws), a cyclic plain object (`cyclic`) and a cause cycle (`cause-cycle`).
+  const text = process.env.DEMO_START_FAILS_TEXT ?? '';
+  const shapes: Record<string, () => unknown> = {
+    'start-fails-nested': () => Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', errors: [new Error(text)] }),
+    'start-fails-map-cause': () => new Error('the place could not start the process', { cause: new Map([['stderr', text]]) }),
+    'start-fails-timeout': () => new DOMException(text, 'TimeoutError'),
+    'start-fails-cyclic': () => { const details: Record<string, unknown> = { text }; details.self = details; return Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', details }); },
+    'start-fails-cause-cycle': () => { const a = new Error(`first ${text}`); const b = new Error(`second ${text}`, { cause: a }); Object.defineProperty(a, 'cause', { value: b, configurable: true }); return a; },
+  };
+  if (mode && shapes[mode]) return { ...inner, start: async () => { throw shapes[mode]!(); } };
+  // `capture-exit` is the local place, handing the run's process a token only it holds (DEMO_CHILD_ONLY_TOKEN, from DEMO_CHILD_ONLY: the supervisor
+  // never tracks it) and keeping each process's exit as the place read it, before any sink, in DEMO_CAPTURE_FILE.
+  if (mode === 'capture-exit') return { ...inner, start: async (order: Parameters<typeof inner.start>[0]) => {
+    const runner = await inner.start({ ...order, env: { ...order.env, ...(process.env.DEMO_CHILD_ONLY ? { DEMO_CHILD_ONLY_TOKEN: process.env.DEMO_CHILD_ONLY } : {}) } });
+    return { ...runner, exited: runner.exited.then((exit) => { if (process.env.DEMO_CAPTURE_FILE) writeFileSync(process.env.DEMO_CAPTURE_FILE, JSON.stringify(exit)); return exit; }) };
+  } };
+  if (mode === 'start-fails-property') return { ...inner, start: async () => { throw Object.assign(new Error('the place could not start the process'), { code: 'START_FAILED', stderr: process.env.DEMO_START_FAILS_TEXT ?? '' }); } };
+  // `handing` hands its home box over but has no reads: its supervisor numbers the box itself, so the process must refuse to claim it (two labellers).
+  if (mode === 'handing') return { ...inner, status, start: (order: Parameters<typeof inner.start>[0]) => inner.start({ ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } }) };
+  if (mode !== 'labelled' && mode !== 'unclaimed' && mode !== 'unreadable' && mode !== 'slow') return inner;
+  const handOver = (order: Parameters<typeof inner.start>[0]) => (mode !== 'unclaimed' ? { ...order, env: { ...order.env, HOST_BOX: JSON.stringify({ provider: 'home', key: '0', run: order.env.RUN_LABEL }) } } : order);
+  // K8's answers over this place's own root: a missing file is null, a missing directory lists nothing.
+  const gate = async () => {
+    if (mode === 'unreadable') throw new Error('the run files cannot be read here');
+    if (mode === 'slow') await new Promise((resolve) => { setTimeout(resolve, 40_000).unref(); });
+  };
+  const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
+  return {
+    ...inner,
+    start: (order: Parameters<typeof inner.start>[0]) => inner.start(handOver(order)),
+    status,
+    readRunFile: async (path: string) => { await gate(); try { return new Uint8Array(await readFile(join(context.paths.root, path))); } catch (error) { if (missing(error)) return null; throw error; } },
+    listRunFiles: async (dir: string) => { await gate(); try { return (await readdir(join(context.paths.root, dir))).sort(); } catch (error) { if (missing(error)) return []; throw error; } },
+  };
+} : undefined;
+
+export const options = { ...(process.env.DEMO_FOLLOW_HOLD_MS ? { followHoldMs: Number(process.env.DEMO_FOLLOW_HOLD_MS) } : {}), ...(process.env.DEMO_CODE_ON ? { codeMode: true } : {}), ...(process.env.DEMO_ITEM ? { itemOf: (path: string) => `scan ${path}` } : {}), self: import.meta.url, spec, job: withReport(withProviders ?? withBox ?? withFan ?? withLeak ?? withSites ?? lingering?.job ?? job), fakes: { ...scriptedHeld, ...(process.env.DEMO_FAKES_INPUT ? { input: { company: 'Beta Ltd' } } : {}), ...(probe ? { vision: probe } : eyes ? { vision: ownLane } : transcribing ? { vision: transcribing } : {}), ...(eyes ? { lead: { input: ['text' as const] } } : {}) }, ...(result ? { result } : {}), ...(live ? { live } : {}), ...(manifest ? { manifest } : {}), ...(sourcesFor ? { sourcesFor } : {}), ...(providers ? { providers } : {}), ...(providerExtensions ? { providerExtensions } : {}), ...(process.env.DEMO_RESULT_THROWS ? { result: () => { throw new Error(process.env.DEMO_RESULT_THROWS_TEXT ?? 'the result hook failed'); } } : {}), ...(withPlace ? { place: withPlace } : {}) };
 if (process.argv.includes('--child')) await demo(options);

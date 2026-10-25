@@ -15,8 +15,10 @@ export type DecisionRule =
   | { kind: "judge" }
   /** pick: the chosen option names an item by its position, or none. */
   | { kind: "pick"; options: string[]; none: string | null }
-  /** route: the chosen branch, or the unsure branch when the choice's confidence is below `gte`. */
-  | { kind: "route"; unsure: { gte: number; branch: string } | null }
+  /** route: the chosen branch, or the unsure branch when the choice's confidence is below `gte`. The chosen
+   *  branch names one of `branches`; `unsure`, when set, judges its confidence against `gte`. `branches` is
+   *  absent on a rule recorded before it was added, and such a rule skips the branch-membership check. */
+  | { kind: "route"; branches?: string[]; unsure: { gte: number; branch: string } | null }
   /** sift: an item of this request is kept when its `keep` measure meets `gte`; every item without a keep
    *  rule. `items` counts this request's items; the action names them by their position in the request. */
   | { kind: "sift"; items: number; ids: string[]; keep: { id: string; measure: "confidence" | "value"; gte: number } | null }
@@ -75,13 +77,30 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
   switch (rule.kind) {
     case "judge": return answersToValue(receipt.answers, receipt.questions as CompiledQuestions);
     case "pick": {
-      const choice = answers.pick?.choice;
+      // An answered pick carries its pick answer; a receipt without one decided nothing.
+      const answer = answers.pick;
+      if (!answer || typeof answer !== "object") return null;
+      const choice = answer.choice;
+      // The choice must be a string that names an option, or the none option. Anything else (no string
+      // choice, or a choice in neither set) is a malformed answer, never a fail-open {index: -1}.
+      if (typeof choice !== "string") return null;
       const none = rule.none !== null && choice === rule.none;
+      if (!none && !rule.options.includes(choice)) return null;
       return { index: none ? null : rule.options.indexOf(choice), none };
     }
     case "route": {
-      const branch = answers.branch?.choice;
-      const unsure = Boolean(rule.unsure && answers.branch.confidence < rule.unsure.gte);
+      // An answered route carries its branch answer; a receipt without one decided nothing.
+      const answer = answers.branch;
+      if (!answer || typeof answer !== "object") return null;
+      const branch = answer.choice;
+      // The chosen branch must be a string; when the rule carries `branches` (recorded since this check was
+      // added) it must name one of them. A rule recorded before `branches` skips the membership check, so an
+      // older route receipt re-derives as it did before, never throwing on a missing field.
+      if (typeof branch !== "string" || (rule.branches && !rule.branches.includes(branch))) return null;
+      // When unsure is set, judging SURE/UNSURE needs a finite numeric confidence. A missing or non-numeric
+      // confidence must not compare false and re-derive as SURE (a fail-open onto the chosen branch).
+      if (rule.unsure && !(typeof answer.confidence === "number" && Number.isFinite(answer.confidence))) return null;
+      const unsure = Boolean(rule.unsure && answer.confidence < rule.unsure.gte);
       return { branch, taken: unsure ? rule.unsure!.branch : branch, unsure };
     }
     case "sift": {
@@ -99,8 +118,15 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       const doubted: string[] = [];
       const unmet: string[] = [];
       for (const [id, threshold] of Object.entries(rule.thresholds)) {
-        if (threshold === null || !(Number(answers[id]?.noul) < threshold)) continue;
-        (rule.present.includes(id) ? doubted : unmet).push(id);
+        if (threshold === null) continue;
+        // A field with a threshold needs its yes/no answer; a receipt missing one, or holding another shape, decided
+        // nothing (null), never a fail-open "accepted".
+        const answer = answers[id];
+        // The answer must be a noul with a finite numeric probability. A noul-typed answer whose noul is
+        // absent or not a finite number would compare NaN < threshold (false), reading as supported: a
+        // fail-open one level down. It decided nothing.
+        if (answer?.type !== "noul" || typeof answer.noul !== "number" || !Number.isFinite(answer.noul)) return null;
+        if (answer.noul < threshold) (rule.present.includes(id) ? doubted : unmet).push(id);
       }
       return { accepted: doubted.length === 0 && unmet.length === 0, doubted, unmet };
     }

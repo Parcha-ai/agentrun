@@ -1,0 +1,26 @@
+# AgentRun Server on Render: one web service and one persistent disk, built from this repository's Dockerfile.
+# The token is generated once; read it in the service's Environment tab.
+services:
+  - type: web
+    name: agentrun-server
+    runtime: docker
+    dockerfilePath: ./packages/serve/docker/Dockerfile
+    dockerContext: .
+    plan: starter
+    numInstances: 1
+    healthCheckPath: /v2/capabilities
+    disk:
+      name: agentrun-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PORT
+        value: "7340"
+      - key: AGENTRUN_TOKEN
+        generateValue: true
+      - key: AGENT_MODEL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false

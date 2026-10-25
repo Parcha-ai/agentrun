@@ -11,7 +11,7 @@ import {
   PDF_MAX_DPI, POINTS_PER_INCH, RESULT_BYTES_SHARE, TILE_ASPECT, TILE_KEEP_BELOW, TILE_MAX_EDGE, TILE_OVERLAP, VIDEO_FRAMES_PER_READ,
 } from "./limits.js";
 import type { Limits } from "./limits.js";
-import { base64Chars } from "./primitives.js";
+import { base64Chars, grouped } from "./primitives.js";
 
 /** What is known of a source for free: no render, no decode beyond a header. */
 export type SourceFacts = {
@@ -95,9 +95,8 @@ type Layout = { readonly cuts: readonly Cut[]; readonly shrunk: boolean };
 const WHOLE: Box = Object.freeze({ x0: 0, y0: 0, x1: 1, y1: 1 });
 const IMAGE_DERIVES: ReadonlySet<PlannedPart["derive"]> = new Set(["image", "tile", "page", "frame"]);
 const PRECEDENCE: readonly Reduction[] = ["windowed", "sampled", "tiled", "downscaled"];
-const grouped = (n: number): string => n.toLocaleString("en-US");
 /** Seconds are planned to the millisecond, the resolution of a fragment. */
-const ms = (seconds: number): number => Math.round(seconds * 1000) / 1000;
+const roundToMs = (seconds: number): number => Math.round(seconds * 1000) / 1000;
 const reduced = (applies: Partial<Record<Reduction, boolean>>): Reduction => PRECEDENCE.find((r) => applies[r]) ?? "as_is";
 const perCall = (limits: Limits, mode: PlanMode): number => Math.floor(mode === "show" ? limits.imagesPerCall : Math.min(limits.imagesPerCall, LOOK_PAGES_PER_REQUEST));
 
@@ -291,13 +290,13 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
     return { parts: [{ fragment: {}, derive: "as_is", maxBytes: base64Chars(inline) }], fit: { reduction: "as_is", original, shown: { bytes: facts.bytes } } };
   }
   if (!(duration !== undefined && duration > 0)) return refuse("unreadable", "its duration is not known, so no window or frame can be chosen", original);
-  const from = ms(selector.fromS ?? 0), to = ms(Math.min(selector.toS ?? duration, duration)), span = to - from;
-  if (!(from >= 0 && from < duration && to > from)) return refuse("refused", `the window ${from}..${to} s is not within the video's ${ms(duration)} s`, original);
+  const from = roundToMs(selector.fromS ?? 0), to = roundToMs(Math.min(selector.toS ?? duration, duration)), span = to - from;
+  if (!(from >= 0 && from < duration && to > from)) return refuse("refused", `the window ${from}..${to} s is not within the video's ${roundToMs(duration)} s`, original);
   if (native && (windowed || mode === "ask")) {
     // Each window is sized so its stream copy fits the inline budget; one that does not is re-encoded when derived.
     const windows = mode === "show" ? 1 : Math.min(Math.round(span * 1000), Math.max(1, Math.ceil((facts.bytes * span) / duration / inline)));
     if (caps.frames !== undefined && windows > caps.frames) return refuse("over_budget", `${from}..${to} s is ${windows} clips of ${grouped(inline)} bytes, over the ${caps.frames} video parts one look takes; ask about a shorter window`, original);
-    const edge = (i: number) => (i === windows ? to : ms(from + (i * span) / windows));
+    const edge = (i: number) => (i === windows ? to : roundToMs(from + (i * span) / windows));
     const parts = Array.from({ length: windows }, (_, i): PlannedPart => ({ fragment: { t: { from: edge(i), to: edge(i + 1) } }, derive: "clip", maxBytes: base64Chars(inline) }));
     return { parts, fit: { reduction: "windowed", original, shown: {} } };
   }
@@ -311,7 +310,7 @@ function planVideo(facts: SourceFacts, selector: Selector, limits: Limits, mode:
   const laid = natural ? layout(natural, box, limits, 1, imageRender(natural)) : undefined;
   if (typeof laid === "string") return refuse("over_budget", laid, original);
   const parts = Array.from({ length: frames }, (_, i): PlannedPart => {
-    const atS = ms(from + ((i + 0.5) * span) / frames);
+    const atS = roundToMs(from + ((i + 0.5) * span) / frames);
     if (laid) return cutParts(laid, { t: { from: atS } }, "frame", box === WHOLE, { atS })[0];
     return { fragment: selector.region ? { t: { from: atS }, xywh: selector.region } : { t: { from: atS } }, derive: "frame", atS };
   });

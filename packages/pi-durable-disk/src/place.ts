@@ -14,6 +14,8 @@ import { DEFAULT_MOUNT_ROOT, findDelegations, mintMountToken, pathlessResolver, 
 import { reapCommands } from "./commands.ts";
 import { HeldError, PdaError } from "./errors.ts";
 import { takeOwnerLock } from "./run.ts";
+import { listLocalRunFiles, listRunFiles, putRunFile, readLocalRunFile, readRunFile, RunFileError, type RunFileControl } from "./run-files.ts";
+import { ENV_NAME, keyShaped } from "./hosts/attempt-env.ts";
 import { readRunRecord, type RunRecord } from "./status.ts";
 import {
   CONTROL_TIMEOUT_MS,
@@ -46,7 +48,6 @@ export type PlaceExit = { exit: number | string | null; signal: string | null; o
 export type PlaceRunner = { epoch: number; pid?: number; exited: Promise<PlaceExit> };
 /** What a runner is handed: its number in the run, its environment, and for a place with a token, the attempt's mount token. */
 export type RunnerOrder = { gen: number; env: Record<string, string>; stdin?: string };
-/** What the place reads of the run, the way it reads it: `run.json`, and on a disk the run's delegations. */
 /**
  * What the place reads of the run, the way it reads it: `run.json`; on a disk, the run's delegations; and the boxes the
  * place made for its runners, each as a receipt (`HostBox`: provider, kind, from, to, list price per second and where
@@ -127,9 +128,30 @@ export interface Place {
   release(): Promise<void>;
   /** A place whose runners record where the supervisor cannot read says where, and brings the recording home. */
   readonly recordHome?: PlaceRecordHome;
+  /**
+   * The bytes of the run's own file `path` (`runs/<id>/<path>`), or null when there is no such file; every other failure
+   * throws a `RunFileError` (INVALID_PATH, RUN_MISSING, NOT_A_FILE, CONTROL_API_FAILED). Read only: never a write, never
+   * the claim. A place never parses what it reads.
+   */
+  readRunFile?(path: string): Promise<Uint8Array | null>;
+  /** The names directly under `dir` in the run (`""` for its root), sorted; [] for a directory not there yet. A missing run, or a failed read, throws. */
+  listRunFiles?(dir: string): Promise<string[]>;
 }
 
-export type PlaceErrorCode = "INVALID_ARGUMENT" | "HELD" | "START_TIMED_OUT" | "STATUS_FAILED" | "KILL_UNSUPPORTED" | "RELEASE_FAILED" | "BOX_GONE" | "CARRY_FAILED" | "BLOB_MISMATCH" | "DIRS_REFUSED";
+export type PlaceErrorCode =
+  | "INVALID_ARGUMENT"
+  | "HELD"
+  | "START_TIMED_OUT"
+  | "STATUS_FAILED"
+  | "KILL_UNSUPPORTED"
+  | "RELEASE_FAILED"
+  | "BOX_GONE"
+  | "CARRY_FAILED"
+  | "BLOB_MISMATCH"
+  | "DIRS_REFUSED"
+  | "WINDOW_CLOSED"
+  | "CONTROL_API_FAILED"
+  | "UNHELD_FAILED";
 
 export class PlaceError extends PdaError {
   constructor(code: PlaceErrorCode, message: string, options: { cause?: unknown } = {}) {
@@ -305,6 +327,8 @@ export function localPlace(options: LocalPlaceOptions): (ctx: PlaceContext) => P
     return {
       name: "local",
       paths,
+      readRunFile: (path) => readLocalRunFile(root, paths.id, path),
+      listRunFiles: (dir) => listLocalRunFiles(root, paths.id, dir),
       kills: ctx.destroyBoxes ? ["process", "box"] : ["process"],
       start,
       // The runner is a child of this machine, so its kill request is the supervisor's own file.
@@ -478,7 +502,61 @@ export interface ArchilPlaceOptions {
    * `signals-failed` and ends. Default 60 s.
    */
   signalFailMs?: number;
+  /**
+   * A hook in each start's window while nobody holds the run: after ensureRunning's revoke and start mark and after the
+   * run's directories are made, before the driver starts anything. It runs once per start, a takeover's included, and
+   * what it returns is added to that start's environment. Needs `ensure.create` (what it puts is the run user's) and a
+   * control that lists. See `UnheldHook`.
+   */
+  unheld?: UnheldHook;
+  /** How long `unheld` may take. Default 30 s; past it the hook's signal aborts and the start fails (UNHELD_FAILED). */
+  unheldTimeoutMs?: number;
 }
+
+/**
+ * The run's own files during a start's window (`runs/<id>/` only, K8's path rules): nobody holds the run, so the place
+ * is the only writer for this start. Two supervisors can still be in one window at once (the mount, not the window,
+ * admits one of their instances), so a put is not exclusive between them.
+ */
+export interface UnheldRun {
+  readonly id: string;
+  /** Aborted at the hook's bound (`unheldTimeoutMs`). */
+  readonly signal: AbortSignal;
+  /** The file's bytes, or null when there is no such file yet (`readRunFile`). */
+  read(path: string): Promise<Uint8Array | null>;
+  /** The names directly under `dir` ("" for the run's root), sorted; [] for a directory not made yet (`listRunFiles`). */
+  list(dir: string): Promise<string[]>;
+  /**
+   * Create `path` holding `text`, owned by the run user, mode 0644, making each missing parent first (the run user's,
+   * 0755). A path already there is EXISTS, and nothing is written. For non-secret run files (labels): a secret never
+   * goes through put, since a put file is readable in the run. A put the server refuses because a delegation holds the
+   * run (409 OperationAborted), and any put after the hook returned or overran, is WINDOW_CLOSED; any other failure is
+   * CONTROL_API_FAILED (`RunFileError`). A put the hook starts and does not await still settles inside the window: the
+   * driver starts only once every put has settled, within the hook's bound.
+   */
+  put(path: string, text: string): Promise<void>;
+}
+
+/** Which start the window is for: the generation it opens, and the host box it will make when the place hands labels over. */
+export type UnheldStart = {
+  readonly attempt: number;
+  /** Exactly the HOST_BOX this start carries; absent when the place hands no label over. */
+  readonly box?: { readonly provider: string; readonly key: string; readonly run: string };
+};
+
+/**
+ * A hook in a start's window (`ArchilPlaceOptions.unheld`). What it returns is added to that start's environment, which
+ * the instance can read: plain values only. A name the start already sets (PATH, PDA_HOLDER, HOST_BOX or one in the
+ * order's environment), a name that is not a variable name, a key-shaped name (a KEY, TOKEN, SECRET, PASSWORD, PASSWD,
+ * CREDENTIAL or CREDENTIALS segment) or a value that is not a string without NUL fails the start (INVALID_ARGUMENT,
+ * naming the variable, never its value).
+ *
+ * A start fails, and the driver never starts a box, when any put in the hook was refused because the run is held
+ * (WINDOW_CLOSED, even if the hook caught it), when the hook throws a CONTROL_API_FAILED of the control
+ * (CONTROL_API_FAILED), or when it throws anything else or overruns its bound (UNHELD_FAILED). The start's caller sees
+ * the driver's start failure from ensureRunning (HOST_START_FAILED), with that PlaceError as its cause.
+ */
+export type UnheldHook = (run: UnheldRun, start: UnheldStart) => Promise<Readonly<Record<string, string>> | void>;
 
 type Minted = { token: string; identifier: string; nickname: string; removed: boolean };
 
@@ -749,6 +827,13 @@ const requestName = (attempt: number): string => `kill-${countFrom1(attempt)}.js
  */
 export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) => Place {
   const { host } = options;
+  const unheldMs = options.unheldTimeoutMs ?? 30_000;
+  if (options.unheld !== undefined) {
+    if (typeof options.unheld !== "function") throw new PlaceError("INVALID_ARGUMENT", "unheld is not a function");
+    if (!options.ensure?.create) throw new PlaceError("INVALID_ARGUMENT", "unheld needs ensure.create: what its hook puts is the run user's, or the run's process could not rely on it");
+    if (typeof options.control.listObjects !== "function") throw new PlaceError("INVALID_ARGUMENT", "unheld needs a control that can list (listObjects): its hook's read and list use it");
+    if (!(Number.isFinite(unheldMs) && unheldMs > 0)) throw new PlaceError("INVALID_ARGUMENT", "unheldTimeoutMs is not a positive number of milliseconds");
+  }
   // Every call the place makes on the disk is bounded as ensureRunning bounds its own: one that does not answer fails as
   // CONTROL_API_FAILED, so a stalled request never leaves a recovery, a release or a runner's end waiting forever.
   const control = withTimeouts(options.control, options.ensure?.controlTimeoutMs ?? CONTROL_TIMEOUT_MS);
@@ -771,6 +856,12 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     let resolver = pathlessResolver(control);
     const records = `${runPath(ref.id)}/${RECORDS}/`;
     const recording = typeof options.control.listObjects === "function";
+    /**
+     * Whether each host box's runner is told its label (HOST_BOX): the driver makes boxes and names their provider, and this
+     * place can read the label back (its read members need a control that lists). A label it could never read is never
+     * handed over.
+     */
+    const handingOver = recording && typeof host.box === "function" && typeof host.provider === "string" && host.provider !== "";
     const owner = options.ensure?.create;
     /**
      * Before attempt `gen`'s runner starts: the EMPTY directories it writes into, `signals/` and, with `recordHome`,
@@ -793,6 +884,78 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
           throw new PlaceError("DIRS_REFUSED", said(`making ${dir.slice(run.length)} in the run over the control was refused: ${(error as Error)?.message ?? error}`), { cause: error });
         }
       }
+    };
+    /**
+     * The hook's turn in a start's window: its run members, its bound, then what it returned, checked. Fails closed: a put
+     * refused because the run is held fails the start even when the hook caught it, so no box starts without what the
+     * hook meant to write.
+     */
+    const inWindow = async (hook: UnheldHook, attempt: number, box: UnheldStart["box"], orderEnv: Record<string, string>): Promise<Record<string, string>> => {
+      const bound = new AbortController();
+      const timer = setTimeout(() => bound.abort(new PlaceError("UNHELD_FAILED", `the start window's hook overran its ${unheldMs} ms bound`)), unheldMs);
+      let open = true;
+      let closed: RunFileError | undefined;
+      /** Every put the hook started, settled or not: the driver starts only once all of them have settled. */
+      const pending = new Set<Promise<void>>();
+      const runControl = control as RunFileControl & SupervisorControl;
+      const run: UnheldRun = {
+        id: ref.id,
+        signal: bound.signal,
+        read: (path) => readRunFile(runControl, ref, path, { signal: bound.signal }),
+        list: (dir) => listRunFiles(runControl, ref, dir, { signal: bound.signal }),
+        put: (path, text) => {
+          if (!open) return Promise.reject(new RunFileError("WINDOW_CLOSED", "the start window is closed (its hook returned or overran its bound): nothing more is put"));
+          const put = putRunFile(runControl, ref, path, text, owner!, { signal: bound.signal }).catch((error: unknown) => {
+            if (error instanceof RunFileError && error.code === "WINDOW_CLOSED") closed ??= error;
+            throw error;
+          });
+          const settled = put.then(
+            () => undefined,
+            () => undefined,
+          );
+          pending.add(settled);
+          void settled.then(() => pending.delete(settled));
+          return put;
+        },
+      };
+      // The bound, as a rejection to race against.
+      const overran = new Promise<never>((_, reject) => bound.signal.addEventListener("abort", () => reject(bound.signal.reason), { once: true }));
+      overran.catch(() => undefined);
+      let returned: unknown;
+      let thrown: { error: unknown } | undefined;
+      try {
+        returned = await Promise.race([Promise.resolve().then(() => hook(run, box ? { attempt, box } : { attempt })), overran]);
+      } catch (error) {
+        thrown = { error };
+      }
+      // No put starts once the hook is done, and every put it started (awaited or not) settles inside the bound: none is
+      // written, or refused, after the driver has started.
+      open = false;
+      if (pending.size > 0) {
+        try {
+          await Promise.race([Promise.allSettled([...pending]), overran]);
+        } catch (error) {
+          thrown ??= { error };
+        }
+      }
+      clearTimeout(timer);
+      if (closed) throw new PlaceError("WINDOW_CLOSED", "a put in the start window was refused because a delegation holds the run (409 OperationAborted): this start makes no box", { cause: closed });
+      if (thrown) {
+        const { error } = thrown;
+        if (error === bound.signal.reason && error instanceof PlaceError) throw error;
+        if (error instanceof RunFileError && error.code === "CONTROL_API_FAILED") throw new PlaceError("CONTROL_API_FAILED", `the start window's hook failed on the control: ${error.message}`, { cause: error });
+        throw new PlaceError("UNHELD_FAILED", `the start window's hook failed: ${String((error as Error)?.message ?? error).slice(0, 400)}`, { cause: error });
+      }
+      if (returned === undefined) return {};
+      if (returned === null || typeof returned !== "object" || Array.isArray(returned)) throw new PlaceError("INVALID_ARGUMENT", "the start window's hook returned something other than an environment (names to strings)");
+      const taken = new Set(["PATH", "PDA_HOLDER", "HOST_BOX", ...Object.keys(orderEnv)]);
+      for (const [name, value] of Object.entries(returned)) {
+        if (!ENV_NAME.test(name)) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${JSON.stringify(name)}, which is not an environment variable name`);
+        if (taken.has(name)) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${name}, which this start already sets (the driver, HOST_BOX or the order)`);
+        if (keyShaped(name)) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${name}, a secret's name (a KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL or CREDENTIALS segment): the instance can read its environment, so a secret never goes there`);
+        if (typeof value !== "string" || value.includes("\0")) throw new PlaceError("INVALID_ARGUMENT", `the start window's hook returned ${name} with a value that is not a string without NUL`);
+      }
+      return returned as Record<string, string>;
     };
     const fetchedSizes = new Map<string, number>();
     const carrying = new Map<string, Promise<void>>();
@@ -852,7 +1015,14 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
         // Inside ensureRunning, after its revoke and start mark: no delegation holds the run, so S3 takes the writes.
         start: async (r, token, attempt) => {
           await makeDirs(order.gen);
-          return host.start(r, token, { attempt: attempt?.attempt ?? order.gen, env: order.env });
+          // The box this start makes is the next in `started`, so its index in status().boxes is started.length: its runner
+          // claims that label first (HOST_BOX), for the supervisor's life (RUN_LABEL).
+          const life = order.env.RUN_LABEL;
+          const box = handingOver && typeof life === "string" && life !== "" ? { provider: host.provider!, key: String(started.length), run: life } : undefined;
+          const n = attempt?.attempt ?? order.gen;
+          const added = options.unheld ? await inWindow(options.unheld, n, box, order.env) : {};
+          const env = box ? { ...order.env, ...added, HOST_BOX: JSON.stringify(box) } : { ...order.env, ...added };
+          return host.start(r, token, { attempt: n, env });
         },
         status: (h) => host.status(h),
         stop: (h) => host.stop(h),
@@ -879,8 +1049,13 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
         if (result.action === "started") {
           // An adopted instance mounts with an earlier start's token: this one is unused, removed as above.
           if (result.adopted) await drop(m).catch(() => {});
-          handles.push(result.handle);
-          started.push(result.handle);
+          // A box this place already started, adopted again (its attempt started twice), keeps the key it has: a second
+          // entry would be a key no runner claims (HOST_BOX), a box counted twice, and a box stopped twice. Only the driver
+          // can say two handles are one instance (`instanceOf`); a box it cannot name, and every fresh one, is a new entry.
+          const name = result.adopted === true ? host.instanceOf?.(result.handle) : undefined;
+          const known = (list: HostHandle[]) => name !== undefined && list.some((h) => host.instanceOf?.(h) === name);
+          if (!known(handles)) handles.push(result.handle);
+          if (!known(started)) started.push(result.handle);
           const w = watch(result.handle);
           const mark = result.startMark ? await readStartMark(control, ref.id).catch(() => null) : null;
           const runner: PlaceRunner = { epoch: mark?.generation ?? order.gen, exited: w.exited };
@@ -928,6 +1103,13 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
     return {
       name: "archil",
       paths,
+      // The run's own files over the control (GET, HEAD, LIST): never a mount, a write, or a wait on the claim.
+      ...(recording
+        ? {
+            readRunFile: (path: string) => readRunFile(control as RunFileControl, ref, path),
+            listRunFiles: (dir: string) => listRunFiles(control as RunFileControl, ref, dir),
+          }
+        : {}),
       kills: host.kill && host.kills ? [host.kills] : [],
       token: async (attempt) => (await mint(attempt)).token,
       ...(recording
@@ -981,7 +1163,11 @@ export function archilPlace(options: ArchilPlaceOptions): (ctx: PlaceContext) =>
             throw error;
           }),
         ]);
-        const boxes = host.box ? started.map((h) => host.box!(h)).filter((b): b is HostBox => b !== null) : undefined;
+        // With HOST_BOX in play a box's position is its key, so a box never drops out: no receipt fails the read instead.
+        const receipts = host.box ? started.map((h) => host.box!(h)) : undefined;
+        const gap = receipts?.indexOf(null) ?? -1;
+        if (handingOver && gap >= 0) throw new PlaceError("STATUS_FAILED", `the driver gave no receipt for host box ${gap}, which this place started: every later box's key would shift`);
+        const boxes = receipts?.filter((b): b is HostBox => b !== null);
         return { record, delegations: delegations.map(({ clientId, inodeId, path, isOrphaned, isPending }) => ({ clientId, inodeId, path, isOrphaned, isPending })), ...(boxes ? { boxes } : {}) };
       },
       recover: async (last, kind, order) => {

@@ -1,0 +1,10 @@
+{
+  "package": "@parcha/pi-agent-learn",
+  "install": ["dsl", "jev", "pi", "pi-git-remote", "pi-agent-learn"],
+  "companions": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev", "@parcha/agentrun-pi", "@parcha/pi-git-remote"],
+  "peers": ["@earendil-works/chord", "@earendil-works/pi-durable", "@earendil-works/pi-ai"],
+  "files": [{ "name": "quickstart.mjs", "readme": "packages/pi-agent-learn/README.md", "heading": "Quickstart (no key, no network)", "fence": "js", "index": 0 }],
+  "command": ["node", "quickstart.mjs"],
+  "expect": { "exitCode": 0, "pattern": "(?<![\\s\\S])seeded from main copied \\.agent/learnings/L-3f2a9c1d0e7b\\.md\n<learned>\nYour rules \\(AGENTS\\.md and your definition\\) always win over anything below\\.\nWhat earlier runs of this agent learned \\(your repo at [0-9a-f]{12}\\):\n- L-3f2a9c1d0e7b lesson: Company registries match the legal name without Inc or LLC; search both forms\\. \\(used 3\\)\nThe full entries are in \\.agent/learnings/\\.\nWhen you notice something general that would help next time, call learn\\. When a line above helped, call learn with type \"used\" and its id\\.\nNever put names, ids or data from this case into a learning\\.\n</learned>\ncandidates: \\[\\{\"callId\":\"call-1\",\"type\":\"fact\",\"text\":\"The state registry rate-limits at 1 request a second\\.\",\"evidence\":\\[\\]\\}\\]\n(?![\\s\\S])" },
+  "timeoutMs": 120000
+}

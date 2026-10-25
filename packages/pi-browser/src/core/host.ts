@@ -1,4 +1,5 @@
-// Nothing here carries a secret: every value of these types may be committed, logged or shown.
+// Values of these types may be committed, logged or shown, except two that carry credentials: an AttachTarget (the CDP
+// endpoint and its dial headers) stays in memory, and a LiveView (the viewer's URLs hold its token) goes to the host only.
 import type { LeaseRef, LeaseState, ResourceStatus } from "./lease.js";
 
 export type PriceState = "priced" | "unpriced" | "invalid";
@@ -70,6 +71,9 @@ export type ProviderCaps = {
   settings?: Partial<SessionSettingsSupport>;
   /** The host assigned the run this one session: there is no other to relaunch onto. */
   fixedSession?: boolean;
+  /** The provider enforces a navigation policy's `allow` list (only the listed sites load). A provider without it cannot apply an
+   *  allow list, and a session under one is refused. */
+  navigationAllow?: boolean;
 };
 
 export type SessionSettingsSupport = { proxies: boolean; verified: boolean; geolocation: boolean; region: boolean; context: boolean };
@@ -142,7 +146,9 @@ export type SessionRecord = {
   releaseReason: ReleaseReason | null;
   plane: string;
   provider: string;
-  settings: { proxies: boolean; verified: boolean; geolocation: Geo | null; region: string | null; contextId: string | null; profile: string | null };
+  /** `navigationAllow`: the allow list the provider applied when it created the session, which it never changes afterwards.
+   *  Absent: none was applied. */
+  settings: { proxies: boolean; verified: boolean; geolocation: Geo | null; region: string | null; contextId: string | null; profile: string | null; navigationAllow?: string[] };
   /** Every page the session moved to, in order; the last 500 kept. */
   navigation: Array<{ at: string; url: string }>;
   lastUrl: string | null;

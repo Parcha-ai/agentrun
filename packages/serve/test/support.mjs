@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
@@ -42,6 +43,31 @@ export function client(baseUrl, token) {
 }
 
 export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });
+
+/** A workflow of one model node: `answer` extracts `{answer: number}` from the input's `question`. */
+export const answerFlow = (instructions = "Answer the question.") => ({
+  v: 2, name: "answer",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Answer: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } },
+  },
+  input: { schemaId: "In" },
+  output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions, out: "Answer", as: "answer" }] },
+});
+
+/** A workflow agent `id`: its definition carries `workflow` in place of instructions. */
+export const flowAgent = (id, workflow = answerFlow(), extra = {}) => ({ definition: { id, name: id, workflow, ...extra } });
+
+/** The store's row for run `runId`, read from the data directory. */
+export function storeRun(data, runId) {
+  const reader = openStoreReader(data);
+  try {
+    return reader.readRun(runId);
+  } finally {
+    reader.close();
+  }
+}
 
 /** Create agent `id` and start one run of it with `content`. */
 export async function startRun(api, id, content, extra = {}, skills) {

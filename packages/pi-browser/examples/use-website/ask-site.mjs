@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, getAgentDir, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { localSites } from "@parcha/pi-browser";
 import { createBrowserExtension } from "@parcha/pi-browser/coding-agent";
@@ -26,11 +28,14 @@ export async function askSite({ question, site, model, modelRuntime, cwd = proce
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// A CLI when this is the file node started, however it was reached: a symlink, or a path a file URL spells differently (a space). A script read
+// through stdin has argv[1] "-", which names no file: that is not a main module, and importing this file from it must not throw.
+const isMain = () => { try { return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); } catch { return false; } };
+if (process.argv[1] && isMain()) {
   const [startUrl, question, baseUrl = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1", modelId = "gpt-6-luna"] = process.argv.slice(2);
   if (!startUrl || !question) { console.error("usage: node ask-site.mjs <site URL> <question> [base URL] [model]"); process.exit(2); }
   const modelRuntime = await ModelRuntime.create();
-  const local = ["127.0.0.1", "localhost"].includes(new URL(baseUrl).hostname);
+  const local = ["127.0.0.1", "localhost", "[::1]"].includes(new URL(baseUrl).hostname);
   modelRuntime.registerProvider("ask-site", { api: "openai-responses", baseUrl, apiKey: process.env.OPENAI_API_KEY || (local ? "unused-by-a-local-broker" : ""), models: [{ id: modelId, name: modelId, reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 400_000, maxTokens: 32_000 }] });
   const { answer, reports } = await askSite({ question, site: { title: new URL(startUrl).host, description: "The site the question is about.", startUrl }, model: modelRuntime.getModel("ask-site", modelId), modelRuntime });
   for (const report of reports) console.log(`child report: ${report.report ?? JSON.stringify(report)}`);

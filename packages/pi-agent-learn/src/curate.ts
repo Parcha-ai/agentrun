@@ -5,11 +5,11 @@ import { type Learning, learningId, parseLearning, renderLearning } from "./entr
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
 import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
-import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
-import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate, WorkflowUse } from "./types.js";
-import { revisionOf, usesSettler, workflowAdmitter } from "./workflows.js";
+import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate } from "./types.js";
+import { parseRunUses, type RunUses, revisionOf, usesSettler, workflowAdmitter } from "./workflows.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
 export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
@@ -150,6 +150,8 @@ type Asked = { readonly verdict: Verdict; readonly p?: number };
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const oneLine = (text: string) => text.replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim();
 const fixed = (p: number | undefined) => (p === undefined ? "?" : p.toFixed(2));
+/** Why a question left a candidate held: the run's budget ran out, or the judge was unsure of `what`. */
+const unsureReason = (a: Asked, what: string) => (a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether ${what} (${fixed(a.p)})`);
 
 function checkThresholds(input: CurateOptions["thresholds"]): Thresholds {
   const out = {} as Record<Question, Cut>;
@@ -200,7 +202,7 @@ export async function curate(options: CurateOptions): Promise<CurateReport> {
   const stamp = options.now === undefined ? {} : { now: () => options.now! };
   const admitWorkflow = options.admitWorkflow === null ? undefined : (options.admitWorkflow ?? workflowAdmitter(stamp));
   const settleUses = options.settleUses === null ? undefined : (options.settleUses ?? usesSettler());
-  const resolved: Resolved = { ...options, ...(admitWorkflow ? { admitWorkflow } : { admitWorkflow: undefined }), ...(settleUses ? { settleUses } : { settleUses: undefined }) };
+  const resolved: Resolved = { ...options, admitWorkflow, settleUses };
   return exclusive(options.repo, () => curateRuns(resolved, thresholds, caps, secrets));
 }
 
@@ -467,16 +469,16 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     if (rules.trim() !== "") {
       const a = await ask("narrowsRules", { learning, rules });
       if (a.verdict === "yes") bad.push(`contradicts or narrows a rule (${fixed(a.p)})`);
-      else if (a.verdict !== "no") unsure.push(a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it narrows a rule (${fixed(a.p)})`);
+      else if (a.verdict !== "no") unsure.push(unsureReason(a, "it narrows a rule"));
     }
     if (untrusted) {
       const a = await ask("fromContent", { learning });
       if (a.verdict === "yes") bad.push(`an instruction from content the run read (${fixed(a.p)})`);
-      else if (a.verdict !== "no") unsure.push(a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it came from content the run read (${fixed(a.p)})`);
+      else if (a.verdict !== "no") unsure.push(unsureReason(a, "it came from content the run read"));
     }
     const g = await ask("general", { learning });
     if (g.verdict === "no") bad.push(`about this case, not general (${fixed(g.p)})`);
-    else if (g.verdict !== "yes") unsure.push(g.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it is general (${fixed(g.p)})`);
+    else if (g.verdict !== "yes") unsure.push(unsureReason(g, "it is general"));
     if (bad.length) return { status: "refused", reason: bad.join("; ") };
     if (unsure.length) return { status: "held", reason: [...new Set(unsure)].join("; ") };
     return undefined;
@@ -541,7 +543,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     for (const old of related("retired")) {
       const dup = await ask("duplicate", { candidate: learning, existing: { id: old.id, type: old.type, text: old.text } });
       if (dup.verdict === "no") continue;
-      outcome = { kind: "held", of: old.id, reason: dup.verdict === "budget" ? "the run's question budget is spent" : dup.verdict === "yes" ? `relearns the retired ${old.id} (${fixed(dup.p)})` : `unsure whether it relearns the retired ${old.id} (${fixed(dup.p)})` };
+      outcome = { kind: "held", of: old.id, reason: dup.verdict === "yes" ? `relearns the retired ${old.id} (${fixed(dup.p)})` : unsureReason(dup, `it relearns the retired ${old.id}`) };
       break;
     }
     const replaces: string[] = [];
@@ -553,7 +555,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         break;
       }
       if (dup.verdict !== "no") {
-        outcome = { kind: "held", of: existing.id, reason: dup.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it repeats ${existing.id} (${fixed(dup.p)})` };
+        outcome = { kind: "held", of: existing.id, reason: unsureReason(dup, `it repeats ${existing.id}`) };
         break;
       }
       const sup = await ask("supersedes", pair);
@@ -562,14 +564,14 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         continue;
       }
       if (sup.verdict !== "no") {
-        outcome = { kind: "held", of: existing.id, reason: sup.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it replaces ${existing.id} (${fixed(sup.p)})` };
+        outcome = { kind: "held", of: existing.id, reason: unsureReason(sup, `it replaces ${existing.id}`) };
         break;
       }
       const con = await ask("contradicts", pair);
       if (con.verdict !== "no") {
         outcome = {
           kind: "held", of: existing.id,
-          reason: con.verdict === "budget" ? "the run's question budget is spent" : con.verdict === "yes" ? `contradicts ${existing.id} without replacing it (${fixed(con.p)})` : `unsure whether it contradicts ${existing.id} (${fixed(con.p)})`,
+          reason: con.verdict === "yes" ? `contradicts ${existing.id} without replacing it (${fixed(con.p)})` : unsureReason(con, `it contradicts ${existing.id}`),
         };
         break;
       }
@@ -637,6 +639,37 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const reader: RepoRead = { main, read: (path, sha) => repo.read(path, sha), list: (p, sha) => repo.list(p, sha) };
   const workflowFiles: Record<string, string | null> = {};
   const workflowNames = new Set<string>();
+  // The run's workflow uses, settled into their trials by the workflows lane, FIRST: a run that ran a revision and saved a
+  // new one of the same name has its use counted on the revision it ran, which a promotion then keeps restorable under the
+  // new trial.
+  const usesText = runFiles[usesPath(runId)];
+  if (typeof usesText === "string") {
+    const uses = runUsesOf(usesText, runId);
+    if (uses === undefined) lists.refused.push({ reason: "uses: the uses file does not parse" });
+    else if (uses.length && !options.settleUses) lists.held.push({ reason: "uses: no uses settler is installed" });
+    else if (uses.length && options.settleUses) {
+      const names = [...new Set(uses.map((u) => u.name))].sort();
+      const result = await options.settleUses({ ...reader, run: runId, uses });
+      const files = result?.files;
+      const decisions = Array.isArray(result?.decisions) ? result.decisions : undefined;
+      const held = !files || typeof files !== "object" || !decisions ? "the uses settler answered out of shape" : undefined;
+      const refusal = held ? undefined : workflowFilesRefusal(files!, names, input.secrets, "the uses settler");
+      if (held) lists.held.push({ reason: `uses: ${held}` });
+      else if (refusal) lists.refused.push({ reason: `uses: ${refusal}` });
+      else {
+        Object.assign(workflowFiles, files);
+        for (const d of decisions!) {
+          if (!d || typeof d.name !== "string" || !names.includes(d.name) || !["promote", "demote", "hold"].includes(d.action)) continue;
+          const back = typeof d.rollbackTo === "string" && /^[0-9a-f]{64}$/.test(d.rollbackTo) ? `, back to ${d.rollbackTo.slice(0, 12)}` : "";
+          lists.settled.push({ workflow: d.name, reason: `${d.action}${back}: ${safeReason(d.reason, input.secrets)}` });
+          if (Object.keys(files!).length) workflowNames.add(d.name);
+        }
+      }
+    }
+  }
+
+  // The run's saved workflows are admitted against main as its uses left it: the admitter reads the settled trial.
+  const settledReader = overlaid(reader, workflowFiles);
   for (const name of [...records.keys()].sort()) {
     const noted = workflows.get(name);
     const item = { ...(noted?.candidate === undefined ? {} : { candidate: noted.candidate }), workflow: name };
@@ -654,12 +687,12 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         continue;
       }
       if (a.verdict !== "no") {
-        lists.held.push({ ...item, reason: a.verdict === "budget" ? "the run's question budget is spent" : `unsure whether it names a case or carries an instruction beyond the job (${fixed(a.p)})` });
+        lists.held.push({ ...item, reason: unsureReason(a, "it names a case or carries an instruction beyond the job") });
         continue;
       }
     }
     const workflow: WorkflowCandidate = { run: runId, name, records: records.get(name) ?? {}, untrusted: noted?.untrusted ?? candidates.some((c) => c.untrusted === true) };
-    const result = await options.admitWorkflow({ ...reader, workflow });
+    const result = await options.admitWorkflow({ ...settledReader, workflow });
     const reason = safeReason(result?.reason, input.secrets);
     if (result?.status === "held" || result?.status === "refused") {
       lists[result.status].push({ ...item, reason });
@@ -681,35 +714,6 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     Object.assign(workflowFiles, result.files);
     workflowNames.add(name);
     lists.accepted.push({ ...item, reason });
-  }
-
-  // The run's workflow uses, settled into their trials by the workflows lane.
-  const usesText = runFiles[usesPath(runId)];
-  if (typeof usesText === "string") {
-    const uses = parseUses(usesText, runId);
-    if (uses === undefined) lists.refused.push({ reason: "uses: the uses file does not parse" });
-    else if (uses.length && !options.settleUses) lists.held.push({ reason: "uses: no uses settler is installed" });
-    else if (uses.length && options.settleUses) {
-      const names = [...new Set(uses.map((u) => u.name))].sort();
-      const result = await options.settleUses({ ...reader, run: runId, uses });
-      const files = result?.files;
-      const decisions = Array.isArray(result?.decisions) ? result.decisions : undefined;
-      const held = !files || typeof files !== "object" || !decisions
-        ? "the uses settler answered out of shape"
-        : Object.keys(files).some((p) => p in workflowFiles) ? "they touch a workflow this run also admitted, so they were not settled" : undefined;
-      const refusal = held ? undefined : workflowFilesRefusal(files!, names, input.secrets, "the uses settler");
-      if (held) lists.held.push({ reason: `uses: ${held}` });
-      else if (refusal) lists.refused.push({ reason: `uses: ${refusal}` });
-      else {
-        Object.assign(workflowFiles, files);
-        for (const d of decisions!) {
-          if (!d || typeof d.name !== "string" || !names.includes(d.name) || !["promote", "demote", "hold"].includes(d.action)) continue;
-          const back = typeof d.rollbackTo === "string" && /^[0-9a-f]{64}$/.test(d.rollbackTo) ? `, back to ${d.rollbackTo.slice(0, 12)}` : "";
-          lists.settled.push({ workflow: d.name, reason: `${d.action}${back}: ${safeReason(d.reason, input.secrets)}` });
-          if (Object.keys(files!).length) workflowNames.add(d.name);
-        }
-      }
-    }
   }
 
   // The derived index stays under its cap: archive the least-used older learnings first, this run's own only after them.
@@ -759,29 +763,15 @@ function workflowFilesRefusal(files: Readonly<Record<string, string | null>>, na
   return refusals.length ? `the workflow's files are refused: ${refusalReason(refusals)}` : undefined;
 }
 
-const OUTCOMES: readonly string[] = ["frozen", "escalated", "failed"];
-const MAX_USES = 256;
-
-/** `uses/<run id>.json`: `{ version: 1, run, uses: [{ name, sha256, outcome, at }] }`, nothing looser; undefined when it is not. */
-function parseUses(text: string, runId: string): WorkflowUse[] | undefined {
-  let parsed: unknown;
+/** `uses/<run id>.json` read by the same rules the uses settler folds by, so a file it could not fold is refused here,
+ *  in the report, instead of reaching the settler; undefined when it does not parse. */
+function runUsesOf(text: string, runId: string): RunUses["uses"] | undefined {
   try {
-    parsed = JSON.parse(text);
-  } catch {
+    return parseRunUses(text, runId).uses;
+  } catch (error) {
+    if (!(error instanceof LearnError)) throw error;
     return undefined;
   }
-  const file = parsed as { version?: unknown; run?: unknown; uses?: unknown } | null;
-  if (!file || typeof file !== "object" || Array.isArray(file) || Object.keys(file).some((k) => !["version", "run", "uses"].includes(k))) return undefined;
-  if (file.version !== 1 || file.run !== runId || !Array.isArray(file.uses) || file.uses.length > MAX_USES) return undefined;
-  const out: WorkflowUse[] = [];
-  for (const raw of file.uses as unknown[]) {
-    const u = raw as Record<string, unknown> | null;
-    if (!u || typeof u !== "object" || Object.keys(u).some((k) => !["name", "sha256", "outcome", "at"].includes(k))) return undefined;
-    if (typeof u.name !== "string" || !WORKFLOW_NAME.test(u.name) || typeof u.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(u.sha256)) return undefined;
-    if (typeof u.outcome !== "string" || !OUTCOMES.includes(u.outcome) || typeof u.at !== "string" || Number.isNaN(Date.parse(u.at)) || new Date(u.at).toISOString() !== u.at) return undefined;
-    out.push({ name: u.name, sha256: u.sha256, outcome: u.outcome as WorkflowUse["outcome"], at: u.at });
-  }
-  return out;
 }
 
 /** A reason from outside this package, kept only when it holds nothing the guard would refuse. */
@@ -808,11 +798,20 @@ function finish(input: PlanInput, lists: Lists, files: Record<string, string | n
   const trailers: Record<string, string | string[]> = { [CURATED_RUN]: input.runId };
   if (ids.length) trailers[LEARNING_ID_TRAILER] = [...ids];
   if (workflows.length) trailers[WORKFLOW_TRAILER] = [...workflows];
-  for (const id of ids) if (!LEARNING_ID.test(id)) throw new LearnError("invalid", "a touched learning has no valid id");
   return {
     files,
     message: lines.length ? `${subject}\n\n${lines.join("\n")}` : subject,
     trailers,
     report: { run: input.runId, ...lists, questions },
+  };
+}
+
+/** `reader` with `files` (curate's pending changes) laid over main: a path they write reads as written, one they delete
+ *  reads as absent, any other read and every listing as main has it. */
+function overlaid(reader: RepoRead, files: Readonly<Record<string, string | null>>): RepoRead {
+  return {
+    main: reader.main,
+    read: async (path, sha) => (sha === reader.main && Object.hasOwn(files, path) ? (files[path] ?? undefined) : reader.read(path, sha)),
+    list: (prefix, sha) => reader.list(prefix, sha),
   };
 }

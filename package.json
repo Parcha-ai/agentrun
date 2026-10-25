@@ -1,7 +1,7 @@
 {
   "name": "agentrun-dsl-workspace",
   "private": true,
-  "version": "0.1.0-beta.20",
+  "version": "0.1.0-beta.27",
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -13,12 +13,12 @@
     "build": "node scripts/check-node.mjs && npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p examples/tsconfig.json",
-    "check": "npm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples && npm run test:viewer",
+    "check": "npm run build && node scripts/generate-schema.mjs --check && node scripts/generate-author-contract.mjs --check && node scripts/generate-author-references.mjs --check && npm run typecheck && npm test && npm run test:release && npm run test:examples && npm run test:viewer",
     "demo": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
     "demo:triage": "node packages/dsl/dist/cli.js demo",
     "verify:packages": "node scripts/verify-packages.mjs",
     "test:release": "node --test scripts/*.test.mjs scripts/recording/*.test.mjs",
-    "test:examples": "node --test examples/*.test.mjs examples/web/*.test.mjs examples/web/agent/*.test.mjs examples/agent-learn/*.test.mjs",
+    "test:examples": "node --test examples/*.test.mjs examples/web/*.test.mjs examples/web/agent/*.test.mjs examples/web/agents/*/*.test.mjs examples/agent-learn/*.test.mjs",
     "test:viewer": "tsc -p apps/viewer/tsconfig.json && node --test apps/viewer/test/*.test.ts",
     "demo:typed": "node scripts/check-node.mjs && node examples/run-typed-research.ts",
     "test:typed-example": "tsc -p examples/tsconfig.json && node --test examples/typed-research.test.mjs",
@@ -42,7 +42,7 @@
     "ajv": "^8.18.0",
     "typescript": "5.9.3",
     "typescript-json-schema": "^0.68.0",
-    "zod": "4.6.5"
+    "zod": "4.6.6"
   },
   "repository": {
     "type": "git",
@@ -52,5 +52,8 @@
     "url": "https://github.com/Parcha-ai/agentrun/issues"
   },
   "homepage": "https://agentrun.ai",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "overrides": {
+    "zod": "$zod"
+  }
 }

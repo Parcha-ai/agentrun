@@ -20,8 +20,9 @@ checks that relationship on its corpus; it is not a proof of implementation equi
 
 namespace AgentRun
 
-/-- `s.startsWith("$")`, written with `front` so the kernel can evaluate it. -/
-@[irreducible] def startsWithDollar (s : String) : Bool := s.front == '$'
+/-- `s.includes("$")`: an engine-owned key holds a `$` (`$host`, `<as>$answers`, `<as>$verify`). Written over the
+    character list so the kernel can evaluate it. -/
+@[irreducible] def holdsDollar (s : String) : Bool := s.toList.contains '$'
 
 mutual
 def tmplRefs : Tmpl → List Path
@@ -107,8 +108,9 @@ def Node.declaredAs : Node → Option String
 
 mutual
 /-- `declaredWrites` exactly as `workflow.ts` computes it: a report's `report_markdown`,
-otherwise the node's `as`; no descent into map bodies or child workflows. It ignores
-labels, `<as>$answers`, `<as>$verify` and code patches. -/
+otherwise the node's `as`, or an unaliased agent's, decide's or extract's label; no descent
+into map bodies or child workflows. It ignores `<as>$answers`, `<as>$verify` and code
+patches, whose keys are known only when the code runs (finding F2). -/
 def declaredWrites : Node → List String
   | .report .. => ["report_markdown"]
   | .map _ _ _ as _ _ fa => (if as.isEmpty then [] else [as]) ++ (match fa with
@@ -120,6 +122,9 @@ def declaredWrites : Node → List String
   | .route _ _ branches _ as _ | .routeValue _ _ branches _ as _ => (match as with
       | some k => if k.isEmpty then [] else [k]
       | none => []) ++ declaredWritesNamed branches
+  | .gen _ label _ as _ _ _ => match as with
+    | some k => if k.isEmpty then (if label.isEmpty then [] else [label]) else [k]
+    | none => if label.isEmpty then [] else [label]
   | n => match n.declaredAs with
     | some k => if k.isEmpty then [] else [k]
     | none => []
@@ -196,7 +201,7 @@ def collectErrors (as : String) (oif fa : Option String) : List String :=
     (match fa with
       | none => ["onItemFailure \"collect\" needs failedAs"]
       | some k => if k.trim.isEmpty then ["onItemFailure \"collect\" needs failedAs"]
-        else if startsWithDollar k then ["failedAs must not name an engine-owned \"$\" state key"]
+        else if holdsDollar k then ["failedAs must not name an engine-owned \"$\" state key"]
         else if k == as then ["failedAs must differ from as"] else [])
   else if fa.isSome then ["failedAs is written only with onItemFailure \"collect\""] else [])
 
@@ -204,10 +209,10 @@ def collectErrors (as : String) (oif fa : Option String) : List String :=
 def dollarErrors : Node → List String
   | .code label as | .gen _ label _ as _ _ _ =>
     match as with
-    | some k => if startsWithDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
-    | none => if startsWithDollar label then ["label must not begin with \"$\""] else []
+    | some k => if holdsDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
+    | none => if holdsDollar label then ["label must not contain \"$\""] else []
   | n => match n.declaredAs with
-    | some k => if startsWithDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
+    | some k => if holdsDollar k then ["\"as\" must not name an engine-owned \"$\" state key"] else []
     | none => []
 
 def workspaceRelative (f : String) : Bool :=

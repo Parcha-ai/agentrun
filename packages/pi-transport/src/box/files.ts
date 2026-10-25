@@ -2,6 +2,8 @@ import type { Context } from "@earendil-works/chord";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import { type Box, BoxError, type BoxFile, type BoxProcess } from "./box.ts";
 
+/** No bytes to send: the script reads /dev/null, never an exec stdin whose end `docker exec -i` can lose. */
+const EMPTY_INPUT = "exec </dev/null; ";
 const WRITE_SCRIPT = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1" && { [ -z "$2" ] || chmod "$2" "$1"; }';
 const READ_SCRIPT = '[ -e "$1" ] || exit 3; [ -d "$1" ] && exit 4; exec cat -- "$1"';
 const EXIT_NOT_FOUND = 3;
@@ -28,16 +30,21 @@ type Finished = { readonly exitCode: number; readonly stdout: Uint8Array; readon
 
 /** Feed `input` to a started program, read both streams to their end, and report how it ended. */
 export async function finish(process: BoxProcess, input?: Uint8Array): Promise<Result<Finished, BoxError>> {
+	// A write that fails because the box takes no stdin is the caller's answer: the program ran without its input, so its exit code means nothing.
+	let refused: BoxError | undefined;
 	const feed = (async () => {
 		if (input !== undefined && input.length > 0) await process.stdin.write(input);
 		await process.stdin.close();
-	})().catch(() => {});
+	})().catch((cause: unknown) => {
+		if (cause instanceof BoxError && cause.code === "unsupported") refused = cause;
+	});
 	const [stdout, stderr, exit] = await Promise.all([
 		readStream(process.stdout),
 		readStream(process.stderr),
 		process.wait(),
 		feed,
 	]);
+	if (refused !== undefined) return err(refused);
 	if (!exit.ok) return exit;
 	return ok({ exitCode: exit.value, stdout, stderr: new TextDecoder().decode(stderr) });
 }
@@ -50,7 +57,11 @@ export async function uploadByExec(
 ): Promise<Result<void, BoxError>> {
 	for (const file of files) {
 		const mode = file.mode === undefined ? "" : file.mode.toString(8);
-		const started = await box.exec(["sh", "-c", WRITE_SCRIPT, "sh", file.path, mode], undefined, context);
+		const started = await box.exec(
+			["sh", "-c", (file.bytes.length === 0 ? EMPTY_INPUT : "") + WRITE_SCRIPT, "sh", file.path, mode],
+			undefined,
+			context,
+		);
 		if (!started.ok) return started;
 		const finished = await finish(started.value, file.bytes);
 		if (!finished.ok) return finished;

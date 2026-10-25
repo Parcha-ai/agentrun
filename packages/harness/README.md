@@ -65,6 +65,7 @@ first-demo: complete
 
 The fakes make no priced call, so there is no cost line. Node 22 also prints its SQLite `ExperimentalWarning` on stderr.
 The run's record, `{"id":"x","score":42}`, is in the whole result that `--json` prints.
+`node demo.mjs --record ./rec` keeps the run as an `agentrun.recording/1` folder. Open it in the hosted run viewer, https://parcha-ai.github.io/agentrun/: choose or drop the folder, and it plays in your browser, with nothing uploaded.
 
 `pi-durable-disk run --app` takes this package's child app as a file: `import.meta.resolve('@parcha/agentrun-harness/child-app')`.
 
@@ -114,7 +115,7 @@ it with what it found and where, and the directory is left without a manifest, s
 | 1 | `models` | pi-durable's `models`, the node runner's agent | pi-ai's faux provider, answering from the job's script |
 | 2 | `tools` | the workflow's `call` (`runEffect`), a later process's lookup of a call an earlier one left unknown (`answered`), the agent's extensions, the browser's provider and driver | the job's `search` and the answers it kept, no extra extensions, `FakeBackend` from `@parcha/pi-browser/testing` |
 | 3 | `evidence` | the browser and vision, one sink for both record types | a JSON file per record under `<run>/evidence/<label>/`, named by its hash |
-| 4 | `decisions` | the workflow's `judge` (`runJudge`), the browser's page judge (`classifyPage`) | the job's scripted answers; a page judge only when the fakes give one. Each answer's receipt is a row in the run's store (`agentrun.decisions`) before it acts, and a later process of the run replays it instead of asking again |
+| 4 | `decisions` | the workflow's `judge` (`runJudge`), the browser's page judge (`classifyPage`) | the job's scripted answers; a page judge only when the fakes give one. Each answer's receipt is a row in the run's store (`agentrun.decisions`, one keyed document per row) before it acts, and a later process of the run replays it instead of asking again |
 | 5 | `status` | browser sessions and reconcile, vision looks and misses, workflow events | one JSON line per row in `<run>/events.jsonl` |
 | 6 | `deliver` | the workflow's output | `<run>/out/record.json` |
 | 7 | `credentials` | the browser's `redact`, the environment of a program vision starts | none; a started program sees only `PATH`. A command the agent runs (its `bash` tool, code mode's `tools.bash`) sees only `PATH`, `HOME`, `TMPDIR` and `LANG`: a key stays in the host (`command-env.ts`) |
@@ -232,6 +233,7 @@ await demo({ self: import.meta.url, spec, job, fakes });
 | `--fetch-sources` | fetches the demo's `sources.json` into the run's `work/` before the job runs (always with `--live`) |
 | `--cache <dir>` | where fetched sources are kept by hash, so a re-run does not fetch them again (default `agentrun-sources` in the OS temp dir) |
 | `--dir <path>` | keeps the run's directory |
+| `--box-ids <dir>` | where the provider ids of the run's boxes go: a directory, one file per label (default `box-ids.internal/` in the run's directory); refused inside the recording |
 | `--json` | the result as one JSON object |
 
 ### The spec
@@ -244,6 +246,46 @@ The parts of `demo.json` the entry acts on:
 - `sources`: `true` (the demo's `sources.json`), or a path (relative to the demo's directory, to the repository when it starts with `examples/`, or absolute): `sources.json` has two kinds of entry. `pages` are visited live by the agent (each with its URL, what it shows and its hand-check date): the entry passes them through untouched, never fetching or refusing them. `files` (or `items`) are the checked files `{ id, url, bytes, sha256, license }` the job reads. They are fetched into `work/` as `<id><extension of the URL's path>`, verified by size and hash (a file already there with the right hash is kept; one that is not the checked bytes is refused, naming what was checked and what came), on `--live` and with `--fetch-sources`. A no-key run uses the files the demo commits (`job.files`). A demo whose files depend on the input gives `sourcesFor(input)` instead (the same item shape, without `license`): only those items are fetched, and a no-key run that lacks their files is refused in one line naming `--fetch-sources`.
 - `input`: `{ fixtures: { <name>: "examples/<demo>/fixtures/<file>.json" } }`: the demo's captures, each a name (`[a-z0-9-]`) and the JSON file that is the job's input for it. `--input <name>` runs the job on that capture. A path outside `examples/<demo>/fixtures/` is refused; on fakes a bare name that is not a capture (and not a file) is refused with the list of captures; `--live` reads the real thing.
 - `boxes`: `{ kind: "local" | "docker", image?, runIn? }`. Docker is used only with `--live`: a no-key run uses a local box and starts no container. The provider is handed to the demo's tools as `context.boxes` (their second argument), with the crossings and transport lines of [Crossings](#crossings) built in. A tool's `context` also carries `live` (false on a no-key run: one set of tools reads live or replays a capture) and the run's `place` (`{ root, work }`), where it reads the run's evidence files and the job's files. `runIn: true` also runs the job's own disk tools in a box of it.
+
+### Boxes the demo's tools make
+
+A demo whose tools make boxes on providers of its own (a Daytona and a Modal one, say) passes them as `providers: ({ live, env, root }) => ({ name: provider, ... })`. The entry taps each and hands
+them to the tools as `context.providers`; every box a tool makes on one is on the recording:
+
+- live lines with source `transport`, each naming the box by its label (`box-1`, `box-2` by first appearance), never by the provider's id: `box.created` `{ box, provider, facts: { isolation, cpus, gpu }, role? }`
+  (`role` is the create call's `labels.role`), `box.exec` `{ box }` for each command the box took (never the command, its arguments or its environment), and `box.ended` `{ box }`;
+- a host `box.receipt` when the box ends, or when the process ends with it still open (`to` and `seconds` null), also when the run or the result hook fails. A process that was killed
+  (no `finally` runs) leaves its open boxes' receipts to the next process of the run, which writes them when it opens the run. It writes the receipt only: it does not end such a box.
+  The box's own `maxLifetimeMs` ends it, and a listing of the provider by the run's labels finds it. It names no rate (`usd_per_second`, `cost_usd`, `source` and `priced` null), so the run's cost
+  reads unknown, never 0.
+
+A box the tool made carries its label (`box.label`): a tool puts that in its result, so the result and the lines agree. An agent's own tools (pi extension tools, not workflow call nodes) get the same
+tapped providers through `providerExtensions: ({ providers, live, place }) => [extension, ...]`, called once in each process right after the tap, on fakes and on `--live`; every other extension stays on
+`fakes.extensions` and the live parts' `host.tools.extensions`. `providerExtensions` without `providers` is refused. The provider ids go only to `--box-ids` (`box-ids.internal/` in the run's
+directory by default): a directory with one file per label (`box-N.json`), each claimed by an exclusive `link(2)`, so two processes never take one label, and the next process of the run numbers on from
+them. Either path is refused when it resolves inside the recording. Before its first claim the ledger checks that the disk gives an exclusive link (a second link to one name must fail). A read-only
+mount (EROFS), a directory that exists but takes no files (ENOENT: on a disk place the place must make it, not a process by path), an ids path that is a file, and a damaged label file each refuse the
+run by name, so no label is given twice. `demo.json`'s `boxes` are named by label the same way.
+
+A demo with a place of its own passes `providers` only when that place shares the run's one labeller. Two things are needed:
+- **The handover.** The place hands each run process the host box it started for it, as `HOST_BOX` in the order's environment: JSON
+  `{ provider, key, run }`, where `key` is the box's start index in the place's `status().boxes` and `run` is the supervisor's life (the
+  order's `RUN_LABEL`). The process claims that box's label first, before any model call or tool box. A restarted process in the same life
+  gets the same label, and another life or another provider for the key is refused.
+- **The reads.** The place lets the supervisor read the run's files, through `readRunFile(path)` and `listRunFiles(dir)`. These have the
+  per-path shape of `@parcha/pi-durable-disk`'s `readRunFile` / `listRunFiles`, so a disk place binds its own control and run ref to them.
+  The supervisor reads the labels from `box-ids.internal/` and parses them itself; the place only returns bytes.
+  - `readRunFile` returns `null` for a file that is not there yet: the label has not landed, and the supervisor reads it again at the next tick.
+  - `listRunFiles` returns `[]` for a directory that is not there yet.
+  - Any other failure throws: a missing run, a path that is not a regular file, a failed control call. The supervisor takes a throw as an
+    unreadable label, never as one not yet landed.
+
+At the final read, a host box the place reported with no label refuses the recording, with the reason named:
+- its process never claimed it;
+- its label cannot be read;
+- the read did not finish inside its bound.
+
+A place without both reads numbers its host boxes in the supervisor, and is refused beside `providers`.
 
 ### The judge seam
 

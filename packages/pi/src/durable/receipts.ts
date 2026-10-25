@@ -50,7 +50,10 @@ export type ReuseReceiptsOptions = {
   /** Whether a repeat of another session's paid call is answered from its receipt (a continuation's sessions do). Receipts
    *  are recorded either way. */
   answer: boolean;
-  /** Effects whose outcome is unknown, from the handoff (`handoff.unknown`): a call equal to one is refused. */
+  /** Effects whose outcome is unknown, from the handoff (`handoff.unknown`): a call equal to one is refused, with a tool
+   *  result whose `details.effect_status` is "unknown". A workflow call that runs a wrapped tool passes its result through
+   *  `effectResultOf`, which turns that refusal into the DSL's thrown signal. A durable task runs the host's own `runEffect`
+   *  (`WorkflowHostParts`), so a durable host calls it there; without it the refusal reads as the call's result. */
   unknown?: readonly Pick<InheritedUnknown, "name" | "argsHash" | "intent">[];
   /** How a call's key is derived. Default: the gateway tool a `fetch` wrapper names, else the tool's own name. */
   keyOf?: (toolName: string, args: unknown) => { tool: string; argsHash: string };
