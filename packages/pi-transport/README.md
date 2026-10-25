@@ -979,6 +979,44 @@ The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep`
 survives that program's death: a writer appends ten records, each followed by an `fsync`, then it is killed and a second
 process counts them. A runtime is fit to hold a session's disk only when every acknowledged record is kept.
 
+## Testing a host against a fake provider
+
+`fakeBoxes(options)` (`@parcha/pi-transport/testing`) is a `BoxProvider` that does what a test scripts and writes down every call it
+was asked, so a test of a host (anything built on a `Box`) asserts what the host asked and how it behaves when a provider misbehaves,
+with no machine, key or network. It follows the `Box` contract (typed errors as values, stable ids, labels, facts), so a test written
+against it holds on a real provider. It runs no real program: a program in a fake box is a function a test registers with
+`provider.program(match, run)`, and a box's files are in memory (`box.files`).
+
+```ts
+import { fakeBoxes, fakeClock, modalLike } from "@parcha/pi-transport/testing";
+
+const provider = fakeBoxes(modalLike({ clock: fakeClock() }));
+provider.program("inst", async ({ stdin }) => { await stdin.readAll(); return 0; });
+provider.script.on({ op: "create" }, { fail: "unknown", leakBox: true }); // fails, but the box exists and `list` finds it
+```
+
+- `provider.calls` is every call in the order the provider saw it (`seq`, `op`, `box`, exact `argv`, env names never values, the stdin
+  bytes written, file paths and sizes, the spec, the typed result, and the label of the script rule that decided it). A failed
+  `create` is in it. `provider.leaks(marker)` says where a value appears in anything recorded (argv, stdin, an upload's bytes or
+  path, env, a label, the spec): the check that a secret travelled only on the channel it was meant for.
+- `provider.script.on(match, outcome, { times, label })` decides a call: a typed `fail`, a `delayMs`, a `hang` that ends on abort or
+  timeout, a lost end of an empty stdin (`lose: "stdin-eof"`, the `docker exec -i` fault), a dropped or truncated output stream, a
+  scripted `exit`, a box that goes `gone` in the middle of an exec, a `refuse`. A match names the op, a box, the nth call, a command
+  or any predicate over the call. `fakeClock()` moves time only when a test says (`advance`): delays, `timeoutMs` and a box's
+  `maxLifetimeMs` all run on it.
+- Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`)
+  run over it with no exec of a launcher program. A launch has a scriptable state (`phase`, `incarnation`, `restarts`, `lastExit`),
+  restarts under the spec's policy (`restart`, `restartDelayMs`, `restartLimit`, `terminalExits`), the stdin replayed to every
+  incarnation, `secrets` on the program's secrets channel, and a stop that drains, runs the `beforeStop` program, then kills. The
+  stdin and secrets are recorded on the `launch` call only, so `leaks(token)` finds them there and nowhere else; each start is an
+  `incarnation` call, never an `exec`. Errors are the launcher's `LaunchError`. A rule can fail a restart
+  (`{ op: "incarnation", when: (c) => c.incarnation === 2 }`), make the state unreadable (`{ op: "launchState" }` with a `fail`), or
+  end the program with a chosen code (`{ op: "launch" }` with an `exit`); `fake.launches[i].exit(code)` does it later.
+- `modalLike()` (a VM with FUSE and a ptrace scope a launcher can raise) and `daytonaLike()` (a container with no FUSE and a scope that
+  cannot be raised) are presets; `fuse`, `startedAt` and `ptraceScope` are extra facts until the box contract carries them.
+
+The fake does not run a shell, a real process or a mount: those are the real providers' and their live suites'.
+
 ## Writing a provider
 
 Fill `BoxProvider` and `Box`, then run the conformance suite against real boxes:
