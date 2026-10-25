@@ -45,9 +45,12 @@ const help = 'Describe a task: /agentrun <what you want done>\nTry support triag
 const NO_RUN = 'no workflow ran';
 const STAMP_LABEL = 'AgentRun host notice (not written by the model):';
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-const stampText = (runs: { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number } }[]): string => runs.length === 0
+type TurnRun = { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number }; scripted: boolean; resumed: boolean };
+const stampText = (runs: TurnRun[]): string => runs.length === 0
   ? `${STAMP_LABEL} ${NO_RUN} in this turn. A result, verification or support the model reports for this turn came from its own work, not from a workflow.`
-  : runs.map(run => `${STAMP_LABEL} receipt ${run.id}, ${run.status}, ${run.name}; ${plural(run.calls.agent, 'model step')}, ${plural(run.calls.judge, 'Jev decision')}, ${plural(run.calls.tool, 'tool call')}.`).join('\n');
+  : runs.map(run => `${STAMP_LABEL} receipt ${run.id}, ${run.status}, ${run.name}; ` + (run.scripted
+    ? 'scripted adapters: no model or Jev call was made.'
+    : `${plural(run.calls.agent, 'model step')}, ${plural(run.calls.judge, 'Jev decision')}, ${plural(run.calls.tool, 'direct tool call')}${run.resumed ? ' (resumed run: these counts cover this attempt only)' : ''}.`)).join('\n');
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
 function singleTextInput(workflow: unknown): string | undefined {
   const source = workflow as { input?: { schemaId?: string }; schemas?: Record<string, any> } | undefined;
@@ -132,7 +135,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   // What the host tells the user about a turn is its own entry, never text in the model's message. A session is engaged once the
   // author skill has loaded in it or the agentrun tool has been called; the runs that ended since the prompt began are its record.
   let engaged = false;
-  let turnRuns: { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number } }[] = [];
+  let turnRuns: TurnRun[] = [];
   const toolSet = (ctx: ExtensionContext, trusted = false): PiToolDefinition[] => {
     if (configuration.hostTools) {
       const supplied = configuration.hostTools(ctx);
@@ -366,6 +369,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         }
         s.pause = () => driver!.stop({ action: 'pause', source: 'operator' });
       }
+      // A resumed run keeps its id; the counts of a report cover the attempt that made it.
+      const resumed = resumable && runId === s.runId;
       s.observation = observation.data; s.report = undefined; s.runId = runId;
       persist(s, true);
       const ordinal = ++runOrdinal;
@@ -392,7 +397,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         if (unknown.length) report.uncertainEffects = unknown.map(effect => ({ idempotencyKey: effect.id, outcome: 'unknown' as const }));
       }
       s.report = report;
-      turnRuns.push({ id: runId, status: report.status, name: inspectWorkflow(s.draft).name, calls: report.calls });
+      turnRuns.push({ id: runId, status: report.status, name: inspectWorkflow(s.draft).name, calls: report.calls, scripted, resumed });
       persist(s);
       const summary = formatRunReport(report, scripted);
       const { events: _events, ...modelReport } = report;
