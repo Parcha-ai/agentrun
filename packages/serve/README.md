@@ -224,6 +224,16 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
 - Each run's door listens on loopback and takes only the server's door token.
 - A run's process gets the server's environment (model keys and the `AGENT_MODEL` variables among it) without the
   server's token: no `AGENTRUN_TOKEN`, no `AGENTRUN_API_KEY`, and no variable whose value is the token.
+- A run's file tools (`read`, `write`, `edit`) reach its own `work/`, and two places of its own beside it: `read` also
+  reaches the run's `tmp/` (next to `work/`, where a command's spilled output would go), and a write may also land in a
+  temporary directory the run's environment made for a tool (`createTempDir`). Every other path, a link inside `work/`
+  included, is resolved and refused (`outside the workspace`), so a run reads neither the server's token, the door
+  token, `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is
+  pi-durable-disk's confinement inside the run's process, not an operating-system boundary: the run and the server
+  share a user (one uid in the container), so the confinement holds only because the run has no shell.
+- No path offers a shell. `bash` is not bound: a revision that names it is not runnable here (`409`), and a model that
+  calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
+  nothing. There is no sandbox box in this phase, so shell stays off.
 - Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is
   `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404`. Every answer is `nosniff`, and HTML carries a CSP with
