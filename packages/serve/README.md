@@ -77,6 +77,17 @@ every route but `GET /v2/capabilities` still needs the token.
 `/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
 `https://<service>.onrender.com/?token=<the token>`. Set `AGENT_MODEL` and the provider's key there too.
 
+## Upgrading from 0.1.0-beta.26
+
+0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions, and each run under `DIR/runs/<id>/`.
+0.1.0-beta.26 and earlier kept one agent home per agent, `DIR/<agent>/agent.sqlite`, and this version does not read
+those. So it refuses to start on a data directory that holds one, and names each home it found, instead of serving
+it as if it had no agents.
+
+To keep those agents and their runs, keep the earlier version on that data directory. To start this version, give it a
+new data directory (a new volume), or move the old homes out of the one you have. Then create the agents again, here or
+through `POST /v2/agents`. Their earlier runs stay readable where you moved them, with the earlier version.
+
 ## Models
 
 An agentic revision names its model as `provider/model-id` (`"model"` in its definition), or names none and runs on
