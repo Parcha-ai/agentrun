@@ -28,13 +28,14 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { VIEW_FLAGS } from '../../apps/viewer/src/format.ts';
 
 /** The release the asset is on: a tag no release workflow reads (they read `v*`). */
 export const RELEASE = 'gallery';
 export const RECORDING_LIMIT = 80_000_000;
 export const GALLERY_LIMIT = 300_000_000;
-/** The views a lock entry may open its replay in: flags of the viewer's own chat page (`chat.html?r=<id>&muse`). The viewer keeps the same list (apps/viewer/src/app.ts). */
-export const VIEW_FLAGS = ['muse'];
+/** The views a lock entry may open its replay in: flags of the viewer's own chat page (`chat.html?r=<id>&muse`), the viewer's own list. */
+export { VIEW_FLAGS };
 export const TITLE_LIMIT = 120;
 
 const SHA256 = /^[0-9a-f]{64}$/;
