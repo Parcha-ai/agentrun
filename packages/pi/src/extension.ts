@@ -239,10 +239,17 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     const agents = s.draft ? inspectWorkflow(s.draft).nodes.map(entry => entry.path.split('/').slice(1).reduce<any>((item, key) => item?.[key.replace(/~1/g, '/').replace(/~0/g, '~')], s.draft))
       .filter(node => node && ['agent', 'decide', 'extract', 'report'].includes(node.node)) : [];
     if (agents.length) {
-      const available = toolSet(ctx).map(tool => tool.name);
+      // A node that names no tools is given the run's whole tool set, and a trusted run's set adds bash, edit and write.
+      const available = toolSet(ctx).map(tool => tool.name), trusted = toolSet(ctx, true).map(tool => tool.name);
+      const added = trusted.filter(name => !available.includes(name));
+      const shown = (turns: number | null) => turns === null ? 'no turn limit' : `${turns} turns`;
       lines.push('', 'This workflow:', ...agents.map(node => {
-        const { turns, source } = nodeTurns(node.node === 'agent' && typeof node.max_turns === 'number' ? node.max_turns : undefined, Array.isArray(node.tools) ? node.tools : available);
-        return `- ${node.label} [${node.node}]: ${turns === null ? 'no turn limit' : `${turns} turns`} (${source})`;
+        const maxTurns = node.node === 'agent' && typeof node.max_turns === 'number' ? node.max_turns : undefined;
+        const { turns, source } = nodeTurns(maxTurns, Array.isArray(node.tools) ? node.tools : available);
+        const inTrusted = Array.isArray(node.tools) ? undefined : nodeTurns(maxTurns, trusted).turns;
+        const trustedNote = inTrusted !== undefined && inTrusted !== turns
+          ? `; ${inTrusted === null ? 'no turn limit' : inTrusted} in a trusted run, which adds ${added.length > 1 ? `${added.slice(0, -1).join(', ')} and ${added.at(-1)}` : added.join('')}` : '';
+        return `- ${node.label} [${node.node}]: ${shown(turns)} (${source}${trustedNote})`;
       }));
     }
     return lines.join('\n');
@@ -292,7 +299,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     return {
       runNode: request => {
         if (!runner) throw new OperatorError('Workflow agent adapter was not admitted');
-        const { turns } = nodeTurns(request.maxTurns, request.tools ?? []);
+        // A node that names no tools is given the run's own tool set, trusted or not.
+        const { turns } = nodeTurns(request.maxTurns, request.tools ?? s.toolNames);
         return runner(turns === null ? request : { ...request, maxTurns: turns });
       },
       runJudge: request => {
