@@ -9,7 +9,7 @@ import {
   VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, type WorkflowDeps } from '@parcha/agentrun-dsl';
-import { createJevRunner } from '@parcha/agentrun-jev';
+import { createJevRunner, jevProviderFromEnv } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import { piHostLine } from './pi-host.js';
 import { workflowToolContext } from './tool-context.js';
@@ -20,7 +20,8 @@ import { demoInput, demoSearchTool, demoWorkflow, scriptedDemoDeps } from './dem
 import { cleanText as safe, formatRunReport, modelJson } from './presentation.js';
 import { ToolInputValidationError, toolInputProblems } from './tool-input-error.js';
 import { mkdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import type { Workflow } from '@parcha/agentrun-dsl';
 import { RecoveryError, fileStore, openRecovery, withRecovery, type JournalRecord, type RecoveryDriver } from '@parcha/agentrun-dsl/recovery';
 import { readSopFile, missingSopSections, sopDigest, type SopText } from './sop.js';
@@ -40,6 +41,21 @@ const mutatingTools = new Set(['bash', 'edit', 'write']);
 /** The extension's own tool's name, which a host tool may not take. */
 const toolName = 'agentrun';
 const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Dry run: /agentrun dry-run · SOP text: /agentrun sop <file> · Setup: /agentrun status · Limits: /agentrun limits\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
+/** What a result says when it ends no run, and the label on what the host says about a turn. */
+const NO_RUN = 'no workflow ran';
+const STAMP_LABEL = 'AgentRun host notice (not written by the model):';
+/** A workflow's name is written by the model, so the host prints it only when it is a plain name, and inside quotes (the pattern has no
+ *  double quote, so a name cannot close them); any other is "a workflow". A name with a line break, or one that spells the host's own
+ *  words, would otherwise read as the host's. */
+const PLAIN_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._:()/-]{0,79}$/;
+const plainName = (name: unknown): string => typeof name === 'string' && PLAIN_NAME.test(name) ? `workflow "${name}"` : 'a workflow';
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+type TurnRun = { id: string; status: string; name: string; calls: { agent: number; judge: number; tool: number }; scripted: boolean; resumed: boolean };
+const stampText = (runs: TurnRun[]): string => runs.length === 0
+  ? `${STAMP_LABEL} ${NO_RUN} in this turn. A result, verification or support the model reports for this turn came from its own work, not from a workflow.`
+  : runs.map(run => `${STAMP_LABEL} receipt ${run.id}, ${run.status}, ${plainName(run.name)}; ` + (run.scripted
+    ? 'scripted adapters: no model or Jev call was made.'
+    : `${plural(run.calls.agent, 'model step')}, ${plural(run.calls.judge, 'Jev decision')}, ${plural(run.calls.tool, 'direct tool call')}${run.resumed ? ' (resumed run: these counts cover this attempt only)' : ''}.`)).join('\n');
 const textResult = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text: safe(text) }], details });
 function singleTextInput(workflow: unknown): string | undefined {
   const source = workflow as { input?: { schemaId?: string }; schemas?: Record<string, any> } | undefined;
@@ -124,6 +140,10 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     maxJudgeCalls: limits.judgeCalls, maxToolCalls: limits.toolAttempts };
   let current: Session | undefined;
   let runOrdinal = 0;
+  // What the host tells the user about a turn is its own entry, never text in the model's message. A session is engaged once the
+  // author skill has loaded in it or the agentrun tool has been called; the runs that ended since the prompt began are its record.
+  let engaged = false;
+  let turnRuns: TurnRun[] = [];
   const toolSet = (ctx: ExtensionContext, trusted = false): PiToolDefinition[] => {
     if (configuration.hostTools) {
       const supplied = configuration.hostTools(ctx);
@@ -175,7 +195,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   const readiness = (ctx: ExtensionContext, s: Session) => ({
     skill: pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill'),
     pi: !!ctx.model && ctx.modelRegistry.getAll().some(model => model.id === ctx.model?.id && model.provider === ctx.model?.provider && model.api === ctx.model?.api),
-    jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim(), sop: !!configuration.sop || !!s.sop, running: s.busy, workflow: !!s.draft,
+    jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim() || !!process.env.OPENROUTER_API_KEY?.trim(), sop: !!configuration.sop || !!s.sop, running: s.busy, workflow: !!s.draft,
     mode: s.draft ? s.demo ? 'scripted' : 'live' : undefined,
   });
   const show = (s: Session, content: string, details: unknown = {}) => {
@@ -297,8 +317,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         judge = configuration.createJudge({ signal });
         if (typeof judge !== 'function') throw new Error('Host judge factory must return a runner');
       } else {
-        try { judge = createJevRunner({ signal, maxAttempts: 1 }); }
-        catch { throw new OperatorError('AgentRun requires TypeSafe configuration for this workflow. Set TYPESAFE_API_KEY and, for a gateway, TYPESAFE_BASE_URL before running.'); }
+        // The provider is the one the environment's keys select, as for the Jev adapter: OpenRouter only when its key is the one set.
+        try { judge = createJevRunner({ signal, maxAttempts: 1, provider: jevProviderFromEnv(process.env) }); }
+        catch { throw new OperatorError('AgentRun requires Jev configuration for this workflow. Set TYPESAFE_API_KEY (and, for a gateway, TYPESAFE_BASE_URL), or OPENROUTER_API_KEY for Jev through OpenRouter, before running.'); }
       }
     }
     return {
@@ -397,6 +418,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         }
         s.pause = () => driver!.stop({ action: 'pause', source: 'operator' });
       }
+      // A resumed run keeps its id; the counts of a report cover the attempt that made it.
+      const resumed = resumable && runId === s.runId;
       s.observation = observation.data; s.report = undefined; s.runId = runId;
       persist(s, true);
       const ordinal = ++runOrdinal;
@@ -423,11 +446,12 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         if (unknown.length) report.uncertainEffects = unknown.map(effect => ({ idempotencyKey: effect.id, outcome: 'unknown' as const }));
       }
       s.report = report;
+      turnRuns.push({ id: runId, status: report.status, name: inspectWorkflow(s.draft).name, calls: report.calls, scripted, resumed });
       persist(s);
       const summary = formatRunReport(report, scripted);
       const { events: _events, ...modelReport } = report;
       const mode = scripted ? 'scripted' : 'live';
-      return textResult(options.modelResult ? modelJson({ mode, ...modelReport }) : summary + (s.persistenceWarning ? `\n${s.persistenceWarning}` : ''), { mode, ...report,
+      return textResult(options.modelResult ? modelJson({ mode, receipt: runId, ...modelReport }) : summary + (s.persistenceWarning ? `\n${s.persistenceWarning}` : ''), { mode, receipt: runId, ...report,
         // Failure diagnostics must not echo rejected raw arguments. The operator
         // can inspect the retained draft explicitly; the error receipt stays sanitized.
         ...(report.error ? {} : { view: workflowView(s.draft, { input: s.input, observation: s.observation, report, mode }) }) });
@@ -488,6 +512,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       return new Text(safe(text), 0, 0);
     },
     async execute(_id, args, signal, onUpdate, ctx) {
+      engaged = true;
       const s = await state(ctx);
       const store = new WorkflowStore(ctx.cwd);
       if (args.action === 'save') {
@@ -501,7 +526,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         const saved = await store.load(args.name ?? '', args.digest);
         const result = inspect(ctx, s, saved.workflow, args.input); s.input = structuredClone(args.input ?? {}); s.savedName = saved.name; s.demo = undefined; clearRun(s); persist(s);
         const preview = view(ctx, s);
-        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input }), { ...result, saved, view: preview });
+        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input, note: NO_RUN }), { ...result, saved, view: preview });
       }
       if (args.action === 'describe') {
         const details = { tools: describeTools(toolSet(ctx)),
@@ -511,7 +536,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       if (args.action === 'dry-run') {
         if (args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then dry-run without a workflow argument.');
         const report = await dryRun(ctx, s, args.input, false, signal);
-        return textResult(modelJson({ dryRun: report }), { dryRun: report });
+        return textResult(modelJson({ dryRun: report, note: NO_RUN }), { dryRun: report });
       }
       if (args.action === 'run' && args.workflow !== undefined) throw new Error('Inspect the workflow first with action inspect, then run without a workflow argument.');
       if (args.action === 'inspect') {
@@ -519,7 +544,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         const preview = view(ctx, s);
         // The author needs the exact definition when editing a restored procedure.
         // Pi's renderer shows the readable view, not this model-facing JSON.
-        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input }), { ...result, view: preview, tools: toolSet(ctx).map(t => t.name) });
+        return textResult(modelJson({ preview: formatWorkflowView(preview), workflow: s.draft, input: s.input, note: NO_RUN }), { ...result, view: preview, tools: toolSet(ctx).map(t => t.name) });
       }
       return execute(ctx, s, args.input ?? s.input, { signal, update: onUpdate, modelResult: true });
     },
@@ -573,7 +598,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         } else if (/^history(?:\s|$)/.test(command)) {
           const history = workflowRunHistory(ctx.sessionManager.getBranch());
           if (!history.length) { show(s, 'No retained runs on this Pi session branch yet.'); return; }
-          const labels = history.map((run, index) => `${index + 1}. ${inspectWorkflow(run.workflow).name} · ${run.report?.status ?? 'interrupted'} · ${run.createdAt}`);
+          const labels = history.map((run, index) => `${index + 1}. ${plainName(inspectWorkflow(run.workflow).name)} · ${run.report?.status ?? 'interrupted'} · ${run.createdAt}`);
           let index = Number(command.slice(7).trim()) - 1;
           if (command === 'history' && ctx.mode === 'tui') {
             const selected = await ctx.ui.select('Retained runs on this session branch', labels);
@@ -633,7 +658,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           show(s, formatLimits(ctx, s), { limits: { ...limits }, nodeTurnDefaults: { ...nodeTurnDefaults } });
         } else if (command === 'status') {
           const ready = readiness(ctx, s);
-          show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\n${piHostLine(PI_VERSION)}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${ready.jev ? 'configuration present (connection not tested)' : 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY before starting Pi'}`, ready);
+          show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\n${piHostLine(PI_VERSION)}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${!ready.jev ? 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY, or OPENROUTER_API_KEY for Jev through OpenRouter, before starting Pi' : configuration.createJudge ? 'host-configured judge (connection not tested)' : `configuration present, via ${jevProviderFromEnv(process.env) === 'openrouter' ? 'OpenRouter' : 'TypeSafe'} (connection not tested)`}`, ready);
         } else if (command === 'stop') {
           const dry = s.dryRun; dry?.abort();
           s.pause?.(); s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : dry ? 'Dry run stopped.' : 'Nothing is running.');
@@ -676,12 +701,33 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (retainFinal && wasRunning && old.report) persist(old, false, true);
     if (current === old) current = undefined;
   };
-  pi.on('session_shutdown', () => closeSession(true));
-  pi.on('session_before_switch', () => closeSession(true));
-  pi.on('session_before_fork', () => closeSession(true));
+  pi.on('session_shutdown', () => { engaged = false; return closeSession(true); });
+  pi.on('session_before_switch', () => { engaged = false; return closeSession(true); });
+  pi.on('session_before_fork', () => { engaged = false; return closeSession(true); });
+  pi.on('before_agent_start', event => {
+    turnRuns = [];
+    // From Pi 1.2 the event is a union: a run started by a user prompt carries `prompt`, one started by a custom message does not.
+    if ('prompt' in event && typeof event.prompt === 'string' && event.prompt.includes(`<skill name="${AUTHOR_SKILL_NAME}"`)) engaged = true;
+  });
+  // A model can load the author skill by itself, by reading the file Pi lists for the skill's command.
+  pi.on('tool_call', (event, ctx) => {
+    if (engaged || event.toolName !== 'read') return;
+    const path = (event.input as { path?: unknown }).path;
+    const skill = pi.getCommands().find(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill')?.sourceInfo?.path;
+    if (typeof path === 'string' && skill && resolve(ctx.cwd, path.replace(/^~(?=\/|$)/, homedir())) === resolve(skill)) engaged = true;
+  });
+  pi.on('agent_end', () => {
+    if (!engaged) return;
+    const runs = turnRuns; turnRuns = [];
+    pi.sendMessage({ customType: 'agentrun:stamp', content: safe(stampText(runs)), display: true, details: { runs } }, { triggerTurn: false });
+  });
   pi.on('session_start', async (_event, ctx) => {
     if (current && current.key !== `${ctx.sessionManager.getSessionId()}:${ctx.cwd}`) await closeSession();
     await state(ctx);
+    // An allowlist such as --tools read,grep leaves this tool out, and Pi then disables it without a word.
+    const active = pi.getActiveTools();
+    if (!active.includes(toolName)) pi.sendMessage({ customType: 'agentrun', display: true, details: {},
+      content: safe(`The agentrun tool is not active, so Pi's model cannot call AgentRun workflows in this session. /agentrun still works. To let the model use the tool, start Pi with: pi --tools ${[...active, toolName].join(',')}`) });
   });
   pi.on('session_tree', async (_event, ctx) => { await closeSession(); await state(ctx); });
   pi.registerEntryRenderer<WorkflowSessionSnapshot>('agentrun:snapshot', (entry, options) => {
@@ -691,6 +737,6 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (!snapshot.report && !snapshot.running) return undefined;
     return new Text(safe(options.expanded ? formatWorkflowView(workflowView(snapshot.workflow, {
       input: snapshot.input, report: snapshot.report, observation: snapshot.observation, mode: snapshot.demo ? 'scripted' : 'live adapters',
-    })) : `AgentRun receipt · ${snapshot.report?.status ?? 'interrupted'} · ${inspectWorkflow(snapshot.workflow).name}`), 0, 0);
+    })) : `AgentRun receipt · ${snapshot.report?.status ?? 'interrupted'} · ${plainName(inspectWorkflow(snapshot.workflow).name)}`), 0, 0);
   });
 }
