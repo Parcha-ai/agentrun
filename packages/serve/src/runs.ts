@@ -709,6 +709,8 @@ export class Runs {
     if (revision.kind === "workflow") return run;
     void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`).catch((error: Error) => {
       run.submitted = 0;
+      // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
+      if (run.outcome || run.finishing || run.cancel) return;
       run.error = { code: "run_failed", message: error.message, retryable: false };
       if (this.live(run)) this.finish(run, "failed");
       else if (!run.cancel) void this.settle(run, 1, true);
