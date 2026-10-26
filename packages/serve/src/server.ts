@@ -1,16 +1,15 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { extname, join, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
+import { join, resolve } from "node:path";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { FILE_LIST_CAP, readFileRoute, walk } from "./files.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -28,13 +27,6 @@ const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
-const FILE_LIST_CAP = 2_000;
-const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
-const TYPES: Record<string, string> = {
-  txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
-  html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
-};
-const INLINE = new Set(["text/plain; charset=utf-8", "text/markdown; charset=utf-8", "text/csv; charset=utf-8", "application/json", "application/x-ndjson", "image/png", "image/jpeg", "image/gif", "image/webp", "text/html; charset=utf-8"]);
 
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
@@ -409,55 +401,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       clearInterval(beat);
       res.end();
     }
-  }
-
-  // ---- files ----------------------------------------------------------------------------------------------------------
-
-  async function walk(base: string, dir = "", out: { path: string; size_bytes: number; modified_at: string; content_type: string | null }[] = [], depth = 0): Promise<typeof out> {
-    for (const d of await readdir(join(base, dir), { withFileTypes: true }).catch(() => [])) {
-      if (d.name.startsWith(".") || d.isSymbolicLink() || out.length > FILE_LIST_CAP) continue;
-      const rel = dir ? `${dir}/${d.name}` : d.name;
-      if (d.isDirectory()) depth < 16 && (await walk(base, rel, out, depth + 1));
-      else if (d.isFile()) {
-        const st = await stat(join(base, rel)).catch(() => null);
-        if (st) out.push({ path: rel, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(rel).slice(1).toLowerCase()] ?? null });
-      }
-    }
-    return out;
-  }
-
-  async function readFileRoute(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, raw: string): Promise<void> {
-    let rel: string;
-    try {
-      rel = raw.split("/").map(decodeURIComponent).join("/");
-    } catch {
-      throw new ApiError("invalid_file_path", "the path is not percent-encoded right");
-    }
-    const parts = rel.split("/");
-    if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
-    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    let path = join(run.dir, "work");
-    if (!(await lstat(path).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
-    for (const part of parts) {
-      path = join(path, part);
-      const st = await lstat(path).catch(() => null);
-      if (!st || st.isSymbolicLink()) throw new ApiError("not_found", "no such file");
-    }
-    const st = await lstat(path);
-    if (!st.isFile()) throw new ApiError("not_found", "no such file");
-    const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
-    const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
-    const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
-    res.writeHead(200, {
-      "content-type": type,
-      "content-length": st.size,
-      "x-content-type-options": "nosniff",
-      "cache-control": "no-store",
-      ...(type.startsWith("text/html") ? { "content-security-policy": FILE_CSP } : {}),
-      ...(download ? { "content-disposition": `attachment; filename="${name}"` } : {}),
-    });
-    if (req.method === "HEAD" || st.size === 0) return void res.end();
-    await pipeline(createReadStream(path), res).catch(() => undefined);
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
