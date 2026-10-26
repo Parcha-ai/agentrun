@@ -656,13 +656,6 @@
     }
 
     // ---- a stored run: copy its answer, run it again -------------------------------------------------------------------
-    /** The person's first message: the run's input, unless the timeline cut it (its rows' text stops at 2000 characters). */
-    function firstInput(rows) {
-      var first = (rows || []).filter(function (row) { return row.kind === "user_message"; })[0];
-      if (!first || typeof first.text !== "string") return null;
-      return { text: first.text, whole: !(first.text.length >= 2000 && /…$/.test(first.text)) };
-    }
-
     function runActions(run, data) {
       if (run.state === "running") return null;
       var out = el("span");
@@ -692,23 +685,23 @@
         });
         parts.push(copy);
       }
-      var input = run.kind === "agentic" ? firstInput(data.rows) : null;
-      if (input) {
-        var again = button("Run again", "quiet", function () {
-          again.disabled = true;
-          say(out, null);
-          v2("POST", "agents/" + enc(run.agent) + "/runs", { input: { content: input.text }, revision: run.revision }).then(
-            function (next) { window.location.hash = "#/runs/" + enc(next.run_id); },
-            function (error) {
-              again.disabled = false;
-              say(out, error);
-            }
-          );
-        });
-        again.title = input.whole ? "A new run of the same version, with the same input" : "The input is too long to send again from this page";
-        if (!input.whole) again.disabled = true;
-        parts.push(again);
-      }
+      var again = button("Run again", "quiet", function () {
+        again.disabled = true;
+        say(out, null);
+        // The input as the run was started, whole: the timeline's rows cut a long one.
+        v2("GET", "runs/" + enc(run.id) + "/input").then(function (kept) {
+          if (!kept || kept.input === null || typeof kept.input !== "object") throw new Error("This run's input was not kept, so it cannot run again.");
+          return v2("POST", "agents/" + enc(run.agent) + "/runs", { input: kept.input, revision: run.revision });
+        }).then(
+          function (next) { window.location.hash = "#/runs/" + enc(next.run_id); },
+          function (error) {
+            again.disabled = false;
+            say(out, error);
+          }
+        );
+      });
+      again.title = "A new run of the same version, with the same input";
+      parts.push(again);
       return parts.length ? el("div", { class: "actions run-actions" }, parts, out) : null;
     }
 

@@ -504,23 +504,27 @@ test("a completed run's Copy answer puts its whole answer on the clipboard as pl
   assert.equal(buttonNamed(failed.page, "Copy answer"), undefined, "only a completed run has an answer to copy");
 });
 
-test("Run again starts a new run of the same revision with the same input, then opens it; an input cut short, or a workflow's, offers no run again", async () => {
-  const answers = { ...ended(storedRun("completed", [said("What is six times seven?"), answered])), "POST v2/agents/calc/runs": [202, { ...LIVE, run_id: "run-8", status: "queued" }] };
+test("Run again starts a new run of the same revision with the run's whole input, read from /v2/runs/{id}/input, then opens it; a workflow run's too", async () => {
+  const long = `What is six times seven? ${"Say it plainly. ".repeat(200)}`;
+  const answers = { ...ended(storedRun("completed", [said(`${long.slice(0, 1999)}…`), answered])), "v2/runs/run-7/input": { input: { content: long } }, "POST v2/agents/calc/runs": [202, { ...LIVE, run_id: "run-8", status: "queued" }] };
   const { page, api } = open("#/runs/run-7", answers);
   await page.settle();
   buttonNamed(page, "Run again").click();
   await page.settle();
-  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/runs", { input: { content: "What is six times seven?" }, revision: REV_B }]]);
+  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/runs", { input: { content: long }, revision: REV_B }]], "the input whole, not the timeline's cut");
   assert.equal(page.window.location.hash, "#/runs/run-8");
-  const long = `${"x".repeat(1_999)}…`;
-  const cut = open("#/runs/run-7", { ...answers, "api/runs/run-7": storedRun("completed", [said(long), answered]) });
-  await cut.page.settle();
-  const off = buttonNamed(cut.page, "Run again");
-  assert.equal(off.disabled, true, "an input the timeline cut is not sent again as if whole");
-  assert.match(off.title, /too long/);
-  const flow = open("#/runs/run-7", { ...answers, "api/runs/run-7": { ...storedRun("completed", []), run: { ...storedRun("completed", []).run, kind: "workflow" }, workflow: { graph: { nodes: [], edges: [] }, status: {} } } });
+  const stored = storedRun("completed", []);
+  const flow = open("#/runs/run-7", { ...ended({ ...stored, run: { ...stored.run, kind: "workflow" }, workflow: { graph: { nodes: [], edges: [] }, status: {} } }), "v2/runs/run-7/input": { input: { question: "Six times seven?" } }, "POST v2/agents/calc/runs": [202, { ...LIVE, run_id: "run-9", status: "queued" }] });
   await flow.page.settle();
-  assert.equal(buttonNamed(flow.page, "Run again"), undefined, "a workflow run's input is not on the page");
+  buttonNamed(flow.page, "Run again").click();
+  await flow.page.settle();
+  assert.deepEqual(flow.api.writes(), [["POST", "v2/agents/calc/runs", { input: { question: "Six times seven?" }, revision: REV_B }]]);
+  const lost = open("#/runs/run-7", { ...answers, "v2/runs/run-7/input": { input: null } });
+  await lost.page.settle();
+  buttonNamed(lost.page, "Run again").click();
+  await lost.page.settle();
+  assert.deepEqual(problemText(lost.page), ["This run's input was not kept, so it cannot run again."]);
+  assert.deepEqual(lost.api.writes(), []);
 });
 
 test("a refusal is said in words, without its HTTP status or a field's internal prefix", async () => {
