@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { client, FAUX, follow, scratch, serve, startRun, storeRun, withEnv } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -177,6 +177,20 @@ test("after a restart the runs are read from the agent home: status, result and 
   assert.equal(page.final, true);
   assert.deepEqual(page.rows.map((r) => r.kind), before.rows.map((r) => r.kind));
   assert.equal(JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).title, "What is six times seven?");
+});
+
+test("with accounts, a run's process never sees the accounts settings, any BETTER_AUTH_ variable or the accounts secret's value; AGENTRUN_NO_BROWSER and AGENTRUN_PUBLIC_URL still reach it", async (t) => {
+  const secret = `secret_${"s".repeat(40)}`;
+  const stripped = ["AGENTRUN_AUTH_SECRET", "SECRET_COPY", "AGENTRUN_OWNER_EMAIL", "AGENTRUN_OWNER_PASSWORD_FILE", "AGENTRUN_ACCOUNTS", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL"];
+  const kept = ["AGENTRUN_NO_BROWSER", "AGENTRUN_PUBLIC_URL"];
+  withEnv(t, {
+    AGENTRUN_AUTH_SECRET: secret, SECRET_COPY: secret, AGENTRUN_OWNER_EMAIL: "ops@example.com", AGENTRUN_OWNER_PASSWORD_FILE: "/nowhere", AGENTRUN_ACCOUNTS: "1",
+    BETTER_AUTH_SECRET: "another secret", BETTER_AUTH_URL: "http://127.0.0.1:1", AGENTRUN_NO_BROWSER: "1", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123",
+  });
+  const { api } = await serve(t, { accounts: true, authSecret: secret });
+  const { run_id } = await startRun(api, "env", `Which variables do you see? ${[...stripped, ...kept].join(" ")}`);
+  await follow(api, run_id, ["completed"]);
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, [...stripped.map((name) => `${name} unset`), ...kept.map((name) => `${name} set`)].join("; "));
 });
 
 test("a run's process never sees the server's token, by name or by value; model keys and the AGENT_MODEL variables still reach it", async (t) => {

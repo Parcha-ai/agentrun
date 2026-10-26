@@ -33,8 +33,8 @@ async function probed(api, data, agent, probe, workflow = false) {
   return { runId: run.body.run_id, done: async () => (await follow(api, run.body.run_id, ["completed"]), answers(data, run.body.run_id)) };
 }
 
-test("read, write and edit reach nothing outside work/: the tokens, the store, another run, /proc, a planted link, the data directory and /tmp", async (t) => {
-  const { api, data } = await serve(t, { faux: PROBE });
+test("read, write and edit reach nothing outside work/: the tokens, the store, the accounts database and secret, another run, /proc, a planted link, the data directory and /tmp", async (t) => {
+  const { api, data } = await serve(t, { faux: PROBE, accounts: true });
   assert.equal((await api("POST", "/agents", { definition: { id: "probe", name: "probe", instructions: "Probe.", tools: ["read", "write", "edit"] } })).status, 201);
   // Another run of the same agent, with a secret in its own work/.
   const other = await probed(api, data, "probe", []);
@@ -47,13 +47,18 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   await writeFile(otherTmp, "another run's temporary secret");
   const outside = join(data, "..", "outside.txt");
   const go = join(data, "..", "go");
-  const before = { token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8") };
+  const kept = async () => ({ token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8"), secret: await readFile(join(data, ".auth-secret"), "utf8") });
+  const before = await kept();
   const attempts = [
     ["read", { path: "../../.token" }],
     ["read", { path: "../../../.token" }],
     ["read", { path: join(data, ".token") }],
     ["read", { path: "../../../.door-token" }],
     ["read", { path: "../../../store.sqlite" }],
+    ["read", { path: "../../../auth.sqlite" }],
+    ["read", { path: join(data, "auth.sqlite") }],
+    ["read", { path: "../../../.auth-secret" }],
+    ["read", { path: join(data, ".auth-secret") }],
     ["read", { path: `../../${other.runId}/work/secret.txt` }],
     ["read", { path: secret }],
     ["read", { path: `../../${other.runId}/tmp/secret.txt` }],
@@ -64,6 +69,10 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
     ["write", { path: outside, content: "evil" }],
     ["write", { path: "../tmp/written.txt", content: "evil" }],
     ["edit", { path: "../../../store.sqlite", edits: [{ oldText: "CREATE TABLE", newText: "CREATE TABLX" }] }],
+    ["write", { path: "../../../.auth-secret", content: "evil" }],
+    ["write", { path: join(data, "auth.sqlite"), content: "evil" }],
+    ["edit", { path: "../../../auth.sqlite", edits: [{ oldText: "CREATE TABLE", newText: "CREATE TABLX" }] }],
+    ["edit", { path: join(data, ".auth-secret"), edits: [{ oldText: "a", newText: "b" }] }],
   ];
   const control = [["write", { path: "inside.txt", content: "inside" }], ["read", { path: "inside.txt" }], ["read", { path: "../tmp/note.txt" }]];
   const run = await probed(api, data, "probe", [{ wait: go }, ...[...attempts, ...control].map(([tool, args]) => ({ tool, args }))]);
@@ -83,7 +92,7 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   assert.deepEqual(said.slice(attempts.length).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to inside.txt"], ["read", false, "inside"], ["read", false, "note"]], "the same run reads and writes inside work/, and reads its own tmp/");
   assert.equal(await readFile(join(data, "runs", run.runId, "work", "inside.txt"), "utf8"), "inside");
   // Nothing outside changed, and nothing was made there.
-  assert.deepEqual({ token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8") }, before);
+  assert.deepEqual(await kept(), before);
   assert.equal(await readFile(secret, "utf8"), "another run's secret");
   assert.equal(await exists(join(data, "evil.txt")), false);
   assert.equal(await exists(outside), false);
@@ -93,6 +102,10 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   t.after(() => store.close());
   assert.equal(store.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
   assert.ok(store.prepare("SELECT sql FROM sqlite_master WHERE name = 'agents'").get().sql.startsWith("CREATE TABLE"), "the edit did not land");
+  const auth = new DatabaseSync(join(data, "auth.sqlite"), { readOnly: true });
+  t.after(() => auth.close());
+  assert.equal(auth.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
+  assert.ok(auth.prepare(`SELECT sql FROM sqlite_master WHERE name = 'user'`).get().sql.startsWith("CREATE TABLE"), "the accounts database is untouched");
 });
 
 test("no path offers a shell: an agentic revision naming bash is not saved, and a run or a workflow node that calls bash anyway runs no command", async (t) => {

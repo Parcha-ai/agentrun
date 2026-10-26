@@ -30,9 +30,11 @@ export default function reply(context, faux) {
     return faux.message(JSON.stringify({ region: users.length === 1 ? "us" : last.trim() }));
   }
   // The run's process says which of these it sees: the server's token must not reach it, the rest must.
+  // The names after the question, when it lists any, are the ones it says.
   if (first.includes("Which variables do you see?")) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
-    return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
+    const named = first.split("Which variables do you see?")[1].trim().split(/\s+/).filter(Boolean);
+    return faux.message((named.length ? named : ["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"]).map(seen).join("; "));
   }
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
