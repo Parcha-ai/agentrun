@@ -19,8 +19,8 @@ const sources = JSON.parse(readFileSync(new URL('./hero/sources.json', import.me
 const NINE = ['caiso', 'ercot', 'nyiso', 'isone', 'ieso', 'eirgrid', 'bpa', 'transpower', 'ree'];
 
 const scratch = async (t) => { const dir = await mkdtemp(join(tmpdir(), 'hero-test-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
-/** Whether the manifest's cost covers what the eyes charged. */
-const covers = (usd, charged) => usd >= charged;
+/** Whether the manifest's cost covers what the eyes charged: the fold rounds usd to 1e-8, so it may land a hair under the raw sum (the 1e-9 the look cost's check allows). */
+const covers = (usd, charged) => usd >= charged - 1e-9;
 
 test('the manifest\'s cost covers the eyes\' charges when the fold rounds them a hair under their raw sum', () => {
   // The nine charges of a priced run whose raw sum is 0.009632000000000002: the fold rounds every figure to 1e-8, so its usd is 0.009632.
