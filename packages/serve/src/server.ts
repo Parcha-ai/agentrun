@@ -259,6 +259,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     return run;
   }
 
+  const onlyFields = (body: Json, allowed: readonly string[]): InputIssue[] => Object.keys(body).filter((k) => !allowed.includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. */
   async function idempotent(req: IncomingMessage, path: string, body: Json, work: () => Promise<{ status: number; body: unknown; headers?: Record<string, string> }>) {
     const key = req.headers["idempotency-key"];
@@ -326,7 +328,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
-      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      const issues = onlyFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"]);
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
       if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
       if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -554,8 +556,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "setCurrent": {
         const entry = needAgent(id);
         const body = await bodyOf(req);
-        const extra = Object.keys(body).filter((k) => k !== "revision");
-        if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+        const extra = onlyFields(body, ["revision"]);
+        if (extra.length) throw invalid(extra);
         const revision = body.revision;
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
@@ -589,8 +591,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
         const body = await bodyOf(req);
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const extra = Object.keys(body).filter((k) => k !== "content");
-          if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+          const extra = onlyFields(body, ["content"]);
+          if (extra.length) throw invalid(extra);
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
