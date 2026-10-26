@@ -2,7 +2,7 @@ import { inspectWorkflow, runWorkflowSlice } from '@parcha/agentrun-dsl';
 import { createHash } from 'node:crypto';
 import { researchQuestion } from './typed-research.ts';
 import { evidenceCases } from './research-eval-cases.mjs';
-import { isMain, loadEvidenceCases, loadResearchAdapters, runCli, saveReport, validateEvidenceCases, withCancellation } from './research-runtime.mjs';
+import { loadEvidenceCases, loadResearchAdapters, runCli, saveReport, validateEvidenceCases, withCancellation } from './research-runtime.mjs';
 
 // Scripted answers are separate from the gold labels. Changing the gold labels
 // cannot change these outputs. This verifies the evaluator, not Jev quality.
@@ -51,7 +51,7 @@ export async function evaluateEvidence({ runJudge = scriptedEvidenceDecision, ca
   };
 }
 
-if (isMain(import.meta.url)) await runCli(async (signal, options) => {
+if (import.meta.main) await runCli(async (signal, options) => {
   const cases = options.cases ? await loadEvidenceCases(options.cases, signal) : evidenceCases;
   const { runJudge } = options.live
     ? await loadResearchAdapters({ ...options, signal, agents: false }) : { runJudge: scriptedEvidenceDecision };
