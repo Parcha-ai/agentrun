@@ -50,24 +50,31 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
-async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: { token: string; dir: string }, held: boolean): Promise<void> {
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void };
+
+async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the page answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
   const file = FILES[raw];
   if (file) return send(req, res, 200, file.type, await bytesOf(file.path));
   const url = new URL(req.url ?? "/", "http://serve");
   if (raw.startsWith("/api/")) {
-    if (!held && !same(String(req.headers.authorization ?? ""), `Bearer ${server.token}`)) return refuse(req, res, new ApiError("unauthenticated", "the page's data needs the cookie the printed link sets, or Authorization: Bearer <the token>"));
+    if (!held && !same(String(req.headers.authorization ?? ""), `Bearer ${server.token}`)) {
+      server.authFailed?.(raw, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
+      return refuse(req, res, new ApiError("unauthenticated", "the page's data needs the cookie the printed link sets, or Authorization: Bearer <the token>"));
+    }
     const { status, value } = await storeApi({ dir: server.dir })(url.pathname, url.searchParams);
     return send(req, res, status, "application/json; charset=utf-8", JSON.stringify(value));
   }
   const given = url.searchParams.get("token");
-  if (given !== null && same(given, server.token)) {
+  // A token holds no whitespace, so a space in the link is a "+" that was not encoded.
+  if (given !== null && (same(given, server.token) || same(given.replaceAll(" ", "+"), server.token))) {
     url.searchParams.delete("token");
     const rest = url.searchParams.toString();
     const cookie = `${cookieName(req)}=${sessionOf(server.token)}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}`;
     res.writeHead(303, { ...SECURITY, location: `${raw}${rest ? `?${rest}` : ""}`, "set-cookie": cookie, "content-length": 0 });
     return void res.end();
   }
+  if (given !== null) server.authFailed?.(raw, "wrong_link_token");
   if (!held || given !== null) return send(req, res, 401, HTML, await bytesOf(LOCKED.path));
   return send(req, res, 200, HTML, await bytesOf(PAGE.path));
 }
@@ -77,7 +84,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
  * /v2 path with no Authorization header, the page's cookie becomes the Bearer header for a GET or HEAD, and for any other
  * method only when the request's Origin is the page's own origin and its body is application/json.
  */
-export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: { token: string; dir: string }): boolean {
+export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
   const held = cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";

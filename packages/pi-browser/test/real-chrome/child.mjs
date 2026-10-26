@@ -14,7 +14,7 @@ import { cdpProvider } from "../../dist/providers/cdp.js";
 const env = process.env;
 const script = JSON.parse(env.SCRIPT || "[]").map((step) => (Array.isArray(step) ? step : [step, {}]));
 const filed = [];
-const local = cdpProvider({ chrome: { executablePath: env.CHROME, profileRoot: env.PROFILE_ROOT, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"] } });
+const local = cdpProvider({ chrome: { executablePath: env.CHROME, profileRoot: env.PROFILE_ROOT, args: ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost"], confineExtension: false } });
 const live = new Set();
 let proxy = null;
 const cut = env.CUT_BEFORE === undefined ? null : Number(env.CUT_BEFORE);

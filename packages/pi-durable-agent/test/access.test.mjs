@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import fsPromises, { copyFile, readdir, rm } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
+import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
@@ -219,29 +220,69 @@ test("a local start that fails is undone under the same hold of the home: anothe
   const { home } = await leasedThenBroken();
   const before = await readAgentHome(home);
   const lock = path.join(home.dir, "owner.lock");
+  const runDir = path.join(home.dir, "runs", "run-b");
+  // The other process answers each "probe" with one try of the lock: "busy", or "held". From the first probe on it also
+  // polls the lock until it gets it; once it has it, it says "held" and keeps it past the home's 5 s wait.
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     const { DatabaseSync } = await import("node:sqlite");
-    let sawBusy = false;
-    console.log("polling");
-    for (const end = Date.now() + 30_000; Date.now() < end; ) {
+    const { createInterface } = await import("node:readline");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    let polling = false, got = false;
+    const take = () => {
       const db = new DatabaseSync(${JSON.stringify(lock)}, { timeout: 0 });
       try { db.exec("PRAGMA locking_mode = EXCLUSIVE"); db.exec("BEGIN EXCLUSIVE"); db.exec("COMMIT"); }
-      catch { db.close(); sawBusy = true; await new Promise((r) => setTimeout(r, 1)); continue; }
-      if (!sawBusy) { db.close(); await new Promise((r) => setTimeout(r, 1)); continue; }
+      catch { db.close(); return false; }
+      got = true;
       console.log("held");
-      await new Promise((r) => setTimeout(r, 6_500));
-      db.close();
-      process.exit(0);
+      sleep(6_500).then(() => { db.close(); process.exit(0); });
+      return true;
+    };
+    const poll = async () => {
+      for (const end = Date.now() + 30_000; Date.now() < end; await sleep(1)) if (got || take()) return;
+      process.exit(3);
+    };
+    console.log("ready");
+    for await (const line of createInterface({ input: process.stdin })) {
+      if (got || line !== "probe" || take()) continue;
+      console.log("busy");
+      if (!polling) { polling = true; poll(); }
     }
-    process.exit(3);
-  `], { stdio: ["ignore", "pipe", "inherit"] });
-  let out = "";
-  const polling = new Promise((resolve) => child.stdout.on("data", (chunk) => { out += chunk; if (out.includes("polling")) resolve(); }));
+  `], { stdio: ["pipe", "pipe", "inherit"] });
+  child.stdin.on("error", () => {});
   const exited = new Promise((resolve) => child.on("exit", resolve));
-  await polling;
-  await assert.rejects(startRun(home, { runId: "run-b", host: "test", now: T0 + 2_000 }));
+  const said = [];
+  let heard = () => {};
+  createInterface({ input: child.stdout }).on("line", (line) => { said.push(line); heard(line); });
+  const reply = (command) => {
+    const line = new Promise((resolve) => { heard = resolve; });
+    if (command) child.stdin.write(`${command}\n`);
+    return Promise.race([line, exited.then(() => "exited")]);
+  };
+  assert.equal(await reply(), "ready");
+  // Before each write the start makes under runs/run-b, from its seed's first to the undo's removal of the directory,
+  // the other process tries the lock.
+  const probes = [];
+  const realFs = { mkdir: fsPromises.mkdir, rm: fsPromises.rm, writeFile: fsPromises.writeFile, rename: fsPromises.rename };
+  for (const [op, fn] of Object.entries(realFs)) {
+    fsPromises[op] = async (target, ...rest) => {
+      if (String(target).startsWith(runDir)) probes.push({ op, target: path.relative(home.dir, String(target)), answer: await reply("probe") });
+      return fn(target, ...rest);
+    };
+  }
+  syncBuiltinESMExports();
+  let error;
+  try {
+    error = await startRun(home, { runId: "run-b", host: "test", now: T0 + 2_000 }).then(() => null, (e) => e);
+  } finally {
+    Object.assign(fsPromises, realFs);
+    syncBuiltinESMExports();
+  }
+  const settled = said.length;
+  assert.deepEqual(probes.filter((probe) => probe.answer !== "busy"), [], "the other process never got the lock while the start or its undo was going on");
+  assert.deepEqual(probes.at(-1), { op: "rm", target: path.join("runs", "run-b"), answer: "busy" }, "the last write tried under the hold is the undo's removal of the run directory");
+  assert.match(String(error), /ENOTDIR|EEXIST|not a directory/i, "the start failed on its seed");
   assert.equal(await exited, 0, "the other process got the lock, once the start had let it go");
-  assert.match(out, /held/);
+  assert.equal(said.indexOf("held"), settled, "and only then");
   const after = await readAgentHome(home);
   assert.equal(after.runs["run-b"], undefined, "no record");
   assert.deepEqual(after.leases, before.leases, "the leases as they were");
