@@ -13,6 +13,7 @@ import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
+import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
@@ -50,28 +51,31 @@ export type ServeOptions = {
   faux?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
+  /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
+  log?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
 };
 
-/** `tokenFile` is null when `options.token` gave the token. */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; close(): Promise<void> };
+/** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
-/** A private token in `file` (0600), made once and kept. */
-async function tokenIn(file: string): Promise<string> {
+/** A private token in `file` (0600), made once and kept; `made` when this call made it. */
+async function tokenIn(file: string): Promise<{ token: string; made: boolean }> {
   const known = await readFile(file, "utf8").then((text) => text.trim(), () => "");
   if (known && !/\s/.test(known)) {
     await chmod(file, 0o600);
-    return known;
+    return { token: known, made: false };
   }
   const token = `ar_local_${randomBytes(24).toString("base64url")}`;
   await writeFile(file, `${token}\n`, { mode: 0o600, flag: "w" });
   await chmod(file, 0o600);
-  return token;
+  return { token, made: true };
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
@@ -197,13 +201,18 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
-  const token = options.token ?? (await tokenIn(tokenFile!));
+  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
+  const token = options.token ?? stored!.token;
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
-  const doorToken = await tokenIn(doorTokenFile);
+  const { token: doorToken } = await tokenIn(doorTokenFile);
+  if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
+  const log = options.log;
+  const quiet = process.env.AGENTRUN_LOG === "quiet";
+  const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -502,7 +511,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "capabilities") return send(res, 200, caps);
-    if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
+    if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
+      authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
+      throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
+    }
     if (found.capability) {
       const off: Record<string, string> = {
         "home.export": "This server does not export a home yet.",
@@ -645,6 +657,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const server = createServer((req, res) => {
     const requestId = `req_${randomBytes(8).toString("hex")}`;
     res.setHeader("x-request-id", requestId);
+    if (log && !quiet) {
+      const started = performance.now();
+      const method = req.method ?? "GET";
+      const path = (req.url ?? "/").split("?")[0]!;
+      res.once("finish", () => log(logLine("request", { method, path, status: res.statusCode, ms: Math.round(performance.now() - started) })));
+    }
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
       const known = error instanceof ApiError ? error : new ApiError("internal", (error as Error)?.message ?? String(error));
@@ -661,7 +679,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
-    if (answerPage(req, res, raw, { token, dir: data })) return;
+    if (answerPage(req, res, raw, { token, dir: data, authFailed })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
@@ -678,6 +696,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     port: address.port,
     token,
     tokenFile,
+    tokenMade: stored?.made ?? false,
     async close() {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));

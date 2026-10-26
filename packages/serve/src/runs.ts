@@ -17,6 +17,7 @@ import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
+import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -27,6 +28,8 @@ type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
 const LEASE_MS = 90_000;
+/** How long an agentic run's process may finish its turn after SIGTERM, unless the server says otherwise. */
+const DRAIN = "30s";
 /** The run process's stderr, beside run.json: a file, so the process outlives a server that stops without stopping it. */
 const PROCESS_LOG = "process.log";
 const QUIET = /:run:(start|end)$/;
@@ -183,7 +186,8 @@ export function statusOf(run: Run): { status: Status; state: State } {
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** `token` is the server's own: no run's process sees it. */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry };
+/** `log` takes a run's start and end (print.ts). */
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -191,7 +195,20 @@ const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
   Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
 
-/** The last line of the run process's log, for a failure's message. */
+/** One line of the run process's log in words: pi-durable-disk writes JSON lines (`{at, event, message, ...}`). */
+function inWords(line: string): string {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return line;
+  }
+  if (!isObject(value)) return line;
+  const text = (key: string) => (typeof value[key] === "string" ? (value[key] as string) : undefined);
+  return [text("event"), text("message") ?? text("error")].filter(Boolean).join(": ") || "the run's process left no message";
+}
+
+/** The last line of the run process's log, in words, for a failure's message. */
 async function lastLogLine(run: Run): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
@@ -199,7 +216,7 @@ async function lastLogLine(run: Run): Promise<string> {
     const { size } = await file.stat();
     const length = Math.min(size, 4096);
     const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
-    return clip(buffer.toString("utf8").trim().split("\n").at(-1) ?? "", 300);
+    return clip(inWords(buffer.toString("utf8").trim().split("\n").at(-1) ?? ""), 300);
   } finally {
     await file.close();
   }
@@ -531,7 +548,7 @@ export class Runs {
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
-    const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? "30s");
+    const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
       "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
@@ -640,6 +657,7 @@ export class Runs {
     const row = this.store.readRun(run.id);
     run.endedAt = row?.endedAt ?? run.endedAt ?? new Date().toISOString();
     if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
+    this.options.log?.("run_ended", { run: run.id, agent: run.agentId, status: outcome, cost_usd: row?.costUsd ?? cost ?? "unknown" });
     run.outcome = outcome;
     run.finishing = undefined;
     run.settled = true;
@@ -684,12 +702,15 @@ export class Runs {
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
     this.runs.set(run.id, run);
+    this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;
     this.refresh(run);
     this.launch(run);
     if (revision.kind === "workflow") return run;
     void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`).catch((error: Error) => {
       run.submitted = 0;
+      // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
+      if (run.outcome || run.finishing || run.cancel) return;
       run.error = { code: "run_failed", message: error.message, retryable: false };
       if (this.live(run)) this.finish(run, "failed");
       else if (!run.cancel) void this.settle(run, 1, true);
@@ -749,18 +770,23 @@ export class Runs {
     return true;
   }
 
+  /** How long a run's process gets after SIGTERM before SIGKILL: its drain and a second to exit. */
+  private killAfterMs(): number {
+    return (durationMs(this.options.drainTimeout ?? DRAIN) ?? 30_000) + 1_000;
+  }
+
   async close(): Promise<void> {
     this.closing = true;
     const live = [...this.runs.values()].filter((run) => run.child);
     for (const run of live) {
       run.child!.kill("SIGTERM");
-      setTimeout(() => run.child?.exitCode === null && run.child.kill("SIGKILL"), 45_000).unref();
+      setTimeout(() => run.child?.exitCode === null && run.child.kill("SIGKILL"), this.killAfterMs()).unref();
     }
     await Promise.all(live.map((run) => new Promise((resolve) => (run.child ? run.child.once("exit", resolve) : resolve(undefined)))));
     // An adopted process is stopped the same way, and watched by its pid.
     const adopted = [...this.runs.values()].filter((run) => run.orphan && alive(run.orphan));
     for (const run of adopted) this.terminate(run);
-    for (const deadline = Date.now() + 45_000; adopted.some((run) => run.orphan && alive(run.orphan)) && Date.now() < deadline; ) await sleep(100);
+    for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphan && alive(run.orphan)) && Date.now() < deadline; ) await sleep(100);
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
     for (const run of this.runs.values()) run.feed?.abort();
