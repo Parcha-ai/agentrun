@@ -151,4 +151,12 @@ test("a save whose checks run while another request changes the current revision
   agents.setCurrent(back, b.revision.id);
   releaseB();
   await assert.rejects(savingB, (error) => error.code === "precondition_failed");
+  // With no If-Match, a save naming version 3 while another request saves version 3 first: this one would be 4, so 422.
+  const two = agents.get("x");
+  let releaseC;
+  const heldC = new Promise((resolve) => { releaseC = resolve; });
+  const savingC = agents.commit(two, body({ instructions: "Answer in a word.", version: 3 }), { check: () => heldC });
+  await agents.commit(two, body({ instructions: "Answer in a sentence.", version: 3 }));
+  releaseC();
+  await assert.rejects(savingC, (error) => error.code === "input_invalid" && /^definition\.version is 4 /.test(error.message));
 });
