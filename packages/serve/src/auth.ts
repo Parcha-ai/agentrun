@@ -107,9 +107,12 @@ async function jsonBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   return value as Record<string, unknown>;
 }
 
+/** The session cookie's name: `__Host-` on https, so no other host or path can set it; else one per port. */
+const sessionCookie = (baseUrl: string, port: number) => (baseUrl.startsWith("https://") ? "__Host-agentrun-session" : `agentrun-${port}-session`);
+
 function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number }) {
   const https = site?.baseUrl.startsWith("https://") ?? false;
-  const name = https ? "__Host-agentrun-session" : `agentrun-${site?.port ?? 0}-session`;
+  const name = sessionCookie(site?.baseUrl ?? "", site?.port ?? 0);
   return {
     appName: "AgentRun Server",
     database: db,
@@ -191,7 +194,7 @@ export class Accounts {
    *  its link, or null. */
   attach(baseUrl: string, port: number): string | null {
     this.auth = build(this.db, this.secret, { baseUrl, port });
-    this.site = { baseUrl, origin: new URL(baseUrl).origin, cookie: baseUrl.startsWith("https://") ? "__Host-agentrun-session" : `agentrun-${port}-session` };
+    this.site = { baseUrl, origin: new URL(baseUrl).origin, cookie: sessionCookie(baseUrl, port) };
     if (this.hasOwner()) return null;
     this.setupCode = { code: randomBytes(16).toString("base64url"), until: Date.now() + SETUP_TTL_MS, tries: 0 };
     return `${baseUrl}/setup#code=${this.setupCode.code}`;
