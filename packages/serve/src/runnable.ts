@@ -6,7 +6,6 @@ import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import type { InputIssue } from "./errors.js";
 import { chooseModel, nodeTiers } from "./model.js";
 
-/** A revision's body as it is saved or stored. */
 export type RevisionShape =
   | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string }
   | { kind: "workflow"; workflow: unknown };
@@ -46,5 +45,4 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   return out;
 }
 
-/** A blocker as a field issue, for a 422 or a warning. */
 export const issueOf = ({ field, reason, message }: Blocker): InputIssue => ({ field, reason, message });

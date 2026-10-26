@@ -14,7 +14,6 @@ export const CAP_ENV = "AGENTRUN_SERVE_MAX_COST_USD";
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
 
-/** The run's cap from its process's environment; absent for a run without one. */
 export function capOf(env: NodeJS.ProcessEnv): number | undefined {
   const text = env[CAP_ENV];
   if (text === undefined || text === "") return undefined;
@@ -59,9 +58,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // "out of budget" is final to pi-ai's retry policy, whatever digits the amounts hold.
     errorMessage: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spent + held).toFixed(6)} spent the run would pass its cap of $${cap}: the run is out of budget.`,
   });
-  /** Adds what `answer` cost to what the run has spent once it settles. */
   const count = (answer: Promise<AssistantMessage>) => answer.then((message) => void (spent += message.usage?.cost?.total ?? 0), () => undefined);
-  /** Admits a request of `worst`, holding it until `answer` settles, or says why not. */
   const admit = (worst: number, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> | undefined => {
     if (spent + held + worst > cap) return undefined;
     held += worst;

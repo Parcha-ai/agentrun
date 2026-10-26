@@ -31,7 +31,6 @@ function names(value: unknown, field: string, out: InputIssue[]): void {
   else if (new Set(value).size !== value.length) out.push(issue(field, "duplicate", `${field} names one item twice`));
 }
 
-/** The skills a revision's files hold: each `<name>/SKILL.md`, by name, sorted. */
 export const skillNames = (files: Iterable<string>): string[] => [...files].filter((path) => path.endsWith(SKILL_FILE)).map((path) => path.slice(0, -SKILL_FILE.length)).sort();
 
 /**

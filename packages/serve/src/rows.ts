@@ -108,7 +108,6 @@ export class RowLog {
     return { reset, rows, drop, next_after: upto, unchanged, has_more };
   }
 
-  /** Resolves on the next change, or after `ms`. */
   changed(ms: number): Promise<void> {
     return new Promise((resolve) => {
       const done = () => (clearTimeout(timer), this.waiters.delete(done), resolve());
