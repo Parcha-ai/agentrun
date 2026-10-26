@@ -1,6 +1,6 @@
 // The live session's parts, offline: what the person says, and that the tools the agent is told about are the tools the workflow calls and the live code provides.
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import { githubTools } from './issue-triage/github.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -117,6 +117,82 @@ test('--max-usd stops the session cleanly: no lead request starts once the known
     await new Promise((resolve) => setTimeout(resolve, 600));
     assert.equal(faux.state.callCount, asked, 'the model is not asked again after the stop');
   } finally { console.log = log; process.exitCode = 0; await rm(dir, { recursive: true, force: true }); }
+});
+
+// The cap's other cases share one set-up: a stub lead whose every answer can bill the recording's spool as it is asked (the bill is tied to the call, never to a clock), and a spend that can already be in place before the first request.
+const CALL_USD = 0.0004, CAP_USD = 0.0009;
+async function cappedRun({ answers, placed = 0 }) {
+  const dir = await mkdtemp(join(tmpdir(), 'triage-cap-'));
+  const lines = [];
+  const log = console.log; console.log = (line) => lines.push(String(line));
+  try {
+    const spool = join(dir, 'run', 'meter', '.spool');
+    let commit = 0;
+    const write = (usd, name) => appendFileSync(join(spool, name), `${JSON.stringify({ channel: 'durable', source: 'pi', kind: 'pi.assistant', commit: ++commit, conv: 1, data: { model: [{ role: 'assistant', usage: { cost: { total: usd } } }] } })}\n`);
+    const bill = (usd = CALL_USD) => { if (existsSync(spool)) write(usd, 'stub-usage.jsonl'); };
+    if (placed) { mkdirSync(spool, { recursive: true }); write(placed, 'placed-usage.jsonl'); }
+    const faux = fauxProvider({ models: [{ id: 'faux-1' }] });
+    faux.setResponses(answers(bill));
+    const catalog = createModels(); catalog.setProvider(faux.provider);
+    const parts = { host: { models: { catalog, lead: { provider: faux.provider.id, modelId: 'faux-1' } }, decisions: { runJudge: async () => { throw new Error('no judge here'); } } }, tools: {}, models: {} };
+    await session({ dir: join(dir, 'run'), input: { repo: 'o/r', sha: 'a'.repeat(40), numbers: [1] }, plain: true, maxUsd: CAP_USD, parts });
+    return { lines, summary: JSON.parse(lines.at(-1)), faux };
+  } finally { console.log = log; process.exitCode = 0; await rm(dir, { recursive: true, force: true }); }
+}
+const describing = (bill) => Array.from({ length: 400 }, () => () => { bill(); return fauxAssistantMessage([fauxToolCall('agentrun', { action: 'describe' })], { stopReason: 'toolUse' }); });
+const stopLine = (lines) => lines.some((line) => /stopped: the known spend, \$[\d.]+, reached --max-usd \$0\.0009/.test(line));
+
+test('--max-usd refuses a request when the known spend equals the cap exactly: the lead is never asked', { timeout: 30_000 }, async () => {
+  const { lines, summary, faux } = await cappedRun({ answers: describing, placed: CAP_USD });
+  assert.equal(faux.state.callCount, 0, 'a spend that has reached the cap (>=, not >) keeps the first request from being made');
+  assert.equal(summary.outcome, 'over_budget');
+  assert.equal(summary.spentUsd, CAP_USD);
+  assert.ok(stopLine(lines), lines.join('\n'));
+});
+
+test('--max-usd lets the one request through that crosses the cap, and refuses the next: the spend ends within one call of the cap', { timeout: 30_000 }, async () => {
+  const placed = CAP_USD - CALL_USD / 2;
+  const { lines, summary, faux } = await cappedRun({ answers: describing, placed });
+  assert.equal(faux.state.callCount, 1, 'one call crosses the cap; no request is made after it');
+  assert.equal(summary.outcome, 'over_budget');
+  assert.ok(summary.spentUsd >= CAP_USD && summary.spentUsd <= CAP_USD + CALL_USD, `${summary.spentUsd}`);
+  assert.ok(stopLine(lines), lines.join('\n'));
+});
+
+test('--max-usd ends a call that is already in flight when the spend crosses the cap while it runs: only the timer can, the guard asks nothing then', { timeout: 15_000 }, async () => {
+  let ended = false;
+  // One slow call: it bills past the cap mid-call, then waits for the run to be aborted (its own timeout is far past the test's).
+  const answers = (bill) => [async (_context, options) => {
+    bill(CAP_USD + CALL_USD);
+    await new Promise((resolve) => {
+      const wait = setTimeout(resolve, 60_000); wait.unref();
+      options?.signal?.addEventListener('abort', () => { ended = true; clearTimeout(wait); resolve(); }, { once: true });
+    });
+    return fauxAssistantMessage('stopped waiting');
+  }];
+  const { lines, summary, faux } = await cappedRun({ answers });
+  assert.equal(faux.state.callCount, 1, 'no second request: the guard never ran again');
+  assert.equal(ended, true, 'the call in flight was aborted');
+  assert.equal(summary.outcome, 'over_budget');
+  assert.ok(stopLine(lines), lines.join('\n'));
+});
+
+test('--max-usd also guards a research node\'s requests: a node that keeps calling is refused once the spend it bills reaches the cap', { timeout: 30_000 }, async () => {
+  const note = { type: 'object', additionalProperties: false, required: ['content'], properties: { content: { type: 'string' } } };
+  const draft = { v: 2, name: 'Read a note', schemas: { Result: note }, output: { schemaId: 'Result', path: 'result' }, root: { node: 'agent', label: 'read-note', instructions: 'Read note.txt with read and submit its text.', tools: ['read'], out: 'Result', as: 'result' } };
+  // The lead authors and runs the workflow without billing; only the node's own requests bill, so the cap is reached while the node runs.
+  const answers = (bill) => [
+    () => fauxAssistantMessage([fauxToolCall('agentrun', { action: 'inspect', workflow: draft })], { stopReason: 'toolUse' }),
+    () => fauxAssistantMessage([fauxToolCall('agentrun', { action: 'run' })], { stopReason: 'toolUse' }),
+    ...Array.from({ length: 400 }, () => () => { bill(); return fauxAssistantMessage([fauxToolCall('read', { path: 'note.txt' })], { stopReason: 'toolUse' }); }),
+  ];
+  const { lines, summary, faux } = await cappedRun({ answers });
+  const nodeCalls = faux.state.callCount - 2;
+  assert.ok(nodeCalls >= 1, `the node was asked: ${faux.state.callCount} requests\n${lines.join('\n')}`);
+  assert.ok(nodeCalls <= Math.ceil(CAP_USD / CALL_USD), `no node request starts once the known spend is at the cap: ${nodeCalls} node calls`);
+  assert.ok(summary.spentUsd >= CAP_USD && summary.spentUsd <= CAP_USD + CALL_USD, `${summary.spentUsd}`);
+  assert.equal(summary.outcome, 'over_budget');
+  assert.ok(stopLine(lines), lines.join('\n'));
 });
 
 test('the rows are the result itself when it is a list, else its rows (the agent chooses the output shape)', () => {
