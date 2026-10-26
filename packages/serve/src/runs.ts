@@ -212,6 +212,7 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  private readonly runDir = (id: string) => join(this.options.agents.dir, "runs", id);
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -241,7 +242,7 @@ export class Runs {
   }
 
   private async load(row: RunRow): Promise<Run> {
-    const dir = join(this.options.agents.dir, "runs", row.id);
+    const dir = this.runDir(row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
@@ -777,7 +778,7 @@ export class Runs {
   /** `Run`, as the contract shows it. */
   async view(run: Run) {
     const { status, state } = statusOf(run);
-    const row = TERMINAL.has(status) ? this.store.readRun(run.id) : undefined;
+    const row = this.store.readRun(run.id);
     const answer = answerOf(run.rows);
     const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
@@ -799,14 +800,14 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       cost: this.cost(run),
-      archived_at: this.store.readRun(run.id)?.archivedAt ?? null,
+      archived_at: row?.archivedAt ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at };
+    const { effort, updated_at, result, poll_after_ms, ...summary } = await this.view(run);
+    return summary;
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -821,7 +822,7 @@ export class Runs {
   async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Awaited<ReturnType<Runs["summary"]>>> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known);
-    const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
+    const meta = (await readJson(join(this.runDir(row.id), RUN_META))) as Partial<RunMeta> | null;
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
