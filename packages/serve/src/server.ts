@@ -12,6 +12,7 @@ import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agen
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, invalid, unsupported } from "./errors.js";
 import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
+import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
@@ -75,9 +76,11 @@ async function tokenIn(file: string): Promise<string> {
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 
-type Route = { method: string; pattern: RegExp; name: string; capability?: string };
-const ROUTES: Route[] = [
-  { method: "GET", pattern: /^\/capabilities$/, name: "capabilities" },
+/** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off. */
+export type Route = { method: string; pattern: RegExp; name: string; capability?: string };
+export const ROUTES: readonly Route[] = [
+  { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
+  { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
@@ -135,6 +138,8 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
       query: false,
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
+    /** This server's own: where its OpenAPI document is, beside this one. */
+    links: { openapi: "/v2/openapi.json" },
     limits: {
       max_body_bytes: MAX_BODY,
       max_upload_bytes: null,
@@ -179,6 +184,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const doorToken = await tokenIn(doorTokenFile);
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
+  const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
   const expected = digest(`Bearer ${token}`);
@@ -469,18 +475,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (found.name === "capabilities") return send(res, 200, caps);
+    if (found.name === "getCapabilities") return send(res, 200, caps);
+    if (found.name === "getOpenapi") return send(res, 200, openapi);
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
-    if (found.capability) {
-      const off: Record<string, string> = {
-        "home.export": "This server does not export a home yet.",
-        "home.import": "This server does not import a home yet.",
-        "runs.kill": "This server does not kill a run's process yet.",
-        "files.upload": "This server takes no uploads yet.",
-        quotes: "This server has no billing, so it gives no quotes.",
-      };
-      throw unsupported(found.capability, off[found.capability]!);
-    }
+    if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {

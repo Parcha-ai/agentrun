@@ -89,6 +89,8 @@ const allowedEndpoints = {
     ['README.md', 'http://127.0.0.1:7340'],
     // The same address in the changelog entry the release fold writes from the package's fragment (#625).
     ['CHANGELOG.md', 'http://127.0.0.1:7340'],
+    // The agentrun.v2/0 contract, vendored unchanged for GET /v2/openapi.json: its servers list the local server's default address.
+    ['dist/openapi/agentrun-v2.openapi.json', 'http://127.0.0.1:7340'],
   ],
 };
 
