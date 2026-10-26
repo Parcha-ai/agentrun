@@ -85,7 +85,8 @@ export async function installRegistryConsumer(consumer, { requested, root, regis
   const npmMajor = Number((await run('npm', ['--version'])).stdout.trim().split('.')[0]);
   const { overrides, held } = buildOverrides(rootLock, npmMajor);
   await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-registry-consumer', private: true, type: 'module', overrides }));
-  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', `--registry=${registry}`, ...requested], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+  // A caller's silenced npm (`npm run -s` sets npm_config_loglevel=silent) must not hide why the install refused: the flag wins.
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--loglevel=error', `--registry=${registry}`, ...requested], { cwd: consumer, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
   const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
   const drifted = findDrift(lock.packages, held);
   assert.deepEqual(drifted, [], `The registry consumer holds @earendil-works packages the repository does not hold, or at versions it does not hold: ${drifted.join(', ')}`);
