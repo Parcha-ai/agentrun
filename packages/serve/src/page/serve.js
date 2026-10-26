@@ -8,6 +8,19 @@
   var STATUSES = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
   var STATUS_CLASS = { queued: "live", working: "live", input_required: "escalated", completed: "ok", failed: "error", cancelled: "stopped" };
   var LONG_POLL_MS = 25000;
+  /** What each refusal means, in words, by its code. */
+  var REFUSALS = {
+    agent_not_runnable: "This agent can't run here",
+    input_invalid: "Some of it needs a change",
+    not_continuable: "This run has ended",
+    not_found: "It is not here",
+    precondition_failed: "Someone changed it first",
+    unauthenticated: "This page is signed out; open the link the server printed",
+    rate_limited: "The server is busy; try again in a moment",
+    spend_cap_reached: "The run reached its spending limit",
+    unsupported_here: "This server does not offer that",
+    unavailable: "The server is not ready; try again in a moment",
+  };
   /** What seeds the showcase agents and their runs into the server the compose file starts. */
   var SHOWCASE = "docker compose -f packages/serve/docker/compose.yaml exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs";
   /** The run's own start and end rows, which only a live timeline has: the stored one, and the server, count them as quiet. */
@@ -51,12 +64,24 @@
           }
           if (res.ok) return data;
           var said = data && data.error && typeof data.error === "object" ? data.error : {};
-          var error = new Error(res.status + (said.message ? " " + said.message : ""));
+          var fields = Array.isArray(said.fields) ? said.fields : [];
+          var error = new Error(inWords(said.code, fields.length ? "" : said.message));
           error.status = res.status;
-          error.fields = Array.isArray(said.fields) ? said.fields : [];
+          error.code = said.code;
+          error.fields = fields;
           throw error;
         });
       });
+    }
+
+    /** A refusal as a sentence a person reads: what it means first, then the server's own words; never its status. */
+    function inWords(code, message) {
+      var lead = REFUSALS[code] || "That did not work";
+      return message ? lead + ": " + plainNames(message) : lead + ".";
+    }
+    /** A field the server names (`definition.model`), as the form calls it (`model`), in a field or in a sentence. */
+    function plainNames(text) {
+      return String(text || "").replace(/\bdefinition\./g, "");
     }
 
     function problem(error) {
@@ -65,7 +90,7 @@
         "div",
         { class: "problem", role: "alert" },
         String((error && error.message) || error),
-        fields.length ? el("ul", null, fields.map(function (f) { return el("li", null, (f.field ? f.field + ": " : "") + (f.message || f.reason || "")); })) : null
+        fields.length ? el("ul", null, fields.map(function (f) { return el("li", null, (f.field ? plainNames(f.field) + ": " : "") + plainNames(f.message || f.reason || "")); })) : null
       );
     }
     function say(box, error) {
@@ -579,6 +604,63 @@
       return false;
     }
 
-    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, empty: emptyStore };
+    // ---- a stored run: copy its answer, run it again -------------------------------------------------------------------
+    /** The person's first message: the run's input, unless the timeline cut it (its rows' text stops at 2000 characters). */
+    function firstInput(rows) {
+      var first = (rows || []).filter(function (row) { return row.kind === "user_message"; })[0];
+      if (!first || typeof first.text !== "string") return null;
+      return { text: first.text, whole: !(first.text.length >= 2000 && /…$/.test(first.text)) };
+    }
+
+    function runActions(run, data) {
+      if (run.state === "running") return null;
+      var out = el("span");
+      var parts = [];
+      if (run.state === "completed") {
+        var copy = button("Copy answer", "quiet", function () {
+          copy.disabled = true;
+          say(out, null);
+          // The run's /v2 view has its answer whole; the store's rows cut a long one.
+          v2("GET", "runs/" + enc(run.id)).then(
+            function (view) {
+              var answer = view && view.result && typeof view.result.final_answer === "string" ? view.result.final_answer : run.summary || "";
+              var clipboard = window.navigator && window.navigator.clipboard;
+              if (!clipboard) throw new Error("This browser does not let the page copy: select the answer and copy it.");
+              return clipboard.writeText(answer);
+            }
+          ).then(
+            function () {
+              copy.disabled = false;
+              out.appendChild(el("span", { class: "done-note" }, "Copied."));
+            },
+            function (error) {
+              copy.disabled = false;
+              say(out, error);
+            }
+          );
+        });
+        parts.push(copy);
+      }
+      var input = run.kind === "agentic" ? firstInput(data.rows) : null;
+      if (input) {
+        var again = button("Run again", "quiet", function () {
+          again.disabled = true;
+          say(out, null);
+          v2("POST", "agents/" + enc(run.agent) + "/runs", { input: { content: input.text }, revision: run.revision }).then(
+            function (next) { window.location.hash = "#/runs/" + enc(next.run_id); },
+            function (error) {
+              again.disabled = false;
+              say(out, error);
+            }
+          );
+        });
+        again.title = input.whole ? "A new run of the same version, with the same input" : "The input is too long to send again from this page";
+        if (!input.whole) again.disabled = true;
+        parts.push(again);
+      }
+      return parts.length ? el("div", { class: "actions run-actions" }, parts, out) : null;
+    }
+
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, empty: emptyStore, run: runActions };
   };
 })();

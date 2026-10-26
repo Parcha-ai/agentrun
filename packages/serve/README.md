@@ -186,6 +186,12 @@ data directory, with this server's own views beside it:
   `GET /v2/runs/{id}/timeline` with a long poll; while it waits on `ask_person`, an answer box sends
   `POST /v2/runs/{id}/messages`. The live view leaves out the run's own start and end rows, as the stored view does.
   Once it is final, the page reads it from the store.
+- **An ended run**: its answer and every summary render as Markdown (tables, lists, bold, code, http(s) links; markup
+  stays text). **Copy answer** on a completed run puts its whole answer, as `GET /v2/runs/{id}` has it, on the
+  clipboard as plain text. **Run again** on an agentic run starts a new run of the same revision with its first message
+  as input and opens it; it is off when the timeline cut that message (2,000 characters), and a workflow run has none,
+  as the page does not hold its input. A refusal is said in words ("This agent can't run here: …"), without its HTTP
+  status.
 - **Compare revisions**: on an agent's page, one row per revision, newest first: its runs, how many completed, failed
   or escalated, their total cost, the cost per completed run (every run's cost over the completed ones, the cheapest
   marked) and the median time of those that ended. It reads the store's runs of the agent; a row filters the runs to

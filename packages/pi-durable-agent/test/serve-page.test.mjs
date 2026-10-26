@@ -151,7 +151,7 @@ test("a live run refreshes every 2 s until the reader leaves it; a missing run s
 
   await page.go("#/runs/nope");
   assert.equal(page.timers.size, 0);
-  assert.match(page.app.textContent, /Could not read the agent home\. 404 no api\/runs\/nope/);
+  assert.match(page.app.textContent, /Could not read the agent home\. no api\/runs\/nope/);
 
   assert.equal(page.theme.textContent, "auto");
   page.theme.click();

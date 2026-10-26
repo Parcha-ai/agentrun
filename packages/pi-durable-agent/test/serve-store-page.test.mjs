@@ -54,7 +54,7 @@ test("the picker: each agent with its current revision's kind and its run count,
   assert.match(empty.app.textContent, /No agents in this store yet\./);
   const busy = mount({ "api/store": [500, { error: "this store has an unfinished write from a run that stopped" }] }, "#/", { serve: STORE });
   await busy.settle();
-  assert.match(busy.app.textContent, /Could not read the agent store\. 500 this store has an unfinished write from a run that stopped/);
+  assert.match(busy.app.textContent, /Could not read the agent store\. this store has an unfinished write from a run that stopped/);
 });
 
 const revision = (id, fields) => ({ id: id.repeat(64), kind: "agentic", current: false, createdAt: "2026-10-21T09:00:00.000Z", parent: null, parentKind: null, diff: null, ...fields });
@@ -249,7 +249,7 @@ test("a running run's page is read again every 2 s, says what it spent so far, a
   await page.go("#/");
   const first = mount({ "api/runs/run-5": [503, { error: "busy" }] }, "#/runs/run-5", { serve: STORE });
   await first.settle();
-  assert.match(first.app.textContent, /Could not read the agent store\. 503 busy/, "a first read that fails says why");
+  assert.match(first.app.textContent, /Could not read the agent store\. busy/, "a first read that fails says why");
 });
 
 const PRIVATE = "/root/steps/1/branches/private/body";
@@ -316,4 +316,43 @@ test("a workflow run its reader refuses shows that one line in place of the grap
   assert.deepEqual(all(page.app).filter((el) => classOf(el) === "note").map((el) => el.textContent), ["a run in the keyed layout is not read here"]);
   assert.deepEqual(pills(page.app)[0], ["pill escalated", "escalated"]);
   assert.ok(page.app.textContent.includes("$0.018") && page.app.textContent.includes(`escalated at No public record ${HOSTILE}`));
+});
+
+const TABLE = `Two items:\n\n| Item | Owner |\n| --- | :---: |\n| Draft the brief | **Ana** |\n| ${HOSTILE} | a \\| b |\n\nDone.`;
+const cellsOf = (table, tag) => all(table).filter((el) => el.tagName === tag).map((el) => el.textContent);
+
+test("an answer's table renders as a table, its cells as text with inline markdown, wherever the answer shows: the result box and the timeline", async () => {
+  const rows = [...TIMELINE.slice(0, -1), { ...TIMELINE.at(-1), kind: "final_answer", text: TABLE, summary: "Two items:" }];
+  const page = mount({ "api/runs/run-3": { ...AGENTIC_RUN, run: { ...RUNS[2], summary: TABLE }, rows } }, "#/runs/run-3", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  const tables = all(page.app).filter((el) => el.tagName === "TABLE");
+  assert.equal(tables.length, 2, "the result box's and the timeline answer's");
+  for (const table of tables) {
+    assert.deepEqual(cellsOf(table, "TH"), ["Item", "Owner"]);
+    assert.deepEqual(cellsOf(table, "TD"), ["Draft the brief", "Ana", HOSTILE, "a | b"], "an escaped pipe stays in its cell; markup is text");
+    assert.deepEqual(all(table).filter((el) => el.tagName === "B").map((el) => el.textContent), ["Ana"]);
+    assert.equal(classOf(table.parentNode), "md-table", "a table scrolls in its own box on a narrow screen");
+  }
+  assert.ok(!all(page.app).some((el) => el.tagName === "P" && el.textContent.includes("| --- |")), "no raw pipes");
+});
+
+test("the agent page's runs show each summary as markdown: bold, code and a list as elements, markup as text", async () => {
+  const summary = `**Paid** the bill with \`card\`.\n- one\n- two ${HOSTILE}`;
+  const page = mount(agentApi({ "api/runs?agent=company-researcher": [{ ...RUNS[2], summary }] }), "#/agents/company-researcher", { serve: STORE });
+  await page.settle();
+  assertInert(page.app);
+  const cell = all(runRows(page)[0]).find((el) => classOf(el) === "c reason");
+  assert.deepEqual(all(cell).filter((el) => ["B", "CODE", "LI"].includes(el.tagName)).map((el) => [el.tagName, el.textContent]), [["B", "Paid"], ["CODE", "card"], ["LI", "one"], ["LI", `two ${HOSTILE}`]]);
+  assert.ok(!cell.textContent.includes("**"), "no raw markdown");
+});
+
+test("a host adds to a stored run's head, given the run and what the page read", async () => {
+  const seen = [];
+  const host = (kit) => ({ run: (run, data) => (seen.push([run.id, data.agent]), kit.el("span", { class: "host-run" }, "added")) });
+  const page = mount({ "api/runs/run-3": AGENTIC_RUN }, "#/runs/run-3", { serve: STORE, window: { agentStoreHost: host } });
+  await page.settle();
+  const head = all(page.app).find((el) => classOf(el) === "card run-head");
+  assert.equal(all(head).find((el) => classOf(el) === "host-run").textContent, "added");
+  assert.deepEqual(seen, [["run-3", AGENTIC_RUN.agent]]);
 });

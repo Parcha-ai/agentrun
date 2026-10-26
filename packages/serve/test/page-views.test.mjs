@@ -58,9 +58,9 @@ function stub(answers) {
   return { fetch, calls, push, answer: (more) => Object.assign(answers, more), writes: () => calls.filter((c) => c.method !== "GET").map((c) => [c.method, c.path, plain(c.body)]) };
 }
 
-function open(hash, answers) {
+function open(hash, answers, window = {}) {
   const api = stub(answers);
-  const page = mount({}, hash, { serve: "store", fetch: api.fetch, scripts: [["serve.js", SERVE_JS]] });
+  const page = mount({}, hash, { serve: "store", fetch: api.fetch, scripts: [["serve.js", SERVE_JS]], window });
   return { page, api };
 }
 const find = (page, tag, name) => all(page.app).find((el) => el.tagName === tag && el.name === name);
@@ -163,7 +163,7 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
   find(page, "TEXTAREA", "workflow").value = '{"name":"flow"}';
   buttonNamed(page, "Create agent").click();
   await page.settle();
-  assert.deepEqual(problemText(page), [`422 the workflow does not checkdefinition.workflow.steps: steps is required ${HOSTILE}`]);
+  assert.deepEqual(problemText(page), [`Some of it needs a change.workflow.steps: steps is required ${HOSTILE}`]);
   assert.equal(buttonNamed(page, "Create agent").disabled, false, "the button is back for another try");
   find(page, "TEXTAREA", "workflow").value = '{"name":"flow","steps":[]}';
   buttonNamed(page, "Create agent").click();
@@ -470,4 +470,71 @@ test("an agent whose current revision names a tool this server cannot bind says 
   const runnable = open("#/agents/calc", { "api/agents/calc": { ...page, revisions: [revision(REV_B, true, "Files only")] }, "api/runs?agent=calc": [], "v2/capabilities": capabilities });
   await runnable.page.settle();
   assert.equal(all(runnable.page.app).find((el) => classOf(el) === "cant-run")?.textContent ?? "", "", "a revision this server can run says nothing");
+});
+
+/** A run as the store's page reads it (api/runs/:id), ended, with its rows. */
+const storedRun = (state, rows, fields = {}) => ({ run: { id: "run-7", agent: "calc", revision: REV_B, kind: "agentic", state, startedAt: LIVE.created_at, endedAt: LIVE.created_at, summary: "The answer is **42**.", ...fields }, agent: "Calc", rows });
+const said = (text) => ({ id: "1:1", seq: 1, kind: "user_message", text, summary: `You: ${text}` });
+const answered = { id: "1:2:0", seq: 2, kind: "final_answer", text: "The answer is **42**.", summary: "The answer is 42." };
+
+/** The answers a stored run's page needs: /v2 knows the run as ended (its timeline final), and the store's page reads it. */
+const ended = (stored, view = {}) => ({
+  "v2/runs/run-7": { ...LIVE, run_id: "run-7", status: stored.run.state === "completed" ? "completed" : "failed", ...view },
+  "v2/runs/run-7/timeline": page({ final: true, status: "completed" }),
+  "api/store": { agents: AGENTS },
+  "api/runs/run-7": stored,
+});
+
+test("a completed run's Copy answer puts its whole answer on the clipboard as plain text, and says so", async () => {
+  const copied = [];
+  const clipboard = { writeText: async (text) => void copied.push(text) };
+  const whole = "The answer is **42**.\n\nWhole, past any cut.";
+  const { page } = open("#/runs/run-7", ended(storedRun("completed", [said("What is six times seven?"), answered]), { result: { output: null, final_answer: whole } }), { navigator: { clipboard } });
+  await page.settle();
+  buttonNamed(page, "Copy answer").click();
+  await page.settle();
+  assert.deepEqual(copied, [whole], "the answer whole, as the run's /v2 view has it");
+  assert.ok(all(page.app).some((el) => el.textContent === "Copied."));
+  const failed = open("#/runs/run-7", ended(storedRun("failed", [said("x")])));
+  await failed.page.settle();
+  assert.equal(buttonNamed(failed.page, "Copy answer"), undefined, "only a completed run has an answer to copy");
+});
+
+test("Run again starts a new run of the same revision with the same input, then opens it; an input cut short, or a workflow's, offers no run again", async () => {
+  const answers = { ...ended(storedRun("completed", [said("What is six times seven?"), answered])), "POST v2/agents/calc/runs": [202, { ...LIVE, run_id: "run-8", status: "queued" }] };
+  const { page, api } = open("#/runs/run-7", answers);
+  await page.settle();
+  buttonNamed(page, "Run again").click();
+  await page.settle();
+  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/runs", { input: { content: "What is six times seven?" }, revision: REV_B }]]);
+  assert.equal(page.window.location.hash, "#/runs/run-8");
+  const long = `${"x".repeat(1_999)}…`;
+  const cut = open("#/runs/run-7", { ...answers, "api/runs/run-7": storedRun("completed", [said(long), answered]) });
+  await cut.page.settle();
+  const off = buttonNamed(cut.page, "Run again");
+  assert.equal(off.disabled, true, "an input the timeline cut is not sent again as if whole");
+  assert.match(off.title, /too long/);
+  const flow = open("#/runs/run-7", { ...answers, "api/runs/run-7": { ...storedRun("completed", []), run: { ...storedRun("completed", []).run, kind: "workflow" }, workflow: { graph: { nodes: [], edges: [] }, status: {} } } });
+  await flow.page.settle();
+  assert.equal(buttonNamed(flow.page, "Run again"), undefined, "a workflow run's input is not on the page");
+});
+
+test("a refusal is said in words, without its HTTP status or a field's internal prefix", async () => {
+  const refused = { error: { code: "agent_not_runnable", message: "pi-ai finds no key for openai in this environment", fields: [] } };
+  const { page } = open("#/agents/calc", { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [], "POST v2/agents/calc/runs": [409, refused] });
+  await page.settle();
+  find(page, "TEXTAREA", "input").value = "hi";
+  buttonNamed(page, "Start run").click();
+  await page.settle();
+  assert.deepEqual(problemText(page), ["This agent can't run here: pi-ai finds no key for openai in this environment"]);
+  const invalid = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": [422, { error: { code: "input_invalid", message: "definition.model is \"provider/model-id\"", fields: [{ field: "definition.model", reason: "bad_format", message: "definition.model is \"provider/model-id\"" }] } }] });
+  await invalid.page.settle();
+  find(invalid.page, "INPUT", "name").value = "A";
+  find(invalid.page, "TEXTAREA", "instructions").value = "Answer.";
+  buttonNamed(invalid.page, "Create agent").click();
+  await invalid.page.settle();
+  const [text] = problemText(invalid.page);
+  assert.ok(text.startsWith("Some of it needs a change."), text);
+  assert.ok(text.includes("model: "), text);
+  assert.ok(!/\b4\d\d\b/.test(text) && !text.includes("definition."), `no status and no internal prefix: ${text}`);
 });
