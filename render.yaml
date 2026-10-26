@@ -9,6 +9,8 @@ services:
     plan: starter
     numInstances: 1
     healthCheckPath: /v2/capabilities
+    # Render waits 30 s after SIGTERM, above the image's 6 s drain. maxShutdownDelaySeconds would set it, but Render
+    # does not take it for a service with a persistent disk, as this one is.
     disk:
       name: agentrun-data
       mountPath: /data

@@ -190,6 +190,12 @@
               "type": "number",
               "title": "budget_usd"
             },
+            "max_turns": {
+              "description": "The most turns the node asks its host for, per attempt. The host applies it within its own cap; the engine\nenforces nothing.",
+              "minimum": 1,
+              "type": "integer",
+              "title": "max_turns"
+            },
             "context": {
               "description": "An `agent` node's context (`AGENT_CONTEXTS`).",
               "enum": [
