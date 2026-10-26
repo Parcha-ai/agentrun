@@ -15,6 +15,7 @@ import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.j
 import { readJson, RUN_META, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
+import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
@@ -155,7 +156,14 @@ const answerOf = (rows: readonly TimelineEvent[]) => {
   const last = meaningful(rows);
   return last?.kind === "final_answer" || last?.kind === "text_block" ? last : undefined;
 };
-const costOf = (rows: readonly TimelineEvent[]): number | null => rows.findLast((r) => r.kind === "usage")?.usage?.usd ?? null;
+const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
+/** The run's cost from its usage row: null when a response's cost is unknown, 0 before any request. */
+const costOf = (rows: readonly TimelineEvent[]): number | null => {
+  const usage = usageOf(rows);
+  return usage ? (usage.usage?.usd ?? null) : 0;
+};
+/** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
+const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 
 /** A run's status and state, by the contract's table. */
@@ -323,9 +331,11 @@ export class Runs {
     if (run.kind === "workflow") return undefined;
     const cap = run.meta.max_cost_usd;
     const cost = costOf(run.rows);
-    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: "spend_cap_reached", message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
+    if (cap !== undefined && cost !== null && cost > cap) return { outcome: "failed", abort: true, error: { code: SPEND_CAP_REACHED, message: `The run cost $${cost.toFixed(4)}, over its cap of $${cap}.`, retryable: false } };
     if (run.working || run.submitted > 0) return undefined;
     const last = meaningful(run.rows);
+    // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
+    if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
     return !run.stopped && answerOf(run.rows) ? { outcome: "completed" } : undefined;
   }
@@ -517,6 +527,8 @@ export class Runs {
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel) return;
     const env: NodeJS.ProcessEnv = { ...childEnv(process.env, this.options.token), ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
+    delete env[CAP_ENV];
+    if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? "30s");
@@ -756,8 +768,10 @@ export class Runs {
 
   // ---- views ------------------------------------------------------------------------------------------------------------
 
+  /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    return { usd: costOf(run.rows) ?? run.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    const usage = usageOf(run.rows);
+    return { usd: usage ? (usage.usage?.usd ?? run.costUsd ?? null) : (run.costUsd ?? 0), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
@@ -766,6 +780,8 @@ export class Runs {
     const row = TERMINAL.has(status) ? this.store.readRun(run.id) : undefined;
     const answer = answerOf(run.rows);
     const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
+    // A run its cap stopped keeps the answer it paid for.
+    const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
     return {
       run_id: run.id,
       agent_id: run.agentId,
@@ -780,16 +796,17 @@ export class Runs {
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
       ended_at: TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null,
-      result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : null,
+      result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       cost: this.cost(run),
+      archived_at: this.store.readRun(run.id)?.archivedAt ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -811,6 +828,7 @@ export class Runs {
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
+      archived_at: row.archivedAt ?? null,
     };
   }
 

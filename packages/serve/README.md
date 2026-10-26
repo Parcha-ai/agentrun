@@ -94,6 +94,17 @@ every route but `GET /v2/capabilities` still needs the token.
 `/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
 `https://<service>.onrender.com/?token=<the token>`. Set `AGENT_MODEL` and the provider's key there too.
 
+## Upgrading from 0.1.0-beta.26
+
+0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions, and each run under `DIR/runs/<id>/`.
+0.1.0-beta.26 and earlier kept one agent home per agent, `DIR/<agent>/agent.sqlite`, and this version does not read
+those. So it refuses to start on a data directory that holds one, and names each home it found, instead of serving
+it as if it had no agents.
+
+To keep those agents and their runs, keep the earlier version on that data directory. To start this version, give it a
+new data directory (a new volume), or move the old homes out of the one you have. Then create the agents again, here or
+through `POST /v2/agents`. Their earlier runs stay readable where you moved them, with the earlier version.
+
 ## Models
 
 An agentic revision names its model as `provider/model-id` (`"model"` in its definition), or names none and runs on
@@ -118,9 +129,19 @@ from:
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   ...), and its catalog prices the run. The `AGENT_MODEL` variables are then `provider/model-id` too.
 
-A run whose model cannot be reached here (no model for the revision or for a tier its workflow's nodes name, a model
-pi-ai does not know, no key for its provider) is refused before it starts, `409 agent_not_runnable`, saying which. A run
-needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
+A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
+it starts:
+
+- What no setting of this host fixes refuses the save, `422 input_invalid` by field, and nothing is written: a tool
+  this host does not bind (`definition.tools[i]`, `bash` among them), a model pi-ai does not know when no gateway is
+  set (`definition.model`, saying why), empty instructions (`definition.instructions`), and a workflow that needs a tool
+  call, a judge, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one field per need).
+- What a setting of this host fixes saves, and the `201` or `200` carries it in `warnings` (`[{field, reason:
+  "not_set_up_here", message}]`, empty when there is none): no key for the model's provider, no default model for a
+  revision that names none, no model for a tier a workflow's nodes name. The page shows them before it leaves the form.
+
+A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
+fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
 it is never off, and a model node that names its own thinking level keeps it.
@@ -130,18 +151,20 @@ it is never off, and a model node that names its own thinking level keeps it.
 | Route | Here |
 | --- | --- |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name. The ETag (`home_etag`) is the current revision's id. |
-| `PUT /agents/{id}/definition` | The same body: a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
+| `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
+| `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | `POST` takes `{input, revision?, effort?, max_cost_usd?, file_ids?, quote_id?}` and answers `202` with the run ([starting a run](#starting-a-run)). `GET` lists the agent's runs, newest first. |
-| `GET /runs` | Every agent's runs, newest first, a page of `limit` (20 by default, at most 100) with `cursor` for the next; `agent`, `revision` and `status` narrow it. A failed run's summary carries its `error`. |
-| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`). |
+| `GET /runs` | Every agent's runs, newest first, a page of `limit` (20 by default, at most 100) with `cursor` for the next; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`. |
+| `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll up to 25 s), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). How a client reads them is [below](#reading-the-timeline). |
 | `POST /runs/{id}/messages` | To an agentic run, `{content}` only: the server picks the message's mode from the run's state ([messages](#messages)). A run that ended cannot be continued (`409 not_continuable`); a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
+| `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `GET /usage` | The cost estimates of the runs started between `from` and `to` (RFC 3339; by default this month so far), grouped by `group_by`: `meter` (the default, one `tokens` line), `agent`, `day`, or `key` and `region` (one `local` line each: this server has one token and one region). |
+| `GET /usage` | The cost estimates of the runs started between `from` and `to` (RFC 3339; by default this month so far), grouped by `group_by`: `meter` (the default, one `tokens` line), `agent`, `day`, or `key` and `region` (one `local` line each: this server has one token and one region). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 ### Starting a run
 
@@ -151,7 +174,7 @@ it is never off, and a model node that names its own thinking level keeps it.
   not this one); a workflow run's is what its workflow's input schema takes (`422` naming the field otherwise).
 - `revision`: one of the agent's revision ids; by default the current one. The run is pinned to it.
 - `effort`: `low`, `medium` or `high`, the run's thinking level ([Models](#models)).
-- `max_cost_usd`: a number above 0, an agentic run's spend cap ([a run's life](#a-runs-life)). A workflow run refuses
+- `max_cost_usd`: a number above 0, an agentic run's spend cap ([spend cap](#spend-cap)). A workflow run refuses
   it (`422`).
 - `file_ids`: an empty list only; this server takes no uploads, so a run that names files is `501`.
 - `quote_id`: `501`; this server has no billing.
@@ -185,7 +208,27 @@ the wait ends. A run's state `waiting` (status `input_required`) means only the 
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
-browser sign-ins (`sign_ins: false`).
+browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
+above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+## Archiving
+
+An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes are this server's own, outside the
+`/v2` contract, like `GET /runs` and an agent's revisions; capabilities list them in `features.archive`.
+
+- `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
+  `GET /agents/{id}/runs`; `POST /v2/runs/{id}/archive` hides one run. `.../unarchive` shows them again. Each is
+  idempotent (archiving again keeps the first time), takes no body, and answers what it changed.
+- Each list takes `archived=true` to list only archived ones (`false`, the default, lists the others).
+- Every read by id still answers, with `archived_at` (null when it is not archived; a run's is its own, else its
+  agent's): `GET /agents/{id}`, `GET /runs/{id}`, its timeline and its files. `/usage` still counts archived runs: the
+  spend happened.
+- A new run of an archived agent is `409 agent_not_runnable`, saying it is archived (`details.archived_at`); a run
+  already going when its agent is archived keeps going.
+- The store keeps each change as one row of `archive_changes` in `store.sqlite`, written once
+  ([the store](../pi-durable-agent/README.md#agents-in-a-folder-the-agent-store)). A data directory an earlier version
+  wrote opens as it is, with nothing archived. Going back to an earlier version keeps every row, but that version does
+  not read them: archived agents and runs show as not archived there, and an archived agent's runs start again.
 
 ## The page
 
@@ -193,10 +236,11 @@ Open the link the server prints, once, in a browser. The page at `/`, AgentRun S
 [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page over the agent store in the
 data directory, with this server's own views beside it:
 
-- **Agents**: each agent with its current revision's kind and its runs; an agent's revisions, newest first, an agentic
-  one's prompt diffed against its parent's and a workflow's graph; its runs, filtered by revision.
+- **Agents**: each agent with its current revision's kind and its runs, archived ones behind **Show archived**; an
+  agent's revisions, newest first, an agentic one's prompt diffed against its parent's and a workflow's graph; its runs,
+  filtered by revision. **Archive** (or **Unarchive**) on an agent's page and a run's page.
 - **All runs**: every run of every agent, newest first, with its agent, revision, kind, state, cost and start, filtered by
-  agent and by state. A row opens the run. A run `/v2` reports as `failed` with `error.code` `escalated` reads escalated,
+  agent and by state; archived runs behind **Show archived**. A row opens the run. A run `/v2` reports as `failed` with `error.code` `escalated` reads escalated,
   here and on its live page, as the store's page draws it.
 - **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, for a prompt a model
   (`provider/model-id`, or none for the server's own) and a thinking level, and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the
@@ -226,15 +270,15 @@ only when the request's `Origin` is the page's own origin and its body is `appli
 2. The app reads the run's revision from the store.
    - An agentic revision runs as the root agent: its instructions and skills, its model, and the tools it names of the
      workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline then shows a `waiting`
-     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not bound, so a revision
-     that names it is not runnable here. The run is `queued` until its first message shows; while the process runs, the
+     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not bound, so a
+     definition that names it is not saved here. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
-     (`run_failed`), and a run whose cost estimate passes its `max_cost_usd` ends `failed` (`spend_cap_reached`).
+     (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
    - A workflow revision runs on agentrun-pi's durable workflow task, started by `startWorkflowRevision` of
      `@parcha/pi-durable-agent/workflow` (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`,
      `report`) on the run's model, with the file tools each node names. A workflow that needs a tool call, a judge or
-     code is not runnable here (`409`). The run is `queued` until its process serves, then `working`; when the workflow
+     code is not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
      ends, the app writes the run's final status with the outcome and releases it. Nothing is carried back from inside
      the process, which holds the run's store until it exits.
 3. When the process has exited, the run's rows are read from its released store (an agentic run's conversation, a
@@ -255,6 +299,29 @@ the answer is sent, so a retry after a restart gets the first answer.
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
 
+## Spend cap
+
+An agentic run may name `max_cost_usd` (a workflow run may not: `422`). The cap is checked in the run's own process
+before each model request, the agent's and a compaction's alike: what the run has spent so far plus the request's worst
+case must stay within it, or the request is not sent and the run ends `failed` with `spend_cap_reached`. The worst
+case is the request's input tokens at the input price plus its max output tokens at the output price, the max output
+tokens being the ones the request sends (the model's, clamped to what its context window leaves). The input is priced
+at the higher of the model's input and cache-write prices, since the provider may bill any of it as a cache write. The
+input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last response reported, plus about one token
+per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
+catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
+restart, plus each response since; a request in flight holds its worst case until it answers. A model priced at $0 (a
+gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap. Pricing the whole output
+ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
+so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
+
+The server also checks the run's cost after each response, as a backstop, and stops a run whose cost passed its cap.
+Either way the run keeps the answer it paid for: a run the cap stopped has `result: {output: null, final_answer}`, the
+newest answer it received, beside its `error`; one stopped before any answer has `result: null`.
+
+A run's `cost.usd` is $0 before its first model request (a run cancelled before one included), and `null` when a
+response reported no price: no request costs nothing, but a request of unknown price is unknown, never $0.
+
 ## The faux model
 
 `--faux MODULE` loads `MODULE` in each run's process. Its default export is called for every model request with the
@@ -271,7 +338,8 @@ export default function reply(context, faux) {
 `faux.message`, `faux.text`, `faux.thinking` and `faux.toolCall` are pi-ai's faux helpers; `faux.signal` is aborted when
 the turn is stopped. A workflow's model node offers the `submit` tool (in its system message's `toolsAdded`), and
 delivers its record by calling it. A module may also export `cost` (`{input, output, cacheRead, cacheWrite}` in USD per
-million tokens) to price the faux usage; unpriced, every run's estimate is $0. The tests' module is
+million tokens) to price the faux usage; unpriced, every run's estimate is $0, and with `cost = "unknown"` its usage
+carries no cost at all, as from a provider that does not price the model. The tests' module is
 `test/fixtures/faux-model.mjs`.
 
 ## Safety
@@ -295,7 +363,8 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
   token, `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is
   pi-durable-disk's confinement inside the run's process, not an operating-system boundary: the run and the server
   share a user (one uid in the container), so the confinement holds only because the run has no shell.
-- No path offers a shell. `bash` is not bound: a revision that names it is not runnable here (`409`), and a model that
+- No path offers a shell. `bash` is not bound: a definition that names it is not saved here (`422`), one saved before
+  that check is not runnable (`409`), and a model that
   calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
   nothing. There is no sandbox box in this phase, so shell stays off.
 - Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is
