@@ -15,7 +15,7 @@ import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
+import { checkDefinitionBody, contentIssues, ID, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -315,7 +315,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
   async function inputIssuesOf(revision: Revision, input: Json) {
-    if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
+    if (revision.kind === "agentic") return contentIssues(input);
     const { validateWorkflow } = await import("@parcha/agentrun-dsl");
     const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
     return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
