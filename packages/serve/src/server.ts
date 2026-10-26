@@ -459,22 +459,26 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!Number.isFinite(from) || !Number.isFinite(to)) throw new ApiError("bad_request", "from and to are RFC 3339 times");
     const group = url.searchParams.get("group_by") ?? "meter";
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
-    const lines = new Map<string, number | null>();
-    let total: number | null = 0;
+    const lines = new Map<string, { usd: number; unpriced: number }>();
+    const total = { usd: 0, unpriced: 0 };
     for (const row of agents.store.listRuns()) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      const before = lines.has(key) ? lines.get(key)! : 0;
-      lines.set(key, before === null || usd === null ? null : before + usd);
-      total = total === null || usd === null ? null : total + usd;
+      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
+      // never passes as $0.
+      const line = lines.get(key) ?? lines.set(key, { usd: 0, unpriced: 0 }).get(key)!;
+      for (const sum of [line, total]) {
+        if (usd === null) sum.unpriced++;
+        else sum.usd += usd;
+      }
     }
-    const round = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6);
+    const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
-      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total),
-      lines: [...lines].map(([key, usd]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(usd) })),
+      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }
