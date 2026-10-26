@@ -1,13 +1,14 @@
 # @parcha/agentrun-serve
 
-AgentRun Server: the Agentrun v2 API on your own machine, or in one container. `agentrun-serve` serves the same `/v2` contract (`agentrun.v2/0`) as the hosted
-API, over one agent store of [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md) in a directory: many agents,
-each with revisions written once (an agentic prompt, or an agentrun-dsl workflow), and every run pinned to the revision
-it ran. Each run is a [`@parcha/pi-durable-disk`](../pi-durable-disk/README.md) run directory beside the store. An SDK
-pointed at it works the way it works against the hosted API; the capabilities document says what this server does not
-offer.
+AgentRun Server: the Agentrun v2 API on your own machine, or in one container. `agentrun-serve` serves `/v2` by the
+`agentrun.v2/0` contract (`contract` in its capabilities), over one agent store of
+[`@parcha/pi-durable-agent`](../pi-durable-agent/README.md) in a directory: many agents, each with revisions written
+once (an agentic prompt, or an agentrun-dsl workflow), and every run pinned to the revision it ran. Each run is a
+[`@parcha/pi-durable-disk`](../pi-durable-disk/README.md) run directory beside the store. A client written to that
+contract works against it; the capabilities document says what this server does not offer.
 
-This package is held: it is built and tested in this repository and not published yet.
+The npm package is not published (it is `private`); the server ships as a public container image
+([In a container](#in-a-container)), or runs from a checkout of this repository.
 
 ## Quick start (no key, no network)
 
@@ -133,14 +134,54 @@ it is never off, and a model node that names its own thinking level keeps it.
 | `PUT /agents/{id}/definition` | The same body: a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
-| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
-| `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it. A failed run's summary carries its `error`. |
+| `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | `POST` takes `{input, revision?, effort?, max_cost_usd?, file_ids?, quote_id?}` and answers `202` with the run ([starting a run](#starting-a-run)). `GET` lists the agent's runs, newest first. |
+| `GET /runs` | Every agent's runs, newest first, a page of `limit` (20 by default, at most 100) with `cursor` for the next; `agent`, `revision` and `status` narrow it. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`). |
-| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop. A finished run is `409 not_continuable`; a workflow run takes none (`501`). |
+| `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll up to 25 s), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). How a client reads them is [below](#reading-the-timeline). |
+| `POST /runs/{id}/messages` | To an agentic run, `{content}` only: the server picks the message's mode from the run's state ([messages](#messages)). A run that ended cannot be continued (`409 not_continuable`); a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
-| `GET /usage` | The runs' cost estimates, by meter, agent, day or region. |
+| `GET /usage` | The cost estimates of the runs started between `from` and `to` (RFC 3339; by default this month so far), grouped by `group_by`: `meter` (the default, one `tokens` line), `agent`, `day`, or `key` and `region` (one `local` line each: this server has one token and one region). |
+
+### Starting a run
+
+`POST /agents/{id}/runs`, with an `Idempotency-Key` header when a retry must not start a second run:
+
+- `input`: an agentic run's is `{content: string}`, its first message (`limits.max_message_chars` bounds later messages,
+  not this one); a workflow run's is what its workflow's input schema takes (`422` naming the field otherwise).
+- `revision`: one of the agent's revision ids; by default the current one. The run is pinned to it.
+- `effort`: `low`, `medium` or `high`, the run's thinking level ([Models](#models)).
+- `max_cost_usd`: a number above 0, an agentic run's spend cap ([a run's life](#a-runs-life)). A workflow run refuses
+  it (`422`).
+- `file_ids`: an empty list only; this server takes no uploads, so a run that names files is `501`.
+- `quote_id`: `501`; this server has no billing.
+
+Any other field is `422`, by name.
+
+### Messages
+
+`POST /runs/{id}/messages` takes `{content}` (a non-empty string of at most `limits.max_message_chars`, 20,000) and no
+mode: the server picks it from the run's status and state, and answers it, `202 {run_id, message_id, mode, status, state,
+poll_after_ms}`:
+
+| The run is | `mode` | What the message does |
+| --- | --- | --- |
+| `queued`, or `working` with state `working` | `steer` | Reaches the agent within the turn running now. |
+| `input_required` with state `waiting` (the agent asked) | `answer` | Answers the question: it is the agent's next message, and the run goes on. |
+| anything else that has not ended (after a stop: `input_required` and idle) | `follow_up` | Starts the next turn. |
+
+A run that ended (`completed`, `failed` or `cancelled`) takes no message and cannot be continued: `409 not_continuable`,
+whose `next_action` says to start a new run of the agent.
+
+### Reading the timeline
+
+A page's `rows` are changes, not an append-only list. A client keeps the rows by `id`: on `reset` it clears them, then
+deletes each id in `drop`, then puts each row of `rows` in place of the one with its `id`, and shows them in `seq`
+order; `after=<next_after>` reads on, and `final: true` comes once the run ended and its rows are all in. The run's cost
+is one row (`kind: "usage"`) updated in place. A `waiting` row is the agent waiting for the person (`Waiting for you:`
+and the question, after `ask_person`), or, on a live run only, waiting on something else, its summary saying which: a
+model request about to be retried, a provider being polled, or messages queued for the next turn; it is dropped when
+the wait ends. A run's state `waiting` (status `input_required`) means only the first: the person is asked.
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
@@ -239,7 +280,9 @@ million tokens) to price the faux usage; unpriced, every run's estimate is $0. T
   another address (`--listen`, the container's `0.0.0.0`) it serves every `Host` name, and the token is its only lock.
   It sends no CORS headers, so a page on another origin cannot read an answer.
 - Every route but `GET /capabilities` needs `Authorization: Bearer <the token>`, compared in constant time, or the
-  page's cookie under the rules of [the page](#the-page). The page's own files (its HTML, scripts and styles) hold no
+  page's cookie under the rules of [the page](#the-page); without it, `401 unauthenticated`. The token is
+  `AGENTRUN_TOKEN` when it is set, else the one in `DIR/.token`. There is one token and no users: whoever holds it reads
+  and changes every agent and run. Agents and runs are not deleted (`DELETE` is `405`). The page's own files (its HTML, scripts and styles) hold no
   data; everything it shows comes through those routes. It loads nothing from the network, and its CSP allows this
   origin only.
 - Each run's door listens on loopback and takes only the server's door token.
