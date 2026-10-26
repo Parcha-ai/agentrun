@@ -162,17 +162,17 @@ function cursorOf(value: string | null): number {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError("bad_request", "cursor is not one this server gave");
   return offset;
 }
-const nextCursor = (offset: number, total: number) => (offset < total ? Buffer.from(String(offset)).toString("base64url") : null);
-function limitOf(value: string | null): number {
-  if (value === null) return 20;
+function integerParam(value: string | null, name: string, max: number, { min = 0, absent = 0 } = {}): number {
+  if (value === null) return absent;
   const n = Number(value);
-  if (!/^\d+$/.test(value) || n < 1 || n > 100) throw new ApiError("bad_request", "limit is an integer from 1 to 100");
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(n) || n < min || n > max) throw new ApiError("bad_request", `${name} is an integer from ${min} to ${max}`);
   return n;
 }
-function integerParam(value: string | null, name: string, max: number): number {
-  if (value === null) return 0;
-  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > max) throw new ApiError("bad_request", `${name} is an integer from 0 to ${max}`);
-  return Number(value);
+/** The request's `limit` and `cursor`, checked when called; the function it returns cuts that page of a list. */
+function pageAt(url: URL) {
+  const limit = integerParam(url.searchParams.get("limit"), "limit", 100, { min: 1, absent: 20 });
+  const offset = cursorOf(url.searchParams.get("cursor"));
+  return <T>(all: readonly T[]) => ({ page: all.slice(offset, offset + limit), next_cursor: offset + limit < all.length ? Buffer.from(String(offset + limit)).toString("base64url") : null });
 }
 
 /** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
@@ -358,8 +358,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 
   async function runsPage(url: URL, filter: { agent?: string; revision?: string }) {
-    const limit = limitOf(url.searchParams.get("limit"));
-    const offset = cursorOf(url.searchParams.get("cursor"));
+    const pageOf = pageAt(url);
     const status = url.searchParams.get("status");
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
@@ -369,10 +368,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
+    const { page, next_cursor } = pageOf(rows);
     const versions = new Map<string, number>();
-    for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of agents.revisions(agent)) versions.set(r.id, r.version);
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions)));
-    return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
+    for (const agent of new Set(page.map((row) => row.agent))) for (const r of agents.revisions(agent)) versions.set(r.id, r.version);
+    return { runs: await Promise.all(page.map((row) => runs.summaryOfRow(row, versions))), next_cursor };
   }
 
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
@@ -526,11 +525,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listAgents": {
-        const limit = limitOf(url.searchParams.get("limit"));
-        const offset = cursorOf(url.searchParams.get("cursor"));
+        const pageOf = pageAt(url);
         const archived = archivedParam(url);
-        const all = agents.list().filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: all.slice(offset, offset + limit).map((entry) => agentView(entry)), next_cursor: nextCursor(offset + limit, all.length) });
+        const { page, next_cursor } = pageOf(agents.list().filter((entry) => Boolean(entry.agent.archivedAt) === archived));
+        return send(res, 200, { agents: page.map((entry) => agentView(entry)), next_cursor });
       }
       case "getAgent": {
         const entry = needAgent(id);
@@ -550,11 +548,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }
       case "listRevisions": {
         const entry = needAgent(id);
-        const limit = limitOf(url.searchParams.get("limit"));
-        const offset = cursorOf(url.searchParams.get("cursor"));
-        const all = agents.revisions(id);
-        const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id)));
-        return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+        const { page, next_cursor } = pageAt(url)(agents.revisions(id));
+        return send(res, 200, { revisions: page.map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id))), next_cursor });
       }
       case "setCurrent": {
         const entry = needAgent(id);
