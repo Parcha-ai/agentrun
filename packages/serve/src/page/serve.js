@@ -337,7 +337,20 @@
         save.disabled = true;
         say(out, null);
         (agentId ? v2("PUT", "agents/" + enc(agentId) + "/definition", body, undefined, etag ? { "if-match": etag } : null) : v2("POST", "agents", body)).then(
-          function (agent) { window.location.hash = kit.agentHref(agentId || agent.agent_id); },
+          function (agent) {
+            var href = kit.agentHref(agentId || agent.agent_id);
+            var warnings = (agent && Array.isArray(agent.warnings)) ? agent.warnings : [];
+            if (!warnings.length) return void (window.location.hash = href);
+            // Saved, but the host lacks what it needs to run it (a key, a default model): said here before leaving.
+            say(out, null);
+            out.appendChild(el(
+              "div",
+              { class: "notice", role: "status" },
+              "Saved. It does not run on this host until it has what these name:",
+              el("ul", null, warnings.map(function (w) { return el("li", null, (w.field ? w.field + ": " : "") + (w.message || w.reason || "")); })),
+              el("a", { class: "btn quiet", href: href }, "Open the agent")
+            ));
+          },
           function (error) {
             save.disabled = false;
             say(out, error.status === 412 ? new Error("The agent has a newer revision than the one this form started from: open Edit again to start from it.") : error);

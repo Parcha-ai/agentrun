@@ -128,9 +128,19 @@ from:
 - Otherwise pi-ai's providers serve them, each with its key from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
   ...), and its catalog prices the run. The `AGENT_MODEL` variables are then `provider/model-id` too.
 
-A run whose model cannot be reached here (no model for the revision or for a tier its workflow's nodes name, a model
-pi-ai does not know, no key for its provider) is refused before it starts, `409 agent_not_runnable`, saying which. A run
-needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
+A definition is checked for what keeps it from running here when it is saved, with the same checks a run makes before
+it starts:
+
+- What no setting of this host fixes refuses the save, `422 input_invalid` by field, and nothing is written: a tool
+  this host does not bind (`definition.tools[i]`, `bash` among them), a model pi-ai does not know when no gateway is
+  set (`definition.model`, saying why), empty instructions (`definition.instructions`), and a workflow that needs a tool
+  call, a judge, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one field per need).
+- What a setting of this host fixes saves, and the `201` or `200` carries it in `warnings` (`[{field, reason:
+  "not_set_up_here", message}]`, empty when there is none): no key for the model's provider, no default model for a
+  revision that names none, no model for a tier a workflow's nodes name. The page shows them before it leaves the form.
+
+A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
+fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
 it is never off, and a model node that names its own thinking level keeps it.
@@ -140,8 +150,8 @@ it is never off, and a model node that names its own thinking level keeps it.
 | Route | Here |
 | --- | --- |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name. The ETag (`home_etag`) is the current revision's id. |
-| `PUT /agents/{id}/definition` | The same body: a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
+| `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
@@ -197,15 +207,15 @@ only when the request's `Origin` is the page's own origin and its body is `appli
 2. The app reads the run's revision from the store.
    - An agentic revision runs as the root agent: its instructions and skills, its model, and the tools it names of the
      workspace's `read`, `write` and `edit`, and `ask_person`, which ends the turn; the timeline then shows a `waiting`
-     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not bound, so a revision
-     that names it is not runnable here. The run is `queued` until its first message shows; while the process runs, the
+     row, and the run is `input_required` and `waiting` until a message answers it. `bash` is not bound, so a
+     definition that names it is not saved here. The run is `queued` until its first message shows; while the process runs, the
      timeline comes from its door's events through `@parcha/pi-durable-agent/timeline`. Once the run is idle and its
      newest row is the agent's answer, the server sends the process SIGTERM. A model error ends it `failed`
      (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
    - A workflow revision runs on agentrun-pi's durable workflow task, started by `startWorkflowRevision` of
      `@parcha/pi-durable-agent/workflow` (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`,
      `report`) on the run's model, with the file tools each node names. A workflow that needs a tool call, a judge or
-     code is not runnable here (`409`). The run is `queued` until its process serves, then `working`; when the workflow
+     code is not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
      ends, the app writes the run's final status with the outcome and releases it. Nothing is carried back from inside
      the process, which holds the run's store until it exits.
 3. When the process has exited, the run's rows are read from its released store (an agentic run's conversation, a
@@ -288,7 +298,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   token, `store.sqlite`, another run's files (its `work/` or its `tmp/`) nor `/proc`, and writes nowhere else. This is
   pi-durable-disk's confinement inside the run's process, not an operating-system boundary: the run and the server
   share a user (one uid in the container), so the confinement holds only because the run has no shell.
-- No path offers a shell. `bash` is not bound: a revision that names it is not runnable here (`409`), and a model that
+- No path offers a shell. `bash` is not bound: a definition that names it is not saved here (`422`), one saved before
+  that check is not runnable (`409`), and a model that
   calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
   nothing. There is no sandbox box in this phase, so shell stays off.
 - Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is

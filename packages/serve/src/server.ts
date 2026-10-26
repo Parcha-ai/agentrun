@@ -7,13 +7,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
-import { ApiError, invalid, unsupported } from "./errors.js";
-import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
+import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -285,30 +286,26 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  /** What keeps `revision` from running here, checked before anything starts: tools this host does not bind, workflow
-   *  adapters it does not give, and a model it cannot reach. */
+  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow });
+
+  /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
+   *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
   async function runnable(revision: Revision): Promise<void> {
-    if (revision.kind === "agentic") {
-      const unbound = revision.body.tools.filter((name) => !(BOUND_TOOLS as readonly string[]).includes(name));
-      if (unbound.length) throw new ApiError("agent_not_runnable", `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; this revision also names ${unbound.join(", ")}.`, { details: { unbound } });
-      const chosen = await chooseModel(env, revision.body.model);
-      if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { unbound: [] } });
-      return;
-    }
-    const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
-    const { requires } = inspectWorkflow(revision.body.workflow);
-    const adapters = requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name));
-    const unbound = requires.tools.filter((name) => !(NODE_TOOLS as readonly string[]).includes(name));
-    const why = adapters.length || requires.executableCode
-      ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report); this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
-      : unbound.length
-        ? `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${unbound.join(", ")}.`
-        : undefined;
-    if (why) throw new ApiError("agent_not_runnable", why, { details: { adapters, unbound, code: requires.executableCode } });
-    for (const tier of nodeTiers(revision.body.workflow)) {
-      const chosen = await chooseModel(env, undefined, tier);
-      if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { adapters: [], unbound: [], code: false, tier } });
-    }
+    const blockers = await blockersOf(env, shapeOf(revision));
+    if (!blockers.length) return;
+    const message = blockers.map((b) => b.message).join(" ");
+    const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
+    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound } });
+    const tier = blockers.find((b) => b.tier)?.tier;
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}) } });
+  }
+
+  /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
+  async function saveable(revision: NewRevision): Promise<InputIssue[]> {
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow });
+    const never = blockers.filter((b) => !b.host);
+    if (never.length) throw invalid(never.map(issueOf));
+    return blockers.map(issueOf);
   }
 
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
@@ -508,8 +505,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "createAgent": {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
-          const entry = await agents.create(checkDefinitionBody(body));
-          return { status: 201, body: agentView(entry), headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          let warnings: InputIssue[] = [];
+          const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
+          return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
@@ -530,8 +528,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const body = await bodyOf(req);
         // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
         // the same revision exactly one lands.
-        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null });
-        return send(res, 200, agentView(edited), { etag: etagOf(edited) });
+        let warnings: InputIssue[] = [];
+        const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
+        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), { check, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = needAgent(id);
