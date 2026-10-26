@@ -45,7 +45,7 @@ export const askPerson = defineTool({
 });
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
-export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
+async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
   const skills = await Promise.all(
     skillNames(skillFiles).map(async (name) => `<skill name="${name}">\n${(await readFile(join(work, ".agents", "skills", ...name.split("/"), "SKILL.md"), "utf8")).trim()}\n</skill>`),
   );

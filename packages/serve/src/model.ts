@@ -10,12 +10,12 @@ import type { ModelCost, ModelThinkingLevel } from "@earendil-works/pi-ai";
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
 /** A run's `effort`, passed to its child. */
 export const EFFORT_ENV = "AGENTRUN_SERVE_EFFORT";
-export const MODEL_PROVIDER = "agent-model";
+const MODEL_PROVIDER = "agent-model";
 export const EFFORTS = ["low", "medium", "high"] as const;
-export type Effort = (typeof EFFORTS)[number];
+type Effort = (typeof EFFORTS)[number];
 /** The thinking levels a revision or the host may name. Never off. */
 export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
-export const TIERS = ["fast", "default", "strong"] as const;
+const TIERS = ["fast", "default", "strong"] as const;
 export type Tier = (typeof TIERS)[number];
 const TIER_ENV: Record<Tier, string> = { fast: "AGENT_MODEL_FAST", default: "AGENT_MODEL", strong: "AGENT_MODEL_STRONG" };
 /** The workflow node kinds that run on a model. */
@@ -26,7 +26,7 @@ const tierModel = (env: NodeJS.ProcessEnv, tier: Tier): string | undefined => en
 /** A faux model id per tier: `faux-1`, or the id a tier's variable names. */
 const fauxModel = (env: NodeJS.ProcessEnv, tier: Tier): string => (tier === "default" ? undefined : env[TIER_ENV[tier]]) || "faux-1";
 
-export type ModelSource = { source: "faux" | "gateway" | "providers" } & Record<Tier, string | null>;
+type ModelSource = { source: "faux" | "gateway" | "providers" } & Record<Tier, string | null>;
 
 /** What capabilities say about models here: where they come from, and the model of each tier (`default` is also what a
  *  revision that names none runs on). */
@@ -52,7 +52,7 @@ export function nodeTiers(workflow: unknown): Tier[] {
   return TIERS.filter((tier) => tiers.has(tier));
 }
 
-export type ModelRef = { provider: string; modelId: string };
+type ModelRef = { provider: string; modelId: string };
 
 /**
  * The model a revision runs on here, or why it cannot: `ref` is an agentic revision's "provider/model-id", absent for

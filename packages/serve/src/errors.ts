@@ -38,7 +38,7 @@ const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "r
 export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string };
 
 /** What a refusal carries beside its code and message. */
-export type ErrorExtra = {
+type ErrorExtra = {
   capability?: string;
   fields?: InputIssue[];
   next_action?: Record<string, unknown>;

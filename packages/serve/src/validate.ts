@@ -20,7 +20,7 @@ const NOT_KEPT: Record<string, string> = {
   max_cost_usd: "The agent store keeps no max_cost_usd on a definition: give one with each run.",
 };
 /** `provider/model-id`. */
-export const MODEL_REF = /^[^/\s]+\/\S+$/;
+const MODEL_REF = /^[^/\s]+\/\S+$/;
 const SKILL_FILE = "/SKILL.md";
 
 const issue = (field: string, reason: string, message: string, fix?: string): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });
@@ -37,7 +37,7 @@ export const skillNames = (files: Iterable<string>): string[] => [...files].filt
  * A definition as `POST /agents` and `PUT .../definition` take it: what one revision of an agent keeps. `instructions`
  * makes an agentic revision, `workflow` (an agentrun-dsl workflow) a workflow revision. `creating` asks for a name.
  */
-export function definitionIssues(definition: unknown, { at = "definition", creating = true } = {}): InputIssue[] {
+function definitionIssues(definition: unknown, { at = "definition", creating = true } = {}): InputIssue[] {
   if (!isObject(definition)) return [issue(at, definition === undefined ? "missing" : "wrong_type", `${at} is not an object`)];
   const out: InputIssue[] = [];
   for (const key of Object.keys(definition)) {

@@ -6,7 +6,7 @@
 // back after a drop is served under a new id, so one id never names two seqs.
 import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 
-export type Row = TimelineEvent & { seq: number };
+type Row = TimelineEvent & { seq: number };
 
 let latest = 0;
 

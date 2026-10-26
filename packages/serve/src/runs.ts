@@ -21,7 +21,7 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
-export type State = "working" | "waiting" | "idle";
+type State = "working" | "waiting" | "idle";
 export const STATUSES: readonly Status[] = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
 type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
@@ -127,7 +127,7 @@ registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ?
 
 /** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
  *  from the call's row, whose label this module registers. */
-export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
+function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
   const out: TimelineEvent[] = [];
   const questions = new Map<string, string>();
   for (const row of rows) {
@@ -167,7 +167,7 @@ const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.ki
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 
 /** A run's status and state, by the contract's table. */
-export function statusOf(run: Run): { status: Status; state: State } {
+function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
   if (run.finishing) return { status: run.finishing, state: "idle" };
   if (run.kind === "workflow") return { status: run.working ? "working" : "queued", state: "working" };
