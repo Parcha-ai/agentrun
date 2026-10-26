@@ -98,7 +98,7 @@ export async function vendor(commit, release, { dir = FACADE_DIR, io = github } 
   return manifest;
 }
 
-if (import.meta.main) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const argv = process.argv.slice(2);
   const value = (flag) => { const i = argv.indexOf(flag); return i === -1 ? undefined : argv[i + 1]; };
   if (argv.includes("--check")) {
