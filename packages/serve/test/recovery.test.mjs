@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, flowAgent, follow, scratch, storeRun } from "./support.mjs";
+import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -337,4 +337,85 @@ test("one failed save of the kept keys neither fails its create nor stops the sa
   assert.deepEqual(slots.sort(), ["save-1", "save-2"], "the next save lands, and carries the key the failed one missed");
   const replay = await api("POST", "/agents", agent("save-a"), { "idempotency-key": "save-1" });
   assert.equal(replay.headers.get("idempotent-replayed"), "true");
+});
+
+/** Start a slow run of a new agent `id`, wait until its turn works, and stop it. */
+async function stopWhileWorking(api, id) {
+  const { run_id } = await startRun(api, id, "Take your time.");
+  await untilState(api, run_id, ["working", "working"]);
+  assert.equal((await api("POST", `/runs/${run_id}/stop`)).body.stopped, true);
+  await follow(api, run_id, ["input_required"]);
+  return run_id;
+}
+
+const stateOf = async (api, runId) => {
+  const { body } = await api("GET", `/runs/${runId}`);
+  return [body.status, body.state];
+};
+
+async function untilState(api, runId, want, tries = 200) {
+  for (let i = 0; ; i++) {
+    const now = await stateOf(api, runId);
+    if (now.join() === want.join()) return;
+    assert.ok(i < tries, `the run reaches ${want.join("/")}: last ${now.join("/")}`);
+    await sleep(50);
+  }
+}
+
+test("a stopped run is still input_required and idle after a restart that ended its process: a follow-up goes on, a cancel cancels", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const first = client(one.baseUrl, one.token);
+  const followed = await stopWhileWorking(first, "slow");
+  const cancelled = await stopWhileWorking(first, "slower");
+  const { run_id: asked } = await startRun(first, "regions", "Pick a region.", { tools: ["ask_person"] });
+  await follow(first, asked, ["input_required"]);
+  await one.close();
+  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => two.close());
+  const api = client(two.baseUrl, two.token);
+  assert.deepEqual(await stateOf(api, followed), ["input_required", "idle"]);
+  assert.deepEqual(await stateOf(api, cancelled), ["input_required", "idle"]);
+  assert.deepEqual(await stateOf(api, asked), ["input_required", "waiting"], "a run that asks still waits");
+  const next = await api("POST", `/runs/${followed}/messages`, { content: "go on" });
+  assert.equal(next.body.mode, "follow_up");
+  await follow(api, followed, ["completed"]);
+  assert.equal((await api("GET", `/runs/${followed}`)).body.result.final_answer, "On go on: done.");
+  assert.equal((await api("POST", `/runs/${cancelled}/cancel`)).status, 202);
+  await follow(api, cancelled, ["cancelled"]);
+  assert.equal(storeRun(data, cancelled).state, "stopped");
+});
+
+test("a stopped run whose live process the next server adopts is input_required and idle; a follow-up after that is no longer stopped", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const crash = async (server, runId) => {
+    server.child.kill("SIGKILL");
+    await new Promise((resolve) => server.child.once("exit", resolve));
+    const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+    assert.ok(alive(holder.pid), "the run's process outlived its server");
+    t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  };
+  const adopted = async (api, runId) => {
+    for (let i = 0; (await stateOf(api, runId))[0] === "queued"; i++) {
+      assert.ok(i < 200, "the adopted run's rows arrive");
+      await sleep(50);
+    }
+    return stateOf(api, runId);
+  };
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  const runId = await stopWhileWorking(first.api, "slow");
+  await crash(first, runId);
+  const second = await serverProcess(data);
+  t.after(() => second.child.kill("SIGKILL"));
+  assert.deepEqual(await adopted(second.api, runId), ["input_required", "idle"]);
+  assert.equal((await second.api("POST", `/runs/${runId}/messages`, { content: "Take your time again." })).body.mode, "follow_up");
+  await untilState(second.api, runId, ["working", "working"]);
+  await crash(second, runId);
+  const third = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => third.close());
+  const api = client(third.baseUrl, third.token);
+  assert.deepEqual(await adopted(api, runId), ["working", "working"], "the follow-up ended the stop");
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(api, runId, ["cancelled"]);
 });
