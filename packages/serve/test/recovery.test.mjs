@@ -339,6 +339,19 @@ test("one failed save of the kept keys neither fails its create nor stops the sa
   assert.equal(replay.headers.get("idempotent-replayed"), "true");
 });
 
+/** Servers that start through `start` are closed before the test's scratch directory goes: t.after hooks run in the
+ *  order they were added, and this one is added first. On a failure, a server whose runs still work would otherwise
+ *  outlive its directory and keep the file from ending. */
+function servers(t) {
+  const open = new Set();
+  t.after(() => Promise.all([...open].map((server) => server.close())));
+  return async (options) => {
+    const server = await startServe(options);
+    open.add(server);
+    return { ...server, close: () => (open.delete(server), server.close()) };
+  };
+}
+
 /** Start a slow run of a new agent `id`, wait until its turn works, and stop it. */
 async function stopWhileWorking(api, id) {
   const { run_id } = await startRun(api, id, "Take your time.");
@@ -362,17 +375,17 @@ async function untilState(api, runId, want, tries = 200) {
   }
 }
 
-test("a stopped run is still input_required and idle after a restart that ended its process: a follow-up goes on, a cancel cancels", async (t) => {
+test("a stopped run is still input_required and idle after a restart that ended its process: a follow-up goes on, a cancel cancels", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
   const data = join(await scratch(t), "agents");
-  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const one = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const first = client(one.baseUrl, one.token);
   const followed = await stopWhileWorking(first, "slow");
   const cancelled = await stopWhileWorking(first, "slower");
   const { run_id: asked } = await startRun(first, "regions", "Pick a region.", { tools: ["ask_person"] });
   await follow(first, asked, ["input_required"]);
   await one.close();
-  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => two.close());
+  const two = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(two.baseUrl, two.token);
   assert.deepEqual(await stateOf(api, followed), ["input_required", "idle"]);
   assert.deepEqual(await stateOf(api, cancelled), ["input_required", "idle"]);
@@ -386,7 +399,8 @@ test("a stopped run is still input_required and idle after a restart that ended 
   assert.equal(storeRun(data, cancelled).state, "stopped");
 });
 
-test("a stopped run whose live process the next server adopts is input_required and idle; a follow-up after that is no longer stopped", async (t) => {
+test("a stopped run whose live process the next server adopts is input_required and idle; a follow-up after that is no longer stopped", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
   const data = join(await scratch(t), "agents");
   const crash = async (server, runId) => {
     server.child.kill("SIGKILL");
@@ -412,17 +426,17 @@ test("a stopped run whose live process the next server adopts is input_required 
   assert.equal((await second.api("POST", `/runs/${runId}/messages`, { content: "Take your time again." })).body.mode, "follow_up");
   await untilState(second.api, runId, ["working", "working"]);
   await crash(second, runId);
-  const third = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => third.close());
+  const third = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(third.baseUrl, third.token);
   assert.deepEqual(await adopted(api, runId), ["working", "working"], "the follow-up ended the stop");
   assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
   await follow(api, runId, ["cancelled"]);
 });
 
-test("a reply that answers only once its turn is stopped leaves the run stopped, before and after a restart; a follow-up completes it", async (t) => {
+test("a reply that answers only once its turn is stopped leaves the run stopped, before and after a restart; a follow-up completes it", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
   const data = join(await scratch(t), "agents");
-  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const one = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const first = client(one.baseUrl, one.token);
   const { run_id } = await startRun(first, "late", "Answer when stopped.");
   await untilState(first, run_id, ["working", "working"]);
@@ -433,8 +447,7 @@ test("a reply that answers only once its turn is stopped leaves the run stopped,
   // answer, this run would be the one decide() must not complete.
   assert.deepEqual(stopped.rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block"), []);
   await one.close();
-  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
-  t.after(() => two.close());
+  const two = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   const api = client(two.baseUrl, two.token);
   assert.deepEqual(await stateOf(api, run_id), ["input_required", "idle"]);
   assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
