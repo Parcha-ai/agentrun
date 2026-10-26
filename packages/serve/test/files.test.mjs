@@ -28,6 +28,11 @@ test("the files a run wrote are listed and served raw; dot segments, .. and syml
   assert.match(page.headers.get("content-security-policy"), /default-src 'none'.*sandbox/);
   const spaced = await fetch(`${baseUrl}/runs/${run_id}/files/sub/a%20b.txt?download=1`, { headers: { authorization: `Bearer ${token}` } });
   assert.deepEqual([await spaced.text(), spaced.headers.get("content-disposition")], ["spaced", 'attachment; filename="a_b.txt"']);
+  for (const [path, type, disposition] of [["m.pdf", "application/pdf", 'attachment; filename="m.pdf"'], ["p.png", "image/png", null], ["x.bin", "application/octet-stream", 'attachment; filename="x.bin"']]) {
+    await writeFile(join(work, path), path);
+    const file = await fetch(`${baseUrl}/runs/${run_id}/files/${path}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.deepEqual([file.status, file.headers.get("content-type"), file.headers.get("content-disposition")], [200, type, disposition], path);
+  }
   const { request } = await import("node:http");
   // Sent as written: fetch would fold `..` and `%2E%2E` segments before they reach the server.
   const code = (path) =>
