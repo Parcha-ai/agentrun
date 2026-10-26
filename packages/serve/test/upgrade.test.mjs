@@ -58,11 +58,11 @@ test("an old home under any name is refused: an agent named runs, a symlinked ho
   await oldHome(join(root, "elsewhere"), "kept");
   await mkdir(linked, { recursive: true });
   await symlink(join(root, "elsewhere", "kept"), join(linked, "kept"));
-  assert.ok(await refusal({ data: linked, port: 0, faux: FAUX }), "a symlinked home is refused too");
+  assert.match((await refusal({ data: linked, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked home is refused too");
   const file = join(root, "file");
   await mkdir(join(file, "kept"), { recursive: true });
   await symlink(join(root, "elsewhere", "kept", "agent.sqlite"), join(file, "kept", "agent.sqlite"));
-  assert.ok(await refusal({ data: file, port: 0, faux: FAUX }), "a symlinked agent.sqlite is refused too");
+  assert.match((await refusal({ data: file, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked agent.sqlite is refused too");
 });
 
 test("this version's own runs/ and a directory with no agent.sqlite start as before", async (t) => {
