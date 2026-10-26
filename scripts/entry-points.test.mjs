@@ -30,7 +30,8 @@ test('the argv[1] check is recognised in each form the repository has used', () 
 test('no tracked script compares process.argv[1] with its own URL to decide it is the command', () => {
   const files = execFileSync('git', ['ls-files', '*.mjs', '*.js', '*.ts', '*.mts', '*.cjs'], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean);
   const self = 'scripts/entry-points.test.mjs';
-  // packages/pi-browser is a synced snapshot of the harness: its fix comes back through the sync, which removes this exclusion.
+  // packages/pi-browser is a synced snapshot the harness owns. Its own engines include Node 24.0-24.1, which have no
+  // import.meta.main, so it uses the symlink-safe realpathSync form. It stays out of this scan for good.
   const synced = 'packages/pi-browser/';
   const found = files.filter((file) => file !== self && !file.startsWith(synced)).flatMap((file) => readFileSync(new URL(file, root), 'utf8').split('\n')
     .flatMap((line, at) => argvCheck.test(line) ? [`${file}:${at + 1}`] : []));
