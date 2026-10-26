@@ -236,6 +236,9 @@ test("a run's input is checked against the default schema {content: string} befo
     assert.equal(wrongType.status, 422);
     assert.deepEqual(wrongType.body.error.fields, [{ field: "input.content", reason: "wrong_type", message: "input.content is not string" }]);
   }
+  const unknown = await api("POST", "/agents/plain/runs", { input: { content: "x" }, extra: 1, other: 2 });
+  assert.equal(unknown.status, 422);
+  assert.deepEqual(unknown.body.error.fields, [{ field: "extra", reason: "not_allowed", message: "The body keeps no field extra." }, { field: "other", reason: "not_allowed", message: "The body keeps no field other." }]);
   const quote = await api("POST", "/agents/plain/runs", { input: { content: "x" }, quote_id: "q" });
   assert.deepEqual([quote.status, quote.body.error.capability], [501, "quotes"]);
   const unbound = await api("POST", "/agents", agent("shell", { tools: ["read", "bash"] }));
