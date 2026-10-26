@@ -74,6 +74,8 @@ export type Place = {
 /** The local place: a child process of this machine on a directory of it, the entry's own `run.ts` started with `--child`. A box kill takes the boxes the run made
  *  with it (`destroyBoxes`), since the machine the box stood for is this machine's. */
 export function localPlace(options: { self: string; paths: RunPlace; destroyBoxes?: () => void | Promise<void>; /** Where attempt n's child writes its kill request (a file in the supervisor's own scratch). */ requestFile?: (attempt: number) => string }): Place {
+  // The children still running: `release` stops them, so a child the supervisor gave up on (a kill that failed) never outlives the run, writing under a directory that is being removed.
+  const running = new Set<Runner>();
   const start = async (order: RunnerOrder): Promise<Runner> => {
     const proc = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', fileURLToPath(options.self), '--child'], { env: { PATH: process.env.PATH!, ...order.env }, stdio: [order.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
     if (order.stdin !== undefined) proc.stdin!.end(order.stdin);
@@ -87,7 +89,10 @@ export function localPlace(options: { self: string; paths: RunPlace; destroyBoxe
         resolve({ exit: signal ?? code, signal, ...(row ? { outcome: row.outcome } : {}), stderr: stderr.trim().slice(0, 600) });
       });
     });
-    return { epoch: 1, pid: proc.pid!, exited };
+    const runner = { epoch: 1, pid: proc.pid!, exited };
+    running.add(runner);
+    void exited.catch(() => undefined).finally(() => running.delete(runner));
+    return runner;
   };
   // A runner the supervisor has stopped: `recover` does not stop it again (a box's providers are not asked twice).
   const stopped = new WeakSet<Runner>();
@@ -102,7 +107,10 @@ export function localPlace(options: { self: string; paths: RunPlace; destroyBoxe
     start, kill,
     ...(options.requestFile ? { requestFile: options.requestFile, signals: (attempt) => localSignals(options.requestFile!(attempt)) } : {}),
     recover: async (last, kind, order) => { if (!stopped.has(last)) await kill(last, kind); return { runner: await start(order) }; },
-    release: async () => undefined,
+    release: async () => {
+      for (const runner of running) if (runner.pid !== undefined) { try { process.kill(runner.pid, 'SIGKILL'); } catch { /* already gone */ } }
+      await Promise.all([...running].map((runner) => runner.exited.catch(() => undefined)));
+    },
   };
 }
 
