@@ -19,6 +19,20 @@ const sources = JSON.parse(readFileSync(new URL('./hero/sources.json', import.me
 const NINE = ['caiso', 'ercot', 'nyiso', 'isone', 'ieso', 'eirgrid', 'bpa', 'transpower', 'ree'];
 
 const scratch = async (t) => { const dir = await mkdtemp(join(tmpdir(), 'hero-test-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
+/** Whether the manifest's cost covers what the eyes charged: the fold rounds usd to 1e-8, so it may land a hair under the raw sum (the 1e-9 the look cost's check allows). */
+const covers = (usd, charged) => usd >= charged - 1e-9;
+
+test('the manifest\'s cost covers the eyes\' charges when the fold rounds them a hair under their raw sum', () => {
+  // The nine charges of a priced run whose raw sum is 0.009632000000000002: the fold rounds every figure to 1e-8, so its usd is 0.009632.
+  const charged = [0.001062, 0.001068, 0.001069, 0.001072, 0.0010680000000000002, 0.001073, 0.001069, 0.0010710000000000001, 0.00108];
+  const looks = charged.map((cost_usd, index) => ({ record: { status: 'ok', facts: { key: `look ${index}`, cost_usd } } }));
+  const usd = cost([{ channel: 'durable', source: 'vision', data: { doc: 'vision.looks', value: { looks } } }]).usd;
+  const total = charged.reduce((sum, charge) => sum + charge, 0);
+  assert.ok(usd < total, `the fold's usd ${usd} is under the raw sum ${total}, the case this test is for`);
+  assert.ok(covers(usd, total));
+  // A cost one fold step (1e-8) under the rounded figure is short of what the eyes charged, not rounding.
+  assert.ok(!covers(usd - 1e-8, total), 'a cost under what the eyes charged is not covered');
+});
 
 test('sources.json lists nine operators, each with a dashboard and a published figure, and none of the excluded', () => {
   assert.deepEqual(sources.pages.map((source) => source.id), NINE);
@@ -129,7 +143,7 @@ test('beat 3, receipts with cost: the strip counts the guard\'s looks (paid.visi
   const counted = fold(lines);
   assert.equal(counted.paid.vision, 9);
   assert.ok(Math.abs(run.manifest.cost.parts.look - total) < 1e-9, `the manifest's look cost ${run.manifest.cost.parts.look} is what the eyes charged ${total}`);
-  assert.ok(run.manifest.cost.usd >= total);
+  assert.ok(covers(run.manifest.cost.usd, total), `the manifest's cost ${run.manifest.cost.usd} covers what the eyes charged ${total}`);
   assert.deepEqual(run.manifest.cost, cost(lines));
   assert.deepEqual([counted.repeated, counted.unknown], [0, 0]);
 });

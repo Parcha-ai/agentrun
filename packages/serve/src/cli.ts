@@ -17,7 +17,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
 Without --faux, a revision's model ("provider/model-id", or AGENT_MODEL when it names none; a workflow node's tier maps
 to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is served by pi-ai's providers with their
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
-it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed.`;
+it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed. AGENTRUN_PUBLIC_URL,
+when set, is the address people open (a container's published port, or a proxy's URL), and the link printed uses it.`;
 
 let values;
 try {
@@ -44,6 +45,15 @@ if (!Number.isInteger(port) || port < 0 || port > 65_535) {
   console.error(`--port takes a port number\n\n${USAGE}`);
   process.exit(2);
 }
+let publicUrl: string | undefined;
+if (process.env.AGENTRUN_PUBLIC_URL) {
+  const parsed = URL.canParse(process.env.AGENTRUN_PUBLIC_URL) ? new URL(process.env.AGENTRUN_PUBLIC_URL) : undefined;
+  if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+    console.error(`AGENTRUN_PUBLIC_URL takes an http(s) URL\n\n${USAGE}`);
+    process.exit(2);
+  }
+  publicUrl = parsed.href.replace(/\/+$/, "");
+}
 const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
 const given = process.env.AGENTRUN_TOKEN || undefined;
 let serve: Serve;
@@ -56,9 +66,9 @@ try {
 // A token from the environment is the operator's already, and is kept out of the logs.
 const shown = given ? "$AGENTRUN_TOKEN" : serve.token;
 console.log(`agentrun-serve on ${serve.baseUrl} (agent store in ${data}${values.listen ? `, listening on ${values.listen}` : ""})`);
-console.log(`AGENTRUN_BASE_URL=${serve.baseUrl}`);
+console.log(`AGENTRUN_BASE_URL=${publicUrl ? `${publicUrl}/v2` : serve.baseUrl}`);
 console.log(`AGENTRUN_API_KEY=${shown}`);
-console.log(`Open ${serve.url}/?token=${shown}`);
+console.log(`Open ${publicUrl ?? serve.url}/?token=${shown}`);
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
