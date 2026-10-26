@@ -419,3 +419,25 @@ test("a stopped run whose live process the next server adopts is input_required 
   assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
   await follow(api, runId, ["cancelled"]);
 });
+
+test("a reply that answers only once its turn is stopped leaves the run stopped, before and after a restart; a follow-up completes it", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const first = client(one.baseUrl, one.token);
+  const { run_id } = await startRun(first, "late", "Answer when stopped.");
+  await untilState(first, run_id, ["working", "working"]);
+  assert.equal((await first("POST", `/runs/${run_id}/stop`)).body.stopped, true);
+  const stopped = await follow(first, run_id, ["input_required"]);
+  assert.equal(stopped.last.state, "idle");
+  // pi-ai ends a reply that resolves after its abort as an aborted message, which leaves no row; were it to keep the
+  // answer, this run would be the one decide() must not complete.
+  assert.deepEqual(stopped.rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block"), []);
+  await one.close();
+  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => two.close());
+  const api = client(two.baseUrl, two.token);
+  assert.deepEqual(await stateOf(api, run_id), ["input_required", "idle"]);
+  assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
+  await follow(api, run_id, ["completed"]);
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+});
