@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.js";
-import { readJson, RUN_META, writeWhole } from "./files.js";
+import { readJson, RUN_META, storeRecords, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
@@ -21,7 +21,7 @@ import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
-export type State = "working" | "waiting" | "idle";
+type State = "working" | "waiting" | "idle";
 export const STATUSES: readonly Status[] = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
 type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
@@ -127,7 +127,7 @@ registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ?
 
 /** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
  *  from the call's row, whose label this module registers. */
-export function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
+function withAsks(rows: readonly TimelineEvent[]): TimelineEvent[] {
   const out: TimelineEvent[] = [];
   const questions = new Map<string, string>();
   for (const row of rows) {
@@ -167,7 +167,7 @@ const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.ki
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 
 /** A run's status and state, by the contract's table. */
-export function statusOf(run: Run): { status: Status; state: State } {
+function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
   if (run.finishing) return { status: run.finishing, state: "idle" };
   if (run.kind === "workflow") return { status: run.working ? "working" : "queued", state: "working" };
@@ -212,6 +212,7 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  private readonly runDir = (id: string) => join(this.options.agents.dir, "runs", id);
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -241,7 +242,7 @@ export class Runs {
   }
 
   private async load(row: RunRow): Promise<Run> {
-    const dir = join(this.options.agents.dir, "runs", row.id);
+    const dir = this.runDir(row.id);
     const stored = (await readJson(join(dir, RUN_META))) as Partial<RunMeta> | null;
     const meta: RunMeta = {
       title: typeof stored?.title === "string" ? stored.title : "",
@@ -296,17 +297,7 @@ export class Runs {
   private async readStore(run: Run): Promise<void> {
     const file = this.storeFile(run);
     if (!(await stat(file).catch(() => null))) return;
-    const { DatabaseSync } = await import("node:sqlite");
-    const entries: Json[] = [];
-    const db = new DatabaseSync(file, { readOnly: true });
-    try {
-      const rows = run.kind === "workflow"
-        ? db.prepare("SELECT record FROM entries ORDER BY id").iterate()
-        : db.prepare("SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
-      for (const row of rows) entries.push(JSON.parse(String((row as { record: string }).record)) as Json);
-    } finally {
-      db.close();
-    }
+    const entries = storeRecords(file, run.kind === "workflow" ? "SELECT record FROM entries ORDER BY id" : "SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id");
     run.working = false;
     noteAnswer(run, entries);
     this.take(run, timelineOf(entries as never, { settled: true }));
@@ -777,7 +768,7 @@ export class Runs {
   /** `Run`, as the contract shows it. */
   async view(run: Run) {
     const { status, state } = statusOf(run);
-    const row = TERMINAL.has(status) ? this.store.readRun(run.id) : undefined;
+    const row = this.store.readRun(run.id);
     const answer = answerOf(run.rows);
     const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
@@ -799,14 +790,14 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       cost: this.cost(run),
-      archived_at: this.store.readRun(run.id)?.archivedAt ?? null,
+      archived_at: row?.archivedAt ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at };
+    const { effort, updated_at, result, poll_after_ms, ...summary } = await this.view(run);
+    return summary;
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -821,7 +812,7 @@ export class Runs {
   async summaryOfRow(row: RunRow, versions: Map<string, number>): Promise<Awaited<ReturnType<Runs["summary"]>>> {
     const known = this.runs.get(row.id) ?? (row.state === "running" ? await this.get(row.id) : null);
     if (known) return this.summary(known);
-    const meta = (await readJson(join(this.options.agents.dir, "runs", row.id, RUN_META))) as Partial<RunMeta> | null;
+    const meta = (await readJson(join(this.runDir(row.id), RUN_META))) as Partial<RunMeta> | null;
     return {
       run_id: row.id, agent_id: row.agent, agent_version: versions.get(row.revision) ?? 0, revision: row.revision, kind: row.kind, sha: null,
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",

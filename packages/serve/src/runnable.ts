@@ -6,17 +6,16 @@ import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import type { InputIssue } from "./errors.js";
 import { chooseModel, nodeTiers } from "./model.js";
 
-/** A revision's body as it is saved or stored. */
 export type RevisionShape =
   | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string }
   | { kind: "workflow"; workflow: unknown };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool`, `adapter`,
  *  `code` and `tier` name it for a run's 409 details. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; adapter?: string; code?: true; tier?: string };
+type Blocker = InputIssue & { host: boolean; tool?: string; adapter?: string; code?: true; tier?: string };
 
 /** The reason a warning gives: the revision runs once this host has what it names. */
-export const NOT_SET_UP = "not_set_up_here";
+const NOT_SET_UP = "not_set_up_here";
 
 export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape): Promise<Blocker[]> {
   const out: Blocker[] = [];
@@ -46,5 +45,4 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   return out;
 }
 
-/** A blocker as a field issue, for a 422 or a warning. */
 export const issueOf = ({ field, reason, message }: Blocker): InputIssue => ({ field, reason, message });

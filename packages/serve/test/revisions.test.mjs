@@ -76,7 +76,9 @@ test("POST current makes an earlier revision current again; a revision of anothe
   assert.equal(foreign.status, 422);
   assert.deepEqual(foreign.body.error.fields.map((f) => f.field), ["revision"]);
   assert.equal((await api("POST", "/agents/back/current", {})).status, 422);
-  assert.equal((await api("POST", "/agents/back/current", { revision: second.revision, extra: 1 })).status, 422);
+  const extra = await api("POST", "/agents/back/current", { revision: second.revision, extra: 1, other: 2 });
+  assert.equal(extra.status, 422);
+  assert.deepEqual(extra.body.error.fields, [{ field: "extra", reason: "not_allowed", message: "The body keeps no field extra." }, { field: "other", reason: "not_allowed", message: "The body keeps no field other." }]);
 });
 
 test("a run pins its revision: the current one by default, or the one named; the store's row says which", async (t) => {

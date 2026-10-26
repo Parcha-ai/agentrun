@@ -1,21 +1,20 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { extname, join, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
+import { join, resolve } from "node:path";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { FILE_LIST_CAP, readFileRoute, walk } from "./files.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
-import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
+import { checkDefinitionBody, contentIssues, ID, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -28,13 +27,6 @@ const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
 const IDEMPOTENCY_TTL_S = 86_400;
-const FILE_LIST_CAP = 2_000;
-const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
-const TYPES: Record<string, string> = {
-  txt: "text/plain; charset=utf-8", md: "text/markdown; charset=utf-8", csv: "text/csv; charset=utf-8", json: "application/json", jsonl: "application/x-ndjson",
-  html: "text/html; charset=utf-8", htm: "text/html; charset=utf-8", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf",
-};
-const INLINE = new Set(["text/plain; charset=utf-8", "text/markdown; charset=utf-8", "text/csv; charset=utf-8", "application/json", "application/x-ndjson", "image/png", "image/jpeg", "image/gif", "image/webp", "text/html; charset=utf-8"]);
 
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
@@ -162,17 +154,17 @@ function cursorOf(value: string | null): number {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError("bad_request", "cursor is not one this server gave");
   return offset;
 }
-const nextCursor = (offset: number, total: number) => (offset < total ? Buffer.from(String(offset)).toString("base64url") : null);
-function limitOf(value: string | null): number {
-  if (value === null) return 20;
+function integerParam(value: string | null, name: string, max: number, { min = 0, absent = 0 } = {}): number {
+  if (value === null) return absent;
   const n = Number(value);
-  if (!/^\d+$/.test(value) || n < 1 || n > 100) throw new ApiError("bad_request", "limit is an integer from 1 to 100");
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(n) || n < min || n > max) throw new ApiError("bad_request", `${name} is an integer from ${min} to ${max}`);
   return n;
 }
-function integerParam(value: string | null, name: string, max: number): number {
-  if (value === null) return 0;
-  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > max) throw new ApiError("bad_request", `${name} is an integer from 0 to ${max}`);
-  return Number(value);
+/** The request's `limit` and `cursor`, checked when called; the function it returns cuts that page of a list. */
+function pageAt(url: URL) {
+  const limit = integerParam(url.searchParams.get("limit"), "limit", 100, { min: 1, absent: 20 });
+  const offset = cursorOf(url.searchParams.get("cursor"));
+  return <T>(all: readonly T[]) => ({ page: all.slice(offset, offset + limit), next_cursor: offset + limit < all.length ? Buffer.from(String(offset + limit)).toString("base64url") : null });
 }
 
 /** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
@@ -259,6 +251,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     return run;
   }
 
+  const onlyFields = (body: Json, allowed: readonly string[]): InputIssue[] => Object.keys(body).filter((k) => !allowed.includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+
   /** Replays the first answer to a create with the same key and body; another body is a mismatch. */
   async function idempotent(req: IncomingMessage, path: string, body: Json, work: () => Promise<{ status: number; body: unknown; headers?: Record<string, string> }>) {
     const key = req.headers["idempotency-key"];
@@ -315,7 +309,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
   async function inputIssuesOf(revision: Revision, input: Json) {
-    if (revision.kind === "agentic") return inputIssues(input, DEFAULT_INPUT_SCHEMA as Json);
+    if (revision.kind === "agentic") return contentIssues(input);
     const { validateWorkflow } = await import("@parcha/agentrun-dsl");
     const checked = validateWorkflow(revision.body.workflow, { executeCode: false, input });
     return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
@@ -326,7 +320,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
-      const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
+      const issues = onlyFields(body, ["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"]);
       if (!isObject(body.input)) issues.push({ field: "input", reason: body.input === undefined ? "missing" : "wrong_type", message: "input is an object" });
       if (body.revision !== undefined && (typeof body.revision !== "string" || !ID.test(body.revision))) issues.push({ field: "revision", reason: "wrong_type", message: "revision is a revision id of this agent" });
       if (body.effort !== undefined && !(EFFORTS as readonly unknown[]).includes(body.effort)) issues.push({ field: "effort", reason: "not_an_option", message: `effort is one of ${EFFORTS.join(", ")}` });
@@ -358,8 +352,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 
   async function runsPage(url: URL, filter: { agent?: string; revision?: string }) {
-    const limit = limitOf(url.searchParams.get("limit"));
-    const offset = cursorOf(url.searchParams.get("cursor"));
+    const pageOf = pageAt(url);
     const status = url.searchParams.get("status");
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
@@ -369,10 +362,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
+    const { page, next_cursor } = pageOf(rows);
     const versions = new Map<string, number>();
-    for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of agents.revisions(agent)) versions.set(r.id, r.version);
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions)));
-    return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
+    for (const agent of new Set(page.map((row) => row.agent))) for (const r of agents.revisions(agent)) versions.set(r.id, r.version);
+    return { runs: await Promise.all(page.map((row) => runs.summaryOfRow(row, versions))), next_cursor };
   }
 
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
@@ -408,55 +401,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       clearInterval(beat);
       res.end();
     }
-  }
-
-  // ---- files ----------------------------------------------------------------------------------------------------------
-
-  async function walk(base: string, dir = "", out: { path: string; size_bytes: number; modified_at: string; content_type: string | null }[] = [], depth = 0): Promise<typeof out> {
-    for (const d of await readdir(join(base, dir), { withFileTypes: true }).catch(() => [])) {
-      if (d.name.startsWith(".") || d.isSymbolicLink() || out.length > FILE_LIST_CAP) continue;
-      const rel = dir ? `${dir}/${d.name}` : d.name;
-      if (d.isDirectory()) depth < 16 && (await walk(base, rel, out, depth + 1));
-      else if (d.isFile()) {
-        const st = await stat(join(base, rel)).catch(() => null);
-        if (st) out.push({ path: rel, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(rel).slice(1).toLowerCase()] ?? null });
-      }
-    }
-    return out;
-  }
-
-  async function readFileRoute(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, raw: string): Promise<void> {
-    let rel: string;
-    try {
-      rel = raw.split("/").map(decodeURIComponent).join("/");
-    } catch {
-      throw new ApiError("invalid_file_path", "the path is not percent-encoded right");
-    }
-    const parts = rel.split("/");
-    if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
-    if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    let path = join(run.dir, "work");
-    if (!(await lstat(path).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
-    for (const part of parts) {
-      path = join(path, part);
-      const st = await lstat(path).catch(() => null);
-      if (!st || st.isSymbolicLink()) throw new ApiError("not_found", "no such file");
-    }
-    const st = await lstat(path);
-    if (!st.isFile()) throw new ApiError("not_found", "no such file");
-    const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
-    const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
-    const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
-    res.writeHead(200, {
-      "content-type": type,
-      "content-length": st.size,
-      "x-content-type-options": "nosniff",
-      "cache-control": "no-store",
-      ...(type.startsWith("text/html") ? { "content-security-policy": FILE_CSP } : {}),
-      ...(download ? { "content-disposition": `attachment; filename="${name}"` } : {}),
-    });
-    if (req.method === "HEAD" || st.size === 0) return void res.end();
-    await pipeline(createReadStream(path), res).catch(() => undefined);
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
@@ -526,11 +470,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listAgents": {
-        const limit = limitOf(url.searchParams.get("limit"));
-        const offset = cursorOf(url.searchParams.get("cursor"));
+        const pageOf = pageAt(url);
         const archived = archivedParam(url);
-        const all = agents.list().filter((entry) => Boolean(entry.agent.archivedAt) === archived);
-        return send(res, 200, { agents: all.slice(offset, offset + limit).map((entry) => agentView(entry)), next_cursor: nextCursor(offset + limit, all.length) });
+        const { page, next_cursor } = pageOf(agents.list().filter((entry) => Boolean(entry.agent.archivedAt) === archived));
+        return send(res, 200, { agents: page.map((entry) => agentView(entry)), next_cursor });
       }
       case "getAgent": {
         const entry = needAgent(id);
@@ -550,17 +493,14 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }
       case "listRevisions": {
         const entry = needAgent(id);
-        const limit = limitOf(url.searchParams.get("limit"));
-        const offset = cursorOf(url.searchParams.get("cursor"));
-        const all = agents.revisions(id);
-        const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id)));
-        return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+        const { page, next_cursor } = pageAt(url)(agents.revisions(id));
+        return send(res, 200, { revisions: page.map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id))), next_cursor });
       }
       case "setCurrent": {
         const entry = needAgent(id);
         const body = await bodyOf(req);
-        const extra = Object.keys(body).filter((k) => k !== "revision");
-        if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+        const extra = onlyFields(body, ["revision"]);
+        if (extra.length) throw invalid(extra);
         const revision = body.revision;
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
@@ -594,8 +534,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
         const body = await bodyOf(req);
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const extra = Object.keys(body).filter((k) => k !== "content");
-          if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
+          const extra = onlyFields(body, ["content"]);
+          if (extra.length) throw invalid(extra);
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);

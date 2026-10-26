@@ -230,7 +230,15 @@ test("a run's input is checked against the default schema {content: string} befo
   await api("POST", "/agents", agent("plain"));
   const noContent = await api("POST", "/agents/plain/runs", { input: { question: "no content" } });
   assert.equal(noContent.status, 422);
-  assert.deepEqual(noContent.body.error.fields.map((f) => [f.field, f.reason]), [["input.content", "missing"]]);
+  assert.deepEqual(noContent.body.error.fields, [{ field: "input.content", reason: "missing", message: "input.content is required" }]);
+  for (const content of [5, null, ["x"]]) {
+    const wrongType = await api("POST", "/agents/plain/runs", { input: { content, question: "extra keys are allowed" } });
+    assert.equal(wrongType.status, 422);
+    assert.deepEqual(wrongType.body.error.fields, [{ field: "input.content", reason: "wrong_type", message: "input.content is not string" }]);
+  }
+  const unknown = await api("POST", "/agents/plain/runs", { input: { content: "x" }, extra: 1, other: 2 });
+  assert.equal(unknown.status, 422);
+  assert.deepEqual(unknown.body.error.fields, [{ field: "extra", reason: "not_allowed", message: "The body keeps no field extra." }, { field: "other", reason: "not_allowed", message: "The body keeps no field other." }]);
   const quote = await api("POST", "/agents/plain/runs", { input: { content: "x" }, quote_id: "q" });
   assert.deepEqual([quote.status, quote.body.error.capability], [501, "quotes"]);
   const unbound = await api("POST", "/agents", agent("shell", { tools: ["read", "bash"] }));

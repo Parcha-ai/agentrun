@@ -20,7 +20,7 @@ const NOT_KEPT: Record<string, string> = {
   max_cost_usd: "The agent store keeps no max_cost_usd on a definition: give one with each run.",
 };
 /** `provider/model-id`. */
-export const MODEL_REF = /^[^/\s]+\/\S+$/;
+const MODEL_REF = /^[^/\s]+\/\S+$/;
 const SKILL_FILE = "/SKILL.md";
 
 const issue = (field: string, reason: string, message: string, fix?: string): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });
@@ -31,14 +31,13 @@ function names(value: unknown, field: string, out: InputIssue[]): void {
   else if (new Set(value).size !== value.length) out.push(issue(field, "duplicate", `${field} names one item twice`));
 }
 
-/** The skills a revision's files hold: each `<name>/SKILL.md`, by name, sorted. */
 export const skillNames = (files: Iterable<string>): string[] => [...files].filter((path) => path.endsWith(SKILL_FILE)).map((path) => path.slice(0, -SKILL_FILE.length)).sort();
 
 /**
  * A definition as `POST /agents` and `PUT .../definition` take it: what one revision of an agent keeps. `instructions`
  * makes an agentic revision, `workflow` (an agentrun-dsl workflow) a workflow revision. `creating` asks for a name.
  */
-export function definitionIssues(definition: unknown, { at = "definition", creating = true } = {}): InputIssue[] {
+function definitionIssues(definition: unknown, { at = "definition", creating = true } = {}): InputIssue[] {
   if (!isObject(definition)) return [issue(at, definition === undefined ? "missing" : "wrong_type", `${at} is not an object`)];
   const out: InputIssue[] = [];
   for (const key of Object.keys(definition)) {
@@ -104,38 +103,8 @@ export function checkDefinitionBody(body: Json, { creating = true } = {}): Defin
   return { definition: body.definition as Json, ...(body.skills !== undefined || creating ? { skills: (body.skills ?? {}) as Record<string, string> } : {}), ...(typeof body.note === "string" ? { note: body.note } : {}) };
 }
 
-const TYPE_CHECK: Record<string, (value: unknown) => boolean> = {
-  string: (v) => typeof v === "string",
-  number: (v) => typeof v === "number" && Number.isFinite(v),
-  integer: (v) => Number.isSafeInteger(v),
-  boolean: (v) => typeof v === "boolean",
-  object: isObject,
-  array: Array.isArray,
-  null: (v) => v === null,
-};
-
-/** The default input schema: `{content: string}`. */
-export const DEFAULT_INPUT_SCHEMA = { type: "object", required: ["content"], properties: { content: { type: "string" } } };
-
-/**
- * An object against a JSON Schema at its top level (a run's input against `input_schema`, a submitted output against
- * `output_schema`): each required property present, each property of a declared type of that type. Deeper keywords
- * are not checked here.
- */
-export function inputIssues(input: Json, schema: Json, at = "input"): InputIssue[] {
-  const out: InputIssue[] = [];
-  const required = Array.isArray(schema.required) ? schema.required.filter((k): k is string => typeof k === "string") : [];
-  const properties = isObject(schema.properties) ? schema.properties : {};
-  for (const key of required) if (input[key] === undefined) out.push(issue(`${at}.${key}`, "missing", `${at}.${key} is required`));
-  for (const [key, value] of Object.entries(input)) {
-    const property = properties[key];
-    if (!isObject(property)) {
-      if (schema.additionalProperties === false) out.push(issue(`${at}.${key}`, "not_allowed", `${at} keeps no field ${key}`, `Remove ${at}.${key}.`));
-      continue;
-    }
-    const types = (Array.isArray(property.type) ? property.type : [property.type]).filter((t): t is string => typeof t === "string" && t in TYPE_CHECK);
-    if (types.length && !types.some((t) => TYPE_CHECK[t]!(value))) out.push(issue(`${at}.${key}`, "wrong_type", `${at}.${key} is not ${types.join(" or ")}`));
-    if (Array.isArray(property.enum) && !property.enum.some((option) => JSON.stringify(option) === JSON.stringify(value))) out.push(issue(`${at}.${key}`, "not_an_option", `${at}.${key} is not one of the options`));
-  }
-  return out;
+/** An agentic run's input: `{content: string}`, other keys allowed. */
+export function contentIssues(input: Json): InputIssue[] {
+  if (input.content === undefined) return [issue("input.content", "missing", "input.content is required")];
+  return typeof input.content === "string" ? [] : [issue("input.content", "wrong_type", "input.content is not string")];
 }

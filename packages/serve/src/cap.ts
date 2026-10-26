@@ -5,16 +5,15 @@
 // higher of the model's input and cache-write prices, plus its max output tokens at the output price. What the run has
 // spent is read back from its store when the process starts, so it survives a restart, plus each response since; a
 // request in flight holds its worst case until it answers.
-import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
+import { storeRecords } from "./files.js";
 
 /** A run's cap in USD, passed to its process. */
 export const CAP_ENV = "AGENTRUN_SERVE_MAX_COST_USD";
 /** How a request the cap refused begins its error, which the server ends the run with. */
 export const SPEND_CAP_REACHED = "spend_cap_reached";
 
-/** The run's cap from its process's environment; absent for a run without one. */
 export function capOf(env: NodeJS.ProcessEnv): number | undefined {
   const text = env[CAP_ENV];
   if (text === undefined || text === "") return undefined;
@@ -26,18 +25,12 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
 /** What the run's store says its model requests cost: every response of every conversation in it. */
 export function spentIn(storeFile: string): number {
   if (!existsSync(storeFile)) return 0;
-  const db = new DatabaseSync(storeFile, { readOnly: true });
-  try {
-    let spent = 0;
-    for (const row of db.prepare("SELECT record FROM entries").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[] };
-      const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : undefined;
-      if (typeof total === "number" && Number.isFinite(total)) spent += total;
-    }
-    return spent;
-  } finally {
-    db.close();
+  let spent = 0;
+  for (const entry of storeRecords(storeFile, "SELECT record FROM entries") as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[] }[]) {
+    const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : undefined;
+    if (typeof total === "number" && Number.isFinite(total)) spent += total;
   }
+  return spent;
 }
 
 /** `models`, refusing each request whose worst case would take the run past `cap` after `spent` USD. */
@@ -65,9 +58,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     // "out of budget" is final to pi-ai's retry policy, whatever digits the amounts hold.
     errorMessage: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spent + held).toFixed(6)} spent the run would pass its cap of $${cap}: the run is out of budget.`,
   });
-  /** Adds what `answer` cost to what the run has spent once it settles. */
   const count = (answer: Promise<AssistantMessage>) => answer.then((message) => void (spent += message.usage?.cost?.total ?? 0), () => undefined);
-  /** Admits a request of `worst`, holding it until `answer` settles, or says why not. */
   const admit = (worst: number, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> | undefined => {
     if (spent + held + worst > cap) return undefined;
     held += worst;

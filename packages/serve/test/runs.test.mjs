@@ -41,6 +41,9 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   assert.equal(after.status, 409);
   assert.equal(after.body.error.code, "not_continuable");
   assert.deepEqual(after.body.error.next_action, { type: "request", method: "POST", path: "/agents/calc/runs", caller_supplies: ["input", "Idempotency-Key"] });
+  const extra = await api("POST", `/runs/${started.run_id}/messages`, { content: "again", extra: 1, other: 2 });
+  assert.equal(extra.status, 422);
+  assert.deepEqual(extra.body.error.fields, [{ field: "extra", reason: "not_allowed", message: "The body keeps no field extra." }, { field: "other", reason: "not_allowed", message: "The body keeps no field other." }]);
 });
 
 test("the change cursor: a saved cursor resumes onto the rows held, 0 resets, and the final cursor answers unchanged", async (t) => {
