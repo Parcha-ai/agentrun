@@ -20,6 +20,21 @@ const errors = (...codes: number[]) =>
   Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 404: "NotFound", 409: "Conflict", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
 
+/** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
+const archiving = (collection: string, noun: string, id: Json, answer: string): Record<string, Record<string, Json>> =>
+  Object.fromEntries(
+    (["archive", "unarchive"] as const).map((verb) => [
+      `/${collection}/{${noun.toLowerCase()}_id}/${verb}`,
+      {
+        post: {
+          operationId: `${verb}${noun}`, tags: [collection], parameters: [id],
+          summary: verb === "archive" ? `Archive the ${noun.toLowerCase()}: hidden from the lists, kept with its history` : `Show the archived ${noun.toLowerCase()} in the lists again`,
+          responses: { "200": json({ type: "object" }, answer), ...errors(401, 404, 429, 500) },
+        },
+      },
+    ]),
+  );
+
 /** This server's own routes, outside the contract. */
 const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/openapi.json": {
@@ -37,6 +52,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "agent", in: "query", required: false, description: "Only this agent's runs.", schema: ref("schemas/Id") },
         { name: "revision", in: "query", required: false, description: "Only runs of this revision.", schema: { type: "string" } },
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
+        { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },
@@ -75,6 +91,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "200": json(ref("schemas/Agent"), "The agent, its current revision the one named."), ...errors(401, 404, 415, 422, 429, 500) },
     },
   },
+  ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
+  ...archiving("runs", "Run", ref("parameters/RunId"), "The run, with archived_at."),
 };
 
 let vendored: Json | undefined;

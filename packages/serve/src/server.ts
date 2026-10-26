@@ -92,7 +92,8 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
-  { method: "POST", pattern: /^\/agents\/([^/]+)\/(archive|unarchive)$/, name: "archiveAgent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
@@ -103,7 +104,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, name: "cancelRun" },
-  { method: "POST", pattern: /^\/runs\/([^/]+)\/(archive|unarchive)$/, name: "archiveRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
@@ -577,9 +579,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const moved = agents.setCurrent(entry, revision);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
-      case "archiveAgent": {
+      case "archiveAgent":
+      case "unarchiveAgent": {
         needAgent(id);
-        agents.store.setArchived("agent", id, second === "archive");
+        agents.store.setArchived("agent", id, found.name === "archiveAgent");
         const entry = needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
@@ -627,9 +630,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const view = await runs.view(run);
         return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
       }
-      case "archiveRun": {
+      case "archiveRun":
+      case "unarchiveRun": {
         const run = await needRun(id);
-        agents.store.setArchived("run", run.id, second === "archive");
+        agents.store.setArchived("run", run.id, found.name === "archiveRun");
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {
