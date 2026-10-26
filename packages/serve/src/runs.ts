@@ -74,6 +74,8 @@ type RunMeta = {
   error?: { code: string; message: string };
   /** A workflow run's output, once it completed. */
   output?: unknown;
+  /** How many messages the person had sent when the run's turn was stopped: it stays stopped until they send another. */
+  stopped_after?: number;
 };
 type RunError = { code: string; message: string; retryable: boolean };
 
@@ -107,7 +109,6 @@ export type Run = {
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
-  stopped: boolean;
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
@@ -119,6 +120,8 @@ export type Run = {
   relaunches: number;
   settled: boolean;
   settling?: Promise<void>;
+  /** The newest write of its serve.json: one at a time, in order. */
+  saving?: Promise<void>;
   updatedAt: string;
 };
 
@@ -165,6 +168,7 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
+const stopped = (run: Run) => run.meta.stopped_after === usersOf(run.rows);
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -174,7 +178,7 @@ export function statusOf(run: Run): { status: Status; state: State } {
   const users = usersOf(run.rows);
   if (!users) return { status: "queued", state: "working" };
   if (run.submitted > 0) return { status: "working", state: "working" };
-  if (run.stopped) return { status: "input_required", state: "idle" };
+  if (stopped(run)) return { status: "input_required", state: "idle" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -251,6 +255,7 @@ export class Runs {
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
+      ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
     };
     const run = this.blank(row, dir, meta, this.options.agents.revisions(row.agent).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
@@ -271,8 +276,14 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, updatedAt: meta.created_at,
+      working: false, submitted: 0, cancel: false, relaunches: 0, settled: false, updatedAt: meta.created_at,
     };
+  }
+
+  /** Writes the run's serve.json as it is when its turn comes. */
+  private saveMeta(run: Run): Promise<void> {
+    run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(() => writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`));
+    return run.saving;
   }
 
   private record(run: Run): Promise<Json | null> {
@@ -337,7 +348,7 @@ export class Runs {
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    return !run.stopped && answerOf(run.rows) ? { outcome: "completed" } : undefined;
+    return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -626,7 +637,7 @@ export class Runs {
     const cost = costOf(run.rows);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
-    await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+    await this.saveMeta(run);
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -708,7 +719,6 @@ export class Runs {
     if (TERMINAL.has(status)) throw this.finished(run);
     const mode = status === "queued" || (status === "working" && state === "working") ? "steer" : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
-    run.stopped = false;
     run.submitted++;
     this.refresh(run);
     try {
@@ -726,10 +736,13 @@ export class Runs {
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
-    run.stopped = true;
+    const before = run.meta.stopped_after;
+    run.meta.stopped_after = usersOf(run.rows);
+    await this.saveMeta(run).catch((error: Error) => warn(run.id, `its stop is not saved, so a restart will not keep it: ${error.message}`));
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
     if (!answer || answer.status >= 400) {
-      run.stopped = false;
+      run.meta.stopped_after = before;
+      await this.saveMeta(run).catch(() => undefined);
       this.refresh(run);
       return false;
     }
