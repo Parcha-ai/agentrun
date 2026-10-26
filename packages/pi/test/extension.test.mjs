@@ -574,6 +574,22 @@ test('with neither Jev key set, the refusal names both keys', async () => {
   });
 });
 
+test('a blank OPENROUTER_API_KEY with no TypeSafe key is no Jev key: status is not ready and the refusal names both keys', async () => {
+  await withEnv({ OPENROUTER_API_KEY: '  ', TYPESAFE_API_KEY: undefined }, async () => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      await app.command('status');
+      assert.equal(app.messages.at(-1).details.jev, false);
+      assert.match(app.messages.at(-1).content.split('\n').find(line => line.startsWith('Jev:')), /^Jev: not configured/);
+      await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      const shown = app.messages.at(-1).content;
+      assert.match(shown, /TYPESAFE_API_KEY/);
+      assert.match(shown, /OPENROUTER_API_KEY/);
+    } finally { await app.shutdown(); }
+  });
+});
+
 test('/agentrun status says which provider Jev uses', async () => {
   const statusLine = async env => withEnv(env, async () => {
     const app = await harness();
