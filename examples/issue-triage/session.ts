@@ -9,7 +9,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BACKGROUND_CONTEXT as ctx } from '@earendil-works/chord/context';
-import { createRegistry } from '@earendil-works/pi-durable';
+import { createRegistry, type Extension } from '@earendil-works/pi-durable';
 import { compileTransform } from '@parcha/agentrun-dsl';
 import { withRecovery, workspaceFiles } from '@parcha/agentrun-dsl/recovery';
 import { createWorkflowTool, decisionRecovery, nodeRunner, taskScope } from '@parcha/agentrun-pi/durable';
@@ -151,6 +151,20 @@ export async function session(options: { dir: string; input: Input; record?: str
   let trip!: () => void;
   const tripped = new Promise<void>((resolve) => { trip = resolve; });
   const meterTimer = cap === undefined ? undefined : setInterval(() => { if (!overBudget && spentOf(spoolLines(meterDir)) >= cap) { overBudget = true; trip(); } }, 250);
+  // The guard on the lead's CALL: before every request attempt (including a research node's, and a recovery's) the spool is read as it stands, and a request is not made once the known spend has reached the cap.
+  // The timer above stays as the backstop that ends a call already in flight. A refused request waits here until the run is aborted, which the stop does at once.
+  const capGuard: Extension = {
+    name: 'spend-cap', tools: [], wraps: [],
+    hooks: [{ task: 'pi.generation', handlers: { beforeRequest: async (_request: unknown, _api: unknown, context: { abortSignal?: AbortSignal }) => {
+      if (cap === undefined) return undefined;
+      if (!overBudget && spentOf(spoolLines(meterDir)) >= cap) { overBudget = true; trip(); }
+      if (overBudget) await new Promise<never>((_, reject) => {
+        const stop = () => reject(new Error(`the spend cap of $${cap} is reached`));
+        if (context.abortSignal?.aborted) stop(); else context.abortSignal?.addEventListener('abort', stop, { once: true });
+      });
+      return undefined;
+    } } }],
+  } as never;
   // A Jev question past the cap is not asked.
   const runJudge = parts.host!.decisions!.runJudge as (request: never) => Promise<unknown>;
   const guardedJudge = async (request: never) => { if (overBudget) throw new Error(`the spend cap of $${cap} is reached`); return runJudge(request); };
@@ -167,7 +181,7 @@ export async function session(options: { dir: string; input: Input; record?: str
   };
 
   // A research node's conversation gets the file tools and nothing else, at low thinking: the agentrun tool is the session's, and a node that is offered it starts authoring workflows of its own.
-  const nodes = nodeRunner({ agent: (node) => ({ model: lead, thinkingLevel: 'low', extensions: [ArchilCodingTools], tools: (ArchilCodingTools.tools ?? []).filter((tool) => (node.tools ?? ['read']).includes(tool.name)) }), record: () => ({ instructions: 'Cite each source you rely on, with a short quotation.' }) });
+  const nodes = nodeRunner({ agent: (node) => ({ model: lead, thinkingLevel: 'low', extensions: [ArchilCodingTools, capGuard], tools: (ArchilCodingTools.tools ?? []).filter((tool) => (node.tools ?? ['read']).includes(tool.name)) }), record: () => ({ instructions: 'Cite each source you rely on, with a short quotation.' }) });
   const tool = createWorkflowTool({
     projectDir: place.work, tools: TOOLS,
     task: {
@@ -185,7 +199,7 @@ export async function session(options: { dir: string; input: Input; record?: str
     runCode: async (node, state, at) => compileTransform(node.code)(state, { sop: at.sop }),
   });
   const registry = createRegistry();
-  for (const extension of [ArchilCodingTools, nodes.extension, tool.extension]) registry.install(extension);
+  for (const extension of [ArchilCodingTools, nodes.extension, tool.extension, capGuard]) registry.install(extension);
   const durable = await openDurableRun({ disk: 'local', region: 'local', id: place.id }, {
     mountToken: 'unused', acquire: async ({ ref }: { ref: RunRef }) => localClaim(ref, place), claimDir: (root: string) => openClaimDir(root, { fstype: null }),
     harness: { registry, models: parts.host!.models!.catalog }, env: runEnv,
@@ -197,7 +211,7 @@ export async function session(options: { dir: string; input: Input; record?: str
   let patience: NodeJS.Timeout | undefined;
   let follow: NodeJS.Timeout | undefined;
   try {
-    const root = await harness.root(ctx, { agent: { model: lead, thinkingLevel: 'medium', instructions: INSTRUCTIONS, extensions: [tool.extension] } } as never);
+    const root = await harness.root(ctx, { agent: { model: lead, thinkingLevel: 'medium', instructions: INSTRUCTIONS, extensions: [tool.extension, capGuard] } } as never);
     const prompt = sentenceFor(input);
     say(`you> ${prompt}`, 'you');
     // A take whose author has not reached `run` in time is not a take: stop it, leaving the recording unfinished (a failed take is run again, never edited).
