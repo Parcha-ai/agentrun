@@ -10,6 +10,7 @@ import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
+import { type Accounts, CLIENT_IP_HEADER, type NewPerson, openAccounts, peerOf, type Principal, type Role, TOKEN_PRINCIPAL } from "./auth.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
@@ -58,10 +59,31 @@ export type ServeOptions = {
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
+  /** People with a password and a role, kept in DIR/auth.sqlite (AGENTRUN_ACCOUNTS=1). Off, nothing of it exists. */
+  accounts?: boolean;
+  /** With accounts: the origin people open (AGENTRUN_PUBLIC_URL); every link and the session cookie are built from it,
+   *  never from Host. Required on an address that is not loopback. */
+  publicUrl?: string;
+  /** With accounts: the library's secret in place of DIR/.auth-secret (AGENTRUN_AUTH_SECRET). */
+  authSecret?: string;
+  /** With accounts: the owner made at start when there is none (AGENTRUN_OWNER_EMAIL, AGENTRUN_OWNER_PASSWORD_FILE). */
+  owner?: { email: string; passwordFile: string };
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; close(): Promise<void> };
+export type Serve = {
+  url: string;
+  baseUrl: string;
+  port: number;
+  token: string;
+  tokenFile: string | null;
+  tokenMade: boolean;
+  /** With accounts and no owner yet: the setup link, with this start's one-time code. */
+  setupUrl?: string;
+  /** With accounts: makes a person server-side, the way in until invites. */
+  addPerson?: (person: NewPerson) => Promise<{ id: string }>;
+  close(): Promise<void>;
+};
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -80,8 +102,15 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 
+/** What the page needs of accounts: the origin a cookie's write must come from, and who is signed in. */
+const pageAccounts = (accounts: Accounts) => ({
+  origin: accounts.origin,
+  hasOwner: () => accounts.hasOwner(),
+  signedIn: async (req: IncomingMessage, res: ServerResponse) => (await accounts.person(req, res)) !== null,
+});
+
 type Route = { method: string; pattern: RegExp; name: string; capability?: string };
-const ROUTES: Route[] = [
+export const ROUTES: Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "capabilities" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
@@ -109,6 +138,33 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
 ];
+/** This server's own routes with accounts on, outside the contract. */
+export const ACCOUNT_ROUTES: Route[] = [
+  { method: "POST", pattern: /^\/setup$/, name: "setup" },
+  { method: "GET", pattern: /^\/me$/, name: "me" },
+  { method: "GET", pattern: /^\/people$/, name: "listPeople" },
+  { method: "PATCH", pattern: /^\/people\/([^/]+)$/, name: "updatePerson" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/activity$/, name: "runActivity" },
+  { method: "GET", pattern: /^\/activity$/, name: "listActivity" },
+];
+
+/** With accounts, each route's least role ("none": answered before any credential). A route missing here is refused to
+ *  everyone. */
+export const ROUTE_ROLES: Record<string, Role | "none"> = {
+  capabilities: "none", setup: "none",
+  createAgent: "member", listAgents: "member", getAgent: "member", updateDefinition: "member", listRevisions: "member", setCurrent: "member", archiveAgent: "member",
+  createRun: "member", listRuns: "member", exportHome: "member", importHome: "member", listAllRuns: "member", getRun: "member", getTimeline: "member",
+  sendMessage: "member", stopRun: "member", cancelRun: "member", archiveRun: "member", killRun: "member", listRunFiles: "member", readRunFile: "member",
+  createFile: "member", uploadFile: "member", createQuote: "member", getUsage: "member",
+  me: "member", runActivity: "member", listActivity: "member",
+  listPeople: "admin", updatePerson: "admin",
+};
+
+/** Whether `principal` may call route `name`: deny by default. */
+export function permits(principal: Principal, name: string): boolean {
+  const role = Object.hasOwn(ROUTE_ROLES, name) ? ROUTE_ROLES[name] : undefined;
+  return role === "member" || (role === "admin" && principal.role === "admin");
+}
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
 export function capabilities(env: NodeJS.ProcessEnv = process.env) {
@@ -203,6 +259,13 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
   const token = options.token ?? stored!.token;
+  const host = options.host ?? "127.0.0.1";
+  let accounts: Accounts | undefined;
+  if (options.accounts) {
+    if (options.publicUrl !== undefined && !/^https?:\/\/[^/?#]+$/.test(options.publicUrl)) throw new Error("with accounts, AGENTRUN_PUBLIC_URL is an origin: http(s)://host[:port], no path");
+    if (!isLoopback(host) && options.publicUrl === undefined) throw new Error(`with accounts on ${host}, which is not loopback, set AGENTRUN_PUBLIC_URL: every link and the session cookie are built from it, never from Host`);
+    accounts = await openAccounts({ data, token, ...(options.authSecret !== undefined ? { secret: options.authSecret } : {}), ...(options.owner ? { owner: options.owner } : {}) });
+  }
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const { token: doorToken } = await tokenIn(doorTokenFile);
   if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
@@ -230,7 +293,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
         await rename(`${keptFile}.partial`, keptFile);
       }));
-  const host = options.host ?? "127.0.0.1";
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
@@ -330,7 +392,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     return checked.ok ? [] : checked.issues.map((i) => ({ field: `input${i.path ? ` at ${i.path}` : ""}`, reason: "invalid", message: `the workflow does not take this input: ${i.code}${i.path ? ` at ${i.path}` : ""}` }));
   }
 
-  async function createRun(req: IncomingMessage, agentId: string) {
+  async function createRun(req: IncomingMessage, agentId: string, principal: Principal) {
     const entry = needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
@@ -354,6 +416,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       await runnable(revision);
       const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
+      accounts?.record(principal, "run.create", { agent: entry.agent.id, revision: revision.id, run: run.id });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
     });
   }
@@ -506,15 +569,32 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // ---- routing --------------------------------------------------------------------------------------------------------
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
-    const matching = ROUTES.filter((r) => r.pattern.test(path));
+    const matching = (accounts ? [...ROUTES, ...ACCOUNT_ROUTES] : ROUTES).filter((r) => r.pattern.test(path));
     if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "capabilities") return send(res, 200, caps);
-    if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
-      authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
-      throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
+    if (accounts && found.name === "setup") {
+      const answer = await accounts.setup(req, res);
+      return send(res, answer.status, answer.body);
     }
+    let principal: Principal = TOKEN_PRINCIPAL;
+    if (!accounts || req.headers.authorization !== undefined) {
+      if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
+        authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
+        throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
+      }
+    } else {
+      const person = await accounts.person(req, res);
+      if (!person) {
+        authFailed(`/v2${path}`, "no_session");
+        throw new ApiError("unauthenticated", "this route needs a signed-in session, or Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
+      }
+      accounts.checkWrite(req);
+      principal = person;
+    }
+    if (accounts && !permits(principal, found.name)) throw new ApiError("forbidden", `${req.method} ${path} is not open to a ${principal.role}`);
+    const did = (action: string, refs: { agent?: string; revision?: string | null; run?: string }) => accounts?.record(principal, action, refs);
     if (found.capability) {
       const off: Record<string, string> = {
         "home.export": "This server does not export a home yet.",
@@ -533,6 +613,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const answer = await idempotent(req, "/agents", body, async () => {
           let warnings: InputIssue[] = [];
           const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
+          did("agent.create", { agent: entry.agent.id, revision: entry.revision?.id ?? null });
           return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -558,6 +639,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), { check, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        if (edited.revision && edited.revision.id !== entry.revision?.id) did("agent.update", { agent: id, revision: edited.revision.id });
         return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
@@ -566,7 +648,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const offset = cursorOf(url.searchParams.get("cursor"));
         const all = agents.revisions(id);
         const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id)));
-        return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+        if (!accounts) return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+        // The revision list is this server's own answer: with accounts it says who made each revision.
+        const by = accounts.revisionsBy(page.map((view) => view.revision));
+        return send(res, 200, { revisions: page.map((view) => ({ ...view, by: by.get(view.revision) ?? null })), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "setCurrent": {
         const entry = needAgent(id);
@@ -577,16 +662,18 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = agents.setCurrent(entry, revision);
+        did("agent.set_current", { agent: id, revision });
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
       case "archiveAgent": {
         needAgent(id);
         agents.store.setArchived("agent", id, second === "archive");
+        did(`agent.${second}`, { agent: id });
         const entry = needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
       case "createRun": {
-        const answer = await createRun(req, id);
+        const answer = await createRun(req, id, principal);
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listRuns":
@@ -612,6 +699,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           const { mode, messageId } = await runs.message(run, content);
+          did("run.message", { agent: run.agentId, revision: run.revision, run: run.id });
           const view = await runs.view(run);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status: view.status, state: view.state, poll_after_ms: 1000 } };
         });
@@ -620,18 +708,21 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "stopRun": {
         const run = await needRun(id);
         const stopped = await runs.stop(run);
+        did("run.stop", { agent: run.agentId, revision: run.revision, run: run.id });
         const view = await runs.view(run);
         return send(res, 200, { run_id: run.id, stopped, status: view.status, state: view.state });
       }
       case "cancelRun": {
         const run = await needRun(id);
         const requested = await runs.cancel(run);
+        did("run.cancel", { agent: run.agentId, revision: run.revision, run: run.id });
         const view = await runs.view(run);
         return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
       }
       case "archiveRun": {
         const run = await needRun(id);
         agents.store.setArchived("run", run.id, second === "archive");
+        did(`run.${second}`, { agent: run.agentId, revision: run.revision, run: run.id });
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {
@@ -643,6 +734,31 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return readFileRoute(req, res, url, await needRun(id), second!);
       case "getUsage":
         return send(res, 200, await usage(url));
+    }
+    if (accounts) {
+      switch (found.name) {
+        case "me":
+          return send(res, 200, accounts.me(principal));
+        case "listPeople":
+          return send(res, 200, accounts.people());
+        case "updatePerson":
+          return send(res, 200, await accounts.updatePerson(principal, id, await bodyOf(req)));
+        case "runActivity": {
+          const run = await needRun(id);
+          const limit = limitOf(url.searchParams.get("limit"));
+          const offset = cursorOf(url.searchParams.get("cursor"));
+          const { total, entries } = accounts.activity({ run: run.id }, offset, limit);
+          return send(res, 200, { run_id: run.id, activity: entries, next_cursor: nextCursor(offset + limit, total) });
+        }
+        case "listActivity": {
+          const agent = url.searchParams.get("agent") ?? undefined;
+          if (agent !== undefined && !ID.test(agent)) throw new ApiError("bad_request", "agent is an id");
+          const limit = limitOf(url.searchParams.get("limit"));
+          const offset = cursorOf(url.searchParams.get("cursor"));
+          const { total, entries } = accounts.activity(agent === undefined ? {} : { agent }, offset, limit);
+          return send(res, 200, { activity: entries, next_cursor: nextCursor(offset + limit, total) });
+        }
+      }
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -679,17 +795,24 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
-    if (answerPage(req, res, raw, { token, dir: data, authFailed })) return;
+    if (accounts) req.headers[CLIENT_IP_HEADER] = peerOf(req);
+    if (answerPage(req, res, raw, { token, dir: data, authFailed, ...(accounts ? { accounts: pageAccounts(accounts) } : {}) })) return;
+    if (accounts && raw.startsWith("/v2/auth/")) return void accounts.forward(req, res, raw, url.search).catch(fail);
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
   const port = options.port ?? DEFAULT_PORT;
-  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
+  await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done()))).catch((error) => {
+    accounts?.close();
+    throw error;
+  });
   const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
   // An address of every interface is reached on this machine at its loopback one.
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
+  // Fixed before the first request can arrive: nothing awaits between the listen and here.
+  const setupUrl = accounts?.attach(options.publicUrl ?? url, address.port);
   return {
     url,
     baseUrl: `${url}/v2`,
@@ -697,10 +820,13 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     token,
     tokenFile,
     tokenMade: stored?.made ?? false,
+    ...(setupUrl ? { setupUrl } : {}),
+    ...(accounts ? { addPerson: (person: NewPerson) => accounts.addPerson(person) } : {}),
     async close() {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
+      accounts?.close();
     },
   };
 }

@@ -22,6 +22,18 @@ const FILES: Record<string, { path: string; type: string }> = {
 };
 const PAGE = own("index.html", HTML);
 const LOCKED = own("locked.html", HTML);
+/** With accounts: the setup and sign-in pages, each with its own script, public like the page's files. */
+const ACCOUNT_FILES: Record<string, { path: string; type: string }> = {
+  "/account.css": own("account.css", "text/css; charset=utf-8"),
+  "/setup.js": own("setup.js", "text/javascript; charset=utf-8"),
+  "/sign-in.js": own("sign-in.js", "text/javascript; charset=utf-8"),
+};
+const SETUP = own("setup.html", HTML);
+const SIGN_IN = own("sign-in.html", HTML);
+
+/** With accounts: the origin a cookie's write must come from, whether there is an owner yet, and whether the request's
+ *  session cookie signs someone in. */
+export type PageAccounts = { origin: string; hasOwner(): boolean; signedIn(req: IncomingMessage, res: ServerResponse): Promise<boolean> };
 
 const read = new Map<string, Promise<Buffer>>();
 const bytesOf = (path: string) => {
@@ -50,12 +62,18 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void };
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; accounts?: PageAccounts };
+
+const redirect = (res: ServerResponse, location: string) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0 }), void res.end());
 
 async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the page answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
-  const file = FILES[raw];
+  const accounts = server.accounts;
+  const file = FILES[raw] ?? (accounts ? ACCOUNT_FILES[raw] : undefined);
   if (file) return send(req, res, 200, file.type, await bytesOf(file.path));
+  if (accounts && raw === "/setup") return accounts.hasOwner() ? redirect(res, "/sign-in") : send(req, res, 200, HTML, await bytesOf(SETUP.path));
+  if (accounts && raw === "/sign-in") return accounts.hasOwner() ? send(req, res, 200, HTML, await bytesOf(SIGN_IN.path)) : redirect(res, "/setup");
+  if (accounts && !held) held = await accounts.signedIn(req, res);
   const url = new URL(req.url ?? "/", "http://serve");
   if (raw.startsWith("/api/")) {
     if (!held && !same(String(req.headers.authorization ?? ""), `Bearer ${server.token}`)) {
@@ -75,7 +93,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
     return void res.end();
   }
   if (given !== null) server.authFailed?.(raw, "wrong_link_token");
-  if (!held || given !== null) return send(req, res, 401, HTML, await bytesOf(LOCKED.path));
+  if (!held || given !== null) return send(req, res, 401, HTML, await bytesOf((accounts ? (accounts.hasOwner() ? SIGN_IN : SETUP) : LOCKED).path));
   return send(req, res, 200, HTML, await bytesOf(PAGE.path));
 }
 
@@ -88,10 +106,13 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
   const held = cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
-    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
+    // With accounts the page's origin is the one the server was started with, never one the request names.
+    const origin = server.accounts?.origin ?? ownOrigin(req);
+    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === origin && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
     return false;
   }
-  if (raw !== "/" && !FILES[raw] && !raw.startsWith("/api/")) return false;
+  const accountPage = server.accounts && (raw === "/setup" || raw === "/sign-in" || Boolean(ACCOUNT_FILES[raw]));
+  if (raw !== "/" && !FILES[raw] && !raw.startsWith("/api/") && !accountPage) return false;
   answer(req, res, raw, server, held).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the page could not be read"));
     else res.destroy();

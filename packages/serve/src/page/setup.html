@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<!-- What a browser gets while this server has no owner (AGENTRUN_ACCOUNTS=1): the owner's form, which needs the code the server printed. setup.js sends it; nothing is inline. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Set up AgentRun Server</title>
+<link rel="stylesheet" href="/page.css">
+<link rel="stylesheet" href="/serve.css">
+<link rel="stylesheet" href="/account.css">
+</head>
+<body>
+<main>
+<section class="card account">
+<p class="kicker">AgentRun Server</p>
+<h1>Set up this server</h1>
+<p class="lede">Make its owner. The setup code is in the line agentrun-serve printed that starts with <code>Set up this server</code>; that link fills it in.</p>
+<form id="setup" novalidate>
+<label class="field"><span class="word">Setup code</span><input type="password" name="code" autocomplete="off" required></label>
+<label class="field"><span class="word">Your name</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
+<label class="field"><span class="word">Email</span><input type="email" name="email" autocomplete="email" required></label>
+<label class="field"><span class="word">Password</span><input type="password" name="password" autocomplete="new-password" minlength="12" maxlength="128" required><span class="hint">12 characters at least.</span></label>
+<div class="actions"><button class="btn" type="submit">Make the owner</button></div>
+<p class="said" id="said" role="status"></p>
+</form>
+</section>
+</main>
+<script src="/setup.js"></script>
+</body>
+</html>

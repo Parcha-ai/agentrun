@@ -1,0 +1,5 @@
+/* What the setup and sign-in pages add to page.css and serve.css: their inputs and the line that says what went wrong. Square corners, as everywhere. */
+.field input[type="email"],.field input[type="password"]{width:100%;max-width:100%;padding:8px 10px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);font:13px/1.5 var(--mono);appearance:none;border-radius:0}
+.account{max-width:420px}
+.said{min-height:1.5em;margin:12px 0 0;color:var(--muted);font-size:13px}
+.said.wrong{color:var(--bad,#c0392b)}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<!-- What a browser that is not signed in gets (AGENTRUN_ACCOUNTS=1): email and password. sign-in.js sends them; nothing is inline. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Sign in to AgentRun Server</title>
+<link rel="stylesheet" href="/page.css">
+<link rel="stylesheet" href="/serve.css">
+<link rel="stylesheet" href="/account.css">
+</head>
+<body>
+<main>
+<section class="card account">
+<p class="kicker">AgentRun Server</p>
+<h1>Sign in</h1>
+<form id="sign-in" novalidate>
+<label class="field"><span class="word">Email</span><input type="email" name="email" autocomplete="username" required></label>
+<label class="field"><span class="word">Password</span><input type="password" name="password" autocomplete="current-password" required></label>
+<div class="actions"><button class="btn" type="submit">Sign in</button></div>
+<p class="said" id="said" role="status"></p>
+</form>
+</section>
+</main>
+<script src="/sign-in.js"></script>
+</body>
+</html>

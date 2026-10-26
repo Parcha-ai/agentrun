@@ -64,11 +64,23 @@ const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".
 const given = process.env.AGENTRUN_TOKEN || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
+// Accounts stay off unless AGENTRUN_ACCOUNTS=1; off, none of these settings is read.
+const accounts = process.env.AGENTRUN_ACCOUNTS === "1";
+let owner: { email: string; passwordFile: string } | undefined;
+if (accounts && (process.env.AGENTRUN_OWNER_EMAIL || process.env.AGENTRUN_OWNER_PASSWORD_FILE)) {
+  if (!process.env.AGENTRUN_OWNER_EMAIL || !process.env.AGENTRUN_OWNER_PASSWORD_FILE) {
+    console.error("AGENTRUN_OWNER_EMAIL and AGENTRUN_OWNER_PASSWORD_FILE go together: the owner's email, and a file holding their password");
+    process.exit(2);
+  }
+  owner = { email: process.env.AGENTRUN_OWNER_EMAIL, passwordFile: process.env.AGENTRUN_OWNER_PASSWORD_FILE };
+}
+const authSecret = process.env.AGENTRUN_AUTH_SECRET || undefined;
 let serve: Serve;
 try {
   serve = await startServe({
     data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
+    ...(accounts ? { accounts, ...(publicUrl ? { publicUrl } : {}), ...(authSecret ? { authSecret } : {}), ...(owner ? { owner } : {}) } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -77,6 +89,7 @@ try {
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+if (serve.setupUrl) console.log(`Set up this server: ${serve.setupUrl}`);
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
