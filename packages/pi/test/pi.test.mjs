@@ -197,3 +197,8 @@ test('LLM instruction braces remain literal and the runner receives state as JSO
   assert.match(run.seen.options.resourceLoader.getSystemPrompt(), /These braces are literal: \{text\}\./);
   assert.deepEqual(JSON.parse(run.seen.prompts[0]), { text: 'There are 3 apples.' });
 });
+test('the runner itself refuses a max_turns above its cap, naming the cap, with no inspection in front of it', async () => {
+  const run = scripted([{ count: 1 }]);
+  await assert.rejects(createPiRunner(run.options)({ ...request, maxTurns: 6 }), /asks max_turns 6, above this host's cap of 5 turns/);
+  assert.equal(run.seen.sessions, 0, 'no session is started');
+});

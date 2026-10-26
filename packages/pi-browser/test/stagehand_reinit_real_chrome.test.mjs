@@ -23,7 +23,9 @@ async function proxiedDriver(t) {
     if (ref) await provider.release(ref);
     await rm(dir, { recursive: true, force: true });
   }, { timeout: 30_000 });
-  provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: dir } });
+  // A proxy sits between the extension and the browser's socket, a URL the extension's connect policy does not name: this test is of the
+  // reconnect, so the extension runs without it.
+  provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: dir, confineExtension: false } });
   const signal = new AbortController().signal;
   ref = await provider.create(SPEC, signal);
   const own = await provider.attach(ref);

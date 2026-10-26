@@ -47,6 +47,26 @@ test("the public ./providers/chrome-args export is exactly what the cdp provider
   const recorded = fs.readdirSync(root, { recursive: true }).find((file) => String(file).endsWith("fake-chrome.json"));
   const { argv } = JSON.parse(fs.readFileSync(path.join(root, String(recorded)), "utf8"));
   const userDataDir = argv.find((arg) => arg.startsWith("--user-data-dir=")).slice("--user-data-dir=".length);
-  assert.deepEqual(argv, [...published({ userDataDir, viewport: spec.viewport, headless: true, sandbox: false }), "about:blank"]);
-  assert.ok(argv.includes(`--remote-allow-origins=${publishedOrigin()}`));
+  // The provider gives the browser its own copy of the extension, so its Origin is that copy's; every other argument is the export's.
+  const origin = argv.find((arg) => arg.startsWith("--remote-allow-origins="));
+  assert.match(origin, /^--remote-allow-origins=chrome-extension:\/\/[a-p]{32}$/);
+  assert.notEqual(origin, `--remote-allow-origins=${publishedOrigin()}`, "the lease's own extension, not Stagehand's directory");
+  assert.deepEqual(argv, [...published({ userDataDir, viewport: spec.viewport, headless: true, sandbox: false }).map((arg) => arg.startsWith("--remote-allow-origins=") ? origin : arg), "about:blank"]);
+  // With the extension's confinement off, the browser is started for Stagehand's own directory.
+  const open = cdpProvider({ chrome: { executablePath: path.join(import.meta.dirname, "fixtures", "fake-chrome.mjs"), profileRoot: root, sandbox: false, confineExtension: false } });
+  const openRef = await open.create({ ...spec, tag: `${spec.tag}-open` }, new AbortController().signal);
+  t.after(() => open.release(openRef));
+  const openRecord = fs.readdirSync(root, { recursive: true }).find((file) => String(file).includes(`${spec.tag}-open`) && String(file).endsWith("fake-chrome.json"));
+  const { argv: openArgv } = JSON.parse(fs.readFileSync(path.join(root, String(openRecord)), "utf8"));
+  assert.ok(openArgv.includes(`--remote-allow-origins=${publishedOrigin()}`));
+});
+
+test("an extension directory given to chromeArgs names the one allowed Origin; none given keeps Stagehand's own", (t) => {
+  const root = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "chrome-args-dir-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, "derived");
+  fs.mkdirSync(dir);
+  const given = chromeArgs({ userDataDir: "/tmp/profile", viewport: { width: 800, height: 600 }, headless: true, sandbox: true, extensionDir: dir });
+  assert.deepEqual(origins(given), [`--remote-allow-origins=${extensionOrigin(dir)}`]);
+  assert.notEqual(extensionOrigin(dir), extensionOrigin());
 });

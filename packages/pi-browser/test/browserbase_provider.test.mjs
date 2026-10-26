@@ -477,6 +477,16 @@ test("one session at a time saves to a profile, and a saving session's release w
   assert.ok((await provider.create(spec({ tag: "ar-run1-4-1", profile: PROFILE }), new AbortController().signal)).id);
 });
 
+test("a context given by id (a vault's kept one) is saved by one session at a time, its release waits for the write-back, and no refusal names the id", async () => {
+  const slept = [];
+  const { provider } = rig({}, proxied(), { profiles: memoryStore(), sleep: async (ms) => { slept.push(ms); }, profileSettleMs: 4_000 });
+  const first = await provider.create(spec({ contextId: "ctx_kept_0001" }), new AbortController().signal);
+  await assert.rejects(provider.create(spec({ tag: "ar-run1-2-1", metadata: { run: "run-2", label: "other" }, contextId: "ctx_kept_0001" }), new AbortController().signal), (error) => error.failure?.code === "refused" && /one session at a time/.test(error.failure.message) && !/ctx_kept_0001/.test(error.failure.message));
+  await provider.release(first);
+  assert.ok(slept.includes(4_000), "the release waited out the write-back");
+  assert.ok((await provider.create(spec({ tag: "ar-run1-3-1", contextId: "ctx_kept_0001" }), new AbortController().signal)).id);
+});
+
 test("the default profile store is a file: first use is one create across processes, other names survive, and a file that is not ours, unreadable or malformed is never overwritten", async (t) => {
   const dir = await scratch(t, "bb-profiles-");
   const file = `${dir}/profiles.json`;
