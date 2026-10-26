@@ -1,7 +1,7 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStoreReader } from "@parcha/pi-durable-agent";
@@ -40,6 +40,52 @@ export function client(baseUrl, token) {
       json = JSON.parse(text);
     } catch {}
     return { status: res.status, headers: res.headers, body: json ?? text };
+  };
+}
+
+/** One request with every header the caller names, Host, Origin and Cookie included (fetch sets or drops those itself). */
+export function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method, path, headers: { host: `127.0.0.1:${port}`, ...headers } }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let json;
+        try {
+          json = JSON.parse(text);
+        } catch {}
+        resolve({ status: res.statusCode, headers: res.headers, text, json });
+      });
+    });
+    req.once("error", reject);
+    req.end(body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body));
+  });
+}
+
+/** The keys of the contract's answers and of the revision list as they were before accounts: accounts add none. */
+export const SHAPES = {
+  agentList: ["agents", "next_cursor"],
+  agent: ["agent_id", "definition", "kind", "revision", "revisions", "source", "skills", "sign_ins", "runs", "region", "home_etag", "archived_at", "created_at", "updated_at"],
+  runList: ["runs", "next_cursor"],
+  runSummary: ["run_id", "agent_id", "agent_version", "revision", "kind", "sha", "status", "state", "title", "created_at", "ended_at", "error", "cost", "archived_at"],
+  run: ["run_id", "agent_id", "agent_version", "revision", "kind", "sha", "status", "state", "title", "created_at", "updated_at", "ended_at", "result", "error", "cost", "archived_at", "poll_after_ms"],
+  revision: ["revision", "version", "parent", "kind", "current", "note", "created_at", "definition"],
+  features: ["agents", "archive", "home", "runs", "messages", "timeline", "files", "quotes", "usage", "efforts", "thinking", "browser", "sign_ins", "vault", "query"],
+};
+
+/** The same keys read from a server through `api`, over agent `agentId` and its run `runId`. */
+export async function shapesOf(api, agentId, runId) {
+  const agents = (await api("GET", "/agents")).body;
+  const runs = (await api("GET", "/runs")).body;
+  return {
+    agentList: Object.keys(agents),
+    agent: Object.keys((await api("GET", `/agents/${agentId}`)).body),
+    runList: Object.keys(runs),
+    runSummary: Object.keys(runs.runs[0]),
+    run: Object.keys((await api("GET", `/runs/${runId}`)).body),
+    revision: Object.keys((await api("GET", `/agents/${agentId}/revisions`)).body.revisions[0]),
+    features: Object.keys((await api("GET", "/capabilities")).body.features),
   };
 }
 
