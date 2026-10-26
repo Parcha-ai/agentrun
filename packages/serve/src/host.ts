@@ -30,10 +30,11 @@ export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
   return value;
 }
 
-export type Health = { status: "ok" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" } };
+export type Health = { status: "ok" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" | "cannot_check" } };
 
-/** Whether the store in `data` opens for a read, and its disk has `minFreeBytes` free. Says no path and no number. */
-export async function healthOf(data: string, minFreeBytes: number): Promise<Health> {
+/** Whether the store in `data` opens for a read, and its disk has `minFreeBytes` free; a disk it cannot measure fails.
+ *  Says no path and no number. `fsStat` is node's statfs unless a test gives another. */
+export async function healthOf(data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
   let store: Health["checks"]["store"] = "ok";
   try {
     const reader = openStoreReader(data);
@@ -45,7 +46,7 @@ export async function healthOf(data: string, minFreeBytes: number): Promise<Heal
   } catch {
     store = "does_not_open";
   }
-  const free = await statfs(data).then((fs) => fs.bavail * fs.bsize, () => 0);
-  const disk = free >= minFreeBytes ? "ok" : "below_floor";
+  const free = await fsStat(data).then((fs) => fs.bavail * fs.bsize, () => undefined);
+  const disk = free === undefined ? "cannot_check" : free >= minFreeBytes ? "ok" : "below_floor";
   return { status: store === "ok" && disk === "ok" ? "ok" : "failing", checks: { store, disk } };
 }

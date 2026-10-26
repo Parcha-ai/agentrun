@@ -107,11 +107,13 @@ where memory is the container's limit when it has one (cgroup), else the machine
 1 GB, 112 on 8 GB. `--max-runs N` or `AGENTRUN_MAX_RUNS` sets it instead; capabilities report it in
 `limits.max_concurrent_runs`. Over it, `POST /agents/{id}/runs` is `429 rate_limited` with `retry-after` and nothing
 starts: there is no queue, so the client tries again once a run ends. A message to a run already going is never
-refused.
+refused. A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
+counts only its own runs, and a run could be relaunched twice).
 
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
 when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
-and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`) otherwise.
+and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`, or
+`disk: "cannot_check"` when the free space cannot be read) otherwise.
 It names no path, size or version. One route serves as both liveness and readiness: any answer says the server is up,
 and a 200 says it can work, and the platforms here take one path.
 

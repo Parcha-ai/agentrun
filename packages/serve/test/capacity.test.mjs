@@ -51,6 +51,32 @@ test("two starts at once with one place left: one starts and one is 429", async 
   assert.equal((await api("GET", "/runs")).body.runs.length, 1);
 });
 
+test("a start that fails gives its place back: after a store write refused, and after an app that does not load, the next run still starts", { skip: process.getuid?.() === 0 && "root writes a directory of mode 555" }, async (t) => {
+  const { api, data } = await serve(t, { maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
+  // The store's directory read-only: startRun's row cannot be written, and the start fails.
+  await chmod(data, 0o555);
+  let failed;
+  try {
+    failed = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "never-0") } });
+  } finally {
+    await chmod(data, 0o755);
+  }
+  assert.ok(failed.status >= 500, JSON.stringify(failed.body));
+  const next = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "go-0") } });
+  assert.equal(next.status, 202, `the failed start kept the one place: ${JSON.stringify(next.body)}`);
+  await writeFile(join(data, "go-0"), "");
+  await follow(api, next.body.run_id, ["completed"]);
+  // A run whose app does not load: it starts, its process fails at once, and the place is free again.
+  const broken = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
+  assert.equal((await broken.api("POST", "/agents", agent("broken"))).status, 201);
+  for (let i = 0; i < 2; i++) {
+    const run = await broken.api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+    assert.equal(run.status, 202, `start ${i}: ${JSON.stringify(run.body)}`);
+    await follow(broken.api, run.body.run_id, ["failed"]);
+  }
+});
+
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
   const { data } = await serve(t);
   const zero = await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 }).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
@@ -83,6 +109,14 @@ test("health is 503 with the reason when the free disk is under its floor, or th
   } finally {
     await chmod(file, 0o600);
   }
+});
+
+test("a disk health cannot measure fails its check (503 cannot_check), never reads as room", async (t) => {
+  const { healthOf } = await import("../dist/host.js");
+  const { data } = await serve(t);
+  const failing = async () => { throw Object.assign(new Error("statfs failed"), { code: "EIO" }); };
+  assert.deepEqual(await healthOf(data, 64 * MiB, failing), { status: "failing", checks: { store: "ok", disk: "cannot_check" } });
+  assert.deepEqual(await healthOf(data, 64 * MiB), { status: "ok", checks: { store: "ok", disk: "ok" } });
 });
 
 test("compose and render.yaml check /v2/health", async () => {
