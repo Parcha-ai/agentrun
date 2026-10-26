@@ -89,33 +89,33 @@ test('spentOf sums the priced parts of the recording lines and an unknown price 
   assert.ok(Math.abs(spentOf([assistant(0.25), { ...assistant(0.5), commit: 2 }]) - 0.75) < 1e-12);
 });
 
-test('--max-usd stops the session cleanly: a lead that keeps asking is ended once the known spend reaches the cap, and the stop says so', { timeout: 30_000 }, async () => {
+test('--max-usd stops the session cleanly: no lead request starts once the known spend has reached the cap, so the spend ends within one call of it', { timeout: 30_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'triage-cap-'));
   const lines = [];
   const log = console.log; console.log = (line) => lines.push(String(line));
   try {
-    // A stubbed lead that calls the agentrun tool forever (pi-ai's faux prices nothing, so the usage a real model reports is written into the recording's spool, as the recorder writes it).
-    const faux = fauxProvider({ models: [{ id: 'faux-1' }], tokensPerSecond: 20, tokenSize: { min: 1, max: 2 } });
-    faux.setResponses(Array.from({ length: 400 }, () => fauxAssistantMessage([fauxToolCall('agentrun', { action: 'describe' })], { stopReason: 'toolUse' })));
+    // A stubbed lead that calls the agentrun tool forever and answers at once. pi-ai's faux prices nothing, so each call writes the usage a real model reports into the recording's spool, as the recorder writes it: the bill is tied to the call, never to a clock.
+    const CALL_USD = 0.0004, CAP_USD = 0.0009;
+    const spool = join(dir, 'run', 'meter', '.spool');
+    let commit = 0;
+    const bill = () => {
+      if (!existsSync(spool)) return;
+      const line = { channel: 'durable', source: 'pi', kind: 'pi.assistant', commit: ++commit, conv: 1, data: { model: [{ role: 'assistant', usage: { cost: { total: CALL_USD } } }] } };
+      appendFileSync(join(spool, 'stub-usage.jsonl'), `${JSON.stringify(line)}\n`);
+    };
+    const faux = fauxProvider({ models: [{ id: 'faux-1' }] });
+    faux.setResponses(Array.from({ length: 400 }, () => () => { bill(); return fauxAssistantMessage([fauxToolCall('agentrun', { action: 'describe' })], { stopReason: 'toolUse' }); }));
     const catalog = createModels(); catalog.setProvider(faux.provider);
     const parts = { host: { models: { catalog, lead: { provider: faux.provider.id, modelId: 'faux-1' } }, decisions: { runJudge: async () => { throw new Error('no judge here'); } } }, tools: {}, models: {} };
-    const spool = join(dir, 'run', 'meter', '.spool');
-    const bill = setInterval(() => {
-      if (!existsSync(spool)) return;
-      const line = { channel: 'durable', source: 'pi', kind: 'pi.assistant', commit: ++commit, conv: 1, data: { model: [{ role: 'assistant', usage: { cost: { total: 0.0004 } } }] } };
-      appendFileSync(join(spool, 'stub-usage.jsonl'), `${JSON.stringify(line)}\n`);
-    }, 300);
-    let commit = 0;
-    const started = Date.now();
-    await session({ dir: join(dir, 'run'), input: { repo: 'o/r', sha: 'a'.repeat(40), numbers: [1] }, plain: true, maxUsd: 0.0009, parts }).finally(() => clearInterval(bill));
-    assert.ok(lines.some((line) => /stopped: the known spend, \$[\d.]+, reached --max-usd \$0\.0009/.test(line)), lines.join('\n'));
+    await session({ dir: join(dir, 'run'), input: { repo: 'o/r', sha: 'a'.repeat(40), numbers: [1] }, plain: true, maxUsd: CAP_USD, parts });
     const summary = JSON.parse(lines.at(-1));
+    assert.ok(summary.spentUsd >= CAP_USD && summary.spentUsd <= CAP_USD + CALL_USD, `the stop came within one call of the cap: ${summary.spentUsd} (the cap ${CAP_USD}, a call ${CALL_USD}), after ${faux.state.callCount} lead calls`);
+    assert.ok(lines.some((line) => /stopped: the known spend, \$[\d.]+, reached --max-usd \$0\.0009/.test(line)), lines.join('\n'));
     assert.equal(summary.outcome, 'over_budget');
-    assert.ok(summary.spentUsd >= 0.0009 && summary.spentUsd <= 0.002, `the stop came at the cap, not long past it: ${summary.spentUsd}`);
+    assert.ok(faux.state.callCount <= Math.ceil(CAP_USD / CALL_USD), `no lead request starts once the known spend is at the cap: ${faux.state.callCount} calls`);
     const asked = faux.state.callCount;
     await new Promise((resolve) => setTimeout(resolve, 600));
     assert.equal(faux.state.callCount, asked, 'the model is not asked again after the stop');
-    assert.ok(Date.now() - started < 20_000);
   } finally { console.log = log; process.exitCode = 0; await rm(dir, { recursive: true, force: true }); }
 });
 
