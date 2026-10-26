@@ -97,6 +97,7 @@ const ROUTES: Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/home$/, name: "importHome", capability: "home.import" },
   { method: "GET", pattern: /^\/runs$/, name: "listAllRuns" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/input$/, name: "getRunInput" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
@@ -129,6 +130,8 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
       agents: { create: true, list: true, update: true, revisions: true },
       home: { export: false, import: false, check: false },
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
+      /** This server's own route, outside the contract: a run's input as it was started, whole. */
+      run_input: { routes: ["GET /runs/{id}/input"] },
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: false, read: true, range: false, during_run: true },
@@ -549,6 +552,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const revision = url.searchParams.get("revision") ?? undefined;
         return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }));
       }
+      case "getRunInput":
+        return send(res, 200, { input: (await needRun(id)).meta.input ?? null });
       case "getRun":
         return send(res, 200, await runs.view(await needRun(id)));
       case "getTimeline":
