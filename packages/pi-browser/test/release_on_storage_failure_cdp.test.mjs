@@ -20,7 +20,7 @@ const pidOf = (id) => Number(/^local:(\d+):/.exec(id)[1]);
 async function releaseUnrecorded(t, { executablePath, args, driver }) {
   const profiles = await scratch(t, "release-cdp-");
   const dir = scratchSync(t, "release-cdp-store-");
-  const provider = cdpProvider({ chrome: { executablePath, profileRoot: profiles, args } });
+  const provider = cdpProvider({ chrome: { executablePath, profileRoot: profiles, args, confineExtension: false } });
   const { drivers, driver: counting } = counted(driver);
   const { knobs, storage } = failing(await openNodeJsonlStorage(dir, ctx));
   const one = await open(storage, { provider, driver: counting, responses: browsesOnce() });
@@ -71,7 +71,7 @@ const slowClosing = (driver, ms = 500) => async (...args) => {
 async function releaseWithoutDrain(t, { executablePath, args, driver }) {
   const profiles = await scratch(t, "release-cdp-");
   const dir = scratchSync(t, "release-cdp-store-");
-  const provider = cdpProvider({ chrome: { executablePath, profileRoot: profiles, args } });
+  const provider = cdpProvider({ chrome: { executablePath, profileRoot: profiles, args, confineExtension: false } });
   const { harness, browser } = await open(await openNodeJsonlStorage(dir, ctx), { provider, driver, responses: browsesOnce() });
   const root = await harness.root(ctx, { agent: AGENT, init: init(browser) });
   await (await root.submit({ type: "input", content: "Look at the page." }, ctx)).wait(ctx);

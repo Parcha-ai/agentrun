@@ -12,16 +12,23 @@ import { cdpCall } from "./cdp-call.js";
 import { chromeTail, openChromeStderr, watchChromeStderr } from "./chrome-stderr.js";
 import { claimWriter, freeWriter, noteWriter } from "./profiles.js";
 import { chromeArgs } from "./chrome-args.js";
+import { COPY, copyExtension, copyId, isLoaded, loadConfined } from "./worker-extension.js";
 
 export type CdpOptions =
   /** An existing browser: `http://host:port` or a `ws://` debugger URL. Release leaves it running. */
-  | { endpoint: string; extensionId?: string }
+  | { endpoint: string; extensionId?: string;
+    /** The host asserts this endpoint is the run's OWN browser (the launcher that owns its process and its stop started it for this run alone), not one other runs or people share. Only then is a session of it offered to a session vault. Never set it for a shared browser. */
+    ownBrowser?: boolean }
   /** Start Chrome under `profileRoot/<tag>` on a loopback port Chrome picks; release kills that process by exact pid. */
   | { chrome: {
     executablePath: string; profileRoot: string; headless?: boolean; args?: string[];
     /** Chrome's own sandbox, on unless `false`; absent, `PI_BROWSER_NO_SANDBOX=1` turns it off. Turn it off only where
      *  Chrome cannot start its sandbox (root, a container, confined user namespaces), never because a run is in CI. */
     sandbox?: boolean;
+    /** The extension this Chrome is given is a copy whose pages and worker may connect to nothing but the browser's own DevTools
+     *  socket (default true). `false` gives Stagehand's own directory, unconfined: for tests of the layer beneath. Without a private
+     *  TMPDIR for the lease (Windows, a long temp path) the extension is Stagehand's own either way. */
+    confineExtension?: boolean;
   } };
 
 const CAPS: ProviderCaps = { timeoutModel: "wall-clock", maxLifetimeS: 86_400, survivesDisconnect: true, releaseIsAsync: false, profiles: false, extension: "loaded-locally", settings: { proxies: false, verified: false, geolocation: false, region: false, context: false } };
@@ -272,6 +279,8 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   /** The private TMPDIR of each lease this provider started, by tag: the profile's marker is the only record a restarted process has, and a profile
    *  that something else removed first takes it along. */
   const privateTmps = new Map<string, string>();
+  /** The confined extension each lease has been given, by tag, loaded on its first attach: its id is handed to Stagehand as the attach target's extension. */
+  const extensionIds = new Map<string, Promise<string | null>>();
   /** A lease whose private TMPDIR is gone (or never made) keeps neither its map entry nor its record. */
   const forgetTmp = async (root: string, tag: string): Promise<void> => {
     privateTmps.delete(tag);
@@ -279,14 +288,37 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
   };
   /** A spawned Chrome whose handle we hold is ours (a handle cannot name a recycled pid); after a restart, only while
    *  the browser on the recorded port reports that pid. */
+  /** The endpoint leases this provider has released. An endpoint is left running, so a released lease has no process to look at: it is over because it was released. */
+  const endpointReleased = new Set<string>();
   const isOurs = async ({ pid, port }: { pid: number; port: number }): Promise<boolean> => {
     const child = children.get(pid);
     if (child) return child.exitCode === null && child.signalCode === null;
     return alive(pid) && (await browserPid(port)) === pid;
   };
+  /** The lease's confined extension, loaded from its copy on the first attach (an earlier attach, here or in a process that restarted, may have loaded it
+   *  already); null when the lease was started without one. A load that fails fails the attach: Stagehand is never left to load its own, unconfined, directory
+   *  (and the browser's socket is open to the copy's Origin only). */
+  const confinedExtension = (tag: string, devtoolsUrl: string): Promise<string | null> => {
+    if (!("chrome" in options) || options.chrome.confineExtension === false) return Promise.resolve(null);
+    const { profileRoot } = options.chrome;
+    const known = extensionIds.get(tag);
+    if (known) return known;
+    const loading = (async () => {
+      const dir = profileDir(profileRoot, tag);
+      const tmp = privateTmps.get(tag) ?? await recordedTmp(profileRoot, tag) ?? await ownedTmp(dir, tag);
+      const copy = tmp ? path.join(tmp, COPY) : null;
+      if (!copy || !(await lstat(copy).then(() => true, () => false))) return null;
+      const own = copyId(copy);
+      return (await isLoaded(devtoolsUrl, own)) ? own : await loadConfined(copy, devtoolsUrl);
+    })();
+    extensionIds.set(tag, loading);
+    loading.catch(() => { if (extensionIds.get(tag) === loading) extensionIds.delete(tag); });
+    return loading;
+  };
   return {
     name: "cdp",
     caps: { ...CAPS, profiles: "chrome" in options, ...("endpoint" in options ? { sharedBrowser: true } : {}) },
+    ...("chrome" in options || options.ownBrowser === true ? { vault: { kind: "cdp" } as const } : {}),
     ...(downloads ? { downloads } : {}),
 
     async create(spec, signal) {
@@ -317,11 +349,20 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
         await rm(path.join(dir, "DevToolsActivePort"), { force: true });
         const tmp = await makePrivateTmp(spec.tag, dir, spec.profile?.save ? leaseRecord(profileRoot, spec.tag) : null, remove);
         if (tmp) privateTmps.set(spec.tag, tmp);
+        // The copy is made before Chrome starts: its path names the extension, and so the one Origin the browser's socket is opened to.
+        let copy: string | null = null;
+        if (tmp && options.chrome.confineExtension !== false) {
+          try { copy = await copyExtension(tmp); } catch (error) {
+            const left = await removeAll([dir, downloadsDir(profileRoot, spec.tag), tmp], remove);
+            await forgetTmp(profileRoot, spec.tag);
+            throw left ? new ProfileNotRemovedError(left.dirs, left.error, error) : error;
+          }
+        }
         const stderrFd = openChromeStderr(tmp);
         let child: ChildProcess;
         try {
           child = spawn(executablePath, [
-            ...chromeArgs({ userDataDir: dir, viewport: spec.viewport, headless, sandbox }), ...args, "about:blank",
+            ...chromeArgs({ userDataDir: dir, viewport: spec.viewport, headless, sandbox, ...(copy ? { extensionDir: copy } : {}) }), ...args, "about:blank",
           ], { stdio: ["ignore", "ignore", stderrFd ?? "ignore"], detached: true, ...(tmp ? { env: { ...process.env, TMPDIR: tmp } } : {}) });
         } catch (error) {
           // A spawn that throws (an argument with a null byte) starts no child, so nothing else will remove what this start made.
@@ -389,6 +430,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
     async findByTag() { return []; },
 
     async status(ref): Promise<ResourceStatus> {
+      if (ref.id.startsWith("endpoint:")) return endpointReleased.has(ref.id) ? "gone" : "running";
       const local = parse(ref.id);
       // A local-shaped id this provider cannot read names no process it can vouch for: gone, never "running" unchecked.
       if (!local) return ref.id.startsWith("local:") ? "gone" : "running";
@@ -405,10 +447,12 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       if (new URL(url).pathname !== own.path) throw new Error(`the browser on port ${local.port} is not the browser this lease's profile records`);
       // A Chrome this host did not start outlived the host that did: its stderr file is bounded here too.
       watchChromeStderr(privateTmps.get(local.tag) ?? await recordedTmp(options.chrome.profileRoot, local.tag) ?? await ownedTmp(profileDir(options.chrome.profileRoot, local.tag), local.tag), local.pid);
-      return { sdkCdpUrl: url };
+      const extensionId = await confinedExtension(local.tag, url);
+      return { sdkCdpUrl: url, ...(extensionId ? { extensionId } : {}) };
     },
 
     async release(ref) {
+      if (ref.id.startsWith("endpoint:")) { endpointReleased.add(ref.id); return; }
       const local = parse(ref.id);
       if (!local || local.tag !== ref.tag) return;
       const ours = await isOurs(local);
@@ -450,6 +494,7 @@ export function cdpProvider(options: CdpOptions, internals: { remove?: RemoveDir
       // The profile goes even after a crash; a tag that is not one path segment names nothing this provider made, so
       // nothing is removed.
       freeWriter(local.tag);
+      extensionIds.delete(local.tag);
       if (!("endpoint" in options) && SAFE_TAG.test(local.tag)) {
         const dir = profileDir(options.chrome.profileRoot, local.tag);
         const socketDir = await singletonDir(dir);

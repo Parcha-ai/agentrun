@@ -33,7 +33,7 @@ test("a local Chrome is created, driven through Stagehand's extension over the p
     await assert.rejects(setDownloadBehavior(target.sdkCdpUrl.replace(/devtools\/browser\/.*/, "devtools/browser/nope"), { timeoutMs: 2_000 }));
     let browser;
     try {
-      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
+      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
       stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
@@ -98,7 +98,7 @@ test("Browser.setDownloadBehavior lasts as long as the socket that sent it: a do
     assert.equal(setting.open, true);
     let browser;
     try {
-      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
+      browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
       stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();
