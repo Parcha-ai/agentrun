@@ -47,8 +47,9 @@ test("without a default model a revision that names none is refused before it st
   const keyless = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
   assert.equal(keyless.body.error.code, "agent_not_runnable");
   assert.match(keyless.body.error.message, /no key for openai/);
-  assert.equal((await api("POST", "/agents", agent("unknown", { model: "openai/no-such-model" }))).status, 201);
-  assert.match((await api("POST", "/agents/unknown/runs", { input: { content: "hi" } })).body.error.message, /knows no model no-such-model of openai/);
+  const unknown = await api("POST", "/agents", agent("unknown", { model: "openai/no-such-model" }));
+  assert.equal(unknown.status, 422, "a model pi-ai does not know never runs here: refused at save (runnable.test.mjs)");
+  assert.match(unknown.body.error.fields[0].message, /knows no model no-such-model of openai/);
   assert.deepEqual((await api("GET", "/runs")).body, { runs: [], next_cursor: null }, "nothing started");
 });
 
@@ -224,7 +225,7 @@ test("every feature declared off answers 501 unsupported_here naming it, before 
   }
 });
 
-test("a run's input is checked against the default schema {content: string}, and the agent's tools against what is bound, before anything starts", async (t) => {
+test("a run's input is checked against the default schema {content: string} before anything starts, and an agent's tools against what is bound when it is saved", async (t) => {
   const { api } = await serve(t);
   await api("POST", "/agents", agent("plain"));
   const noContent = await api("POST", "/agents/plain/runs", { input: { question: "no content" } });
@@ -232,11 +233,8 @@ test("a run's input is checked against the default schema {content: string}, and
   assert.deepEqual(noContent.body.error.fields.map((f) => [f.field, f.reason]), [["input.content", "missing"]]);
   const quote = await api("POST", "/agents/plain/runs", { input: { content: "x" }, quote_id: "q" });
   assert.deepEqual([quote.status, quote.body.error.capability], [501, "quotes"]);
-  await api("POST", "/agents", agent("shell", { tools: ["read", "bash"] }));
-  const unbound = await api("POST", "/agents/shell/runs", { input: { content: "x" } });
-  assert.equal(unbound.status, 409);
-  assert.equal(unbound.body.error.code, "agent_not_runnable");
-  assert.deepEqual(unbound.body.error.details.unbound, ["bash"]);
+  const unbound = await api("POST", "/agents", agent("shell", { tools: ["read", "bash"] }));
+  assert.deepEqual([unbound.status, unbound.body.error.fields.map((f) => f.field)], [422, ["definition.tools[1]"]]);
   assert.deepEqual((await api("GET", "/agents/plain/runs")).body, { runs: [], next_cursor: null });
 });
 

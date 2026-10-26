@@ -56,27 +56,30 @@ export type ModelRef = { provider: string; modelId: string };
 
 /**
  * The model a revision runs on here, or why it cannot: `ref` is an agentic revision's "provider/model-id", absent for
- * the host's model of `tier`. Through the gateway the model id is the part after the provider, and `namedProvider` is
- * that provider, whose catalog entry prices the model.
+ * the host's model of `tier`. Through the gateway the ref goes whole, as a gateway such as OpenRouter names its models
+ * `vendor/model` (with `AGENT_MODEL_GATEWAY_IDS=bare`, only the part after the provider), and `namedProvider` is that
+ * provider, whose catalog entry prices the model. `host` says a setting of this host (a key, a default model) could
+ * make it reachable; a model the revision names that pi-ai does not know is not.
  */
-export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default"): Promise<{ model: ModelRef; namedProvider?: string } | { why: string }> {
+export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default"): Promise<{ model: ModelRef; namedProvider?: string } | { why: string; host: boolean }> {
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
   const named = ref ?? tierModel(env, tier);
   const none = tier === "default" ? "The revision names no model, and this host has no default" : `A workflow node of the ${tier} tier has no model here (${TIER_ENV[tier]}), and this host has no default`;
   if (env.AGENT_MODEL_BASE_URL) {
-    if (!named) return { why: `${none}: set AGENT_MODEL, or name a model in the definition.` };
+    if (!named) return { why: `${none}: set AGENT_MODEL, or name a model in the definition.`, host: true };
     const slash = ref?.indexOf("/") ?? -1;
-    return { model: { provider: MODEL_PROVIDER, modelId: ref ? ref.slice(slash + 1) : named }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
+    const sent = ref && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? ref.slice(slash + 1) : named;
+    return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
   }
-  if (!named) return { why: `${none}: set AGENT_MODEL to a provider/model-id, start agentrun-serve with --faux MODULE, or name a model in the definition.` };
+  if (!named) return { why: `${none}: set AGENT_MODEL to a provider/model-id, start agentrun-serve with --faux MODULE, or name a model in the definition.`, host: true };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.` };
+  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const models = builtinModels();
   const model = models.getModel(provider, modelId);
-  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.` };
-  if (!(await models.getAuth(model))) return { why: `pi-ai finds no key for ${provider} in this environment (${models.getProvider(provider)?.auth.apiKey?.name ?? "its API key"}): set it where agentrun-serve starts.` };
+  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined };
+  if (!(await models.getAuth(model))) return { why: `pi-ai finds no key for ${provider} in this environment (${models.getProvider(provider)?.auth.apiKey?.name ?? "its API key"}): set it where agentrun-serve starts.`, host: true };
   return { model: { provider, modelId } };
 }
 
@@ -121,15 +124,16 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const models = createModels();
   if (!ids.length) return { models, model, byTier };
   if (faux) {
-    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | "unknown" };
+    const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
-    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(mod.cost ? { cost: mod.cost } : {}) })) as [{ id: string }, ...{ id: string }[]] });
+    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}) })) as [{ id: string }, ...{ id: string }[]] });
     const step = (async (context: unknown, options?: { signal?: AbortSignal }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
     // `cost` (USD per million tokens) prices the faux model's usage, which the faux core leaves at $0, so a run's
-    // estimate and its cap can be tested.
+    // estimate and its cap can be tested; "unknown" leaves its usage with no cost, as a provider that does not price it.
     const priced: typeof core.stream = (model, context, options) => {
       const inner = core.stream(model, context, options);
       if (!mod.cost) return inner;
@@ -139,7 +143,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
         for await (const event of inner) {
           const message = event.type === "done" ? event.message : event.type === "error" ? event.error : undefined;
           if (message) {
-            message.usage.cost = ai.calculateCost(model, message.usage);
+            if (price) message.usage.cost = ai.calculateCost(model, message.usage);
+            else delete (message.usage as { cost?: unknown }).cost;
             last = message;
           }
           outer.push(event);
@@ -169,7 +174,14 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
   const priceOf = (id: string): ModelCost => {
     const { given, named } = prices.get(id)!;
-    if (given === undefined) return listedPrice(catalog.get(id) ?? [], named);
+    if (given === undefined) {
+      // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
+      if (named !== undefined) return listedPrice(catalog.get(id.startsWith(`${named}/`) ? id.slice(named.length + 1) : id) ?? [], named);
+      // A host model set whole (`vendor/model`) the catalog does not list as it is: priced as its model, the vendor named.
+      const slash = id.indexOf("/");
+      if (catalog.has(id) || slash < 1) return listedPrice(catalog.get(id) ?? [], undefined);
+      return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
+    }
     const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
     return { input, output, cacheRead, cacheWrite };
   };

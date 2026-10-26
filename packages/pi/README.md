@@ -19,6 +19,10 @@ pi --offline
 
 `pi --offline` opens Pi's terminal interface, so run it in an interactive terminal; with no terminal attached it prints nothing and exits. `-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
 
+If `pi install ... -l` stops with `Project is not trusted. Use --approve to modify local package config.`, the project is not yet trusted in Pi. Add `--approve` to the install line: `pi install npm:@parcha/agentrun-pi@beta -l --approve`.
+
+Pi starts with `read`, `bash`, `edit` and `write` active. AgentRun's read-only tools are `read`, `grep`, `find` and `ls`, and a workflow can use only the tools that are active. To use all four read-only tools, start Pi with `pi --tools read,grep,find,ls,agentrun`. Keep `agentrun` in the list. Without it, Pi disables the AgentRun tool, and the session shows a warning with the line to use. A workflow that needs a tool which is not active is refused, and the refusal names that tool.
+
 On first launch, Pi asks "Trust project folder?" before loading the extension, with five choices: Trust, Trust parent folder, Trust (this session only), Do not trust, and Do not trust (this session only). Choose Trust, or Trust (this session only), to load it. If Pi is already open, use `/reload`. The current draft is restored from a persisted Pi session branch when available; named definition saves are stored separately.
 
 With no model configured, `pi --offline` prints two warnings at startup: `Warning: fd not found. Offline mode enabled, skipping download.` (the optional `fd` tool is not installed and `--offline` skips fetching it) and `Warning: No models available. Use /login to log into a provider via OAuth or API key.` Both are expected here and the scripted demo needs neither. The `[Skills]` list shows `agentrun-author` and the `[Extensions]` list shows `@parcha/agentrun-pi` when the extension loaded.
@@ -83,7 +87,7 @@ Loading starts with empty input and does not execute. A save retains the definit
 | `/agentrun load <name> [digest]` | Load the newest or exact revision; input starts empty. |
 | `/agentrun list` | List saved revisions. |
 | `/agentrun history` | Inspect retained run receipts on this Pi branch. |
-| `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration without making provider calls. |
+| `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration (TypeSafe or OpenRouter) without making provider calls. |
 | `/agentrun stop` | Request cancellation of the running workflow. |
 
 A progress widget shows active steps and the number finished. Results distinguish completion, escalation, failure, and interruption. Decision records show supplied evidence, criteria, answer, and route, not hidden reasoning or proof of correctness.
@@ -116,7 +120,7 @@ The argument is a project directory, not the workflows directory: the extension 
 | `/agentrun demo live` | Real Pi agent steps and Jev system one decisions over the same fictional sources. |
 | `/agentrun triage` | A second scripted workflow, support-ticket triage over a fictional ticket, without model calls. |
 
-Live mode uses your active Pi model and requires configured TypeSafe access for Jev. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
+Live mode uses your active Pi model and needs a TypeSafe key or an OpenRouter key for Jev: `TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY` to reach Jev through OpenRouter, which is used when `TYPESAFE_API_KEY` is not set. `/agentrun status` says which one Jev uses. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
 
 ## Tools and execution
 
