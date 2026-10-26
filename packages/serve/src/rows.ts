@@ -45,10 +45,6 @@ export class RowLog {
     this.stateChange = clock.base;
   }
 
-  private next(): number {
-    return this.clock.next();
-  }
-
   /** Make the served rows equal `rows`: new ids are added after every row served so far, changed ones keep their seq,
    *  and ids no longer there are dropped. Returns whether anything changed. */
   sync(rows: readonly TimelineEvent[]): boolean {
@@ -62,7 +58,7 @@ export class RowLog {
         if (slot.text === text) continue;
         slot.text = text;
         slot.row = { ...row, id: slot.id, seq: slot.seq };
-        slot.change = this.next();
+        slot.change = this.clock.next();
         changed = true;
         continue;
       }
@@ -71,13 +67,13 @@ export class RowLog {
       const id = use === 1 ? row.id : `${row.id}~${use}`;
       if (slot) this.slots.set(`${row.id}\0${slot.change}`, slot);
       const seq = this.seq++;
-      this.slots.set(row.id, { id, source: row.id, seq, row: { ...row, id, seq }, change: this.next(), dropped: false, text });
+      this.slots.set(row.id, { id, source: row.id, seq, row: { ...row, id, seq }, change: this.clock.next(), dropped: false, text });
       changed = true;
     }
     for (const [key, slot] of this.slots) {
       if (slot.dropped || key !== slot.source || present.has(slot.source)) continue;
       slot.dropped = true;
-      slot.change = this.next();
+      slot.change = this.clock.next();
       changed = true;
     }
     if (changed) this.touch();
@@ -88,7 +84,7 @@ export class RowLog {
   setState(value: string): boolean {
     if (value === this.state) return false;
     this.state = value;
-    this.stateChange = this.next();
+    this.stateChange = this.clock.next();
     this.touch();
     return true;
   }
