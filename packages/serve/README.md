@@ -147,7 +147,8 @@ An agent or a run is archived, never deleted: `DELETE` stays `405`. These routes
   already going when its agent is archived keeps going.
 - The store keeps each change as one row of `archive_changes` in `store.sqlite`, written once
   ([the store](../pi-durable-agent/README.md#agents-in-a-folder-the-agent-store)). A data directory an earlier version
-  wrote opens as it is, with nothing archived.
+  wrote opens as it is, with nothing archived. Going back to an earlier version keeps every row, but that version does
+  not read them: archived agents and runs show as not archived there, and an archived agent's runs start again.
 
 ## The page
 
