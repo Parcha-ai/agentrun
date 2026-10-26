@@ -185,7 +185,7 @@ pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
-`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed.
+`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed. If the install stops with "Project is not trusted", add `--approve`. Pi starts with `read`, `bash`, `edit` and `write` active, so start it with `pi --tools read,grep,find,ls,agentrun` to give workflows the read-only tools. [Pi setup](packages/pi/README.md#install) lists the details.
 
 - `/agentrun demo` loads the scripted research example; `/agentrun run` repeats it without model calls.
 - `/agentrun demo live` uses your configured Pi model and Jev.
