@@ -87,7 +87,7 @@ Loading starts with empty input and does not execute. A save retains the definit
 | `/agentrun load <name> [digest]` | Load the newest or exact revision; input starts empty. |
 | `/agentrun list` | List saved revisions. |
 | `/agentrun history` | Inspect retained run receipts on this Pi branch. |
-| `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration without making provider calls. |
+| `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration (TypeSafe or OpenRouter) without making provider calls. |
 | `/agentrun stop` | Request cancellation of the running workflow. |
 
 A progress widget shows active steps and the number finished. Results distinguish completion, escalation, failure, and interruption. Decision records show supplied evidence, criteria, answer, and route, not hidden reasoning or proof of correctness.
@@ -120,7 +120,7 @@ The argument is a project directory, not the workflows directory: the extension 
 | `/agentrun demo live` | Real Pi agent steps and Jev system one decisions over the same fictional sources. |
 | `/agentrun triage` | A second scripted workflow, support-ticket triage over a fictional ticket, without model calls. |
 
-Live mode uses your active Pi model and requires configured TypeSafe access for Jev. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
+Live mode uses your active Pi model and needs a TypeSafe key or an OpenRouter key for Jev: `TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY` to reach Jev through OpenRouter, which is used when `TYPESAFE_API_KEY` is not set. `/agentrun status` says which one Jev uses. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
 
 ## Tools and execution
 

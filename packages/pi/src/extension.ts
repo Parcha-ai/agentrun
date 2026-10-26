@@ -9,7 +9,7 @@ import {
   VERSION as PI_VERSION, type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import { formatWorkflowTree, inspectWorkflow, AUTHOR_SKILL_NAME, type WorkflowDeps } from '@parcha/agentrun-dsl';
-import { createJevRunner } from '@parcha/agentrun-jev';
+import { createJevRunner, jevProviderFromEnv } from '@parcha/agentrun-jev';
 import { createPiHostRunner, PI_MODEL_SETUP_MESSAGE } from './host-session.js';
 import { piHostLine } from './pi-host.js';
 import { workflowToolContext } from './tool-context.js';
@@ -192,7 +192,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
   const readiness = (ctx: ExtensionContext, s: Session) => ({
     skill: pi.getCommands().some(item => item.name === `skill:${AUTHOR_SKILL_NAME}` && item.source === 'skill'),
     pi: !!ctx.model && ctx.modelRegistry.getAll().some(model => model.id === ctx.model?.id && model.provider === ctx.model?.provider && model.api === ctx.model?.api),
-    jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim(), sop: !!configuration.sop || !!s.sop, running: s.busy, workflow: !!s.draft,
+    jev: !!configuration.createJudge || !!process.env.TYPESAFE_API_KEY?.trim() || !!process.env.OPENROUTER_API_KEY?.trim(), sop: !!configuration.sop || !!s.sop, running: s.busy, workflow: !!s.draft,
     mode: s.draft ? s.demo ? 'scripted' : 'live' : undefined,
   });
   const show = (s: Session, content: string, details: unknown = {}) => {
@@ -276,8 +276,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
         judge = configuration.createJudge({ signal });
         if (typeof judge !== 'function') throw new Error('Host judge factory must return a runner');
       } else {
-        try { judge = createJevRunner({ signal, maxAttempts: 1 }); }
-        catch { throw new OperatorError('AgentRun requires TypeSafe configuration for this workflow. Set TYPESAFE_API_KEY and, for a gateway, TYPESAFE_BASE_URL before running.'); }
+        // The provider is the one the environment's keys select, as for the Jev adapter: OpenRouter only when its key is the one set.
+        try { judge = createJevRunner({ signal, maxAttempts: 1, provider: jevProviderFromEnv(process.env) }); }
+        catch { throw new OperatorError('AgentRun requires Jev configuration for this workflow. Set TYPESAFE_API_KEY (and, for a gateway, TYPESAFE_BASE_URL), or OPENROUTER_API_KEY for Jev through OpenRouter, before running.'); }
       }
     }
     return {
@@ -612,7 +613,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           const result = await execute(ctx, s, input); show(s, result.content[0].text, result.details);
         } else if (command === 'status') {
           const ready = readiness(ctx, s);
-          show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\n${piHostLine(PI_VERSION)}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${ready.jev ? 'configuration present (connection not tested)' : 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY before starting Pi'}`, ready);
+          show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\n${piHostLine(PI_VERSION)}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${!ready.jev ? 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY, or OPENROUTER_API_KEY for Jev through OpenRouter, before starting Pi' : configuration.createJudge ? 'host-configured judge (connection not tested)' : `configuration present, via ${jevProviderFromEnv(process.env) === 'openrouter' ? 'OpenRouter' : 'TypeSafe'} (connection not tested)`}`, ready);
         } else if (command === 'stop') {
           const dry = s.dryRun; dry?.abort();
           s.pause?.(); s.controller?.abort(); s.service.stop(); show(s, s.busy ? 'Stop requested. Already-started tool effects may still finish.' : dry ? 'Dry run stopped.' : 'Nothing is running.');

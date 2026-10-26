@@ -513,8 +513,8 @@ test('only a user trusted command can enable an active write tool, and permissio
 });
 
 test('a workflow requiring Jev fails configuration before any earlier Pi agent call', async () => {
-  const prior = process.env.TYPESAFE_API_KEY;
-  delete process.env.TYPESAFE_API_KEY;
+  const prior = process.env.TYPESAFE_API_KEY, priorRouter = process.env.OPENROUTER_API_KEY;
+  delete process.env.TYPESAFE_API_KEY; delete process.env.OPENROUTER_API_KEY;
   const app = await harness({ responses: [fauxAssistantMessage(fauxToolCall('submit', { value: { content: 'No call should be spent.' } }))] });
   try {
     const definition = workflow({ node: 'chain', steps: [workflow().root,
@@ -529,7 +529,121 @@ test('a workflow requiring Jev fails configuration before any earlier Pi agent c
   } finally {
     await app.shutdown();
     if (prior === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = prior;
+    if (priorRouter === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = priorRouter;
   }
+});
+
+// Jev's provider comes from the environment as the Jev adapter reads it: OpenRouter only when OPENROUTER_API_KEY is set
+// and TYPESAFE_API_KEY is not. Requests go through a stubbed fetch, so no network is reached.
+const withEnv = async (env, run) => {
+  const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(env)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  try { return await run(); } finally { for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+};
+const routerKey = 'fake-router-key';
+const withJevFetch = async run => {
+  const sent = [], realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    sent.push({ url: String(url), authorization: init?.headers?.Authorization, body });
+    const answers = Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 0.9 }]));
+    return new Response(JSON.stringify({ answers, usage: { input_tokens: 10, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try { return await run(sent); } finally { globalThis.fetch = realFetch; }
+};
+
+test('with only OPENROUTER_API_KEY set, /agentrun run asks Jev through OpenRouter with that key', async () => {
+  await withEnv({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }, () => withJevFetch(async sent => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      assert.doesNotMatch(app.messages.at(-1).content, /requires .*configuration/);
+      assert.equal(sent.length, 1, 'one Jev request was sent');
+      assert.equal(sent[0].url, 'https://openrouter.ai/api/v1/systemone');
+      assert.equal(sent[0].authorization, `Bearer ${routerKey}`);
+      assert.equal(sent[0].body.model, '~typesafe/jev-latest');
+      assert.equal(app.messages.at(-1).details.status, 'complete');
+      assert.deepEqual(app.messages.at(-1).details.output, { supported: true });
+    } finally { await app.shutdown(); }
+  }));
+});
+
+test('with both Jev keys set, /agentrun run asks Jev through TypeSafe with the TypeSafe key', async () => {
+  await withEnv({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, () => withJevFetch(async sent => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      assert.equal(sent.length, 1, 'one Jev request was sent');
+      assert.equal(sent[0].url, 'https://api.typesafe.ai/v1/systemone');
+      assert.equal(sent[0].authorization, 'Bearer fake-test-key');
+      assert.equal(app.messages.at(-1).details.status, 'complete');
+    } finally { await app.shutdown(); }
+  }));
+});
+
+test('with only OPENROUTER_API_KEY set, /agentrun demo live reaches Jev through OpenRouter instead of refusing', async () => {
+  const question = 'Can non-developers edit documentation in the repository?';
+  const source = { id: 'editor-trial', text: 'A fictional editor trial.' };
+  const finding = { question, answer: 'Some can, with a browser editor.', sources: [source] };
+  const report = { answer: 'Possibly, with a browser editor.', findings: [finding] };
+  await withEnv({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }, () => withJevFetch(async sent => {
+    const app = await harness({ responses: [{ questions: [question] }, finding, report].map(value => fauxAssistantMessage(fauxToolCall('submit', { value }))) });
+    try {
+      await app.command('demo live');
+      assert.doesNotMatch(app.messages.map(message => message.content).join('\n'), /requires .*configuration/);
+      assert.ok(sent.length > 0, 'the evidence screen asked Jev');
+      for (const request of sent) {
+        assert.equal(request.url, 'https://openrouter.ai/api/v1/systemone');
+        assert.equal(request.authorization, `Bearer ${routerKey}`);
+      }
+      assert.equal(app.messages.at(-1).details.status, 'complete', JSON.stringify(app.messages.at(-1).details));
+      assert.deepEqual(app.messages.at(-1).details.output, report);
+    } finally { await app.shutdown(); }
+  }));
+});
+
+test('with neither Jev key set, the refusal names both keys', async () => {
+  await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: undefined }, async () => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      const shown = app.messages.at(-1).content;
+      assert.match(shown, /TYPESAFE_API_KEY/);
+      assert.match(shown, /OPENROUTER_API_KEY/);
+    } finally { await app.shutdown(); }
+  });
+});
+
+test('a blank OPENROUTER_API_KEY with no TypeSafe key is no Jev key: status is not ready and the refusal names both keys', async () => {
+  await withEnv({ OPENROUTER_API_KEY: '  ', TYPESAFE_API_KEY: undefined }, async () => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      await app.command('status');
+      assert.equal(app.messages.at(-1).details.jev, false);
+      assert.match(app.messages.at(-1).content.split('\n').find(line => line.startsWith('Jev:')), /^Jev: not configured/);
+      await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      const shown = app.messages.at(-1).content;
+      assert.match(shown, /TYPESAFE_API_KEY/);
+      assert.match(shown, /OPENROUTER_API_KEY/);
+    } finally { await app.shutdown(); }
+  });
+});
+
+test('/agentrun status says which provider Jev uses', async () => {
+  const statusLine = async env => withEnv(env, async () => {
+    const app = await harness();
+    try { await app.command('status'); return app.messages.at(-1).content.split('\n').find(line => line.startsWith('Jev:')); }
+    finally { await app.shutdown(); }
+  });
+  assert.match(await statusLine({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: undefined }), /^Jev: .*via OpenRouter/);
+  assert.match(await statusLine({ OPENROUTER_API_KEY: routerKey, TYPESAFE_API_KEY: 'fake-test-key' }), /^Jev: .*via TypeSafe/);
+  assert.match(await statusLine({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key' }), /^Jev: .*via TypeSafe/);
+  const none = await statusLine({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: undefined });
+  assert.match(none, /not configured/); assert.match(none, /TYPESAFE_API_KEY/); assert.match(none, /OPENROUTER_API_KEY/);
 });
 
 
