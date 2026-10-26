@@ -280,7 +280,12 @@ export class WorkflowExtensionService {
       if (node.node === 'call' && (node.via !== 'tool' || !this.allowedTools.has(node.tool))) errors.push('Effects must use a registered host tool; shell and executor calls are unavailable.');
       if (node.node === 'map' && (node.maxConcurrency ?? 4) > extensionStructuralLimits.maxMapConcurrency) errors.push('Map concurrency must not exceed 8.');
       if (node.node === 'parallel' && node.branches.length > extensionStructuralLimits.maxParallelBranches) errors.push('Parallel nodes must not exceed 8 branches.');
-      if (Array.isArray(node.tools) && node.tools.some((name: string) => !this.allowedTools.has(name))) errors.push('Agent tools must be explicitly registered by the host.');
+      // Model-authored text is never echoed: only tool-name-shaped entries are listed, the rest are counted.
+      const unregistered = Array.isArray(node.tools) ? [...new Set<unknown>(node.tools.filter((name: unknown) => !this.allowedTools.has(name as string)))] : [];
+      const named = unregistered.filter((name): name is string => typeof name === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(name));
+      const uncounted = unregistered.length - named.length;
+      const list = [...named, ...(uncounted ? [`${uncounted} more with names that are not tool names`] : [])];
+      if (list.length) errors.push(`Agent tools must be explicitly registered by the host. Not registered: ${list.join(', ')}.`);
     }
     if (errors.length) throw new ExtensionServiceError('admission', errors.slice(0, 8).join(' '));
 

@@ -122,7 +122,7 @@ pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
-`-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch. If Pi is already open, use `/reload` first. The npm package includes the extension and the authoring skill; no AgentRun checkout is needed.
+`-l` installs in this project. `--offline` skips startup downloads, not intentional model calls. Pi asks whether you trust the project before loading its extension on first launch. If the install stops with "Project is not trusted", add `--approve`. Pi starts with `read`, `bash`, `edit` and `write` active; `pi --tools read,grep,find,ls,agentrun` gives workflows the read-only tools and keeps the AgentRun tool on. If Pi is already open, use `/reload` first. The npm package includes the extension and the authoring skill; no AgentRun checkout is needed.
 
 Inside Pi, `/agentrun demo` runs a scripted research workflow and shows its graph without a model call. `/agentrun status` confirms that the authoring skill loaded.
 

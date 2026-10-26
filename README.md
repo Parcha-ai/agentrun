@@ -114,7 +114,7 @@ on; [Archil](https://archil.com) is a network disk you mount on any Linux host.
 | Package | What it does | What it needs | First command with no key | Status |
 | --- | --- | --- | --- | --- |
 | [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx @parcha/agentrun-dsl@beta demo` | published (`@beta`) |
-| [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; `TYPESAFE_API_KEY` for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
+| [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; a TypeSafe key or an OpenRouter key for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.0.4 to below 1.4 (CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0); a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`) |
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@beta`) |
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser, and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes | Pi; a provider (a local Chrome needs no key; Browserbase and Kernel need their keys); pi-durable and chord for its `./durable` entry | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | published (`@beta`) |
@@ -174,7 +174,7 @@ Install the core and Jev adapter in your application with `npm install @parcha/a
 2. **Define and test the workflow.** Write its schemas, steps, thresholds, and review path. Start with fixtures, then evaluate real decisions on labeled cases from your task.
 3. **Give your agent a workflow tool.** Register a function that calls `runWorkflow` as one of your agent's tools. Handle the workflow's output, escalation, and errors.
 
-The [support integration guide](docs/support-quickstart.md) has a config template and live command. Live Jev calls need `TYPESAFE_API_KEY` from the [TypeSafe dashboard](https://console.typesafe.ai/keys), separate from your coding-agent login. Workflows without Jev decisions do not need that key. See [host integration](docs/host-integration.md) for permissions, cancellation, and recovery.
+The [support integration guide](docs/support-quickstart.md) has a config template and live command. Live Jev calls need a TypeSafe key or an OpenRouter key: `TYPESAFE_API_KEY` from the [TypeSafe dashboard](https://console.typesafe.ai/keys), or `OPENROUTER_API_KEY`, which the Pi extension uses for Jev through OpenRouter when `TYPESAFE_API_KEY` is not set. Either is separate from your coding-agent login. Workflows without Jev decisions need neither. See [host integration](docs/host-integration.md) for permissions, cancellation, and recovery.
 
 ## Use it in Pi
 
@@ -185,7 +185,7 @@ pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
-`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed.
+`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed. If the install stops with "Project is not trusted", add `--approve`. Pi starts with `read`, `bash`, `edit` and `write` active, so start it with `pi --tools read,grep,find,ls,agentrun` to give workflows the read-only tools. [Pi setup](packages/pi/README.md#install) lists the details.
 
 - `/agentrun demo` loads the scripted research example; `/agentrun run` repeats it without model calls.
 - `/agentrun demo live` uses your configured Pi model and Jev.

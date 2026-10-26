@@ -173,9 +173,26 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
+/** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
+ *  `runs` or a symlinked home included), which this version's store does not read: their agents and runs would not
+ *  show. This version keeps no `agent.sqlite` under the data directory. */
+async function oldHomes(data: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const name of await readdir(data)) {
+    const file = join(data, name, "agent.sqlite");
+    if (await stat(file).then((info) => info.isFile(), () => false)) found.push(file);
+  }
+  return found.sort();
+}
+
 export async function startServe(options: ServeOptions): Promise<Serve> {
   const data = resolve(options.data);
   await mkdir(data, { recursive: true, mode: 0o700 });
+  const homes = await oldHomes(data);
+  if (homes.length) {
+    const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
+    throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
+  }
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
@@ -451,22 +468,26 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!Number.isFinite(from) || !Number.isFinite(to)) throw new ApiError("bad_request", "from and to are RFC 3339 times");
     const group = url.searchParams.get("group_by") ?? "meter";
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
-    const lines = new Map<string, number | null>();
-    let total: number | null = 0;
+    const lines = new Map<string, { usd: number; unpriced: number }>();
+    const total = { usd: 0, unpriced: 0 };
     for (const row of agents.store.listRuns()) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      const before = lines.has(key) ? lines.get(key)! : 0;
-      lines.set(key, before === null || usd === null ? null : before + usd);
-      total = total === null || usd === null ? null : total + usd;
+      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
+      // never passes as $0.
+      const line = lines.get(key) ?? lines.set(key, { usd: 0, unpriced: 0 }).get(key)!;
+      for (const sum of [line, total]) {
+        if (usd === null) sum.unpriced++;
+        else sum.usd += usd;
+      }
     }
-    const round = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6);
+    const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
-      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total),
-      lines: [...lines].map(([key, usd]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(usd) })),
+      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }

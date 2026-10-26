@@ -12,6 +12,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
+import { capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
 import { isObject, skillNames } from "./validate.js";
@@ -70,7 +71,11 @@ function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
 
 export default async function app(where: AppContext): Promise<AppOptions> {
   const { run, revision } = revisionOf(where);
-  const { models, model, byTier } = revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(revision.body.workflow));
+  const chosen = revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(revision.body.workflow));
+  const { model, byTier } = chosen;
+  // Read before the run opens its store: what it spent in earlier processes counts against its cap.
+  const cap = capOf(process.env);
+  const models = cap === undefined ? chosen.models : await capModels(chosen.models, cap, spentIn(join(where.store, RUN_STORE_FILE)));
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
