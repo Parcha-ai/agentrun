@@ -98,8 +98,11 @@ export class Agents {
    *  is the current revision the caller read, null for none: the store compares it in the commit's own transaction.
    *  `check` sees the revision, the current one's included, before anything is written, and may refuse it. */
   async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent, check }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void> } = {}): Promise<AgentEntry> {
-    const entry = this.get(read.agent.id) ?? read;
-    if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
+    const held = (now: AgentEntry) => {
+      if (ifCurrent !== undefined && (now.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
+      return now;
+    };
+    const entry = held(this.get(read.agent.id) ?? read);
     const { agent } = entry;
     const kept = [
       ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
@@ -117,11 +120,13 @@ export class Agents {
     const revision = this.revisionOf(definition, files, note);
     await this.checked(revision);
     await check?.(revision);
-    if (entry.revision && sameRevision(entry.revision, revision)) {
-      this.checkVersion(definition, entry.version);
-      return entry;
+    // The checks awaited: another request may have moved the current revision meanwhile, so read it again.
+    const now = held(this.get(agent.id) ?? entry);
+    if (now.revision && sameRevision(now.revision, revision)) {
+      this.checkVersion(definition, now.version);
+      return now;
     }
-    this.checkVersion(definition, entry.revisions + 1);
+    this.checkVersion(definition, now.revisions + 1);
     await this.store.commitRevision(agent.id, revision, { setCurrent: true, ...(ifCurrent !== undefined ? { ifCurrent } : {}) }).catch((error) => storeError(error));
     return this.get(agent.id)!;
   }

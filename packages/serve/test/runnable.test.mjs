@@ -7,7 +7,9 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
+import { Agents } from "../dist/agents.js";
 import { startServe } from "../dist/index.js";
+import { checkDefinitionBody } from "../dist/validate.js";
 import { agent, answerFlow, client, scratch, serve, withEnv } from "./support.mjs";
 
 /** No gateway, no default model, no OpenAI key: pi-ai's providers serve the models, and none has a key. */
@@ -124,4 +126,29 @@ test("a revision saved before these checks is refused at its run with the same r
   const run = await client(server.baseUrl, server.token)("POST", "/agents/old/runs", { input: { content: "hi" } });
   assert.deepEqual([run.status, run.body.error.code, run.body.error.details.unbound], [409, "agent_not_runnable", ["bash"]]);
   assert.match(run.body.error.message, /bash/);
+});
+
+test("a save whose checks run while another request changes the current revision is held to its If-Match: 412, never a stale 200", async (t) => {
+  const agents = new Agents(join(await scratch(t), "agents"));
+  t.after(() => agents.close());
+  const body = (extra) => checkDefinitionBody(agent("x", extra), { creating: false });
+  const a = await agents.create(checkDefinitionBody(agent("x")));
+  const b = await agents.commit(a, body({ instructions: "Answer briefly.", version: 2 }));
+  const current = agents.setCurrent(b, a.revision.id);
+  // The same PUT of A again, with If-Match A; while its checks run, another request makes B current.
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const saving = agents.commit(current, body(), { ifCurrent: a.revision.id, check: () => held });
+  agents.setCurrent(current, b.revision.id);
+  release();
+  await assert.rejects(saving, (error) => error.code === "precondition_failed");
+  assert.equal(agents.get("x").revision.id, b.revision.id, "B stays current");
+  // A PUT of B with If-Match A, while another request makes B current: the edit is now no change, and still 412.
+  const back = agents.setCurrent(current, a.revision.id);
+  let releaseB;
+  const heldB = new Promise((resolve) => { releaseB = resolve; });
+  const savingB = agents.commit(back, body({ instructions: "Answer briefly.", version: 2 }), { ifCurrent: a.revision.id, check: () => heldB });
+  agents.setCurrent(back, b.revision.id);
+  releaseB();
+  await assert.rejects(savingB, (error) => error.code === "precondition_failed");
 });
