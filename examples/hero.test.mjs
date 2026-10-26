@@ -30,6 +30,8 @@ test('the manifest\'s cost covers the eyes\' charges when the fold rounds them a
   const total = charged.reduce((sum, charge) => sum + charge, 0);
   assert.ok(usd < total, `the fold's usd ${usd} is under the raw sum ${total}, the case this test is for`);
   assert.ok(covers(usd, total));
+  // A cost one fold step (1e-8) under the rounded figure is short of what the eyes charged, not rounding.
+  assert.ok(!covers(usd - 1e-8, total), 'a cost under what the eyes charged is not covered');
 });
 
 test('sources.json lists nine operators, each with a dashboard and a published figure, and none of the excluded', () => {
