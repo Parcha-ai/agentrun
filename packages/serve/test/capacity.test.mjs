@@ -133,15 +133,17 @@ test("a cancel settles a run whose carry back cannot be written: cancelled, fina
   await follow(api, run.run_id, ["working"]);
   // The store's directory turns read-only: its next write cannot make its journal, as on a full disk.
   await chmod(data, 0o555);
-  t.after(() => chmod(data, 0o755).catch(() => undefined));
-  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
-  const { last } = await follow(api, run.run_id, ["cancelled"]);
-  assert.equal(last.final, true);
-  const view = (await api("GET", `/runs/${run.run_id}`)).body;
-  assert.equal(view.status, "cancelled");
-  assert.equal(typeof view.cost.usd, "number");
-  assert.equal(storeRun(data, run.run_id).state, "running", "the store could not take it yet");
-  await chmod(data, 0o755);
+  try {
+    assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+    const { last } = await follow(api, run.run_id, ["cancelled"]);
+    assert.equal(last.final, true);
+    const view = (await api("GET", `/runs/${run.run_id}`)).body;
+    assert.equal(view.status, "cancelled");
+    assert.equal(typeof view.cost.usd, "number");
+    assert.equal(storeRun(data, run.run_id).state, "running", "the store could not take it yet");
+  } finally {
+    await chmod(data, 0o755);
+  }
   for (let i = 0; storeRun(data, run.run_id).state === "running"; i++) {
     assert.ok(i < 100, "the carry back lands once the store can be written");
     await sleep(100);
