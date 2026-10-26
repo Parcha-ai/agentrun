@@ -24,7 +24,7 @@ const workflow = root => ({ v: 2, name: 'Read a local note', schemas: { Result: 
 async function harness({ cwd = tempCwd, responses = [], activeTools = ['read'], tokensPerSecond = Infinity, withModel = true, hasUI = false, mode = hasUI ? 'tui' : 'print', branch = [], extensionOptions } = {}) {
   const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   const faux = fauxProvider({ tokensPerSecond }); faux.setResponses(responses); runtime.registerNativeProvider(faux.provider);
-  const registry = new ModelRegistry(runtime), calls = [], messages = [], prompts = [], statuses = [], widgets = [], commands = new Map(), tools = new Map(), events = new Map();
+  const registry = new ModelRegistry(runtime), calls = [], messages = [], sendOptions = [], prompts = [], statuses = [], widgets = [], commands = new Map(), tools = new Map(), events = new Map();
   const entered = deferred(); const controller = new AbortController();
   const ctx = { cwd, model: withModel ? faux.getModel() : undefined, thinkingLevel: 'low', signal: controller.signal, hasUI, mode,
     sessionManager: { getSessionId: () => 'native-extension-test', getBranch: () => branch, getSessionFile: () => undefined },
@@ -42,10 +42,10 @@ async function harness({ cwd = tempCwd, responses = [], activeTools = ['read'], 
     getCommands: () => [{name: 'skill:agentrun-author', source: 'skill', sourceInfo: { path: AUTHOR_SKILL_FILE }}],
     getAllTools: () => [...['read', 'grep', 'find', 'ls', 'bash', 'edit', 'write'].map(name => ({ name, sourceInfo: { source: 'builtin' } })), { name: 'custom_search', sourceInfo: { source: 'extension' } }],
     getThinkingLevel: () => 'low',
-    sendMessage: message => messages.push(message), sendUserMessage: (text, options) => prompts.push({ text, options }),
+    sendMessage: (message, options) => { messages.push(message); sendOptions.push(options); }, sendUserMessage: (text, options) => prompts.push({ text, options }),
   };
   (extensionOptions === undefined ? agentRunExtension : createAgentRunExtension(extensionOptions))(pi);
-  return { ctx, pi, calls, messages, prompts, statuses, widgets, commands, tools, events, faux, entered, branch,
+  return { ctx, pi, calls, messages, sendOptions, prompts, statuses, widgets, commands, tools, events, faux, entered, branch,
     command: args => commands.get('agentrun').handler(args, ctx),
     tool: (args, update) => tools.get('agentrun').execute('test-call', args, controller.signal, update, ctx),
     shutdown: () => events.get('session_shutdown')(),
@@ -1194,6 +1194,7 @@ test('a dry run of a draft whose schema the generator cannot synthesize is not r
     assert.equal(result.details.dryRun.ok, true);
     assert.match(result.details.dryRun.skipped.join('\n'), /pattern/);
     assert.equal(JSON.parse(result.content[0].text).dryRun.status, 'not_run', 'the model reads the same status');
+    assert.equal(JSON.parse(result.content[0].text).note, 'no workflow ran', 'a dry run says it ran no workflow');
     const shown = app.tools.get('agentrun').renderResult(result).render(120).join('\n');
     assert.match(shown, /Dry run not run/); assert.match(shown, /not proof/); assert.doesNotMatch(shown, /passed/);
     await app.command('dry-run');
@@ -1388,6 +1389,46 @@ test('the next prompt of the same session is stamped too, and a refused run does
     assert.match(stamps(app)[1].content, /no workflow ran/i);
   } finally { await app.shutdown(); }
 });
+
+test('the host entry never starts a turn of its own, and ending a turn leads to no further prompt', async () => {
+  const app = await harness({ withModel: false });
+  try {
+    await prompted(app, SKILL_PROMPT); await ended(app);
+    assert.equal(stamps(app).length, 1);
+    const at = app.messages.indexOf(stamps(app)[0]);
+    assert.deepEqual(app.sendOptions[at], { triggerTurn: false }, 'the entry is appended, not a reason to run the model again');
+    assert.equal(app.prompts.length, 0);
+    assert.equal(app.calls.length, 0);
+  } finally { await app.shutdown(); }
+});
+
+test('a run in a turn that never ended is not the receipt of the next turn, which says no workflow ran', async () => {
+  const app = await harness({ responses: [fauxAssistantMessage(fauxToolCall('submit', { value: { content: 'cedar' } }))] });
+  try {
+    await prompted(app, SKILL_PROMPT);
+    await app.tool({ action: 'inspect', workflow: workflow() });
+    const receipt = JSON.parse((await app.tool({ action: 'run' })).content[0].text).receipt;
+    assert.ok(receipt);
+    // the first turn is aborted: agent_end never fires for it
+    await prompted(app, 'Is it supported?'); await ended(app, 'Supported, High confidence.');
+    assert.equal(stamps(app).length, 1);
+    assert.match(stamps(app)[0].content, /no workflow ran/i);
+    assert.ok(!stamps(app)[0].content.includes(receipt), 'the earlier run is not offered as this turn\'s receipt');
+  } finally { await app.shutdown(); }
+});
+
+for (const event of ['session_before_switch', 'session_before_fork']) {
+  test(`after ${event} the session starts unengaged, so a plain prompt gets no entry`, async () => {
+    const app = await harness({ withModel: false });
+    try {
+      await prompted(app, SKILL_PROMPT); await ended(app);
+      assert.equal(stamps(app).length, 1);
+      await app.events.get(event)({ type: event }, app.ctx);
+      await prompted(app, 'Rename the helper.'); await ended(app, 'Done.');
+      assert.equal(stamps(app).length, 1, 'the new session never asked for AgentRun');
+    } finally { await app.shutdown(); }
+  });
+}
 
 test('calling the agentrun tool counts as asking for AgentRun, as loading the skill does; a /agentrun command alone does not', async () => {
   const called = await harness({ withModel: false });
