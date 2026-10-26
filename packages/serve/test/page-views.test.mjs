@@ -163,7 +163,7 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
   find(page, "TEXTAREA", "workflow").value = '{"name":"flow"}';
   buttonNamed(page, "Create agent").click();
   await page.settle();
-  assert.deepEqual(problemText(page), [`Some of it needs a change.workflow.steps: steps is required ${HOSTILE}`]);
+  assert.deepEqual(problemText(page), [`Some of it needs a change.Workflow: steps is required ${HOSTILE}`]);
   assert.equal(buttonNamed(page, "Create agent").disabled, false, "the button is back for another try");
   find(page, "TEXTAREA", "workflow").value = '{"name":"flow","steps":[]}';
   buttonNamed(page, "Create agent").click();
@@ -539,6 +539,32 @@ test("a refusal is said in words, without its HTTP status or a field's internal 
   await invalid.page.settle();
   const [text] = problemText(invalid.page);
   assert.ok(text.startsWith("Some of it needs a change."), text);
-  assert.ok(text.includes("model: "), text);
+  assert.ok(text.includes("Model: write it as provider/model-id"), text);
   assert.ok(!/\b4\d\d\b/.test(text) && !text.includes("definition."), `no status and no internal prefix: ${text}`);
+});
+
+test("a refused field reads as what to do, in the form's words: the model's form, a tool this server lacks, empty instructions, a name; another reason keeps the server's words under the field's label", async () => {
+  const refuse = (fields) => [422, { error: { code: "input_invalid", message: fields[0].message, fields } }];
+  const cases = [
+    [{ field: "definition.model", reason: "bad_format", message: 'definition.model is "provider/model-id"' }, "Model: write it as provider/model-id, for example anthropic/claude-sonnet-5-5."],
+    [{ field: "definition.tools[1]", reason: "not_an_option", message: "agentrun-serve binds the tools read, write; bash is not one of them." }, "Tools: bash isn't available on this server."],
+    [{ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions." }, "Instructions: write what the agent should do."],
+    [{ field: "definition.name", reason: "missing", message: "definition.name is required" }, "Name: give the agent a name."],
+    [{ field: "definition.model", reason: "not_an_option", message: `pi-ai knows no model nope of nope ${HOSTILE}` }, `Model: pi-ai knows no model nope of nope ${HOSTILE}`],
+  ];
+  for (const [field, said] of cases) {
+    const { page } = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": refuse([field]) });
+    await page.settle();
+    find(page, "INPUT", "name").value = "Pick";
+    find(page, "TEXTAREA", "instructions").value = "Answer.";
+    const boxes = all(page.app).filter((el) => el.getAttribute("type") === "checkbox");
+    boxes[0].checked = true;
+    boxes[1].checked = true;
+    boxes[1].value = "bash";
+    buttonNamed(page, "Create agent").click();
+    await page.settle();
+    const items = all(page.app).filter((el) => el.tagName === "LI" && classOf(el.parentNode.parentNode) === "problem").map((el) => el.textContent);
+    assert.deepEqual(items, [said], field.field + " " + field.reason);
+    assertInert(all(page.app).find((el) => classOf(el) === "problem"));
+  }
 });
