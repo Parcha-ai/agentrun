@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { agreementOf, ranWorkflow, resultOf, rowsOf, sentenceFor, session, spentOf, TOOLS } from './issue-triage/session.ts';
+import { agreementOf, ranWorkflow, resultOf, rowsOf, sentenceFor, session, spendCapHook, spentOf, TOOLS } from './issue-triage/session.ts';
 
 const workflow = JSON.parse(readFileSync(new URL('./issue-triage/workflow.json', import.meta.url), 'utf8'));
 const callTools = (node, found = new Set()) => {
@@ -193,6 +193,35 @@ test('--max-usd also guards a research node\'s requests: a node that keeps calli
   assert.ok(summary.spentUsd >= CAP_USD && summary.spentUsd <= CAP_USD + CALL_USD, `${summary.spentUsd}`);
   assert.equal(summary.outcome, 'over_budget');
   assert.ok(stopLine(lines), lines.join('\n'));
+});
+
+test('the spend-cap hook holds a request at the cap until the run is aborted: pending while the signal is live, trip called once, then rejected with the cap message', async () => {
+  const controller = new AbortController();
+  let over = false, tripped = 0;
+  const hook = spendCapHook({ cap: CAP_USD, spent: () => CAP_USD, over: () => over, trip: () => { over = true; tripped += 1; } });
+  let settled = false;
+  const held = hook({ messages: [] }, {}, { abortSignal: controller.signal }).then(() => { settled = 'resolved'; }, (error) => { settled = error; });
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the request is held, not let through, while the run is not aborted');
+  assert.equal(tripped, 1);
+  controller.abort();
+  await held;
+  assert.match(settled.message, /the spend cap of \$0\.0009 is reached/);
+  assert.equal(tripped, 1, 'one trip');
+});
+
+test('the spend-cap hook lets a request through under the cap at once, and rejects at once when the context has no abort signal', async () => {
+  let over = false, tripped = 0;
+  const trip = () => { over = true; tripped += 1; };
+  const under = spendCapHook({ cap: CAP_USD, spent: () => CAP_USD - CALL_USD, over: () => over, trip });
+  assert.equal(await under({ messages: [] }, {}, { abortSignal: new AbortController().signal }), undefined);
+  assert.equal(tripped, 0);
+  const unset = spendCapHook({ cap: undefined, spent: () => 1, over: () => over, trip });
+  assert.equal(await unset({ messages: [] }, {}, { abortSignal: undefined }), undefined, 'no cap, no hold');
+  const bare = spendCapHook({ cap: CAP_USD, spent: () => CAP_USD, over: () => over, trip });
+  await assert.rejects(bare({ messages: [] }, {}, { abortSignal: undefined }), /the spend cap of \$0\.0009 is reached/);
+  assert.equal(tripped, 1);
 });
 
 test('the rows are the result itself when it is a list, else its rows (the agent chooses the output shape)', () => {

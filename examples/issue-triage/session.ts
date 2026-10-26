@@ -131,6 +131,19 @@ export function agreementOf(rows: unknown, labelMap: Record<string, string>): { 
   return { matched, compared, total: rows.length, summary: `The type matched the maintainers' label on ${matched} of ${compared} issues${compared < rows.length ? ` (${rows.length - compared} carried no type label)` : ''}` };
 }
 
+/** The hook that runs before every request attempt of a conversation: once the known spend has reached the cap it stops the run (`trip`) and HOLDS the request until the run is aborted, so no request is made at the cap. A context with no abort signal (its type allows none) rejects at once, and the harness then only reports it, with the stop already made. (The session's own stop, the timer's and this one, share `over` and `trip`.) */
+export function spendCapHook(options: { cap: number | undefined; spent: () => number; over: () => boolean; trip: () => void }): GenerationHooks['beforeRequest'] {
+  return async (_request, _api, context) => {
+    if (options.cap === undefined) return undefined;
+    if (!options.over() && options.spent() >= options.cap) options.trip();
+    if (options.over()) await new Promise<never>((_, reject) => {
+      const refuse = () => reject(new Error(`the spend cap of $${options.cap} is reached`));
+      if (context.abortSignal === undefined || context.abortSignal.aborted) refuse(); else context.abortSignal.addEventListener('abort', refuse, { once: true });
+    });
+    return undefined;
+  };
+}
+
 /** `maxUsd` is a hard stop: once the known spend reaches it the run stops before the next paid call and says so (`over_budget`). `parts` is `live(process.env)` unless a test supplies its own. */
 export async function session(options: { dir: string; input: Input; record?: string; plain: boolean; transcript?: string; maxUsd?: number; parts?: ReturnType<typeof live> }) {
   const say = (text: string, cls = 'info') => {
@@ -153,15 +166,7 @@ export async function session(options: { dir: string; input: Input; record?: str
   const meterTimer = cap === undefined ? undefined : setInterval(() => { if (!overBudget && spentOf(spoolLines(meterDir)) >= cap) { overBudget = true; trip(); } }, 250);
   // The guard on the lead's CALL: before every request attempt (including a research node's, and a recovery's) the spool is read as it stands, and a request is not made once the known spend has reached the cap.
   // The timer above stays as the backstop that ends a call already in flight. A refused request waits for the run's abort, which the stop makes at once; a context with no abort signal (its type allows none) rejects at once, and the harness then only reports it, with the stop already tripped.
-  const beforeRequest: GenerationHooks['beforeRequest'] = async (_request, _api, context) => {
-    if (cap === undefined) return undefined;
-    if (!overBudget && spentOf(spoolLines(meterDir)) >= cap) { overBudget = true; trip(); }
-    if (overBudget) await new Promise<never>((_, reject) => {
-      const stop = () => reject(new Error(`the spend cap of $${cap} is reached`));
-      if (context.abortSignal === undefined || context.abortSignal.aborted) stop(); else context.abortSignal.addEventListener('abort', stop, { once: true });
-    });
-    return undefined;
-  };
+  const beforeRequest = spendCapHook({ cap, spent: () => spentOf(spoolLines(meterDir)), over: () => overBudget, trip: () => { overBudget = true; trip(); } });
   // Installed in the registry (a conversation's extensions are chosen by name from it) and named in the extensions of the lead's conversation and of a research node's: each alone leaves the request unguarded.
   const capGuard: Extension = { name: 'spend-cap', tools: [], wraps: [], hooks: [{ task: 'pi.generation', handlers: { beforeRequest } }] };
   // A Jev question past the cap is not asked.
