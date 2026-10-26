@@ -8,7 +8,7 @@ import { test } from 'node:test';
 
 const root = new URL('../', import.meta.url);
 const ownUrl = String.raw`(?:fileURLToPath\(import\.meta\.url\)|import\.meta\.(?:url|filename))`;
-const argvCheck = new RegExp(String.raw`process\.argv\[1\][^;\n]{0,40}===\s*${ownUrl}|${ownUrl}\s*===[^;\n]{0,40}process\.argv\[1\]`);
+const argvCheck = new RegExp(String.raw`process\.argv\[1\][^;\n]{0,40}===\s*${ownUrl}|${ownUrl}\s*===[^;\n]{0,40}process\.argv\[1\]|===\s*(?:pathToFileURL|new URL)\([^;\n]{0,40}process\.argv\[1\]`);
 
 test('the argv[1] check is recognised in each form the repository has used', () => {
   for (const line of [
@@ -19,6 +19,7 @@ test('the argv[1] check is recognised in each form the repository has used', () 
     "if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {",
     "if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {",
     "const isMain = () => realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);",
+    "export function isMain(url) { return !!process.argv[1] && url === pathToFileURL(resolve(process.argv[1])).href; }",
   ]) assert.match(line, argvCheck, line);
   for (const line of [
     'if (import.meta.main) await main();',
