@@ -185,15 +185,17 @@ export function statusOf(run: Run): { status: Status; state: State } {
 
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
-/** `token` is the server's own: no run's process sees it. */
-/** `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; log?: (event: string, fields: Record<string, string | number>) => void };
+/** `token` and `authSecret` are the server's own: no run's process sees them. `log` takes a run's start and end
+ *  (print.ts). */
+export type RunsOptions = { agents: Agents; token: string; authSecret?: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; log?: (event: string, fields: Record<string, string | number>) => void };
 
-/** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
- *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
-export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
+/** The server's own variables, which a run's process never gets: the API token, the accounts settings and every
+ *  BETTER_AUTH_ variable by name, and the token's and the accounts secret's values under any name. A list, not the
+ *  AGENTRUN_ prefix: AGENTRUN_NO_BROWSER is the run's, and AGENTRUN_PUBLIC_URL is no secret. Model keys, the AGENT_MODEL
+ *  variables and the rest of the environment pass; the door token goes by file. */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_ACCOUNTS", "AGENTRUN_AUTH_SECRET", "AGENTRUN_OWNER_EMAIL", "AGENTRUN_OWNER_PASSWORD_FILE"]);
+export const childEnv = (env: NodeJS.ProcessEnv, secrets: string[]): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && !name.startsWith("BETTER_AUTH_") && !secrets.includes(value!)));
 
 /** One line of the run process's log in words: pi-durable-disk writes JSON lines (`{at, event, message, ...}`). */
 function inWords(line: string): string {
@@ -543,7 +545,7 @@ export class Runs {
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel) return;
-    const env: NodeJS.ProcessEnv = { ...childEnv(process.env, this.options.token), ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
+    const env: NodeJS.ProcessEnv = { ...childEnv(process.env, [this.options.token, ...(this.options.authSecret ? [this.options.authSecret] : [])]), ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);

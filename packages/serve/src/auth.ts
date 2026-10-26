@@ -184,7 +184,8 @@ export class Accounts {
   private setupCode: { code: string; until: number; tries: number } | null = null;
   private settingUp = false;
 
-  constructor(private readonly db: DatabaseSync, private readonly secret: string, private readonly token: string) {}
+  /** `secret` is the library's: never a run's. */
+  constructor(private readonly db: DatabaseSync, readonly secret: string, private readonly token: string) {}
 
   /** Fixes the address every link and the cookie are built from, and makes a fresh setup code when there is no owner:
    *  its link, or null. */
