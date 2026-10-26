@@ -1,0 +1,26 @@
+name: better-auth advisories
+
+# AgentRun Server pins better-auth exactly (packages/serve/package.json). Once a week this reads the GitHub advisory
+# database and better-auth's own repository advisories; when one covers the pinned version it opens an issue (or comments
+# on the open one) naming each GHSA id, its affected range and fixed version, and fails. Not a required check: it never
+# runs on a pull request.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - run: node scripts/better-auth-advisories.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
