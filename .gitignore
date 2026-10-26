@@ -35,3 +35,6 @@ spec/lean/.lake/
 # the README is in git
 /apps/viewer/recordings/*
 !/apps/viewer/recordings/README.md
+
+# Sample data the page's dev kit seeds (packages/serve/dev/seed.mjs)
+packages/serve/dev/.data/

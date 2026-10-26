@@ -15,3 +15,5 @@
 **/node_modules
 **/dist
 **/*.tsbuildinfo
+# The page's dev kit and its sample data: not part of the image.
+packages/serve/dev/
