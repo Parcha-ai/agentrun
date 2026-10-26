@@ -169,9 +169,26 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
+/** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
+ *  `runs` or a symlinked home included), which this version's store does not read: their agents and runs would not
+ *  show. This version keeps no `agent.sqlite` under the data directory. */
+async function oldHomes(data: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const name of await readdir(data)) {
+    const file = join(data, name, "agent.sqlite");
+    if (await stat(file).then((info) => info.isFile(), () => false)) found.push(file);
+  }
+  return found.sort();
+}
+
 export async function startServe(options: ServeOptions): Promise<Serve> {
   const data = resolve(options.data);
   await mkdir(data, { recursive: true, mode: 0o700 });
+  const homes = await oldHomes(data);
+  if (homes.length) {
+    const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
+    throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
+  }
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
   const token = options.token ?? (await tokenIn(tokenFile!));
