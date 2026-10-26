@@ -77,8 +77,8 @@ test("every run: newest first across the agents, with its agent, revision, kind,
   assert.deepEqual(rows.map((el) => el.getAttribute("href")), ["#/runs/run-3", "#/runs/run-2", "#/runs/run-1"]);
   const cells = (row) => all(row).filter((el) => /^c /.test(classOf(el))).map((el) => [classOf(el), el.textContent]);
   const [waiting, done, failed] = rows.map(cells);
-  assert.deepEqual(waiting.slice(1), [["c state", "input required"], ["c agent", "Brief"], ["c rev", "cccccccccccc workflow"], ["c cost unknown", "unknown"], ["c id", "run-3"]]);
-  assert.deepEqual(done.slice(1), [["c state", "completed"], ["c agent", `Calc ${HOSTILE}`], ["c rev", "bbbbbbbbbbbb agentic"], ["c cost", "$0.312"], ["c id", "run-2"]]);
+  assert.deepEqual(waiting.slice(1), [["c state", "input required"], ["c agent", "Brief"], ["c rev", "Version 1 workflow"], ["c cost unknown", "unknown"], ["c title", "Input of run-3run-3"]]);
+  assert.deepEqual(done.slice(1), [["c state", "completed"], ["c agent", `Calc ${HOSTILE}`], ["c rev", "Version 1 agentic"], ["c cost", "$0.312"], ["c title", "Input of run-2run-2"]]);
   assert.match(done[0][1], /^2026-10-2\d \d\d:\d\d/);
   assert.deepEqual(all(rows[2]).filter((el) => classOf(el).startsWith("pill ")).map(classOf), ["pill error"]);
   assert.deepEqual(failed.slice(1, 2).concat(failed.slice(4, 5)), [["c state", "failed"], ["c cost", "$0.00014"]], "a run under a tenth of a cent is not free");
@@ -119,6 +119,9 @@ test("a new agent: name, description, a prompt, a model and the tools capabiliti
   find(page, "INPUT", "name").value = "  Researcher ";
   find(page, "INPUT", "description").value = "Writes briefs.";
   find(page, "TEXTAREA", "instructions").value = "Research one company.";
+  const choice = find(page, "SELECT", "model-choice");
+  choice.value = choice.childNodes.at(-1).value;
+  for (const fn of choice.listeners.change ?? []) fn({ type: "change" });
   find(page, "INPUT", "model").value = " openai/gpt-5 ";
   const thinking = find(page, "SELECT", "thinking");
   assert.deepEqual(all(thinking).map((el) => [el.value, el.textContent]), [["", "the run's effort"], ["low", "low"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]], "the levels capabilities offer, never off");
@@ -184,9 +187,9 @@ test("edit: the form is the current definition, a tool the server does not bind 
   assert.equal(find(page, "INPUT", "name"), undefined);
   assert.equal(find(page, "INPUT", "description"), undefined);
   assert.equal(all(page.app).find((el) => el.tagName === "H1").textContent, `Calc ${HOSTILE}`);
-  assert.match(all(page.app).find((el) => classOf(el) === "lede").textContent, /^Adds\. Saving commits a new revision/);
+  assert.match(all(page.app).find((el) => classOf(el) === "lede").textContent, /^Adds\. Saving makes a new version/);
   assert.equal(find(page, "TEXTAREA", "instructions").value, "Answer.");
-  assert.equal(find(page, "INPUT", "model").value, "openai/gpt-5");
+  assert.equal(find(page, "INPUT", "model").value, "openai/gpt-5", "a model the server does not list is Another model's");
   assert.equal(find(page, "SELECT", "thinking").value, "low", "an edit keeps the revision's thinking level");
   const boxes = all(page.app).filter((el) => el.getAttribute("type") === "checkbox");
   assert.deepEqual(boxes.map((el) => [el.value, el.checked]), [["read", true], ["write", false], ["edit", false], ["ask_person", false], ["web_fetch", true]]);
@@ -195,15 +198,15 @@ test("edit: the form is the current definition, a tool the server does not bind 
   find(page, "TEXTAREA", "instructions").value = "Answer, and show the sum.";
   find(page, "INPUT", "note").value = "Shows its work";
   boxes[4].checked = false;
-  buttonNamed(page, "Commit revision").click();
+  buttonNamed(page, "Save").click();
   await page.settle();
   assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5", thinking: "low" }, note: "Shows its work" }]], "no id, version or skills: the server numbers the revision and carries the skill files over");
   assert.equal(api.calls.at(-1).headers["if-match"], `"${REV_B}"`, "the edit commits onto the revision the form read");
   assert.equal(page.window.location.hash, "#/agents/calc");
   stale = true;
-  buttonNamed(page, "Commit revision").click();
+  buttonNamed(page, "Save").click();
   await page.settle();
-  assert.deepEqual(problemText(page), ["The agent has a newer revision than the one this form started from: open Edit again to start from it."]);
+  assert.deepEqual(problemText(page), ["Someone saved a newer version since this form opened: open Edit again to start from it."]);
 
   const flow = open("#/agents/brief/edit", { "v2/capabilities": { ...CAPABILITIES, tools: undefined }, "v2/agents/brief": agentView("brief", "c".repeat(64), { name: "Brief", workflow: { name: "brief", steps: [] }, tools: [] }) });
   await flow.page.settle();
@@ -217,11 +220,11 @@ test("an agent's page: Edit, a run form on its revisions, and Make current on ea
   const { page, api } = open("#/agents/calc", answers);
   await page.settle();
   const card = all(page.app).find((el) => classOf(el) === "card agent");
-  assert.deepEqual(all(card).filter((el) => el.tagName === "A" && classOf(el) === "btn quiet").map((el) => [el.textContent, el.getAttribute("href")]), [["Edit: commit a new revision", "#/agents/calc/edit"]]);
+  assert.deepEqual(all(card).filter((el) => el.tagName === "A" && classOf(el) === "btn quiet").map((el) => [el.textContent, el.getAttribute("href")]), [["Edit", "#/agents/calc/edit"]]);
   const options = all(card).filter((el) => el.tagName === "OPTION").map((el) => [el.value, el.textContent, Boolean(el.selected)]);
-  assert.deepEqual(options, [[REV_B, "bbbbbbbbbbbb · agentic · current · Cites", true], [REV_A, `aaaaaaaaaaaa · agentic · First ${HOSTILE}`, false]]);
+  assert.deepEqual(options, [[REV_B, "Version 2: Cites (in use)", true], [REV_A, `Version 1: First ${HOSTILE}`, false]]);
   const heads = all(page.app).filter((el) => classOf(el) === "rev-head");
-  assert.deepEqual(heads.map((head) => all(head).filter((el) => el.tagName === "BUTTON").map((el) => el.textContent)), [[], ["Make current"]]);
+  assert.deepEqual(heads.map((head) => all(head).filter((el) => el.tagName === "BUTTON").map((el) => el.textContent)), [[], ["Use this version"]]);
   const before = api.calls.length;
   all(heads[1]).find((el) => el.tagName === "BUTTON").click();
   await page.settle();
@@ -266,6 +269,7 @@ test("start a run: its input, on the revision the form shows picked (the current
 
 const row = (seq, kind, fields = {}) => ({ id: `r${seq}`, seq, kind, summary: fields.summary ?? kind, conversation_id: "c", ...fields });
 const page = (fields) => ({ status: "working", state: "working", reset: false, rows: [], drop: [], next_after: 10, unchanged: false, has_more: false, final: false, cost: { usd: 0.01 }, ...fields });
+const timelinePage = page;
 
 test("a live run follows /v2's timeline with a long poll, an answer box while it waits on ask_person, and the store's page once it is final", async () => {
   const stored = { run: { id: "run-9", agent: "calc", revision: REV_B, kind: "agentic", state: "completed", startedAt: LIVE.created_at, endedAt: "2026-10-23T06:01:00.000Z", costUsd: 0.03, summary: "Asked, then answered." }, agent: "Calc", note: "Cites", rows: [row(0, "user_message", { text: "Pick a region" }), row(5, "final_answer", { text: "Using eu." })] };
@@ -306,7 +310,7 @@ test("a live run follows /v2's timeline with a long poll, an answer box while it
   assert.ok(!shown.app.textContent.includes("Waiting for you"), "a dropped row is gone");
   api.push(page({ status: "completed", state: "idle", rows: [row(5, "final_answer", { text: "Using eu." })], next_after: 40, final: true }));
   await shown.settle();
-  assert.equal(api.calls.at(-1).path, "api/runs/run-9", "a final run is the store's own page");
+  assert.ok(api.calls.slice(-2).some((c) => c.path === "api/runs/run-9"), "a final run is the store's own page");
   assert.ok(all(shown.app).find((el) => classOf(el) === "card run-head").textContent.includes("Asked, then answered."));
 });
 
@@ -365,7 +369,7 @@ test("leaving a live run aborts its long poll; a run this server never ran, or a
 
   const final = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, status: "completed" }, "v2/runs/run-9/timeline": page({ final: true, status: "completed" }), "api/store": { agents: AGENTS }, "api/runs/run-9": { ...stored, run: { ...stored.run, id: "run-9" } } });
   await final.page.settle();
-  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9"]);
+  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9", "api/agents/calc"], "the run, then its agent's versions to number it");
 });
 
 /** Revisions and runs shaped like the MCC classifier's A, B and C: two prompts and a workflow, eight runs each. */
@@ -401,10 +405,10 @@ test("compare revisions: one row per revision, newest first, with its runs, comp
   assert.deepEqual(rows.map((el) => el.getAttribute("href")), ["d", "c", "b", "a"].map((l) => `#/agents/mcc?revision=${l.repeat(64)}`));
   const cells = (el) => all(el).filter((c) => /^c /.test(classOf(c))).map((c) => c.textContent);
   assert.deepEqual(rows.map(cells), [
-    ["dddddddddddd agentic Prompt D: not run yet", "no runs"],
-    ["cccccccccccc workflow current The cheap one: read the home page, one fast model step", "8", "7", "1", "$0.0011", "$0.00016 cheapest", "2s"],
-    ["bbbbbbbbbbbb agentic Prompt B: a rubric", "8", "8", "0", "$0.182", "$0.023", "1m 30s"],
-    ["aaaaaaaaaaaa agentic Prompt A: the plain instructions", "8", "7", "1", "$0.107", "$0.015", "1m 00s"],
+    ["Version 4 Prompt D: not run yet dddddddddddd", "no runs"],
+    ["Version 3 The cheap one: read the home page, one fast model step in use cccccccccccc", "8", "7", "1", "$0.0011", "$0.00016 cheapest", "2s"],
+    ["Version 2 Prompt B: a rubric bbbbbbbbbbbb", "8", "8", "0", "$0.182", "$0.023", "1m 30s"],
+    ["Version 1 Prompt A: the plain instructions aaaaaaaaaaaa", "8", "7", "1", "$0.107", "$0.015", "1m 00s"],
   ]);
   assert.deepEqual(rows.map((el) => all(el).filter((c) => classOf(c) === "pill ok").map((c) => c.textContent)), [[], ["cheapest"], [], []], "the cheapest cost per completed run");
   assert.deepEqual(rows.map(classOf), ["cmp", "cmp", "cmp", "cmp"]);
@@ -462,7 +466,7 @@ test("an agent whose current revision names a tool this server cannot bind says 
   assert.ok(api.calls.some((c) => c.path === "v2/capabilities"));
   const card = all(shown.app).find((el) => classOf(el) === "card agent");
   const notice = all(card).find((el) => classOf(el) === "cant-run");
-  assert.equal(notice.textContent, "This server can't run this agent's current revision: browser needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID; vault needs VAULT_KEY.");
+  assert.equal(notice.textContent, "This server can't run the version this agent uses: browser needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID; vault needs VAULT_KEY.");
   const order = all(card).filter((el) => ["cant-run", "run-form"].includes(classOf(el))).map(classOf);
   assert.deepEqual(order, ["cant-run", "run-form"], "above the run form");
   assert.equal(buttonNamed(shown, "Start run").disabled, undefined, "Start run stays: another revision may run, and the 409 still explains");
@@ -537,4 +541,60 @@ test("a refusal is said in words, without its HTTP status or a field's internal 
   assert.ok(text.startsWith("Some of it needs a change."), text);
   assert.ok(text.includes("model: "), text);
   assert.ok(!/\b4\d\d\b/.test(text) && !text.includes("definition."), `no status and no internal prefix: ${text}`);
+});
+
+test("people's words: Edit and Save, Use this version, Version N; no commit, no current, no revision on a button or a label", async () => {
+  const { page } = open("#/agents/calc", { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [] });
+  await page.settle();
+  const controls = () => all(page.app).filter((el) => ["BUTTON", "A", "OPTION", "LABEL", "H3"].includes(el.tagName) || classOf(el) === "kicker" || classOf(el) === "word").map((el) => el.textContent);
+  assert.ok(controls().includes("Edit") && controls().includes("Use this version"), controls().join(" | "));
+  const definition = { name: "Calc", instructions: "Answer.", tools: [] };
+  const edit = open("#/agents/calc/edit", { "v2/capabilities": CAPABILITIES, "v2/agents/calc": agentView("calc", REV_B, definition) });
+  await edit.page.settle();
+  assert.ok(buttonNamed(edit.page, "Save"), "Save, not Commit revision");
+  for (const shown of [page, edit.page]) {
+    const words = all(shown.app).filter((el) => ["BUTTON", "OPTION", "LABEL", "H3"].includes(el.tagName) || ["kicker", "word", "btn quiet"].includes(classOf(el))).map((el) => el.textContent);
+    assert.ok(!words.some((w) => /commit|make current|revision/i.test(w)), words.filter((w) => /commit|make current|revision/i.test(w)).join(" | "));
+  }
+  const options = all(page.app).filter((el) => el.tagName === "OPTION").map((el) => el.textContent);
+  assert.ok(options.every((o) => /^Version \d+/.test(o) && !/[0-9a-f]{12}/.test(o)), options.join(" | "));
+});
+
+test("runs are titled by their input's first line, or by their agent and start, never by id: All runs and a live run's head", async () => {
+  const titled = { ...RUNS[1], title: "Draft the weekly update\nfor the team" };
+  const untitled = { ...RUNS[2], title: "" };
+  const { page } = open("#/runs", { "v2/runs?limit=100": { runs: [titled, untitled], next_cursor: null }, "api/store": { agents: AGENTS } });
+  await page.settle();
+  const cells = all(page.app).filter((el) => classOf(el) === "c title");
+  assert.equal(cells[0].childNodes[0].textContent ?? cells[0].childNodes[0], "Draft the weekly update");
+  assert.match(cells[1].textContent, /^Calc .* · 2026-10-22 /);
+  assert.equal(all(cells[0]).find((el) => classOf(el) === "run-id small").textContent, "run-2", "the id, small");
+  const live = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, title: "What is six times seven?" }, "v2/runs/run-9/timeline": timelinePage({ reset: true }), "api/store": { agents: AGENTS } });
+  await live.page.settle();
+  const head = all(live.page.app).find((el) => classOf(el) === "card run-head");
+  assert.equal(all(head).find((el) => el.tagName === "H1").textContent, "What is six times seven?");
+  assert.equal(all(head).find((el) => classOf(el) === "run-id small").textContent, "run-9");
+  assert.ok(head.textContent.includes("Version 1"));
+});
+
+test("the model is picked from the ones this server runs: its own, each other tier as a definition names it, or another typed in", async () => {
+  const caps = { ...CAPABILITIES, models: { source: "gateway", default: "agent-model/openrouter/anthropic/claude-sonnet-5.5", fast: "agent-model/bare-fast", strong: "agent-model/openai/gpt-5" } };
+  const { page, api } = open("#/new", { "v2/capabilities": caps, "POST v2/agents": [201, { agent_id: "pick" }] });
+  await page.settle();
+  const choice = find(page, "SELECT", "model-choice");
+  assert.deepEqual(choice.childNodes.map((o) => o.textContent), ["This server's model (agent-model/openrouter/anthropic/claude-sonnet-5.5)", "openai/gpt-5 (strong)", "Another model…"], "a bare gateway id is not a definition's provider/model-id");
+  assert.equal(find(page, "INPUT", "model").hidden, true, "the text box only for another model");
+  find(page, "INPUT", "name").value = "Pick";
+  find(page, "TEXTAREA", "instructions").value = "Answer.";
+  choice.value = "openai/gpt-5";
+  buttonNamed(page, "Create agent").click();
+  await page.settle();
+  assert.equal(api.writes().at(-1)[2].definition.model, "openai/gpt-5");
+  const own = open("#/new", { "v2/capabilities": caps, "POST v2/agents": [201, { agent_id: "own" }] });
+  await own.page.settle();
+  find(own.page, "INPUT", "name").value = "Own";
+  find(own.page, "TEXTAREA", "instructions").value = "Answer.";
+  buttonNamed(own.page, "Create agent").click();
+  await own.page.settle();
+  assert.equal(own.api.writes().at(-1)[2].definition.model, undefined, "the server's own model: the definition names none");
 });

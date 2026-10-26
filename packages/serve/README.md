@@ -167,17 +167,24 @@ Open the link the server prints, once, in a browser. The page at `/`, AgentRun S
 [`@parcha/pi-durable-agent`](../pi-durable-agent/README.md#looking-at-a-store)'s store page over the agent store in the
 data directory, with this server's own views beside it:
 
-- **Agents**: each agent with its current revision's kind and its runs (a store with no agent says to make one, or
-  gives the command that seeds the showcase); an agent's revisions, newest first, an agentic one's prompt diffed
-  against its parent's and a workflow's graph; its runs, filtered by revision.
+The page says "version" where the API says revision: an agent's revisions are **Version 1**, **Version 2**, … (the
+oldest is 1, as `GET /v2/agents/{id}/revisions` numbers them), each with its note, the hex id only a small detail; the
+current one is **in use**. A run is titled by its input's first line, or by its agent and start time, and its id is a
+small detail.
+
+- **Agents**: each agent with the kind of the version it uses and its runs (a store with no agent says to make one, or
+  gives the command that seeds the showcase); an agent's versions, newest first, an agentic one's prompt diffed
+  against the version before it and a workflow's graph; its runs, filtered by version.
 - **All runs**: every run of every agent, newest first, with its agent, revision, kind, state, cost and start, filtered by
   agent and by state. A row opens the run. A run `/v2` reports as `failed` with `error.code` `escalated` reads escalated,
   here and on its live page, as the store's page draws it.
 - **New agent** and **Edit**: a name, a description, a prompt or a workflow's JSON, for a prompt a model
-  (`provider/model-id`, or none for the server's own) and a thinking level, and the tools capabilities list. Creating sends `POST /v2/agents`; an edit starts from the
-  current definition, keeps the agent's name and description, and sends `PUT /v2/agents/{id}/definition` with
-  `If-Match` set to the revision it started from, which commits a revision and makes it current (or answers 412 when
-  another revision came first). **Make current** on an older revision sends `POST /v2/agents/{id}/current`.
+  picked from the ones this server runs (its own; each other tier in capabilities' `models`, as a definition names it;
+  or **Another model…**, typed as `provider/model-id`) and a thinking level, and the tools capabilities list. Creating
+  sends `POST /v2/agents`; **Edit** starts from the definition in use, keeps the agent's name and description, and
+  **Save** sends `PUT /v2/agents/{id}/definition` with `If-Match` set to the revision it started from, which makes a new
+  version and uses it (or answers 412 when someone saved another first). **Use this version** on an older version
+  sends `POST /v2/agents/{id}/current`.
 - **Start a run**: when the current revision names a tool capabilities marks unavailable, the agent's card says which
   and what it needs (`browser needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID`); the form stays, since another
   revision may run. An input (for a workflow revision, a JSON object its input schema takes), on the current revision or
@@ -192,10 +199,10 @@ data directory, with this server's own views beside it:
   as input and opens it; it is off when the timeline cut that message (2,000 characters), and a workflow run has none,
   as the page does not hold its input. A refusal is said in words ("This agent can't run here: …"), without its HTTP
   status.
-- **Compare revisions**: on an agent's page, one row per revision, newest first: its runs, how many completed, failed
+- **Compare versions**: on an agent's page, one row per version, newest first: its runs, how many completed, failed
   or escalated, their total cost, the cost per completed run (every run's cost over the completed ones, the cheapest
   marked) and the median time of those that ended. It reads the store's runs of the agent; a row filters the runs to
-  its revision.
+  its version.
 
 The link sets a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
 and sends the browser to the same address without the token. The cookie's value is derived from the token, never the

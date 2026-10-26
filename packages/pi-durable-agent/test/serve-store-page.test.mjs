@@ -45,7 +45,7 @@ test("the picker: each agent with its current revision's kind and its run count,
   assert.deepEqual(tiles.map((el) => [el.getAttribute("href"), pills(el)]), [["#/agents/company-researcher", [["pill workflow", "workflow"]]], ["#/agents/inbox-triage", [["pill agentic", "agentic"]]], ["#/agents/new-agent", []]]);
   assert.ok(tiles[0].textContent.includes(`Company researcher ${HOSTILE}`) && tiles[0].textContent.includes(`Writes a brief ${HOSTILE}`) && tiles[0].textContent.includes("6 runs"));
   assert.ok(tiles[1].textContent.includes("1 run") && !tiles[1].textContent.includes("1 runs"), "one is named in the singular");
-  assert.ok(tiles[2].textContent.includes("no revision yet"));
+  assert.ok(tiles[2].textContent.includes("no version yet"));
   assert.equal(all(page.app).find((el) => el.tagName === "H1").textContent, "3 agents");
   assert.equal(page.document.title, "Agent store");
 
@@ -91,7 +91,7 @@ test("an agent page: its kind the current revision's, its revisions newest first
   assert.deepEqual(pills(all(page.app).filter((el) => classOf(el) === "card agent")[0]), [["pill agentic", "agentic"]], "the current revision's kind");
   const [b, a] = revisionsOf(page);
   assert.deepEqual([classOf(b), classOf(a)], ["revision current", "revision"]);
-  assert.ok(b.textContent.includes("bbbbbbbbbbbb") && b.textContent.includes("current") && b.textContent.includes("from aaaaaaaaaaaa") && a.textContent.includes(`Prompt A ${HOSTILE}`));
+  assert.ok(b.textContent.includes("Version 2") && b.textContent.includes("in use") && b.textContent.includes("from version 1") && a.textContent.includes(`Prompt A ${HOSTILE}`));
   const lines = all(b).filter((el) => classOf(el).startsWith("line "));
   assert.deepEqual(lines.map((el) => [classOf(el), el.textContent]), [["line del", "−Line one."], ["line add", "+Line one, cited."], ["line same", ` Line two ${HOSTILE}`], ["line add", "+Line three."]], "every line of both, marked");
   assert.ok(b.textContent.includes("+2 −1 lines"));
@@ -138,7 +138,7 @@ test("a workflow revision: its graph given to window.drawWorkflowGraph in an svg
   assert.deepEqual(plain([drawn[0].graph, drawn[0].marks]), [GRAPH_2, { diff: { added: ["/root/steps/1", "/root/steps/3"], edited: ["/root/steps/2"], removed: [{ label: `Format the answer ${HOSTILE}`, kind: "call" }] } }]);
   assert.deepEqual(plain([drawn[1].graph, drawn[1].marks]), [GRAPH_1, {}], "a first revision has no diff");
   const [m2] = revisionsOf(page);
-  assert.ok(m2.textContent.includes("Workflow, against 111111111111") && m2.textContent.includes("+2 added") && m2.textContent.includes("1 edited") && m2.textContent.includes("1 removed"));
+  assert.ok(m2.textContent.includes("Workflow, against version 1 111111111111") && m2.textContent.includes("+2 added") && m2.textContent.includes("1 edited") && m2.textContent.includes("1 removed"));
 });
 
 test("a workflow revision drawn by graph.js: the added nodes tagged new, the edited one edited, the removed one named, labels as text; one whose parent is agentic says so", async () => {
@@ -151,7 +151,7 @@ test("a workflow revision drawn by graph.js: the added nodes tagged new, the edi
   assert.ok(drawnNodes(m1).every(([, marks]) => marks === ""), "a first revision has no tags");
   const afterAgentic = mount(mccApi([{ ...MCC_2, parentKind: "agentic", diff: null }]), "#/agents/mcc-classifier", { serve: STORE });
   await afterAgentic.settle();
-  assert.match(afterAgentic.app.textContent, /Its parent 111111111111 is an agentic revision: this revision runs a workflow in place of a prompt\./);
+  assert.match(afterAgentic.app.textContent, /The version before it runs a prompt: this one runs a workflow in place of a prompt\./);
 });
 
 test("the runs: one table across the agent's revisions, escalated a state of its own, a missing cost unknown and a gone directory said in words", async () => {
@@ -161,13 +161,13 @@ test("the runs: one table across the agent's revisions, escalated a state of its
   assert.deepEqual(rows.map((el) => el.getAttribute("href")), RUNS.map((r) => `#/runs/${r.id}`));
   assert.deepEqual(rows.map((el) => pills(el)[0]), [["pill live", "running"], ["pill escalated", "escalated"], ["pill ok", "completed"], ["pill error", "failed"], ["pill stopped", "stopped"]], "escalated is never drawn as failed");
   assert.deepEqual(rows.map((el) => all(el).find((c) => classOf(c).startsWith("c cost")).textContent), ["unknown", "$0.018", "$0.312", "$0", "unknown"], "a missing cost is unknown, never $0; a recorded 0 is $0");
-  assert.ok(rows[1].textContent.includes("bbbbbbbbbbbb") && rows[1].textContent.includes("agentic") && rows[1].textContent.includes(`escalated at No public record ${HOSTILE}`));
+  assert.ok(rows[1].textContent.includes("Version 2") && rows[1].textContent.includes("agentic") && rows[1].textContent.includes(`escalated at No public record ${HOSTILE}`));
   assert.ok(rows[4].textContent.includes("its directory is gone") && !rows[4].textContent.includes("never shown"));
   const filters = all(page.app).filter((el) => el.tagName === "A" && classOf(el).startsWith("filter"));
   assert.deepEqual(filters.map((el) => [el.getAttribute("href"), classOf(el), el.textContent]), [
-    ["#/agents/company-researcher", "filter on", "All revisions"],
-    [`#/agents/company-researcher?revision=${REV_B.id}`, "filter", "bbbbbbbbbbbb agentic"],
-    [`#/agents/company-researcher?revision=${REV_A.id}`, "filter", "aaaaaaaaaaaa agentic"],
+    ["#/agents/company-researcher", "filter on", "All versions"],
+    [`#/agents/company-researcher?revision=${REV_B.id}`, "filter", "Version 2"],
+    [`#/agents/company-researcher?revision=${REV_A.id}`, "filter", "Version 1"],
   ]);
 });
 
@@ -185,7 +185,7 @@ test("the runs filtered by a revision: the filter is in the hash, so a reload ke
   assert.deepEqual(page.fetched.slice(0, 2), ["api/agents/company-researcher", `api/runs?agent=company-researcher&revision=${REV_A.id}`]);
   assert.equal(runRows(page).length, 2);
   assert.deepEqual(all(page.app).filter((el) => classOf(el) === "filter on").map((el) => [el.getAttribute("href"), el.getAttribute("aria-current")]), [[`#/agents/company-researcher?revision=${REV_A.id}`, "true"]]);
-  assert.match(page.app.textContent, /2 runs of aaaaaaaaaaaa/);
+  assert.match(page.app.textContent, /2 runs of version 1/);
 });
 
 const row = (seq, kind, fields = {}) => ({ id: `1:${seq}`, kind, seq, summary: null, text: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, conversation_id: 1, ...fields });
@@ -210,7 +210,7 @@ test("an agentic run's page: its state, cost, agent, revision and summary, then 
   assert.deepEqual(all(head).filter((el) => el.tagName === "A").map((el) => [el.getAttribute("href"), el.textContent]), [["#/agents/company-researcher", `Company researcher ${HOSTILE}`]]);
   assert.deepEqual(all(page.app).filter((el) => el.tagName === "DETAILS" && classOf(el).startsWith("call")).map(classOf), ["call many ok", "call ok", "call ok"], "the two one-call rounds fold, as a home's page folds them");
   assert.ok(all(page.app).some((el) => el.tagName === "B" && el.textContent === "Done"));
-  assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", `Company researcher ${HOSTILE}`, "Run"]);
+  assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", `Company researcher ${HOSTILE}`, `Research ${HOSTILE}`.slice(0, 39) + "…"]);
   assert.equal(page.timers.size, 0);
 
   const noCost = mount({ "api/runs/run-1": { ...AGENTIC_RUN, run: { ...RUNS[4], gone: undefined }, gone: true } }, "#/runs/run-1", { serve: STORE });
@@ -355,4 +355,34 @@ test("a host adds to a stored run's head, given the run and what the page read",
   const head = all(page.app).find((el) => classOf(el) === "card run-head");
   assert.equal(all(head).find((el) => classOf(el) === "host-run").textContent, "added");
   assert.deepEqual(seen, [["run-3", AGENTIC_RUN.agent]]);
+});
+
+test("an agent's versions read as people say them: Version N and its note, the one in use marked, the hex id a small detail", async () => {
+  const page = mount(agentApi(), "#/agents/company-researcher", { serve: STORE });
+  await page.settle();
+  const [b, a] = revisionsOf(page);
+  const head = (article) => all(article).find((el) => classOf(el) === "rev-head");
+  assert.equal(all(head(b)).find((el) => classOf(el) === "version").textContent, "Version 2");
+  assert.equal(all(head(a)).find((el) => classOf(el) === "version").textContent, "Version 1");
+  assert.deepEqual(pills(head(b)).map((p) => p[1]), ["agentic", "in use"]);
+  const small = all(head(b)).find((el) => classOf(el) === "rev-id small");
+  assert.deepEqual([small.textContent, small.getAttribute("title")], ["bbbbbbbbbbbb", REV_B.id], "the id is a small detail, whole on hover");
+  assert.ok(all(b).some((el) => el.tagName === "H3" && el.textContent.startsWith("Prompt, against version 1")));
+  const card = all(page.app).find((el) => classOf(el) === "card agent");
+  assert.ok(card.textContent.includes("uses version 2"));
+  assert.ok(all(page.app).some((el) => el.tagName === "H2" && el.textContent === "2 versions, newest first"));
+});
+
+test("a stored run is titled by its input's first line, or by its agent and start when it has none; never by its id, which is a small detail", async () => {
+  const input = { ...TIMELINE[0], text: "Draft the weekly update\nfor the team" };
+  const page = mount({ "api/runs/run-3": { ...AGENTIC_RUN, rows: [input, ...TIMELINE.slice(1)] }, "api/agents/company-researcher": AGENT }, "#/runs/run-3", { serve: STORE });
+  await page.settle();
+  const head = all(page.app).find((el) => classOf(el) === "card run-head");
+  assert.equal(all(head).find((el) => el.tagName === "H1").textContent, "Draft the weekly update");
+  assert.equal(all(head).find((el) => classOf(el) === "run-id small").textContent, "run-3");
+  assert.ok(head.textContent.includes("Version 2: Prompt B"), "its version, numbered from the agent's");
+  assert.equal(page.document.title, `Draft the weekly update · Company researcher ${HOSTILE} · agent store`);
+  const none = mount({ "api/runs/run-3": { ...AGENTIC_RUN, rows: TIMELINE.slice(1) } }, "#/runs/run-3", { serve: STORE });
+  await none.settle();
+  assert.match(all(none.app).find((el) => el.tagName === "H1").textContent, /^Company researcher .* · 2026-10-22 /);
 });

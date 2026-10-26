@@ -546,9 +546,9 @@ npx @parcha/pi-durable-agent serve ./my-agents
 ```
 
 On a folder holding a `store.sqlite`, the same command serves the store's page: its agents; each agent's revisions,
-newest first, an agentic one's prompt diffed line by line against its parent's and a workflow's graph with what changed;
-its runs across revisions, filtered by revision; and each run, an agentic run's timeline or a workflow run's path lit
-on its graph. It reads `store.sqlite` and the runs' own stores in place, read-only, and never copies them. A run that
+shown as versions (Version 1, Version 2, …, the hex id a small detail), newest first, an agentic one's prompt diffed line
+by line against the version before it and a workflow's graph with what changed; its runs across versions, filtered by
+version; and each run, titled by its input's first line, its timeline or a workflow run's path lit on its graph. It reads `store.sqlite` and the runs' own stores in place, read-only, and never copies them. A run that
 has ended is read as an immutable file, so serving adds no file beside it or to `store.sqlite`; a running run's store
 is read the way SQLite reads a live file. From code, `serveStore({ dir }, { port?, signal? })` from
 `@parcha/pi-durable-agent/serve` does the same.
