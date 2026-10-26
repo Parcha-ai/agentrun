@@ -43,10 +43,12 @@ export function client(baseUrl, token) {
   };
 }
 
-/** One request with every header the caller names, Host, Origin and Cookie included (fetch sets or drops those itself). */
-export function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
+/** One request with every header the caller names, Host, Origin and Cookie included (fetch sets or drops those itself); a
+ *  header given as undefined is not sent, and `from` is the local address it leaves from. */
+export function call(port, { method = "GET", path = "/", headers = {}, body, from } = {}) {
+  const sent = Object.fromEntries(Object.entries({ host: `127.0.0.1:${port}`, ...headers }).filter(([, value]) => value !== undefined));
   return new Promise((resolve, reject) => {
-    const req = request({ host: "127.0.0.1", port, method, path, headers: { host: `127.0.0.1:${port}`, ...headers } }, (res) => {
+    const req = request({ host: "127.0.0.1", port, method, path, headers: sent, ...(from ? { localAddress: from } : {}) }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => {
@@ -88,6 +90,33 @@ export async function shapesOf(api, agentId, runId) {
     features: Object.keys((await api("GET", "/capabilities")).body.features),
   };
 }
+
+/** The owner every accounts test sets up. */
+export const OWNER = { name: "Ana", email: "ana@example.com", password: "correct horse battery" };
+
+/** The `name=value` pairs a response's Set-Cookie lines set, as one Cookie header. */
+export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
+
+/** A server with accounts on (loopback, so its address is http://127.0.0.1:<port>) whose owner was set up with the
+ *  printed code: the owner, their session cookie, and the origin a write must come from. */
+export async function withOwner(t, options = {}) {
+  const server = await serve(t, { accounts: true, ...options });
+  const origin = `http://127.0.0.1:${server.port}`;
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { "content-type": "application/json", origin }, body: { code, ...OWNER } });
+  assert.equal(made.status, 201, made.text);
+  return { ...server, origin, owner: made.json, cookie: cookieOf(made) };
+}
+
+/** Signs `email` in through the library's endpoint from the server's own origin: the answer and its session cookie. */
+export async function signIn(server, email, password, extra = {}) {
+  const res = await call(server.port, { method: "POST", path: "/v2/auth/sign-in/email", headers: { "content-type": "application/json", origin: server.origin }, body: { email, password, ...extra } });
+  return { res, cookie: cookieOf(res) };
+}
+
+/** `method path` as the person whose session `cookie` is, from the server's own origin, with a JSON body. */
+export const asPerson = (server, cookie) => (method, path, body) =>
+  call(server.port, { method, path: `/v2${path}`, headers: { cookie, ...(method === "GET" || method === "HEAD" ? {} : { origin: server.origin, "content-type": "application/json" }) }, body: method === "GET" || method === "HEAD" ? undefined : (body ?? {}) });
 
 export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });
 
