@@ -198,7 +198,8 @@ small detail.
   stays text). **Copy answer** on a completed run puts its whole answer, as `GET /v2/runs/{id}` has it, on the
   clipboard as plain text. **Run again** starts a new run of the same revision with the run's input, whole and as it
   was started (`GET /v2/runs/{id}/input`), and opens it, for an agentic run and a workflow run alike. A refusal is said in words ("This agent can't run here: …"), without its HTTP
-  status.
+  status, and a refused field as what to do ("Model: write it as provider/model-id, for example …"), else the
+  server's words under the field's label.
 - **Compare versions**: on an agent's page, one row per version, newest first: its runs, how many completed, failed
   or escalated, their total cost, the cost per completed run (every run's cost over the completed ones, the cheapest
   marked) and the median time of those that ended. It reads the store's runs of the agent; a row filters the runs to

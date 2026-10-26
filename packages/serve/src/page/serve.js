@@ -8,6 +8,8 @@
   var STATUSES = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
   var STATUS_CLASS = { queued: "live", working: "live", input_required: "escalated", completed: "ok", failed: "error", cancelled: "stopped" };
   var LONG_POLL_MS = 25000;
+  /** A definition's fields as the form labels them. */
+  var FIELD_LABELS = { name: "Name", description: "Description", instructions: "Instructions", model: "Model", thinking: "Thinking", tools: "Tools", workflow: "Workflow", note: "Note", skills: "Skills" };
   /** What each refusal means, in words, by its code. */
   var REFUSALS = {
     agent_not_runnable: "This agent can't run here",
@@ -84,13 +86,31 @@
       return String(text || "").replace(/\bdefinition\./g, "");
     }
 
+    /** A field the server refused, as a sentence a person acts on: its label and what to do, for a reason the page
+     *  knows; else its label and the server's own words. `sent` is the definition the form sent, which names a tool by
+     *  its place in the list. */
+    function fieldSentence(f, sent) {
+      var path = plainNames(f.field);
+      var key = path.split(/[.[]/)[0];
+      var label = FIELD_LABELS[key] || key;
+      if (key === "model" && f.reason === "bad_format") return "Model: write it as provider/model-id, for example anthropic/claude-sonnet-5-5.";
+      if (key === "tools" && f.reason === "not_an_option") {
+        var at = /\[(\d+)\]/.exec(path);
+        var tool = at && sent && Array.isArray(sent.tools) ? sent.tools[Number(at[1])] : null;
+        return "Tools: " + (tool || "a tool it names") + " isn't available on this server.";
+      }
+      if (key === "instructions" && (f.reason === "too_short" || f.reason === "missing")) return "Instructions: write what the agent should do.";
+      if (key === "name" && (f.reason === "too_short" || f.reason === "missing")) return "Name: give the agent a name.";
+      return (label ? label + ": " : "") + plainNames(f.message || f.reason || "");
+    }
+
     function problem(error) {
       var fields = (error && error.fields) || [];
       return el(
         "div",
         { class: "problem", role: "alert" },
         String((error && error.message) || error),
-        fields.length ? el("ul", null, fields.map(function (f) { return el("li", null, (f.field ? plainNames(f.field) + ": " : "") + plainNames(f.message || f.reason || "")); })) : null
+        fields.length ? el("ul", null, fields.map(function (f) { return el("li", null, fieldSentence(f, error.sent)); })) : null
       );
     }
     function say(box, error) {
@@ -518,6 +538,7 @@
           function (agent) { window.location.hash = kit.agentHref(agentId || agent.agent_id); },
           function (error) {
             save.disabled = false;
+            error.sent = definitionOut;
             say(out, error.status === 412 ? new Error("Someone saved a newer version since this form opened: open Edit again to start from it.") : error);
           }
         );
