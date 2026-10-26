@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.js";
-import { readJson, RUN_META, writeWhole } from "./files.js";
+import { readJson, RUN_META, storeRecords, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
@@ -297,17 +297,7 @@ export class Runs {
   private async readStore(run: Run): Promise<void> {
     const file = this.storeFile(run);
     if (!(await stat(file).catch(() => null))) return;
-    const { DatabaseSync } = await import("node:sqlite");
-    const entries: Json[] = [];
-    const db = new DatabaseSync(file, { readOnly: true });
-    try {
-      const rows = run.kind === "workflow"
-        ? db.prepare("SELECT record FROM entries ORDER BY id").iterate()
-        : db.prepare("SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id").iterate();
-      for (const row of rows) entries.push(JSON.parse(String((row as { record: string }).record)) as Json);
-    } finally {
-      db.close();
-    }
+    const entries = storeRecords(file, run.kind === "workflow" ? "SELECT record FROM entries ORDER BY id" : "SELECT record FROM entries WHERE conversation_id = (SELECT MIN(conversation_id) FROM entries) ORDER BY id");
     run.working = false;
     noteAnswer(run, entries);
     this.take(run, timelineOf(entries as never, { settled: true }));

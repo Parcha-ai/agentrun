@@ -5,9 +5,9 @@
 // higher of the model's input and cache-write prices, plus its max output tokens at the output price. What the run has
 // spent is read back from its store when the process starts, so it survives a restart, plus each response since; a
 // request in flight holds its worst case until it answers.
-import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
+import { storeRecords } from "./files.js";
 
 /** A run's cap in USD, passed to its process. */
 export const CAP_ENV = "AGENTRUN_SERVE_MAX_COST_USD";
@@ -26,18 +26,12 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
 /** What the run's store says its model requests cost: every response of every conversation in it. */
 export function spentIn(storeFile: string): number {
   if (!existsSync(storeFile)) return 0;
-  const db = new DatabaseSync(storeFile, { readOnly: true });
-  try {
-    let spent = 0;
-    for (const row of db.prepare("SELECT record FROM entries").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[] };
-      const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : undefined;
-      if (typeof total === "number" && Number.isFinite(total)) spent += total;
-    }
-    return spent;
-  } finally {
-    db.close();
+  let spent = 0;
+  for (const entry of storeRecords(storeFile, "SELECT record FROM entries") as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[] }[]) {
+    const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : undefined;
+    if (typeof total === "number" && Number.isFinite(total)) spent += total;
   }
+  return spent;
 }
 
 /** `models`, refusing each request whose worst case would take the run past `cap` after `spent` USD. */
