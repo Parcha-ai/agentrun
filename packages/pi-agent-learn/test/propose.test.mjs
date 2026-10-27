@@ -267,6 +267,7 @@ test("a draft alone is a proposal; an empty set of workflows is not", async () =
   const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workDir: work });
   assert.equal(result.status, "proposed");
   assert.deepEqual(changed(dir, main, result.sha), ["memos/run-1.md", "workflows/kyb/README.md", "workflows/kyb/workflow.json"]);
+  assert.equal(await repo.read("workflows/kyb/README.md", result.sha), "# kyb\n", "no words in the README the agent did not write");
 });
 
 test("workflow records that are not the DSL store's, or a workflow name that is not one, refuse the whole proposal", async () => {

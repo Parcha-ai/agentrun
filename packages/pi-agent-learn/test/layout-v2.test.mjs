@@ -188,6 +188,7 @@ test("an admitted workflow lands at workflows/<name>/: its records, latest, work
   const files = (await w.curator.list("workflows/registry-lookup", "main")).map((e) => e.path).sort();
   assert.deepEqual(files, [`workflows/registry-lookup/${digest}.json`, "workflows/registry-lookup/README.md", "workflows/registry-lookup/latest", "workflows/registry-lookup/workflow.json"].sort());
   assert.deepEqual(JSON.parse(await w.curator.read("workflows/registry-lookup/workflow.json", "main")), workflowDoc());
+  assert.equal(await w.curator.read("workflows/registry-lookup/README.md", "main"), "# registry-lookup\n\nUse it for a registry quote under the limit.\n", "the agent's README lands as written");
   assert.ok(await w.curator.read(".agents/skills/registry-lookup/trial.json", "main"));
   assert.deepEqual(await w.curator.list(".pi/agentrun/workflows", "main"), [], "nothing is written to the old path");
 });

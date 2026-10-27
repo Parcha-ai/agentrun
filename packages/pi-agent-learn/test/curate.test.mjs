@@ -480,7 +480,7 @@ test("past the question budget the rest of a run is held, never accepted", async
 const DIGEST = "a".repeat(64);
 const NOW = new Date("2026-10-27T05:00:00Z");
 /** A run's draft of the workflow `name`: its document and README, as propose writes them. */
-const draftOf = (_runId, name) => ({ [`workflows/${name}/workflow.json`]: `${JSON.stringify(workflowDoc({ name }), null, 2)}\n`, [`workflows/${name}/README.md`]: `# ${name}\n\nA workflow the run saved.\n` });
+const draftOf = (_runId, name) => ({ [`workflows/${name}/workflow.json`]: `${JSON.stringify(workflowDoc({ name }), null, 2)}\n`, [`workflows/${name}/README.md`]: `# ${name}\n` });
 const admitted = (name, when = "") => ({
   status: "admitted", reason: "trial",
   files: {
@@ -528,21 +528,24 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
   assert.deepEqual((await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: bare.curator, judge, admitWorkflow: null })).runs[0].held, [{ candidate: 1, workflow: "kyb", reason: "no workflow admitter is installed" }]);
 });
 
-test("a learn call of type workflow is asked nothing, and its text reaches neither the admitter nor main", async () => {
+test("a workflow's README is judged like a note: a general one lands on main as the agent wrote it, one about this case is refused with its workflow, and the admitter never sees it", async () => {
   const w = await world();
   const when = (id, text) => ({ callId: `call-${id}`, type: "workflow", id, text, evidence: [] });
   const described = (runId, name, text) => ({ ...draftOf(runId, name), [`workflows/${name}/README.md`]: `# ${name}\n\n${text}\n` });
   await propose(w, "run-1", [when("kyb", "A US company to check against its state registry.")], described("run-1", "kyb", "A US company to check against its state registry."));
   await propose(w, "run-2", [when("acme", "Only for the Acme Widgets file from this morning.")], described("run-2", "acme", "Only for the Acme Widgets file from this morning."));
+  await propose(w, "run-3", [when("plain", "")], draftOf("run-3", "plain"));
   const seen = [];
   const { judge, calls } = fakeJudge([{ q: "general", text: "Acme Widgets", p: 0.05 }]);
   const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: w.curator, judge, admitWorkflow: async (input) => (seen.push(input.workflow), admitted(input.workflow.name)) });
-  assert.deepEqual(seen.map((s) => [s.name, s.description]), [["kyb", undefined], ["acme", undefined]]);
-  assert.deepEqual(report.runs.map((r) => [r.accepted.map((a) => a.workflow), r.refused]), [[["kyb"], []], [["acme"], []]]);
-  // Only each workflow's document is asked about, never the agent's note on when to use it.
-  assert.deepEqual(calls.map((c) => Object.keys(c.questions)[0]), ["workflowCase", "workflowCase"]);
-  assert.ok(!JSON.stringify(calls).includes("Acme Widgets"));
-  for (const name of ["kyb", "acme"]) assert.doesNotMatch(await w.curator.read(`.agents/skills/${name}/SKILL.md`, "main"), /registry|Widgets/);
+  assert.deepEqual(seen.map((s) => [s.name, s.description]), [["kyb", undefined], ["plain", undefined]], "the admitter never sees the README");
+  assert.deepEqual(report.runs.map((r) => r.accepted.map((a) => a.workflow)), [["kyb"], [], ["plain"]]);
+  assert.deepEqual(report.runs[1].refused.map((r) => [r.workflow, r.reason]), [["acme", "about this case, not general (0.05)"]]);
+  assert.deepEqual(calls.map((c) => Object.keys(c.questions)[0]), ["general", "workflowCase", "general", "workflowCase"], "a README with no text of the agent's is asked nothing");
+  assert.equal(await w.curator.read("workflows/kyb/README.md", "main"), "# kyb\n\nA US company to check against its state registry.\n", "the agent's README, as written");
+  assert.equal(await w.curator.read("workflows/acme/README.md", "main"), undefined);
+  assert.equal(await w.curator.read("workflows/plain/README.md", "main"), "# plain\n\nThe plain workflow. When to use it: `.agents/skills/plain/SKILL.md`.\n");
+  assert.doesNotMatch(await w.curator.read(".agents/skills/kyb/SKILL.md", "main"), /registry/, "the skill is the admitter's, from the document");
 });
 
 const usesFile = (runId, uses) => ({ [`uses/${runId}.json`]: `${JSON.stringify({ version: 1, run: runId, uses })}\n` });
