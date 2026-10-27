@@ -2,6 +2,8 @@
 // layer's pieces a harness waits and builds tools with. No network: the provider is a scripted fetch.
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
+import { connect } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { test } from 'node:test';
 import { z } from 'zod';
 import { matchRoute, parseStrict, ProxyRefusal, startModelProxy } from '@parcha/agentrun-adapters/host';
@@ -53,16 +55,29 @@ function send(url, { method = 'POST', path = '/v1/test', key = KEY, headers = {}
       let text = '';
       res.setEncoding('utf8');
       res.on('data', (c) => { text += c; });
-      res.on('end', () => resolve({ status: res.statusCode, text }));
+      res.on('end', () => resolve({ status: res.statusCode, text, headers: res.headers }));
     });
     req.on('error', reject);
     req.end(typeof body === 'string' ? body : JSON.stringify(body));
   });
 }
 
+/** Whether a TCP connection to `host:port` opens. */
+const opens = (host, port) => new Promise((resolve) => {
+  const socket = connect({ host, port }, () => { socket.destroy(); resolve(true); });
+  socket.on('error', () => resolve(false));
+  socket.setTimeout(2_000, () => { socket.destroy(); resolve(false); });
+});
+
 test('the proxy listens on loopback only and admits only the session key', async (t) => {
   const { p, forwarded } = await proxy(t);
   assert.match(p.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+  // Bound to loopback, not every interface: this host's own non-loopback addresses do not reach it.
+  const port = Number(new URL(p.url).port);
+  assert.equal(await opens('127.0.0.1', port), true);
+  for (const address of Object.values(networkInterfaces()).flat().filter((a) => a && !a.internal && a.family === 'IPv4').map((a) => a.address)) {
+    assert.equal(await opens(address, port), false, `reachable on ${address}`);
+  }
   for (const key of [null, '', 'wrong', `${KEY}x`, KEY.slice(0, -1)]) assert.equal((await send(p.url, { key })).status, 401, `key ${JSON.stringify(key)}`);
   assert.equal(forwarded.length, 0);
   assert.equal((await send(p.url)).status, 200);
@@ -88,6 +103,14 @@ test("the provider gets the policy's body, its own credential, the route's path 
   assert.deepEqual(f.headers, { 'content-type': 'application/json', 'x-request-id': 'r1', authorization: 'Bearer provider-secret' });
   assert.equal(f.body.model, 'session-model');
   assert.ok(!JSON.stringify(f).includes(KEY), 'the session key never reaches the provider');
+  // The answer carries the provider's body and its content type, nothing else of the provider's: no header of its own,
+  // and never the credential.
+  assert.ok(!JSON.stringify(r).includes('provider-secret'), 'the credential never comes back');
+  const chatty = await proxy(t, { fetch: async () => new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', 'set-cookie': 'session=1', 'x-provider-request': 'abc', 'x-echo-key': 'provider-secret' } }) });
+  const answered = await send(chatty.p.url);
+  assert.equal(answered.headers['content-type'], 'text/event-stream');
+  for (const name of ['set-cookie', 'x-provider-request', 'x-echo-key']) assert.equal(answered.headers[name], undefined, name);
+  assert.ok(!JSON.stringify(answered.headers).includes('provider-secret'));
 });
 
 test('a duplicate key at any depth, a second JSON value, bad UTF-8 or a policy refusal is refused before anything is asked', async (t) => {
