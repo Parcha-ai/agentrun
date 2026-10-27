@@ -5,6 +5,8 @@ export const LAYOUT = Object.freeze({
   skills: ".agents/skills",
   workflows: "workflows",
   memos: "memos",
+  /** A run's workflow-use receipts, `uses/<run id>.json`: on its own branch only, never on main. */
+  uses: "uses",
 });
 
 /**
@@ -16,6 +18,10 @@ export const LOCKED = Object.freeze({
   names: Object.freeze(["AGENTS.md", "agent.json", "package.json", "SPEC.md", ".agentrun", ".githooks", ".husky", ".github"]),
   prefixes: Object.freeze([".agents/skills/reflect", ".agents/skills/review"]),
 });
+
+/** What the host keeps on main and no run writes: a workflow's saved records and `latest`, and its trial. */
+const HOST_OWNED = [/^workflows\/[^/]+\/(?:[0-9a-f]{64}\.json|latest)$/, /^\.agents\/skills\/[^/]+\/trial\.json$/];
+export const isHostOwned = (path: string): boolean => HOST_OWNED.some((pattern) => pattern.test(path));
 
 /** Files that make git itself run something or read elsewhere: attributes (filters, drivers, LFS) and submodules. */
 export const GIT_FILES = Object.freeze([".gitattributes", ".gitmodules"]);
@@ -38,7 +44,7 @@ export const WORKFLOW_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 /** The shared skills convention's name: lowercase letters, digits and single dashes. */
 export const SKILL_NAME = /^(?=.{1,64}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-export type Kind = "note" | "index" | "skill" | "workflow" | "readme" | "memo";
+export type Kind = "note" | "index" | "skill" | "workflow" | "readme" | "memo" | "uses";
 export type Place = { kind: Kind; id?: string; name?: string };
 
 const PLACES: readonly [RegExp, Kind, RegExp | undefined][] = [
@@ -48,6 +54,7 @@ const PLACES: readonly [RegExp, Kind, RegExp | undefined][] = [
   [/^workflows\/([^/]+)\/workflow\.json$/, "workflow", WORKFLOW_NAME],
   [/^workflows\/([^/]+)\/README\.md$/, "readme", WORKFLOW_NAME],
   [/^memos\/([^/]+)\.md$/, "memo", RUN_ID],
+  [/^uses\/([^/]+)\.json$/, "uses", RUN_ID],
 ];
 
 /** Where `path` sits in the layout, or undefined when the layout does not hold it. */
@@ -57,7 +64,7 @@ export function placeOf(path: string): Place | undefined {
     if (!match) continue;
     if (!name) return { kind };
     if (!name.test(match[1]!)) return undefined;
-    return kind === "note" || kind === "memo" ? { kind, id: match[1]! } : { kind, name: match[1]! };
+    return kind === "note" || kind === "memo" || kind === "uses" ? { kind, id: match[1]! } : { kind, name: match[1]! };
   }
   return undefined;
 }

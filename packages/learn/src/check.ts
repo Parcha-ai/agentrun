@@ -1,11 +1,11 @@
 import { draftProblems, parseIndex, parseMemo, parseNote, skillProblems, type Memo } from "./formats.js";
-import { CAPS, isGitFile, isLocked, LAYOUT, placeOf, RUN_ID, type Kind } from "./layout.js";
+import { CAPS, isGitFile, isHostOwned, isLocked, LAYOUT, placeOf, RUN_ID, type Kind } from "./layout.js";
 import { hiddenCharacter } from "./invisible.js";
 import { secretShapes, valueMatcher } from "./secrets.js";
 
 /** The rule a problem breaks. SPEC.md lists each. */
 export type Rule =
-  | "branch" | "too_many_files" | "locked" | "git_file" | "file_mode" | "outside_layout" | "deleted" | "too_large"
+  | "branch" | "too_many_files" | "locked" | "git_file" | "file_mode" | "host_owned" | "uses" | "outside_layout" | "deleted" | "too_large"
   | "too_many_notes" | "encoding" | "lfs_pointer" | "invisible_unicode" | "secret_shape" | "secret_value" | "memo_missing"
   | "memo" | "memo_run" | "memo_base" | "memo_unlisted" | "other_memo" | "note" | "note_run" | "index" | "index_note" | "skill"
   | "workflow" | "no_tool_list" | "executable_node";
@@ -46,8 +46,8 @@ export type CheckInput = {
 /** `ok` when `problems` is empty: the branch may go on to the injection screen and the review. */
 export type RunCheck = { readonly ok: boolean; readonly problems: Problem[] };
 
-const CAP: Record<Kind, number> = { note: CAPS.note, index: CAPS.index, memo: CAPS.memo, skill: CAPS.file, workflow: CAPS.file, readme: CAPS.file };
-const NEVER_DELETED: readonly Kind[] = ["note", "index", "memo"];
+const CAP: Record<Kind, number> = { note: CAPS.note, index: CAPS.index, memo: CAPS.memo, skill: CAPS.file, workflow: CAPS.file, readme: CAPS.file, uses: CAPS.file };
+const NEVER_DELETED: readonly Kind[] = ["note", "index", "memo", "uses"];
 const LFS_POINTER = /^version https:\/\/git-lfs\.github\.com\/spec\/v1\n/;
 const MODES: Record<string, string> = { "120000": "a symlink", "160000": "a gitlink (submodule)", "100755": "an executable file" };
 
@@ -80,8 +80,10 @@ export function checkRun(input: CheckInput): RunCheck {
     if (isLocked(path, input.lockedPaths)) return add("locked", "a run never touches this path", path);
     if (isGitFile(path)) return add("git_file", "git attributes and submodules are never part of a run", path);
     if (change.status !== "deleted" && change.mode !== undefined && change.mode !== "100644") return add("file_mode", `${MODES[change.mode] ?? `git mode ${change.mode}`}: only a regular, non-executable file`, path);
+    if (isHostOwned(path)) return add("host_owned", "a workflow's records, latest and trial.json are the host's, on main", path);
     const place = placeOf(path);
     if (!place) return add("outside_layout", "the layout does not hold this path", path);
+    if (place.kind === "uses" && run !== undefined && place.id !== run) return add("uses", "a run carries only its own uses file", path);
     const ownMemo = place.kind === "memo" && (run === undefined || place.id === run);
     if (place.kind === "memo" && !ownMemo) add("other_memo", "a run changes only its own memo", path);
     if (place.kind === "workflow" || place.kind === "readme") workflowDirs.add(place.name!);
@@ -130,6 +132,13 @@ export function checkRun(input: CheckInput): RunCheck {
       case "readme":
         if (text.trim() === "") add("workflow", "the README is empty", path);
         return;
+      case "uses":
+        try {
+          JSON.parse(text);
+        } catch {
+          add("uses", "it does not parse as JSON", path);
+        }
+        return;
       case "memo": {
         const parsed = parseMemo(text);
         if (Array.isArray(parsed)) return parsed.forEach((reason) => add("memo", reason, path));
@@ -161,7 +170,7 @@ export function checkRun(input: CheckInput): RunCheck {
       const base = input.runBase ?? input.forkPoint;
       if (base !== undefined && !base.startsWith(memo.base)) add("memo_base", `its base is not the commit the run started from, ${base}`, memoPath);
       for (const { path } of input.changes) {
-        if (path === memoPath || path === LAYOUT.index || flagged.has(path)) continue;
+        if (path === memoPath || path === LAYOUT.index || path === `${LAYOUT.uses}/${run}.json` || flagged.has(path)) continue;
         if (!memo.proposed.some((named) => named === path || (named.endsWith("/") && path.startsWith(named)))) add("memo_unlisted", "the memo's Proposed changes does not name it", path);
       }
     }

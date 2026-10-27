@@ -23,9 +23,15 @@ learnings/L-<12 hex>.md           one note: one general rule
 workflows/<name>/workflow.json    a drafted workflow, as the workflow DSL reads it
 workflows/<name>/README.md        what the draft is for, and when it applies
 memos/<run id>.md                 the memo of each run
+uses/<run id>.json                the run's workflow-use receipts, written by the host: on the run's branch only
 ```
 
 A run's branch may change only the paths above that are not locked. Any other path is refused.
+
+Main also holds files only the host writes, never a run's branch: a workflow's saved records and their pointer
+(`workflows/<name>/<sha256>.json`, `workflows/<name>/latest`) and its trial (`.agents/skills/<name>/trial.json`). A run's
+branch that touches one is refused. `uses/<run id>.json` is the reverse: it lives on the run's branch, is JSON under the
+32768-byte cap, names the branch's run, and never reaches `main`.
 
 - A run id is 1 to 128 letters, digits, dots, dashes or underscores, starting with a letter or digit, with no `..` and
   no trailing `.` or `.lock`, so `runs/<run id>` is always a valid branch name.
@@ -119,6 +125,7 @@ line; a `#` after a space starts a comment.
 | `outcome` | yes | `completed`, `failed` or `stopped` |
 | `harness` | no | a short lowercase name, for information only |
 | `cost_usd` | no | a number of dollars, 0 or more |
+| `untrusted` | no | `true` when the run read content the host does not trust, else `false` |
 
 The checker refuses a memo whose `run` is not the branch's, or whose `base` is not the commit the run started from (the
 full id or a prefix of it): the commit the host names (`--run-base`), or else the branch's fork point from `main`.
@@ -197,7 +204,8 @@ Before every merge, in this order:
 1. The checker passes on the run's branch.
 2. The injection screen: every new or changed note, skill and workflow draft goes through the same page-injection screen
    a page the agent reads goes through, the host's `classifyPage` judge scored against `INJECTION_THRESHOLD` (0.75, from
-   `@parcha/pi-browser`). A score at or over the threshold is refused. An item the screen could not judge (the judge is
+   `@parcha/pi-browser`; the number here must always equal the browser lane's `INJECTION_THRESHOLD`). A score at or over
+   the threshold is refused. With no screen at all, every item is refused: "no injection screen". An item the screen could not judge (the judge is
    down, or timed out) is refused for this merge too, never held: a later run may propose it again.
 3. The review skill reads what is left and merges what is general, new and consistent with `main`. It refuses
    duplicates, notes that contradict `main` without superseding the old note, and anything tied to one case.
@@ -205,7 +213,8 @@ Before every merge, in this order:
 Outside AgentRun, with no injection screen, nothing merges automatically: the checker alone never stands for the screen.
 
 A merge is a merge commit on `main` whose message holds the review's verdict and its reason. `main` is never force-pushed
-or rebased.
+or rebased. Retiring a note on purpose is an operator's act outside the loop: a commit on `main` that sets its `status`
+to `retired`, made by a person or their host, never by a run or the review.
 
 ## What the checker reports
 
@@ -219,6 +228,8 @@ when there is one, the file; it never prints a value it refused.
 | `too_many_files` | more than 64 changed paths |
 | `locked` | a locked path |
 | `git_file` | a `.gitattributes` or `.gitmodules` |
+| `host_owned` | a workflow's records, `latest` or `trial.json`, which only the host writes on `main` |
+| `uses` | a uses file that does not parse, or names another run |
 | `file_mode` | a symlink, a gitlink or an executable |
 | `outside_layout` | a changed path the layout does not hold |
 | `deleted` | a note, the index or a memo deleted |
