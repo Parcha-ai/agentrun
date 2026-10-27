@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-serve",
-  "version": "0.1.0-beta.26",
+  "version": "0.1.0-beta.27",
   "private": true,
   "description": "The Agentrun v2 API on your own machine: an agent store's agents, revisions and runs, served on loopback.",
   "keywords": [
@@ -45,12 +45,12 @@
   },
   "dependencies": {
     "@browserbasehq/sdk": ">=2.20.0 <3",
-    "@parcha/agentrun-dsl": "0.1.0-beta.26",
-    "@parcha/agentrun-pi": "0.1.0-beta.26",
-    "@parcha/pi-agent-learn": "0.1.0-beta.26",
-    "@parcha/pi-browser": "0.1.0-beta.26",
-    "@parcha/pi-durable-agent": "0.1.0-beta.26",
-    "@parcha/pi-durable-disk": "0.1.0-beta.26"
+    "@parcha/agentrun-dsl": "0.1.0-beta.27",
+    "@parcha/agentrun-pi": "0.1.0-beta.27",
+    "@parcha/pi-agent-learn": "0.1.0-beta.27",
+    "@parcha/pi-browser": "0.1.0-beta.27",
+    "@parcha/pi-durable-agent": "0.1.0-beta.27",
+    "@parcha/pi-durable-disk": "0.1.0-beta.27"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.4.0",

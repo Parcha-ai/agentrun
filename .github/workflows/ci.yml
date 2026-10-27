@@ -24,8 +24,9 @@ jobs:
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
     # included, stay on GitHub's runners. The viewer shard stays too: its Chromes starved a 4-vCPU Blacksmith runner until it
-    # lost contact, and it is not the long pole.
-    runs-on: ${{ github.event_name == 'merge_group' && matrix.shard != 'viewer' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # lost contact, and it is not the long pole. The transport shard stays because Blacksmith's kernels have no Yama
+    # ptrace_scope, and pi-transport's launcher refuses a launch with stdin or secrets on such a host.
+    runs-on: ${{ github.event_name == 'merge_group' && matrix.shard != 'viewer' && matrix.shard != 'transport' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false

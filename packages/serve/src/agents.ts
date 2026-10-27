@@ -72,13 +72,15 @@ export class Agents {
     await checkWorkflowBody({ workflow: revision.workflow, tools: revision.tools ?? [] }).catch((error) => storeError(error, "definition.workflow"));
   }
 
-  /** A new agent and its first revision, current. A definition id already here is `409 agent_exists`. */
-  async create({ definition, skills = {}, note }: DefinitionBody): Promise<AgentEntry> {
+  /** A new agent and its first revision, current. A definition id already here is `409 agent_exists`. `check` sees the
+   *  revision before anything is written, and may refuse it. */
+  async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>): Promise<AgentEntry> {
     const given = typeof definition.id === "string" ? definition.id : undefined;
     if (given !== undefined && this.store.readAgent(given)) throw new ApiError("agent_exists", `an agent ${given} exists here`);
     const revision = this.revisionOf(definition, skills, note);
     this.checkVersion(definition, 1);
     await this.checked(revision);
+    await check?.(revision);
     let agent: Agent;
     try {
       agent = this.store.createAgent({ name: definition.name as string, ...(typeof definition.description === "string" ? { description: definition.description } : {}), ...(given !== undefined ? { id: given } : {}) });
@@ -93,10 +95,14 @@ export class Agents {
   /** An edit: a new revision of the agent, its parent the current one, made current. Without `skills` the current
    *  revision's skill files carry over. An edit that is the current revision writes nothing, so a PUT sent twice makes
    *  one revision. The store keeps an agent's id, name and description from its creation. `ifCurrent` (from If-Match)
-   *  is the current revision the caller read, null for none: the store compares it in the commit's own transaction. */
-  async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent }: { ifCurrent?: string | null } = {}): Promise<AgentEntry> {
-    const entry = this.get(read.agent.id) ?? read;
-    if (ifCurrent !== undefined && (entry.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
+   *  is the current revision the caller read, null for none: the store compares it in the commit's own transaction.
+   *  `check` sees the revision, the current one's included, before anything is written, and may refuse it. */
+  async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent, check }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void> } = {}): Promise<AgentEntry> {
+    const held = (now: AgentEntry) => {
+      if (ifCurrent !== undefined && (now.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
+      return now;
+    };
+    const entry = held(this.get(read.agent.id) ?? read);
     const { agent } = entry;
     const kept = [
       ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
@@ -106,12 +112,15 @@ export class Agents {
     ];
     if (kept.length) throw invalid(kept);
     const revision = this.revisionOf(definition, skills ?? (entry.revision ? this.skillFiles(entry.revision) : {}), note);
-    if (entry.revision && sameRevision(entry.revision, revision)) {
-      this.checkVersion(definition, entry.version);
-      return entry;
-    }
-    this.checkVersion(definition, entry.revisions + 1);
     await this.checked(revision);
+    await check?.(revision);
+    // The checks awaited: another request may have moved the current revision meanwhile, so read it again.
+    const now = held(this.get(agent.id) ?? entry);
+    if (now.revision && sameRevision(now.revision, revision)) {
+      this.checkVersion(definition, now.version);
+      return now;
+    }
+    this.checkVersion(definition, now.revisions + 1);
     await this.store.commitRevision(agent.id, revision, { setCurrent: true, ...(ifCurrent !== undefined ? { ifCurrent } : {}) }).catch((error) => storeError(error));
     return this.get(agent.id)!;
   }
@@ -201,6 +210,7 @@ export function agentView(entry: AgentEntry) {
     runs: entry.runs,
     region: "local",
     home_etag: etagOf(entry),
+    archived_at: agent.archivedAt ?? null,
     created_at: agent.createdAt,
     updated_at: revision && revision.createdAt > agent.createdAt ? revision.createdAt : agent.createdAt,
   };

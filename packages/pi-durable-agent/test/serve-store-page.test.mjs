@@ -317,3 +317,37 @@ test("a workflow run its reader refuses shows that one line in place of the grap
   assert.deepEqual(pills(page.app)[0], ["pill escalated", "escalated"]);
   assert.ok(page.app.textContent.includes("$0.018") && page.app.textContent.includes(`escalated at No public record ${HOSTILE}`));
 });
+
+const ARCHIVED_AT = "2026-10-24T08:00:00.000Z";
+
+test("the picker hides archived agents; Show archived lists only those, the hash keeps it, and Hide archived goes back", async () => {
+  const agents = [AGENTS[0], { ...AGENTS[1], archivedAt: ARCHIVED_AT }, AGENTS[2]];
+  const page = mount({ "api/store": { agents } }, "#/", { serve: STORE });
+  await page.settle();
+  const tiles = () => all(page.app).filter((el) => el.tagName === "A" && classOf(el) === "agent-tile").map((el) => el.getAttribute("href"));
+  const toggle = () => all(page.app).find((el) => el.tagName === "A" && classOf(el) === "filter archived");
+  assert.deepEqual(tiles(), ["#/agents/company-researcher", "#/agents/new-agent"]);
+  assert.equal(all(page.app).find((el) => el.tagName === "H1").textContent, "2 agents");
+  assert.deepEqual([toggle().getAttribute("href"), toggle().textContent], ["#/?archived=1", "Show archived (1)"]);
+  await page.go("#/?archived=1");
+  assert.deepEqual(tiles(), ["#/agents/inbox-triage"]);
+  assert.equal(all(page.app).find((el) => el.tagName === "H1").textContent, "1 archived agent");
+  assert.deepEqual(pills(all(page.app).find((el) => classOf(el) === "agent-tile")).map((p) => p[1]), ["agentic", "archived"]);
+  assert.deepEqual([toggle().getAttribute("href"), toggle().textContent], ["#/", "Hide archived"]);
+  assertInert(page.app);
+});
+
+test("an archived agent's page, its archived runs and an archived run's head say archived; a host adds to a run's head", async () => {
+  const archivedAgent = { ...AGENT, agent: { ...AGENT.agent, archivedAt: ARCHIVED_AT } };
+  const page = mount(agentApi({ "api/agents/company-researcher": archivedAgent, "api/runs?agent=company-researcher": [{ ...RUNS[2], archivedAt: ARCHIVED_AT }, RUNS[3]] }), "#/agents/company-researcher", { serve: STORE });
+  await page.settle();
+  const card = all(page.app).find((el) => classOf(el) === "card agent");
+  assert.ok(pills(card).some(([, text]) => text === "archived"), JSON.stringify(pills(card)));
+  assert.deepEqual(runRows(page).map((row) => pills(row).map((p) => p[1])), [["completed", "archived"], ["failed"]]);
+  const host = (kit) => ({ run: (run) => kit.el("span", { class: "host-run" }, `run ${run.id}`) });
+  const runPage = mount({ "api/runs/run-3": { ...AGENTIC_RUN, run: { ...RUNS[2], archivedAt: ARCHIVED_AT } } }, "#/runs/run-3", { serve: STORE, window: { agentStoreHost: host } });
+  await runPage.settle();
+  const head = all(runPage.app).find((el) => classOf(el) === "card run-head");
+  assert.deepEqual(pills(head).map((p) => p[1]), ["completed", "archived", "agentic"]);
+  assert.equal(all(head).find((el) => classOf(el) === "host-run").textContent, "run run-3");
+});

@@ -24,9 +24,11 @@ export default function reply(context, faux) {
   const results = context.messages.filter((m) => m.role === "toolResult").length;
   // Browses with the `browser` tool: a snapshot of the page, then (an agent) its text as the answer, or (a node) the record.
   const browse = first.includes("Browse the example page");
+  // Files the page as evidence with browser_read, then delivers the record.
+  const read = first.includes("Read the example page");
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
-    if (browse && results === 0) return faux.message(faux.toolCall("snapshot", {}), { stopReason: "toolUse" });
-    if (browse && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
+    if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
+    if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
     const submit = faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;

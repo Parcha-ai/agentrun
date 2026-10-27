@@ -20,6 +20,7 @@ import {
 	isReservedLabel,
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
+import { refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
 const RECORD_FILE = "box.json";
@@ -115,6 +116,10 @@ class LocalBox implements Box {
 			maxLifetimeMs: this.#record.maxLifetimeMs,
 			snapshot: null,
 			bulk: "stream",
+			secretsVia: "fd",
+			// A directory on this machine uses its network; it reports no ports, disk or Yama setting.
+			network: "open",
+			startedAt: new Date(this.#record.expiresAt - this.#record.maxLifetimeMs).toISOString(),
 		};
 	}
 
@@ -455,6 +460,8 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 					new BoxError("unsupported", `a local box has no isolation, the spec asks for ${spec.isolation}`),
 				);
 			}
+			const refusedNetwork = refuseNetworkFields(spec, "local");
+			if (refusedNetwork !== undefined) return err(refusedNetwork);
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));
@@ -471,7 +478,9 @@ export function localBoxes(options: LocalBoxesOptions): BoxProvider {
 				expiresAt: Date.now() + spec.maxLifetimeMs,
 			};
 			try {
-				for (const name of ["home", "tmp", "pids"]) await mkdir(join(directory, name), { recursive: true });
+				// Its user's alone, whatever the umask: the launcher refuses a spool below a directory another user can write.
+				for (const name of ["home", "tmp", "pids"])
+					await mkdir(join(directory, name), { recursive: true, mode: 0o700 });
 				await mkdir(record.workspace, { recursive: true });
 				await writeFile(join(directory, RECORD_FILE), JSON.stringify(record));
 			} catch (error) {

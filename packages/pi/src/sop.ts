@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { OperatorError } from './operator-error.js';
 
 export const MAX_SOP_BYTES = 512 * 1024;
 
@@ -10,16 +11,16 @@ export const sopDigest = (text: string): string => createHash('sha256').update(t
 
 /** The SOP text of a regular file inside `cwd`; a path that resolves outside it, or a file over the bound, is refused. */
 export async function readSopFile(cwd: string, file: string): Promise<SopText & { file: string }> {
-  if (!file.trim() || file.includes('\0')) throw new Error('Use /agentrun sop <file>, a path inside this project.');
+  if (!file.trim() || file.includes('\0')) throw new OperatorError('Use /agentrun sop <file>, a path inside this project.');
   const root = await realpath(cwd);
-  const target = await realpath(resolve(cwd, file)).catch(() => { throw new Error(`SOP file not found: ${file}`); });
+  const target = await realpath(resolve(cwd, file)).catch(() => { throw new OperatorError(`SOP file not found: ${file}`); });
   const inside = relative(root, target);
-  if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new Error('The SOP file must be inside this project.');
+  if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new OperatorError('The SOP file must be inside this project.');
   const info = await lstat(target);
-  if (!info.isFile()) throw new Error('The SOP must be a regular file.');
-  if (info.size > MAX_SOP_BYTES) throw new Error(`The SOP file is larger than ${MAX_SOP_BYTES / 1024} KiB.`);
+  if (!info.isFile()) throw new OperatorError('The SOP must be a regular file.');
+  if (info.size > MAX_SOP_BYTES) throw new OperatorError(`The SOP file is larger than ${MAX_SOP_BYTES / 1024} KiB.`);
   const text = (await readFile(target, 'utf8')).replace(/^﻿/, '');
-  if (!text.trim()) throw new Error('The SOP file is empty.');
+  if (!text.trim()) throw new OperatorError('The SOP file is empty.');
   return { file: inside.split(sep).join('/'), text, sha256: sopDigest(text) };
 }
 

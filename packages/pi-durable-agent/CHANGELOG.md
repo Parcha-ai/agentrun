@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.27 (2026-10-25)
+
+- `commitRevision(agent, revision, { ifCurrent })` makes a commit a compare-and-swap: `ifCurrent` is the agent's current revision as the caller read it (null for none), compared inside the commit's own transaction, and another current revision refuses the commit with `AgentHomeError` `stale` and writes nothing. A host serving `If-Match` passes it, so of two edits that read the same revision exactly one lands.
+- `agentrun-serve` serves a page at `/`, AgentRun Server, for the person who holds its token: the agent store's page from `@parcha/pi-durable-agent` (agents, revisions with the prompt diff and the workflow graph, runs, a run's timeline) plus every run across agents, forms that create an agent, commit a revision, make a revision current and start a run through `/v2`, and a live run followed until it is final, with an answer box while it waits on `ask_person`. The server prints one more line, `Open` and the page's address with `?token=` and its token; opening it sets an `HttpOnly`, `SameSite=Strict` cookie that stands in for the Bearer header (a write only from the page's own origin with a JSON body).
+  `@parcha/pi-durable-agent/serve` exports what another server needs to serve the store's page: `storeApi(store)`, the read-only JSON behind its `/api/*` paths, and `STORE_PAGE_FILES`, its files. The page takes a script loaded before `page.js` that sets `window.agentStoreHost`; `pi-durable-agent serve` loads none. A cost under a cent now shows two significant digits ($0.00014, not $0.000), and a recorded 0 shows as $0.
+- A workflow revision can run inside a `pi-durable-disk run` process. `runWorkflowRevision` reads the run's store file once the workflow ends, and such a process holds that file exclusively until it exits, so the read failed (`disk I/O error`) after the workflow had run. Its two halves are now exports: `startWorkflowRevision(options)` checks the tools and the input, starts the run's task and waits for its outcome without reading the file, and `workflowCarry(run, outcome)` reads the run and returns the `carryBack` input, `{ state, summary }`. Inside a disk run, call `startWorkflowRevision` in the app and `workflowCarry` on the host once the run is released and its process has exited. `runWorkflowRevision` is the two in order, and returns what it did.
+
 ## 0.1.0-beta.26 (2026-10-24)
 
 - First release of `@parcha/pi-durable-agent`: an agent home for pi agents, one directory of pi-durable stores (`agent.sqlite`, and one run store per run) that keeps an agent's definition, skills, saved sign-ins and every run. `createAgentHome` and `openAgentHome` keep the agent's identity, its

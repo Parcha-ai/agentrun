@@ -1,13 +1,14 @@
 // Stagehand is created sealed: no inference leaves through it (act, extract and observe are refused), nothing is cached
 // server side, and the driver never ends the browser: custody releases it through the provider.
 import { type DriverFactory } from "../core/custody.js";
+import { INERT_TRACE_ENDPOINT } from "../core/effects.js";
 import type { PageDriver } from "../core/tools.js";
 import { installedExtension } from "./extension-worker.js";
 import { pageDriver } from "./page-driver.js";
 import { attachStep, createSealed, IN_FLIGHT_INIT_MS, INIT_IN_PROGRESS } from "./sealed.js";
 
 /** A closed loopback port, so no span leaves the host: Stagehand 4.1.0 cannot turn its trace exporter off. */
-export const STAGEHAND_TELEMETRY = { traces: { endpoint: "http://127.0.0.1:9/v1/traces" } } as const;
+export const STAGEHAND_TELEMETRY = { traces: { endpoint: INERT_TRACE_ENDPOINT } } as const;
 export const STAGEHAND_INFERENCE_REFUSED = "Stagehand inference is off in this harness: act, extract and observe are unavailable. Drive the page with run code or snapshot IDs.";
 export const SEALED_STAGEHAND = {
   logging: { level: "off" },

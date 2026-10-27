@@ -14,6 +14,7 @@ export const PI_HOST_ADDENDUM: AuthorHostAddendum = Object.freeze({
     'This extension supplies no SOP text: do not run a workflow with sopSection here; it needs an SDK host that supplies the authoritative SOP.',
     'Custom extension tools and outer permission hooks are not inherited, including in trusted runs.',
     'A preview, procedure edit or input change does not authorize execution: inspect it, report Inspected — not run, and execute only when requested.',
+    'Quote the receipt from the run result in your reply, or say that no workflow ran. Work you did yourself with read, grep or bash is not a workflow result and is never reported as one. The host adds its own notice under your reply with the receipt and the run\'s real counts, or with no workflow ran.',
     'Use /agentrun to inspect the current graph, /agentrun input to change input, /agentrun save and /agentrun load for named definition revisions, /agentrun history for retained receipts, /agentrun run to restart, and /agentrun stop to request cancellation; closing the inspector does not stop a run.',
     'Saving retains the definition without input or execution permission; loading rechecks current host capabilities and never resumes an interrupted run.',
     'The structural limits describe returns bound node count, map concurrency and parallel branches.',

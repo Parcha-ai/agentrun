@@ -5,7 +5,11 @@ import { AgentHomeError } from "./store.js";
 
 /** pi-browser's `ProfileStore`, declared here by shape: `resolve` returns the saved sign-in for `key`, calling `make`
  *  only when there is none, and no two callers both make one. */
-export type ProfileStore = { resolve(key: string, make: (signal: AbortSignal) => Promise<string>): Promise<string> };
+export type ProfileStore = {
+  resolve(key: string, make: (signal: AbortSignal) => Promise<string>): Promise<string>;
+  /** True when the store writes the ids it holds to a clear file (pi-browser's default one does); a session vault refuses a provider whose store does. */
+  readonly clear?: boolean;
+};
 
 /** The run store as the host holds it: its Harness, or any Session on that file. */
 export type ProfileTarget = Pick<Session, "commit" | "snapshot">;
