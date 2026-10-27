@@ -183,6 +183,26 @@ test("commitTo with mergeParent makes a merge commit of exactly its files on the
   await assert.rejects(repo.commitTo(MAIN, { files: { "x.md": "x\n" }, message: "x", mergeParent: "f".repeat(40) }), { code: "missing" });
 });
 
+test("makeCommit writes a commit of exactly its files on a parent and moves no ref, so a merge can name it", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root, { "keep.md": "keep\n" });
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  assert.equal(typeof repo.makeCommit, "function");
+  const before = { remote: await refsOf(dir), host: await refsOf(repo.dir) };
+  const side = await repo.makeCommit({ parent: main, files: { "kept.md": "lands\n" }, message: "the run as curated", trailers: { "Run-Id": "r1" } });
+  assert.match(side, /^[0-9a-f]{40}$/);
+  assert.deepEqual({ remote: await refsOf(dir), host: await refsOf(repo.dir) }, before, "no ref moves");
+  assert.equal(await repo.read("kept.md", side), "lands\n");
+  assert.equal(await repo.read("keep.md", side), "keep\n");
+  const [entry] = await repo.log({ ref: side, max: 1 });
+  assert.deepEqual([entry.parents, entry.trailers["Run-Id"]], [[main], ["r1"]]);
+  const merged = await repo.commitTo(MAIN, { files: { "kept.md": "lands\n" }, message: "merge", parent: main, mergeParent: side });
+  await repo.push(merged.sha, MAIN);
+  assert.equal(await rawGit(["cat-file", "-t", side], { gitDir: dir }).then((b) => b.toString().trim()), "commit", "pushing main carries the side commit");
+  await assert.rejects(repo.makeCommit({ parent: "f".repeat(40), files: {}, message: "x" }), { code: "missing" });
+  await assert.rejects(repo.makeCommit({ parent: main, files: { ".git/config": "x" }, message: "x" }), (e) => e instanceof GitRemoteError);
+});
+
 test("merge fast-forwards, makes a merge commit when both sides moved, and reports a conflict without moving anything", async () => {
   const root = await scratch();
   const { dir, remote, seeder } = await seededRemote(root, { "notes.md": "1\n2\n3\n4\n5\n6\n" });
