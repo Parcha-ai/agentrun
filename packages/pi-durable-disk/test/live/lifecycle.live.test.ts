@@ -20,6 +20,7 @@ import { createRunDir, findDelegations, removeMountToken, revokeBestEffort, unmo
 import { localHost } from "../../src/hosts/local-host.ts";
 import { requestRun, type RunResponse } from "../../src/serve.ts";
 import { readRunStatus, type EnsureResult, type HostHandle } from "../../src/supervise.ts";
+import { checkColdStart } from "./_commit-stall.ts";
 
 const CLI = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 const APP = fileURLToPath(new URL("../fixtures/lifecycle-app.ts", import.meta.url));
@@ -118,6 +119,11 @@ const show = (unit: string) =>
       .filter(Boolean)
       .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
   ) as Record<string, string>;
+/** When a unit's main process started, in ms (systemd gives whole seconds, so rounded down), or null. */
+const unitStartedAt = (unit: string) => {
+  const m = /=@(\d+)/.exec(sh("systemctl", ["show", `${unit}.service`, "--property=ExecMainStartTimestamp", "--timestamp=unix"]).stdout);
+  return m ? Number(m[1]) * 1000 : null;
+};
 const journal = (unit: string) => sh("journalctl", ["-u", `${unit}.service`, "--no-pager", "-o", "cat"]).stdout.split("\n");
 const journalEvents = (unit: string) => journal(unit).filter((l) => l.startsWith("{")).map((l) => JSON.parse(l) as Record<string, unknown> & { event: string; at: string });
 /** The main process's exit status from the unit's journal: systemd logs a clean exit as "Deactivated successfully". */
@@ -302,19 +308,23 @@ test("serve: a request to a released run starts it and gets the answer; a repeat
 
   // Never started: no run.json, no delegation. The request starts it on A and gets the answer.
   assert.equal(await s3(ref.id), null);
+  const requestedAt = Date.now();
   const first = await submit(ref, hostA, { requestId: "q1", content: "hello", wait: true });
   r.coldStart = { ms: first.ms, ensured: first.ensured.map((e) => e.action === "started" ? { action: e.action, reason: e.reason, startMs: e.startMs } : e) };
   assert.equal(first.status, 200, JSON.stringify(first.body));
   const body = first.body as { generation: number; submission: { id: number; status: string }; answer: { text: string } };
   assert.equal(body.answer.text, "echo: hello");
-  // Every start is a generation. A cold start answers at generation 1, unless the instance it started lost its lease
-  // before it answered (a commit stalled past the lease) and the request's ensure started it again: then each further
-  // start is a lease-expired takeover, and the answer comes from the last one.
+  // A cold start answers at generation 1. More starts pass only when journald shows a commit stall on the first instance's
+  // own mount before the takeover (checkColdStart): the request's ensure then took over the lease the stall cost it.
   const starts = first.ensured.filter((e): e is Extract<EnsureResult, { action: "started" }> => e.action === "started");
-  assert.ok(starts.length >= 1, `the request started the run: ${JSON.stringify(r.coldStart)}`);
-  assert.equal(starts[0].reason, "none", `the run was never started, so its first start is a cold one: ${JSON.stringify(r.coldStart)}`);
-  assert.deepEqual(starts.slice(1).map((e) => e.reason), starts.slice(1).map(() => "lease-expired"), `a start after the first is a takeover: ${JSON.stringify(r.coldStart)}`);
-  assert.equal(body.generation, starts.length, `one generation per start: ${JSON.stringify(r.coldStart)}`);
+  const stall = checkColdStart({
+    reasons: starts.map((e) => e.reason),
+    generation: body.generation,
+    mountpoint: String(starts[0]?.handle.mountpoint),
+    from: requestedAt,
+    takeoverAt: starts[1] ? unitStartedAt(String(starts[1].handle.unit)) : null,
+  });
+  if (stall) r.coldStartStall = stall;
   const handleA = starts.at(-1)!.handle;
   const recordA = (await s3(ref.id))!;
   assert.equal(recordA.holder?.serve, first.url, "the instance's address is in run.json's holder");

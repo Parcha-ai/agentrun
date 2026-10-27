@@ -1,9 +1,10 @@
 // The live run suite's commit-stall note (test/live/_commit-stall.ts), on archil client lines recorded from a live run in
-// which T14 self-fence's instance exited before it opened (the disk id replaced). The note only names what stalled; it
-// never decides a verdict, and with no journald it says nothing.
+// which T14 self-fence's instance exited before it opened (the disk id replaced). The note only names what stalled and
+// never decides a verdict; with no journald it says nothing. Last, the lifecycle serve test's cold start, where a stall
+// is the evidence a takeover needs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { commitStall, parseJournal, stallNote, type JournalLine } from "./live/_commit-stall.ts";
+import { checkColdStart, commitStall, parseJournal, stallNote, type ColdStart, type JournalLine } from "./live/_commit-stall.ts";
 
 const MP = "/mnt/pda/p4/a/runs/p4-mvqornfb-selffence";
 const CMD = `/usr/bin/archil mount dsk-0000000000000000:/runs/p4-mvqornfb-selffence ${MP} --region aws-us-east-1`;
@@ -60,4 +61,41 @@ test("journalctl's JSON: entries with a text message are read, binary messages a
     { at: 1793105831247.447, cmdline: CMD, message: retry(1, 2) },
     { at: 1793105831247.449, cmdline: "", message: "no command line" },
   ]);
+});
+
+// The lifecycle serve test's cold start. A takeover inside the cold request passes only on a stall that journald shows on
+// the first instance's own mount before the takeover; without one (or without journald) a lost lease is the product's.
+const cold = (reasons: string[], generation: number, more: Partial<ColdStart> = {}): ColdStart => ({ reasons, generation, mountpoint: MP, from: START, takeoverAt: reasons.length > 1 ? EXIT : null, ...more });
+const stub = (lines: JournalLine[] | null) => () => lines;
+const unread = () => {
+  throw new Error("journald read for a single start");
+};
+
+test("cold start: one start answers at generation 1, and journald is not read", () => {
+  assert.equal(checkColdStart(cold(["none"], 1), unread), null);
+  assert.throws(() => checkColdStart(cold(["none"], 2), unread), /generation/);
+  assert.throws(() => checkColdStart(cold(["lease-expired"], 1), unread), /cold one/);
+  assert.throws(() => checkColdStart(cold([], 0), unread), /started the run/);
+});
+
+test("cold start: a takeover with no stall on the first instance's mount fails, also with no journald or no takeover time", () => {
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2), stub([])), /generation 1/);
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2), stub(null)), /generation 1/);
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2, { takeoverAt: null }), stub(RECORDED)), /generation 1/);
+});
+
+test("cold start: a takeover after a stall on the first instance's own mount passes, and the stall is returned", () => {
+  const stall = checkColdStart(cold(["none", "lease-expired"], 2), stub(RECORDED));
+  assert.deepEqual([stall?.retries, Math.round(stall?.longestSyncMs ?? 0)], [4, 9469]);
+});
+
+test("cold start: a stall after the takeover, or on another mount, does not count", () => {
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2, { takeoverAt: START + 100 }), stub(RECORDED)), /generation 1/);
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2, { mountpoint: `${MP}2` }), stub(RECORDED)), /generation 1/);
+});
+
+test("cold start: even after a stall, a later start must be a lease-expired takeover and the generation one per start", () => {
+  assert.throws(() => checkColdStart(cold(["none", "orphaned"], 2), stub(RECORDED)), /takeover/);
+  assert.throws(() => checkColdStart(cold(["none", "none"], 2), stub(RECORDED)), /takeover/);
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 3), stub(RECORDED)), /one generation per start/);
 });

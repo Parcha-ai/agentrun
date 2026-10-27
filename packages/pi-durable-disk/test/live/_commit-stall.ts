@@ -1,6 +1,8 @@
 // What the archil client logged about commits on one mount, read from journald: its server_timeout retries and its
-// syncs of a second or more. A diagnostic for a live test whose instance exited before the step the test waited for:
-// it adds a line to the failure message and never changes whether the test passes.
+// syncs of a second or more. For the run suite, a diagnostic for a test whose instance exited before the step the test
+// waited for: it adds a line to the failure message and never changes whether the test passes. For the lifecycle serve
+// test, the only evidence that lets a cold start's takeover pass (checkColdStart).
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
 /** One journald entry: when (ms since the epoch), the process's command line, the message. */
@@ -78,4 +80,26 @@ export function stallNote(stall: CommitStall | null, before: string): string {
     ...(stall.retries > 0 ? [`${stall.retries} server_timeout retries`] : []),
   ];
   return seen.length ? `environment: on this test's own mount ${seen.join(", ")} before ${before}; ` : "";
+}
+
+/** The serve test's cold start: each start's reason in order, the answer's generation, and where and when to look. */
+export interface ColdStart {
+  readonly reasons: readonly string[];
+  readonly generation: number;
+  /** The first instance's mountpoint. */
+  readonly mountpoint: string;
+  /** When the request began, and when the second start's unit started (null: one start, or not known), in ms. */
+  readonly from: number;
+  readonly takeoverAt: number | null;
+}
+
+/** The serve test's cold start: one generation per start, the first a cold one and every later one a takeover. */
+export function checkColdStart(c: ColdStart, journal: (from: number, to: number) => JournalLine[] | null = readJournal): CommitStall | null {
+  const at = JSON.stringify(c);
+  assert.ok(c.reasons.length >= 1, `the request started the run: ${at}`);
+  assert.equal(c.reasons[0], "none", `the run was never started, so its first start is a cold one: ${at}`);
+  assert.deepEqual(c.reasons.slice(1), c.reasons.slice(1).map(() => "lease-expired"), `a start after the first is a takeover: ${at}`);
+  assert.equal(c.generation, c.reasons.length, `one generation per start: ${at}`);
+  void journal;
+  return null;
 }
