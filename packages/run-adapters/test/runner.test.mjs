@@ -1,11 +1,40 @@
 // createHarnessRunner through the interpreter, as a DSL host runs it: runWorkflow, under withRecovery where a test says
 // so, on the faux harness. Each test is one thing a host depends on.
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, openJournal, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 import { createHarnessRunner, HarnessRunError, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { fauxAdapter, memorySessionStore, FAUX_RECORDS } from '@parcha/agentrun-adapters/testing';
+import { fauxAdapter as scriptedAdapter, memorySessionStore, FAUX_RECORDS } from '@parcha/agentrun-adapters/testing';
+
+/** Every test fails in 30 s at most: a node a regression leaves waiting fails the run instead of hanging it. */
+const test = (name, fn) => nodeTest(name, { timeout: 30_000 }, fn);
+/** Wait for `ready()`, failing after 5 s: a loop that outlived its test would keep the file running. */
+async function until(ready, what) {
+  for (const end = Date.now() + 5_000; !ready();) {
+    if (Date.now() > end) throw new Error(`gave up waiting: ${what}`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+/** The adapter, with each session refusing its 21st turn: a regression whose turns make no paid request (so the turn
+ *  limit never counts them) fails at once instead of re-sending forever. */
+function atMostSends(adapter, most = 20) {
+  const open = adapter.open.bind(adapter);
+  adapter.open = async (spec, io) => {
+    const session = await open(spec, io);
+    const send = session.send.bind(session);
+    let sends = 0;
+    session.send = async (text) => {
+      if (++sends > most) throw new Error(`more than ${most} turns`);
+      return send(text);
+    };
+    return session;
+  };
+  return adapter;
+}
+/** The faux harness, bounded: every test's sessions refuse a 21st turn. */
+const fauxAdapter = (options) => atMostSends(scriptedAdapter(options));
 
 const SCHEMAS = { Out: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } };
 const agent = (extra = {}) => ({ node: 'agent', label: 'task', instructions: 'Answer.', out: 'Out', as: 'final', ...extra });
@@ -69,10 +98,14 @@ test('a fork is refused at create time, final, before anything is spent', async 
 test('a refused node leaves no timer or listener behind', async () => {
   const timers = () => process.getActiveResourcesInfo().filter((kind) => kind === 'Timeout').length;
   const signal = new AbortController().signal;
-  const runNode = createHarnessRunner(fauxAdapter({ script: () => [] }), { store: memorySessionStore(), tools: [lookup], signal, maxTurns: 4 });
+  // Each turn is a paid request, so a node a regression lets through ends at its turn limit and fails here at once,
+  // instead of re-sending turns that never count.
+  const adapter = fauxAdapter({ script: () => Array.from({ length: 20 }, () => ({ say: 'thinking' })) });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup], signal, maxTurns: 4 });
   const before = timers();
   const ask = (extra) => runNode({ kind: 'agent', label: 'task', system: [], user: '{}', schema: SCHEMAS.Out, ...extra });
   for (const extra of [{ context: 'fork' }, { tools: ['shell'] }, { maxTurns: 9 }]) await assert.rejects(ask(extra), (error) => error.final === true);
+  assert.equal(adapter.requests, 0, 'every refusal came before anything was paid');
   assert.equal(timers(), before);
 });
 
@@ -168,8 +201,8 @@ test('a process that died inside a step resumes it under the same sessionId: no 
   // The first process stops inside the step, after two paid requests and one tool call.
   const first = await openRecovery(recovery, workflow, { key: 'run-1' });
   const dead = new AbortController();
-  const stalled = runWorkflow(workflow, {}, withRecovery(first, { runNode: createHarnessRunner(dying, { store, tools: [lookup], signal: dead.signal }) }, { durableNodes: true }));
-  while (dying.requests < 2 || dying.calls.length < 1) await new Promise((resolve) => setImmediate(resolve));
+  const stalled = runWorkflow(workflow, {}, withRecovery(first, { runNode: createHarnessRunner(dying, { store, tools: [lookup], signal: dead.signal, timeoutMs: 5_000 }) }, { durableNodes: true }));
+  await until(() => dying.requests >= 2 && dying.calls.length >= 1, 'two requests and a tool call');
   // The next process opens the same session, finds the turn open, and resumes it from its records.
   const next = fauxAdapter({ script: () => script().filter((action) => !('hang' in action)) });
   const resumed = await underRecovery(recovery, workflow, createHarnessRunner(next, { store, tools: [lookup] }));
@@ -189,8 +222,8 @@ test('a process that died inside a step resumes it under the same sessionId: no 
 test("the run's signal aborts the turn in flight, closes the session and rejects at once", async () => {
   const adapter = fauxAdapter({ script: () => [{ say: 'one' }, { hang: true }] });
   const controller = new AbortController();
-  const running = runWorkflow(doc(agent()), {}, { signal: controller.signal, runNode: createHarnessRunner(adapter, { store: memorySessionStore(), signal: controller.signal }) });
-  while (adapter.requests < 1) await new Promise((resolve) => setImmediate(resolve));
+  const running = runWorkflow(doc(agent()), {}, { signal: controller.signal, runNode: createHarnessRunner(adapter, { store: memorySessionStore(), signal: controller.signal, timeoutMs: 5_000 }) });
+  await until(() => adapter.requests >= 1, 'a paid request');
   const started = Date.now();
   controller.abort(new Error('stop'));
   await assert.rejects(running);
@@ -207,8 +240,8 @@ async function cutThenResume(maxTurns) {
   const beforeRequest = (request) => { asked.push({ turn: request.turn, spentUsd: request.spentUsd }); };
   const dying = fauxAdapter({ script: () => [{ cut: true }] });
   const died = new AbortController();
-  const first = createHarnessRunner(dying, { store, beforeRequest, maxTurns, signal: died.signal })(stepRequest());
-  while (dying.requests < 1) await new Promise((resolve) => setImmediate(resolve));
+  const first = createHarnessRunner(dying, { store, beforeRequest, maxTurns, signal: died.signal, timeoutMs: 5_000 })(stepRequest());
+  await until(() => dying.requests >= 1, 'a paid request');
   died.abort(new Error('the process died'));
   await assert.rejects(first);
   const next = fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }] });
@@ -233,7 +266,7 @@ test("after a crash cut a paid request off, the host's beforeRequest sees it: th
 test('a session that opens after the run was stopped is interrupted and closed, so no harness outlives the node', async () => {
   const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'late' } }], openDelayMs: 200 });
   const stop = new AbortController();
-  const running = createHarnessRunner(adapter, { store: memorySessionStore() })(stepRequest({ signal: stop.signal }));
+  const running = createHarnessRunner(adapter, { store: memorySessionStore(), timeoutMs: 5_000 })(stepRequest({ signal: stop.signal }));
   setTimeout(() => stop.abort(new Error('cancel')), 50);
   await assert.rejects(running, (error) => error.reason === 'aborted');
   await new Promise((resolve) => setTimeout(resolve, 400));
@@ -248,7 +281,7 @@ test('a stop that lands while the session store is being read rejects aborted at
     const slow = { ...store, read: async (key) => { await held; return store.read(key); } };
     const adapter = fauxAdapter({ script: () => [{ hang: true }] });
     const stop = new AbortController();
-    const runner = createHarnessRunner(adapter, { store: slow, ...(via === 'options' ? { signal: stop.signal } : {}) });
+    const runner = createHarnessRunner(adapter, { store: slow, timeoutMs: 5_000, ...(via === 'options' ? { signal: stop.signal } : {}) });
     const running = runner(stepRequest(via === 'request' ? { signal: stop.signal } : {}));
     await new Promise((resolve) => setImmediate(resolve));
     stop.abort(new Error('cancel'));
