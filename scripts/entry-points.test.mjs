@@ -44,6 +44,9 @@ test('a file not on the list is red, whatever shape its comparison takes', () =>
   const split = "const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';\nif (import.meta.url === invoked) main();";
   assert.deepEqual(unreviewed([['examples/new-split.mjs', split]]), ['examples/new-split.mjs']);
   assert.deepEqual(unreviewed([['examples/new-filename.mjs', 'if (realpathSync(process.argv[1]) === import.meta.filename) main();']]), ['examples/new-filename.mjs']);
+  const dirname = "const self = join(import.meta.dirname, 'run.mjs');\nif (process.argv[1] === self) main();";
+  assert.deepEqual(unreviewed([['examples/new-dirname.mjs', dirname]]), ['examples/new-dirname.mjs']);
+  assert.deepEqual(unreviewed([['scripts/new-cjs.cjs', 'if (process.argv[1] === __filename) main();']]), ['scripts/new-cjs.cjs']);
   assert.deepEqual(unreviewed([['packages/pi-durable-disk/src/cli.ts', split]]), [], 'a reviewed file passes');
   assert.deepEqual(unreviewed([['examples/main.mjs', 'if (import.meta.main) main(process.argv[2]);']]), [], 'import.meta.main passes');
 });
