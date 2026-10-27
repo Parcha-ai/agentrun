@@ -324,6 +324,9 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   between a carry back and its proposal loses nothing. The commit's `Run-Id` trailer makes a second proposal of the
   same run add nothing. A proposal that fails (a push the repository refuses) is logged; the run has ended as it would
   have, and the next start proposes it. A run that learned nothing leaves no branch.
+- The guard refuses a note that holds a value of one of the server's secrets: the variables whose names end in `KEY`,
+  `TOKEN`, `SECRET` or `PASSWORD`. A credential inside a variable named otherwise (a `..._URL` such as
+  `postgres://user:password@host/db`) is not among them.
 - Nothing merges into `main` yet. A run's branch stays a proposal until review and merge exist, and those wait for an
   injection screen on this server.
 

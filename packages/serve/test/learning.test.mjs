@@ -11,7 +11,7 @@ import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
+import { catchUp, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
 import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 /** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
@@ -184,14 +184,23 @@ async function serverProcess(data) {
   const { spawn } = await import("node:child_process");
   const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
+  let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
   for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
     assert.ok(i < 200, `the server did not start: ${out}`);
     await sleep(50);
   }
   const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
-  return { child, api: client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY")) };
+  return { child, api: client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY")), stderr: () => err };
 }
+const alive = (pid) => {
+  try {
+    return process.kill(pid, 0), true;
+  } catch {
+    return false;
+  }
+};
 
 test("a run's base stays where it was seeded when its process dies, main moves, and the next server resumes it", async (t) => {
   const dir = await scratch(t);
@@ -238,6 +247,73 @@ test("a run that called a tool reaching outside it is untrusted on its memo", as
   await follow(api, run.run_id, ["completed"]);
   await stateOf(data, "calc", run.run_id);
   assert.equal(front(show(bareOf(data, "calc"), `runs/${run.run_id}`, `memos/${run.run_id}.md`)).untrusted, "true");
+});
+
+test("a run whose end its server never carried back is proposed once by the next server: one branch, one commit, no error", async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  assert.equal((await first.api("POST", "/agents", agent("calc"))).status, 201);
+  const gate = join(dir, "go");
+  const { body: run } = await first.api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${gate} exists.` } });
+  for (let i = 0; !(await first.api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "learn"); i++) {
+    assert.ok(i < 400, "the run notes its lesson");
+    await sleep(50);
+  }
+  // The server dies; the run answers with no server to let it go, then its process is stopped the way a server stops it.
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { pid } = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8")).holder;
+  t.after(() => alive(pid) && process.kill(pid, "SIGKILL"));
+  await writeFile(gate, "");
+  await sleep(2_500);
+  process.kill(pid, "SIGTERM");
+  for (let i = 0; alive(pid); i++) {
+    assert.ok(i < 200, "the run's process exits on SIGTERM");
+    await sleep(50);
+  }
+  assert.equal(storeRun(data, run.run_id).state, "running", "nobody carried it back yet");
+  assert.equal(await readRunState(data, "calc", run.run_id), undefined, "nor proposed it");
+  // The next server carries it back (and so proposes it) while its start-time catch-up walks the runs.
+  const next = await serverProcess(data);
+  t.after(() => next.child.kill("SIGKILL"));
+  const state = await stateOf(data, "calc", run.run_id);
+  assert.equal(storeRun(data, run.run_id).state, "completed");
+  await sleep(1_000);
+  next.child.kill("SIGTERM");
+  await new Promise((resolve) => next.child.once("exit", resolve));
+  const bare = bareOf(data, "calc");
+  assert.deepEqual(branches(bare).filter((b) => b.startsWith("runs/")), [`runs/${run.run_id}`]);
+  assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
+  assert.deepEqual({ ...(await readRunState(data, "calc", run.run_id)) }, { state: "proposed", branch: `runs/${run.run_id}`, base: state.base, sha: state.sha });
+  assert.doesNotMatch(next.stderr(), /not proposed|after its carry back|catch-up/, "no error line");
+});
+
+test("a proposal and the start-time catch-up of the same run at once make one commit and no error", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const bare = bareOf(data, "calc");
+  // A run whose proposal failed: it ended, and nothing is recorded for it.
+  await chmod(join(bare, "refs", "heads"), 0o555);
+  t.after(() => chmod(join(bare, "refs", "heads"), 0o755).catch(() => undefined));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  await sleep(1_000);
+  await chmod(join(bare, "refs", "heads"), 0o755);
+  assert.equal(await readRunState(data, "calc", run.run_id), undefined);
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  const errors = [];
+  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id), catchUp(data, reader, (id, error) => errors.push(`${id}: ${error.message}`))]);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(caught, [run.run_id], "the catch-up read no record either, and proposed it too");
+  const state = await readRunState(data, "calc", run.run_id);
+  assert.equal(state.state, "proposed");
+  // The queue ran the two one after the other: whichever came second found the Run-Id and answered already.
+  assert.ok(["proposed", "already"].includes(direct.status), direct.status);
+  assert.equal(direct.sha, state.sha);
+  assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
 });
 
 test("a cancelled run's memo says it stopped", async (t) => {
