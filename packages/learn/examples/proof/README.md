@@ -77,8 +77,10 @@ tools only, never a harness's built-in tool, and never a shell or executor call.
 and tool-call nodes ... never a code, shell or executor node". No run wrote a workflow draft, so the change touches
 nothing the runs did.
 
-Outside AgentRun there is no injection screen, so a person stood in for it. Before each review, a person read every new
-and changed file on the branch; that is what the review prompt says.
+Outside AgentRun there is no injection screen. For this proof no person reviewed. The building agent read every changed
+file, and the review prompt was told that had happened, so that the merge path could be exercised. Under the skill's
+rule an agent reading is not a stand-in for the screen. Where a merge message says the screen passed, it repeats what
+the review prompt told it.
 
 ## The model
 
@@ -110,8 +112,9 @@ tokens.
 
 - **Codex**, with `CODEX_HOME=codex-home`, where `config.toml` names the broker as a provider with
   `wire_api = "responses"` and no key. It reached the broker, but it could not run any command. Its workspace sandbox
-  needs unprivileged user namespaces, which this machine refuses, and the proof does not run Codex without its
-  sandbox. So Codex has no proof here yet.
+  needs unprivileged user namespaces, which this machine refuses (`bwrap: setting up uid map: Permission denied`, and
+  `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` when it isolates the network). Running Codex without
+  its sandbox was refused by the building session's permission policy. The Codex proof is blocked.
 
 ## What each harness wrote
 
@@ -120,7 +123,7 @@ tokens.
 | Run 1 answer | `{"North": 15.60, "South": 7.25, "East": 20.00}` | `{"North": 15.6, "South": 7.25, "East": 20.0}` |
 | Run 1 memo | [`pi/memos/2026-10-27-0300-a1b2.md`](pi/memos/2026-10-27-0300-a1b2.md) | [`claude-code/memos/2026-10-27-0320-cc01.md`](claude-code/memos/2026-10-27-0320-cc01.md) |
 | Note merged | [`pi/learnings/L-25097a8b5536.md`](pi/learnings/L-25097a8b5536.md) | [`claude-code/learnings/L-d9e97c144a17.md`](claude-code/learnings/L-d9e97c144a17.md) |
-| Merge commit message | [`pi/merge-message.txt`](pi/merge-message.txt) | [`claude-code/merge-message.txt`](claude-code/merge-message.txt) |
+| Merge commit message, as the review wrote it | [`pi/merge-message.txt`](pi/merge-message.txt) | [`claude-code/merge-message.txt`](claude-code/merge-message.txt) |
 | Run 2 answer | `{"West": 6.00, "North": 11.00, "South": 8.00}` | `{"West": 6.00, "North": 11.00, "South": 8.00}` |
 | Run 2 memo | [`pi/memos/2026-10-27-0330-b3c4.md`](pi/memos/2026-10-27-0330-b3c4.md) | [`claude-code/memos/2026-10-27-0340-cc02.md`](claude-code/memos/2026-10-27-0340-cc02.md) |
 | The note on run 2's branch | [`pi/run2-L-25097a8b5536.md`](pi/run2-L-25097a8b5536.md), now naming both runs | [`claude-code/run2-L-d9e97c144a17.md`](claude-code/run2-L-d9e97c144a17.md), now naming both runs |
