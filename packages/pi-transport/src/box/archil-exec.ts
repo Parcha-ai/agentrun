@@ -15,6 +15,7 @@ import {
 	type BoxStatus,
 	isReservedLabel,
 } from "./box.ts";
+import { refuseNetworkFields } from "./network.ts";
 
 /** What one Archil `exec` call is allowed to run, as the service states it: a call is cut at 300 s. */
 const MAX_EXEC_MS = 300_000;
@@ -618,6 +619,8 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 					),
 				);
 			}
+			const refusedNetwork = refuseNetworkFields(spec, "archil-exec");
+			if (refusedNetwork !== undefined) return err(refusedNetwork);
 			if (spec.gpu !== undefined) return err(new BoxError("unsupported", "an Archil exec has no GPU"));
 			if (spec.snapshot !== undefined) return err(new BoxError("unsupported", "an archil-exec box starts empty"));
 			if (spec.workspace !== undefined) {
@@ -646,6 +649,7 @@ export function archilExecBoxes(options: ArchilExecBoxesOptions): BoxProvider {
 				bulk: "files",
 				maxExecMs: MAX_EXEC_MS,
 				liveProcesses: false,
+				startedAt: new Date().toISOString(),
 			};
 			const record: BoxRecord = {
 				format: META_FORMAT,

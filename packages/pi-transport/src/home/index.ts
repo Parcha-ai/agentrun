@@ -1,3 +1,13 @@
+export {
+	LaunchError,
+	type LaunchErrorCode,
+	type LaunchPhase,
+	type LaunchSpec,
+	type LaunchState,
+	launch,
+	launchStatus,
+	stopLaunch,
+} from "../launch/index.ts";
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
 export { CALLS_EXTENSION, type CallEvent } from "./calls.ts";
 export {
@@ -44,16 +54,6 @@ export {
 	RemoteError,
 } from "./host.ts";
 export { KEYS_EXTENSION, type KeyedRequest, requestKey } from "./keys.ts";
-export {
-	LaunchError,
-	type LaunchErrorCode,
-	type LaunchPhase,
-	type LaunchSpec,
-	type LaunchState,
-	launch,
-	launchStatus,
-	stopLaunch,
-} from "./launch.ts";
 export {
 	type Frame,
 	LINK_VERSION,

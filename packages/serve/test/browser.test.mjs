@@ -1,9 +1,10 @@
 // The `browser` tool: pi-browser's durable adapter on Browserbase, here on its fake backend in the run's own process.
 // No network and no key: the Browserbase variables are set to fakes where a run needs them.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { evidenceIn } from "../dist/tools.js";
 import { answerFlow, client, follow, scratch, serve } from "./support.mjs";
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -72,4 +73,36 @@ test("a workflow's model node names browser: it browses, delivers its record, an
   assert.deepEqual((await api("GET", `/runs/${started.body.run_id}`)).body.result.output, { answer: 42 });
   const ops = (await ledger(log)).map((row) => row.op);
   assert.ok(ops.includes("create") && ops.includes("release"), JSON.stringify(ops));
+});
+
+test("evidence names never collide: reads filed at once each keep their own file, and a later process's sink never overwrites one", async (t) => {
+  const work = await scratch(t);
+  const read = (n) => ({ tool: "browser_read", args: {}, status: "ok", facts: { sha256: `sha-${n}` }, body: `page ${n}` });
+  const sink = evidenceIn(work);
+  const filed = await Promise.all([1, 2, 3].map((n) => sink.file("run", read(n))));
+  const later = await evidenceIn(work).file("run", read(4));
+  const shot = await evidenceIn(work).file("run", { tool: "screenshot", args: {}, status: "ok", facts: { sha256: "sha-5" }, body: new Uint8Array([5]), ext: "png" });
+  const paths = [...filed, later].map((at) => at.path);
+  assert.equal(new Set(paths).size, 4, paths.join(", "));
+  for (const [i, path] of paths.entries()) assert.match(await readFile(join(work, path), "utf8"), new RegExp(`"sha256":"sha-${i + 1}"[^]*\\n\\npage ${i + 1}$`), path);
+  assert.deepEqual([...(await readFile(join(work, shot.bodyPath)))], [5]);
+  assert.equal((await readdir(join(work, "evidence"))).length, 6, "four reads, and a capture beside its facts");
+});
+
+test("two parallel workflow nodes that browse each keep their evidence file", async (t) => {
+  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" });
+  const { api, data } = await serve(t, { fauxBrowser: FAUX_BROWSER });
+  const flow = answerFlow();
+  const reader = (label) => ({ ...flow.root.steps[0], label, as: label, tools: ["browser"] });
+  flow.root.steps = [{ node: "parallel", label: "both", branches: [reader("left"), reader("right")] }];
+  flow.output.path = "left";
+  assert.equal((await api("POST", "/agents", { definition: { id: "pair", name: "pair", workflow: flow, tools: ["browser"] } })).status, 201);
+  const started = await api("POST", "/agents/pair/runs", { input: { question: "Read the example page." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  assert.equal(rows.filter((row) => row.kind === "tool_use" && row.tool_name === "browser_read").length, 2);
+  const evidence = join(data, "runs", started.body.run_id, "work", "evidence");
+  const files = (await readdir(evidence)).filter((name) => name.endsWith(".md"));
+  assert.equal(files.length, 2, files.join(", "));
+  for (const name of files) assert.match(await readFile(join(evidence, name), "utf8"), /The answer is forty-two\./, name);
 });

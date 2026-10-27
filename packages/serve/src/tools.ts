@@ -78,21 +78,32 @@ const fileTool = (name: string, summary: string): ToolEntry => ({
 });
 
 /** Where the browser files what it reads: `work/evidence/`, so the run's files show it and the agent can read it back. A
- *  text body follows one line of the read's facts; a capture's bytes go beside its facts. */
-const evidenceIn = (work: string) => ({
-  file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
-    const name = `${Date.now().toString(36)}-${record.tool}`;
-    await mkdir(join(work, "evidence"), { recursive: true });
-    const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
-    if (typeof record.body === "string") {
-      await writeFile(join(work, "evidence", `${name}.md`), `${facts}\n\n${record.body}`);
-      return { path: `evidence/${name}.md`, bodyLine: 3 };
-    }
-    await writeFile(join(work, "evidence", `${name}.${record.ext ?? "bin"}`), record.body);
-    await writeFile(join(work, "evidence", `${name}.json`), `${facts}\n`);
-    return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
-  },
-});
+ *  text body follows one line of the read's facts; a capture's bytes go beside its facts. Each read takes the next free
+ *  number, reserved by an exclusive create, so reads at once (parallel nodes, one turn's calls) and the reads of a later
+ *  process never overwrite one another. */
+export const evidenceIn = (work: string) => {
+  let seq = 0;
+  return {
+    file: async (label: string, record: { tool: string; facts: Record<string, unknown>; body: string | Uint8Array; ext?: string }) => {
+      const dir = join(work, "evidence");
+      await mkdir(dir, { recursive: true });
+      const facts = JSON.stringify({ label, tool: record.tool, ...record.facts });
+      const text = typeof record.body === "string";
+      for (;;) {
+        const name = `${String(++seq).padStart(4, "0")}-${record.tool}`;
+        try {
+          await writeFile(join(dir, text ? `${name}.md` : `${name}.json`), text ? `${facts}\n\n${record.body}` : `${facts}\n`, { flag: "wx" });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+          throw error;
+        }
+        if (text) return { path: `evidence/${name}.md`, bodyLine: 3 };
+        await writeFile(join(dir, `${name}.${record.ext ?? "bin"}`), record.body);
+        return { path: `evidence/${name}.json`, bodyPath: `evidence/${name}.${record.ext ?? "bin"}` };
+      }
+    },
+  };
+};
 
 /** A Browserbase browser driven through Stagehand, on pi-browser's durable adapter: its sessions' custody lives in the
  *  run's own store. No recording and no live view; a session the run still holds is released when the run is let go. */
@@ -163,20 +174,16 @@ export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
 export const CALL_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.effect !== undefined);
 
-/** The tools a workflow names: on its model nodes (`tools`), and on its `call` nodes `via: "tool"` (`tool`). */
-export function workflowTools(workflow: unknown): { nodes: string[]; calls: string[] } {
-  const nodes = new Set<string>();
+/** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
+ *  `via: "tool"` (`tool`). */
+export function workflowTools(nodes: readonly Record<string, unknown>[]): { nodes: string[]; calls: string[] } {
+  const named = new Set<string>();
   const calls = new Set<string>();
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(visit);
-    if (typeof value !== "object" || value === null) return;
-    const node = value as Record<string, unknown>;
+  for (const node of nodes) {
     if (node.node === "call" && node.via === "tool" && typeof node.tool === "string") calls.add(node.tool);
-    else if (typeof node.node === "string" && Array.isArray(node.tools)) for (const name of node.tools) if (typeof name === "string") nodes.add(name);
-    Object.values(node).forEach(visit);
-  };
-  visit((workflow as { root?: unknown } | null)?.root);
-  return { nodes: [...nodes], calls: [...calls] };
+    else if (Array.isArray(node.tools)) for (const name of node.tools) if (typeof name === "string") named.add(name);
+  }
+  return { nodes: [...named], calls: [...calls] };
 }
 
 /** The table's entry for `name`, or undefined for a name it does not hold. */

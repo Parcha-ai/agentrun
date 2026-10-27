@@ -849,6 +849,9 @@ async function supervise(options: DemoOptions, values: ReturnType<typeof parseAr
   }
 }
 
+/** A price as the summary prints it: cents at or above one cent, else two significant digits (a run of fractions of a cent still shows what it cost). */
+export const dollars = (usd: number): string => (usd === 0 ? '0' : usd >= 0.01 ? usd.toFixed(2) : usd.toPrecision(2));
+
 /** A message the supervisor writes about a failure of the place: an absolute path outside the run's directory is replaced by `<path>` (the run's own paths stay), then it is capped at 240 characters. The recorder's exact-value redaction runs on the line after. */
 /** Text the harness hands out at a SINK (an error's message, a returned result, the CLI's output), whatever produced it (a run process's
  *  stderr or outcome, a tool's output, a provider's error): every tracked secret redacted (`redact`, the recorder's, when the run records), and
@@ -988,7 +991,7 @@ export function summarize(options: DemoOptions, result: DemoResult, counts = fal
   if (result.unlanded.length) console.log(`kills that never landed: ${result.unlanded.join(', ')}`);
   // A run that made no priced call has no cost line, unless it has a cap.
   const none = result.usd === null && !result.priced;
-  if (!none || result.maxUsd !== null) console.log(`cost: ${none ? 'none' : result.usd === null ? 'unknown' : `$${result.usd}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
+  if (!none || result.maxUsd !== null) console.log(`cost: ${none ? 'none' : result.usd === null ? 'unknown' : `$${dollars(result.usd)}`}${result.maxUsd === null ? '' : ` (cap $${result.maxUsd})`}${result.overBudget ? ' — over the cap' : ''}`);
   if (result.recording) console.log(`recording: ${result.recording}`);
   if (options.keepRun) console.log(`run directory: ${result.dir}`);
 }

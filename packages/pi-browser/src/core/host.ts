@@ -13,6 +13,8 @@ export type BrowserConfig = {
   label: string;
   run: string;
   policy: BrowserPolicy;
+  /** The saved sign-in this conversation restores and captures, and the origins it may touch: the host's choice, never the model's. */
+  vault?: import("./vault.js").VaultTarget;
 };
 
 /** A named saved sign-in; `save` keeps the session's changes. One saver per profile within a process; across processes the last to end wins. */
@@ -87,9 +89,22 @@ export type FetchResult = { finalUrl: string | null; statusCode: number | null; 
 export type SearchRequest = { query: string; n: number };
 export type SearchResult = { results: Array<{ url: string; title: string | null; author?: string | null; published?: string | null }>; usage?: ToolUsage };
 
+/** What a session vault may keep of this provider's sessions. Absent: nothing (a browser the package cannot read, or one the host shares). */
+export type ProviderVault =
+  | { kind: "cdp" }
+  | {
+      kind: "context"; provider: "browserbase" | "kernel";
+      /** True when this provider writes the context ids it makes to a clear file: a vault refuses such a provider, so an id never lands outside it. */
+      contextIdsInClear: boolean;
+      /** The context or profile this session runs on, or null. A capability: it goes to the host's vault only. */
+      contextOf(ref: LeaseRef): string | null;
+    };
+
 export interface BrowserProvider {
   readonly name: string;
   readonly caps: ProviderCaps;
+  /** See `ProviderVault`. */
+  readonly vault?: ProviderVault;
   /** At most once: SDK retries off, and `spec.tag` stamped provider-side so `findByTag` finds a session whose create
    *  answer was lost. */
   create(spec: SessionSpec, signal: AbortSignal): Promise<LeaseRef>;

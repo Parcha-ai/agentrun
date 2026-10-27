@@ -1,6 +1,6 @@
 {
   "name": "@parcha/pi-browser",
-  "version": "0.1.0-beta.26",
+  "version": "0.1.0-beta.27",
   "description": "Your agent gets its own browser, and you can take over and hand it back.",
   "keywords": [
     "pi-package",
@@ -39,6 +39,10 @@
     "./providers/cdp": {
       "types": "./dist/providers/cdp.d.ts",
       "import": "./dist/providers/cdp.js"
+    },
+    "./providers/cdp-session": {
+      "types": "./dist/providers/cdp-session.d.ts",
+      "import": "./dist/providers/cdp-session.js"
     },
     "./providers/chrome-args": {
       "types": "./dist/providers/chrome-args.d.ts",
