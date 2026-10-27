@@ -160,6 +160,12 @@
       return "#/runs" + (query.length ? "?" + query.join("&") : "");
     }
 
+    /** A run's title: its input's first line (/v2's `title`), else its agent and when it started. Never its id. */
+    function runTitle(run, names) {
+      var line = String(run.title || "").split("\n").filter(function (l) { return l.trim(); })[0];
+      return line ? kit.clip(line.trim(), 120) : (names[run.agent_id] || run.agent_id) + " · " + kit.when(run.created_at);
+    }
+
     function runRow(run, names) {
       return el(
         "a",
@@ -167,9 +173,9 @@
         el("span", { class: "c when" }, el("b", null, kit.when(run.created_at)), el("small", null, kit.ago(run.created_at))),
         el("span", { class: "c state" }, statusPill(run.status, run.error)),
         el("span", { class: "c agent" }, names[run.agent_id] || run.agent_id),
-        el("span", { class: "c rev" }, el("span", { class: "rev-id" }, kit.short(run.revision)), " ", el("span", { class: "word" }, run.kind || "")),
+        el("span", { class: "c rev" }, kit.versionName(run.agent_version), " ", el("span", { class: "word" }, run.kind || "")),
         kit.cost(run.cost && run.cost.usd, "c cost"),
-        el("span", { class: "c id" }, run.run_id)
+        el("span", { class: "c title" }, runTitle(run, names), el("small", { class: "run-id small" }, run.run_id))
       );
     }
 
@@ -186,7 +192,7 @@
           agents.forEach(function (agent) { names[agent.id] = agent.name; });
           var runs = (both[0] && both[0].runs) || [];
           var next = both[0] && both[0].next_cursor;
-          var rows = el("div", { class: "table all", role: "table" }, el("div", { class: "run head", role: "row" }, ["Started", "State", "Agent", "Revision", "Cost", "Run"].map(function (h) { return el("span", { class: "c" }, h); })), runs.map(function (run) { return runRow(run, names); }));
+          var rows = el("div", { class: "table all", role: "table" }, el("div", { class: "run head", role: "row" }, ["Started", "State", "Agent", "Version", "Cost", "Run"].map(function (h) { return el("span", { class: "c" }, h); })), runs.map(function (run) { return runRow(run, names); }));
           var count = el("h1", null, kit.plural(runs.length, "run") + (next ? " so far" : ""));
           var more = el("div", { class: "more" });
           var out = el("div");
@@ -228,19 +234,20 @@
       );
     }
 
-    // ---- an agent: a new revision, the current one, a new run --------------------------------------------------------
-    function revisionLabel(r) {
-      return kit.short(r.id) + " · " + r.kind + (r.current ? " · current" : "") + (r.note ? " · " + kit.clip(r.note, 48) : "");
+    // ---- an agent: a new version, the one in use, a new run -------------------------------------------------------
+    // The API's revisions are versions on the page: "Version N" and its note, the hex id never the name.
+    function revisionLabel(r, n) {
+      return kit.versionName(n) + (r.note ? ": " + kit.clip(r.note, 48) : "") + (r.current ? " (in use)" : "");
     }
 
     function runForm(agent, revisions) {
       var input = textArea("input", "", 3, "What it should do this run");
       var pick = el("select");
       pick.name = "revision";
-      revisions.forEach(function (r) {
+      revisions.forEach(function (r, i) {
         var option = el("option");
         option.value = r.id;
-        option.textContent = revisionLabel(r);
+        option.textContent = revisionLabel(r, revisions.length - i);
         option.selected = r.current;
         pick.appendChild(option);
       });
@@ -269,7 +276,7 @@
           }
         );
       });
-      return el("div", { class: "run-form" }, el("h3", null, "Start a run"), field("Input", input, "For a workflow revision, a JSON object its input schema takes."), el("div", { class: "actions" }, field("Revision", pick), start), out);
+      return el("div", { class: "run-form" }, el("h3", null, "Start a run"), field("Input", input, "For a workflow, a JSON object its input schema takes."), el("div", { class: "actions" }, field("Version", pick), start), out);
     }
 
     /** What keeps the current revision from running here: each tool it names that capabilities marks unavailable, with
@@ -281,7 +288,7 @@
       v2("GET", "capabilities").then(
         function (caps) {
           var why = ((caps && caps.tools) || []).filter(function (tool) { return tool && tool.available === false && named.indexOf(tool.name) >= 0; }).map(function (tool) { return tool.name + " needs " + (tool.missing || []).join(" and "); });
-          if (why.length) box.appendChild(el("p", { class: "cant-run" }, "This server can't run this agent's current revision: " + why.join("; ") + "."));
+          if (why.length) box.appendChild(el("p", { class: "cant-run" }, "This server can't run the version this agent uses: " + why.join("; ") + "."));
         },
         function () {}
       );
@@ -306,15 +313,15 @@
 
     function agentActions(agent, revisions) {
       return [
-        el("div", { class: "actions" }, el("a", { class: "btn quiet", href: "#/agents/" + enc(agent.id) + "/edit" }, revisions.length ? "Edit: commit a new revision" : "Write its first revision"), archiveButton("agents/" + enc(agent.id), agent.archivedAt, function () { kit.route(); })),
+        el("div", { class: "actions" }, el("a", { class: "btn quiet", href: "#/agents/" + enc(agent.id) + "/edit" }, revisions.length ? "Edit" : "Write its first version"), archiveButton("agents/" + enc(agent.id), agent.archivedAt, function () { kit.route(); })),
         cantRun(revisions.filter(function (r) { return r.current; })[0]),
-        revisions.length ? runForm(agent, revisions) : el("p", { class: "none" }, "It has no revision to run yet."),
+        revisions.length ? runForm(agent, revisions) : el("p", { class: "none" }, "It has no version to run yet."),
       ];
     }
 
     function revisionActions(agent, revision) {
       if (revision.current) return null;
-      var make = button("Make current", "quiet small", function () {
+      var make = button("Use this version", "quiet small", function () {
         make.disabled = true;
         v2("POST", "agents/" + enc(agent.id) + "/current", { revision: revision.id }).then(
           function () { kit.route(); },
@@ -324,7 +331,7 @@
           }
         );
       });
-      make.title = "Runs that name no revision run the current one";
+      make.title = "New runs run the version in use";
       return make;
     }
 
@@ -367,11 +374,11 @@
           body.appendChild(el(
             "div",
             { class: "table compare", role: "table" },
-            el("div", { class: "cmp head", role: "row" }, ["Revision", "Runs", "Completed", "Failed or escalated", "Total", "Per completed", "Median time"].map(function (h) { return el("span", { class: "c" }, h); })),
+            el("div", { class: "cmp head", role: "row" }, ["Version", "Runs", "Completed", "Failed or escalated", "Total", "Per completed", "Median time"].map(function (h) { return el("span", { class: "c" }, h); })),
             revisions.map(function (r, i) {
               var s = stats[i];
               var on = filter === r.id;
-              var rev = el("span", { class: "c rev" }, el("span", { class: "rev-id" }, kit.short(r.id)), " ", el("span", { class: "word" }, r.kind), r.current ? [" ", kit.pill("current")] : null, r.note ? [" ", el("span", { class: "rev-note" }, kit.clip(r.note, 80))] : null);
+              var rev = el("span", { class: "c rev" }, el("b", { class: "version" }, kit.versionName(revisions.length - i)), r.note ? [" ", el("span", { class: "rev-note" }, kit.clip(r.note, 80))] : null, r.current ? [" ", kit.pill("current", "in use")] : null, " ", kit.revId(r.id));
               return el(
                 "a",
                 { class: "cmp" + (on ? " on" : ""), href: kit.agentHref(agent.id) + "?revision=" + enc(r.id), "aria-current": on ? "true" : null },
@@ -395,7 +402,7 @@
           body.appendChild(kit.failed(error));
         }
       );
-      return el("section", { class: "card compare" }, kit.kicker("Compare revisions"), el("h2", null, "Runs and cost by revision"), body);
+      return el("section", { class: "card compare" }, kit.kicker("Compare versions"), el("h2", null, "Runs and cost by version"), body);
     }
 
     /** The picker of a store with no agent: what to do next. */
@@ -409,11 +416,35 @@
       );
     }
 
-    /** A new agent, or a new revision of `agentId` prefilled from its current one. */
+    var OTHER = "\u0000other";
+    /** The models a revision can name and run on here, from capabilities' tiers: each as a definition names it (through a
+     *  gateway, without the server's own provider prefix), once, and only as provider/model-id. The default is the empty
+     *  choice, "This server's model". */
+    function modelChoices(models) {
+      if (!models) return [];
+      var seen = {};
+      var nameable = function (id) {
+        if (typeof id !== "string") return null;
+        var value = models.source === "gateway" ? id.replace(/^agent-model\//, "") : id;
+        return /^[^/\s]+\/\S+$/.test(value) ? value : null;
+      };
+      var own = nameable(models.default);
+      if (own) seen[own] = true;
+      var out = [];
+      [["fast", models.fast], ["strong", models.strong]].forEach(function (tier) {
+        var value = nameable(tier[1]);
+        if (!value || seen[value]) return;
+        seen[value] = true;
+        out.push({ value: value, label: value + " (" + tier[0] + ")" });
+      });
+      return out;
+    }
+
+    /** A new agent, or a new version of `agentId` prefilled from the one it uses. */
     function agentForm(agentId, token) {
       var home = agentId ? kit.agentHref(agentId) : "#/";
       kit.crumb(agentId ? [[agentId, home], ["Edit", "#/agents/" + enc(agentId) + "/edit"]] : [["New agent", "#/new"]]);
-      kit.titled(agentId ? "New revision" : "New agent");
+      kit.titled(agentId ? "Edit" : "New agent");
       Promise.all([v2("GET", "capabilities"), agentId ? v2("GET", "agents/" + enc(agentId)) : null]).then(
         function (both) {
           if (!kit.live(token)) return;
@@ -442,7 +473,23 @@
       var description = agentId ? null : textInput("description", "", "What it does, in one line");
       var prompt = textArea("instructions", definition.instructions, 10, "You research one company and write a short brief about it.");
       var workflow = textArea("workflow", definition.workflow ? JSON.stringify(definition.workflow, null, 2) : "", 16, "{ \"name\": \"...\", \"steps\": [] }", true);
-      var model = textInput("model", definition.model, "provider/model-id");
+      var choices = modelChoices(caps.models);
+      var model = textInput("model", "", "provider/model-id");
+      var modelPick = el("select");
+      modelPick.name = "model-choice";
+      [{ value: "", label: "This server's model" + (caps.models && caps.models.default ? " (" + caps.models.default + ")" : "") }].concat(choices, [{ value: OTHER, label: "Another model…" }]).forEach(function (choice) {
+        var option = el("option");
+        option.value = choice.value;
+        option.textContent = choice.label;
+        modelPick.appendChild(option);
+      });
+      var named = definition.model || "";
+      var listed = !named || choices.some(function (c) { return c.value === named; });
+      modelPick.value = listed ? named : OTHER;
+      model.value = listed ? "" : named;
+      var showOther = function () { model.hidden = modelPick.value !== OTHER; };
+      modelPick.addEventListener("change", showOther);
+      showOther();
       var thinking = el("select");
       thinking.name = "thinking";
       [""].concat(levels, definition.thinking && levels.indexOf(definition.thinking) < 0 ? [definition.thinking] : []).forEach(function (level) {
@@ -453,7 +500,7 @@
         thinking.appendChild(option);
       });
       thinking.value = definition.thinking || "";
-      var note = agentId ? textInput("note", "", "What this revision changes") : null;
+      var note = agentId ? textInput("note", "", "What this version changes") : null;
       var had = Array.isArray(definition.tools) ? definition.tools : [];
       var tools = offered.concat(had.filter(function (tool) { return offered.indexOf(tool) < 0; })).map(function (tool) {
         var box = el("input", { type: "checkbox" });
@@ -465,7 +512,7 @@
         return { box: box, label: el("label", { class: title ? "unbound" : null, title: title }, box, tool) };
       });
       var promptField = field("Prompt", prompt, "The agent's instructions: what it reads first on every run.");
-      var modelField = field("Model", model, "Optional: provider/model-id. Empty runs the server's own model.");
+      var modelField = field("Model", el("span", { class: "model-pick" }, modelPick, model), "The models this server runs. Another one is provider/model-id, and needs its provider's key here.");
       var thinkingField = field("Thinking", thinking, "How hard the model thinks on every run; never off.");
       var workflowField = field("Workflow", workflow, "The workflow as JSON, the way the DSL writes it.");
       var kinds = {};
@@ -483,7 +530,7 @@
       });
       setKind(kind);
       var out = el("div");
-      var save = button(agentId ? "Commit revision" : "Create agent", "", function () {
+      var save = button(agentId ? "Save" : "Create agent", "", function () {
         var definitionOut = { tools: tools.filter(function (t) { return t.box.checked; }).map(function (t) { return t.box.value; }) };
         if (name) {
           if (!name.value.trim()) return say(out, new Error("The agent needs a name."));
@@ -498,7 +545,8 @@
           }
         } else {
           definitionOut.instructions = prompt.value;
-          if (model.value.trim()) definitionOut.model = model.value.trim();
+          var chosenModel = modelPick.value === OTHER ? model.value.trim() : modelPick.value;
+          if (chosenModel) definitionOut.model = chosenModel;
           if (thinking.value) definitionOut.thinking = thinking.value;
         }
         var body = { definition: definitionOut };
@@ -523,23 +571,23 @@
           function (error) {
             save.disabled = false;
             error.sent = definitionOut;
-            say(out, error.status === 412 ? new Error("The agent has a newer revision than the one this form started from: open Edit again to start from it.") : error);
+            say(out, error.status === 412 ? new Error("Someone saved a newer version since this form opened: open Edit again to start from it.") : error);
           }
         );
       });
       return el(
         "section",
         { class: "card agent-form" },
-        kit.kicker(agentId ? "New revision" : "New agent"),
+        kit.kicker(agentId ? "Edit" : "New agent"),
         el("h1", null, agentId ? definition.name || agentId : "A new agent"),
-        agentId ? el("p", { class: "lede" }, (definition.description ? definition.description + " " : "") + "Saving commits a new revision from what is below and makes it current. The revisions before it stay as they were.") : null,
+        agentId ? el("p", { class: "lede" }, (definition.description ? definition.description + " " : "") + "Saving makes a new version from what is below and uses it. The versions before it stay as they were.") : null,
         name ? el("div", { class: "pair" }, field("Name", name), field("Description", description)) : null,
         el("div", { class: "field" }, el("span", { class: "word" }, "Runs"), el("div", { class: "seg", role: "group", "aria-label": "What it runs" }, kinds.agentic, kinds.workflow)),
         promptField,
         el("div", { class: "pair" }, modelField, thinkingField),
         workflowField,
         el("div", { class: "field" }, el("span", { class: "word" }, "Tools"), tools.length ? el("div", { class: "tools" }, tools.map(function (t) { return t.label; })) : el("p", { class: "none" }, "This server binds no tools.")),
-        note ? field("Note", note, "Optional: a line the revision keeps.") : null,
+        note ? field("Note", note, "Optional: a line the version keeps.") : null,
         out,
         el("div", { class: "actions" }, save, el("a", { class: "btn quiet", href: agentId ? kit.agentHref(agentId) : "#/" }, "Cancel"))
       );
@@ -570,8 +618,11 @@
       var controller = new AbortController();
       following = controller;
       var agentName = names[run.agent_id] || run.agent_id;
-      kit.crumb([[agentName, kit.agentHref(run.agent_id)], ["Run", "#/runs/" + enc(run.run_id)]]);
-      kit.titled("Run " + kit.short(run.run_id) + " · " + agentName);
+      var names = {};
+      names[run.agent_id] = agentName;
+      var title = runTitle(run, names);
+      kit.crumb([[agentName, kit.agentHref(run.agent_id)], [kit.clip(title, 40), "#/runs/" + enc(run.run_id)]]);
+      kit.titled(title + " · " + agentName);
       // The answer box is made once, so a redraw keeps what is typed in it.
       var question = el("p", { class: "question" });
       var answer = textArea("answer", "", 3, "Your answer");
@@ -611,9 +662,9 @@
           "section",
           { class: "card run-head" },
           kit.kicker("Run"),
-          el("h1", { class: "id" }, run.run_id),
+          el("h1", { class: "title" }, title),
           el("p", { class: "facts" }, statusPill(page.status, run.error), el("span", null, "started " + kit.when(run.created_at)), spent === null ? null : el("span", null, kit.usd(spent) + " so far"), el("span", null, calls + (calls === 1 ? " tool call" : " tool calls")), el("span", { class: "live-note" }, "live")),
-          el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: kit.agentHref(run.agent_id) }, agentName), run.revision ? [el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, kit.short(run.revision))] : null, run.kind ? kit.kindPill(run.kind) : null, run.archived_at ? kit.pill("archived") : null),
+          el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: kit.agentHref(run.agent_id) }, agentName), el("span", null, kit.versionName(run.agent_version)), run.kind ? kit.kindPill(run.kind) : null, run.revision ? kit.revId(run.revision) : null, el("span", { class: "run-id small" }, run.run_id), run.archived_at ? kit.pill("archived") : null),
           el("div", { class: "actions" }, archiveButton("runs/" + enc(run.run_id), run.archived_at, function (view) {
             run = view;
             if (kit.live(token) && !controller.signal.aborted) draw(shown);

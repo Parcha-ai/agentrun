@@ -686,7 +686,7 @@
                     { class: "agent-tile", href: agentHref(agent.id) },
                     el("span", { class: "head" }, el("b", null, agent.name || agent.id), kindPill(agent.currentKind), agent.archivedAt ? pill("archived") : null),
                     agent.description ? el("span", { class: "lede" }, agent.description) : null,
-                    el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no revision yet"), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
+                    el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no version yet"), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
                   );
                 }))
               : archived ? el("p", { class: "none" }, "No archived agents.") : host && host.empty ? host.empty() : el("p", { class: "none" }, "No agents in this store yet.")
@@ -734,7 +734,8 @@
     );
   }
 
-  function agenticBody(r) {
+  /** `against`: the version the diff is against, as a person reads it. */
+  function agenticBody(r, against) {
     var body = r.body || {};
     var diff = r.diff;
     var settings = ["model", "thinking"].map(function (k) {
@@ -748,7 +749,7 @@
       { class: "rev-body" },
       diff && diff.prompt
         ? [
-            el("h3", null, "Prompt, against ", el("span", { class: "id" }, short(diff.against))),
+            el("h3", null, "Prompt, against " + (against || "its parent"), " ", revId(diff.against)),
             el("p", { class: "facts" }, "+" + count("add") + " −" + count("del") + " lines"),
             el("div", { class: "diff" }, diff.prompt.map(function (line) {
               var op = MARKS[line.op] ? line.op : "same";
@@ -758,7 +759,7 @@
         : [
             el("h3", null, "Prompt"),
             diff ? el("p", { class: "note" }, "The prompt is too long to diff line by line.") : null,
-            r.parentKind === "workflow" ? el("p", { class: "none" }, "Its parent " + short(r.parent) + " is a workflow revision: it has no prompt to compare with.") : null,
+            r.parentKind === "workflow" ? el("p", { class: "none" }, "The version before it is a workflow: it has no prompt to compare with.") : null,
             el("pre", { class: "prompt" }, body.instructions || ""),
           ],
       settings.length ? el("p", { class: "facts" }, settings) : null,
@@ -776,27 +777,48 @@
     return el("div", { class: "graph-box" }, svg);
   }
 
-  function workflowBody(r) {
+  function workflowBody(r, against) {
     var diff = r.diff;
     var n = function (list) { return (diff[list] || []).length; };
     return el(
       "div",
       { class: "rev-body" },
-      el("h3", null, diff ? ["Workflow, against ", el("span", { class: "id" }, short(diff.against))] : "Workflow"),
+      el("h3", null, diff ? ["Workflow, against " + (against || "its parent"), " ", revId(diff.against)] : "Workflow"),
       diff ? el("p", { class: "facts" }, pill("added", "+" + n("added") + " added"), pill("edited", n("edited") + " edited"), pill("removed", n("removed") + " removed")) : null,
-      r.parentKind === "agentic" ? el("p", { class: "none" }, "Its parent " + short(r.parent) + " is an agentic revision: this revision runs a workflow in place of a prompt.") : null,
+      r.parentKind === "agentic" ? el("p", { class: "none" }, "The version before it runs a prompt: this one runs a workflow in place of a prompt.") : null,
       graphBox(r.graph, diff ? { diff: { added: diff.added, edited: diff.edited, removed: diff.removed } } : {}),
       toolsAndSkills(r.body || {}, null)
     );
   }
 
-  function revisionBlock(r, agent) {
+  // ---- versions: an agent's revisions as a person reads them -------------------------------------------------------------
+  /** A revision's number among its agent's (`revisions` newest first, as the store lists them), the oldest 1; 0 when it
+   *  is not one of them. */
+  function versionOf(revisions, id) {
+    for (var i = 0; i < (revisions || []).length; i++) if (revisions[i].id === id) return revisions.length - i;
+    return 0;
+  }
+  function versionName(n) {
+    return n ? "Version " + n : "Version";
+  }
+  /** A revision's id as a small detail beside its version, the whole id on hover. */
+  function revId(id) {
+    return el("span", { class: "rev-id small", title: id }, short(id));
+  }
+  /** A run's title: its input's first line, else its agent and when it started. Never its id. */
+  function runTitle(run, agentName, rows) {
+    var first = (rows || []).filter(function (r) { return r.kind === "user_message" && (r.text || r.summary); })[0];
+    var line = first ? String(first.text || first.summary).replace(/^You:\s*/, "").split("\n").filter(function (l) { return l.trim(); })[0] : "";
+    return line ? clip(line.trim(), 120) : (agentName || run.agent) + " · " + when(run.startedAt);
+  }
+
+  function revisionBlock(r, agent, n, revisions) {
     return el(
       "article",
       { class: "revision" + (r.current ? " current" : "") },
-      el("div", { class: "rev-head" }, el("b", { class: "rev-id", title: r.id }, short(r.id)), kindPill(r.kind), r.current ? pill("current") : null, r.note ? el("b", { class: "rev-note" }, r.note) : null, host && host.revision ? host.revision(agent, r) : null),
-      el("p", { class: "facts" }, el("span", null, "created " + when(r.createdAt)), el("span", null, r.parent ? "from " + short(r.parent) : "the first revision")),
-      r.kind === "workflow" ? workflowBody(r) : agenticBody(r)
+      el("div", { class: "rev-head" }, el("b", { class: "version" }, versionName(n)), r.note ? el("b", { class: "rev-note" }, r.note) : null, kindPill(r.kind), r.current ? pill("current", "in use") : null, revId(r.id), host && host.revision ? host.revision(agent, r) : null),
+      el("p", { class: "facts" }, el("span", null, "created " + when(r.createdAt)), el("span", null, r.parent ? "from " + versionName(versionOf(revisions, r.parent)).toLowerCase() : "the first version")),
+      r.kind === "workflow" ? workflowBody(r, r.diff ? versionName(versionOf(revisions, r.diff.against)).toLowerCase() : null) : agenticBody(r, r.diff ? versionName(versionOf(revisions, r.diff.against)).toLowerCase() : null)
     );
   }
 
@@ -816,29 +838,29 @@
       "section",
       { class: "card runs" },
       kicker("Runs"),
-      el("h2", null, plural(list.length, "run") + (filter ? " of " + short(filter) : "")),
-      el("nav", { class: "filters", "aria-label": "Runs of one revision" }, link(null, "All revisions"), revisions.map(function (r) { return link(r.id, [el("span", { class: "rev-id" }, short(r.id)), " ", el("span", { class: "word" }, r.kind)]); })),
+      el("h2", null, plural(list.length, "run") + (filter ? " of " + versionName(versionOf(revisions, filter)).toLowerCase() : "")),
+      el("nav", { class: "filters", "aria-label": "Runs of one version" }, link(null, "All versions"), revisions.map(function (r, i) { return link(r.id, versionName(revisions.length - i)); })),
       runs && runs.error
         ? failed(runs.error)
         : list.length
           ? el(
               "div",
               { class: "table store", role: "table" },
-              el("div", { class: "run head", role: "row" }, ["Started", "State", "Revision", "Cost", "Summary", "Run"].map(function (h) { return el("span", { class: "c" }, h); })),
+              el("div", { class: "run head", role: "row" }, ["Started", "State", "Version", "Cost", "Summary", "Run"].map(function (h) { return el("span", { class: "c" }, h); })),
               list.map(function (run) {
                 return el(
                   "a",
                   { class: "run", href: "#/runs/" + encodeURIComponent(run.id) },
                   el("span", { class: "c when" }, el("b", null, when(run.startedAt)), el("small", null, ago(run.startedAt))),
                   el("span", { class: "c state" }, runState(run.state), run.archivedAt ? [" ", pill("archived")] : null),
-                  el("span", { class: "c rev" }, el("span", { class: "rev-id" }, short(run.revision)), " ", el("span", { class: "word" }, run.kind)),
+                  el("span", { class: "c rev" }, versionName(versionOf(revisions, run.revision)), " ", el("span", { class: "word" }, run.kind)),
                   cost(run.costUsd, "c cost"),
                   el("span", { class: "c reason" }, run.gone ? el("span", { class: "unknown" }, "its directory is gone") : run.summary ? md(run.summary) : ""),
                   el("span", { class: "c id" }, run.id)
                 );
               })
             )
-          : el("p", { class: "none" }, filter ? "No runs of this revision yet." : "No runs yet.")
+          : el("p", { class: "none" }, filter ? "No runs of this version yet." : "No runs yet.")
     );
   }
 
@@ -858,13 +880,13 @@
             { class: "card agent" },
             kicker("Agent"),
             el("h1", null, agent.name),
-            el("p", { class: "facts" }, kindPill(current && current.kind), agent.archivedAt ? pill("archived") : null, el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null, agent.archivedAt ? el("span", null, "archived " + when(agent.archivedAt)) : null),
+            el("p", { class: "facts" }, kindPill(current && current.kind), agent.archivedAt ? pill("archived") : null, el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "uses " + versionName(versionOf(revisions, agent.current)).toLowerCase()) : null, agent.archivedAt ? el("span", null, "archived " + when(agent.archivedAt)) : null),
             agent.description ? el("p", { class: "lede" }, agent.description) : null,
             host && host.agent ? host.agent(agent, revisions) : null
           ),
           host && host.cards ? host.cards(agent, revisions, filter) : null,
           runsCard(agentId, revisions, both[1], filter),
-          el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(revisions.length, "revision") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(function (r) { return revisionBlock(r, agent); }) : el("p", { class: "none" }, "No revisions yet.")),
+          el("section", { class: "card revs" }, kicker("Versions"), el("h2", null, plural(revisions.length, "version") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(function (r, i) { return revisionBlock(r, agent, revisions.length - i, revisions); }) : el("p", { class: "none" }, "No versions yet.")),
         ]);
       },
       function (error) {
@@ -896,7 +918,8 @@
     );
   }
 
-  function storeRunHead(data, rows) {
+  /** `revisions`, the run's agent's (newest first) when the page could read them, number its version. */
+  function storeRunHead(data, rows, revisions) {
     var run = data.run;
     var facts = [el("span", null, "started " + when(run.startedAt))];
     if (run.endedAt) facts.push(el("span", null, "took " + took(run.startedAt, run.endedAt)));
@@ -910,9 +933,9 @@
       "section",
       { class: "card run-head" },
       kicker("Run"),
-      el("h1", { class: "id" }, run.id),
+      el("h1", { class: "title" }, runTitle(run, data.agent, rows)),
       el("p", { class: "facts" }, runState(run.state), run.archivedAt ? pill("archived") : null, facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
-      el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, short(run.revision)), kindPill(run.kind), data.note ? el("span", null, data.note) : null),
+      el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", null, versionName(versionOf(revisions, run.revision)) + (data.note ? ": " + data.note : "")), kindPill(run.kind), revId(run.revision), el("span", { class: "run-id small" }, run.id)),
       run.summary ? el("div", { class: "lede summary" }, md(run.summary)) : null,
       data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null,
       host && host.run ? host.run(run, data) : null
@@ -920,18 +943,34 @@
   }
 
   /** `live` is set when the page already shows this run running: a failed refresh then keeps it and tries again. */
+  /** An agent's revisions by its id, read once a view needs them: a revision is written once, so its number never moves. */
+  var revisionsOf = {};
+  function agentRevisions(agentId) {
+    if (!revisionsOf[agentId]) {
+      revisionsOf[agentId] = get("api/agents/" + encodeURIComponent(agentId)).then(
+        function (found) { return (found && found.revisions) || []; },
+        function () { delete revisionsOf[agentId]; return null; }
+      );
+    }
+    return revisionsOf[agentId];
+  }
+
   function storeRunPage(id, token, live) {
     crumb([["Run", "#/runs/" + encodeURIComponent(id)]]);
-    get("api/runs/" + encodeURIComponent(id)).then(
-      function (data) {
+    get("api/runs/" + encodeURIComponent(id)).then(function (data) {
+      return agentRevisions(data.run.agent).then(function (revisions) { return { data: data, revisions: revisions }; });
+    }).then(
+      function (both) {
         if (token !== view) return;
+        var data = both.data;
         var run = data.run;
-        crumb([[data.agent, agentHref(run.agent)], ["Run", "#/runs/" + encodeURIComponent(id)]]);
-        titled("Run " + short(run.id) + " · " + data.agent);
         var rows = Array.isArray(data.rows) ? data.rows : [];
+        var title = runTitle(run, data.agent, rows);
+        crumb([[data.agent, agentHref(run.agent)], [clip(title, 40), "#/runs/" + encodeURIComponent(id)]]);
+        titled(title + " · " + data.agent);
         var open = openCalls();
         var y = window.scrollY || 0;
-        show([storeRunHead(data, rows), data.gone ? null : run.kind === "workflow" ? workflowRun(data) : timeline(rows)]);
+        show([storeRunHead(data, rows, both.revisions), data.gone ? null : run.kind === "workflow" ? workflowRun(data) : timeline(rows)]);
         // An exit that fired can sit past the edge of a narrow graph's box: bring it into view.
         var fired = app.querySelector(".fired");
         if (fired) fired.scrollIntoView({ block: "nearest", inline: "center" });
@@ -1045,6 +1084,7 @@
         el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },
         kicker: kicker, pill: pill, kindPill: kindPill, when: when, ago: ago, took: took, usd: usd, cost: cost, clip: clip, short: short, plural: plural,
         agentHref: agentHref, timeline: timeline, storeRunPage: storeRunPage, openCalls: openCalls, reopen: reopen, route: route, titled: titled,
+        versionOf: versionOf, versionName: versionName, revId: revId,
       }) || null
     : null;
 
