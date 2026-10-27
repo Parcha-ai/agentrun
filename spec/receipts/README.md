@@ -80,6 +80,29 @@ must catch it:
 
 A property no mutant can fail would be vacuous; a mutant no property catches is a guard the spec does not state.
 
+## The serve door: `Door.tla`
+
+`Door.tla` models the journal the serve door keeps with a door hook (`AppOptions.door`,
+[`packages/pi-durable-disk/src/door.ts`](../../packages/pi-durable-disk/src/door.ts)): the journal above for one
+effect per requestId. A submit passes the lease check; one fenced commit looks its requestId up and, when it is new,
+admits it (Admit, the `door.input` entry); the process that admitted it calls `hook.submit` once (Dispatch); the hook
+answers within the bound (Settle) or the bound passes (Unknown) and a late answer settles the same record (LateSettle).
+Every write is refused once the writer's lease is lost. A process may crash at any point, or lose its lease and go on
+running while the next incarnation starts with the store alone. `Door.cfg` has two requestIds, each submitted up to
+three times (two at once, then a retry), two incarnations and one lost lease.
+
+| Property | Holds that |
+| --- | --- |
+| `I1_OneDispatchPerRequest` | `hook.submit` runs at most once per requestId, across incarnations |
+| `I2_SettledNeverOverwritten` | a settled outcome (`ACCEPTED`, `REJECTED_BUSY`, `FAILED`) is never overwritten |
+| `I3_UnknownSettledByItsLateAnswer` | `UNKNOWN` moves only to a settled outcome written by the late answer of the incarnation that dispatched it, under its lease: never by a retry, a resume, or a process whose lease is gone |
+| `I4_DispatchOnlyAdmittedUnderLease` | nothing is dispatched without a record its process admitted, under a held lease |
+| `I5_LateSettleOnlyAfterUnknown` | a late answer is pending only on an `UNKNOWN` record |
+
+`check-receipts.sh` checks `Door.cfg` with the receipts configs, and `receipts-mutants.mjs` holds its mutants:
+re-submitting an `ADMITTED` or `UNKNOWN` record on resume (`I1`), a late answer written without the fence (`I3`), and
+the dedupe after the dispatch (`I4`).
+
 ## Changing the model
 
 A change to the behavior this model states (the order of admit, dispatch and complete; what a resume does with an
