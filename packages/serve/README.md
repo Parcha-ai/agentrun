@@ -296,7 +296,10 @@ session cookies with the key in `DIR/.session-secret`; both are 0600, and no run
 browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.
 
 A browser's writes must come from the page's own origin. Serve the image on another address or port behind a proxy, and
-set `AGENTRUN_PUBLIC_URL` to the address people open.
+set `AGENTRUN_PUBLIC_URL` to the address people open. Behind a proxy every sign-in comes from the proxy's address, so the
+limit is one for everyone: ten wrong tries in 15 minutes, from anyone, keep the owner out until the window passes (the
+token still works for scripts meanwhile). Serve it over https where you can: on plain http a browser sends the session
+cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
 ## A run's life
 
