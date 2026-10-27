@@ -13,6 +13,7 @@ import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { answerPage } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -89,17 +90,20 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 
-type Route = { method: string; pattern: RegExp; name: string; capability?: string };
-const ROUTES: Route[] = [
-  { method: "GET", pattern: /^\/capabilities$/, name: "capabilities" },
-  { method: "GET", pattern: /^\/health$/, name: "health" },
+/** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off. */
+export type Route = { method: string; pattern: RegExp; name: string; capability?: string };
+export const ROUTES: readonly Route[] = [
+  { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
+  { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
+  { method: "GET", pattern: /^\/health$/, name: "getHealth" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
-  { method: "POST", pattern: /^\/agents\/([^/]+)\/(archive|unarchive)$/, name: "archiveAgent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
@@ -110,7 +114,8 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, name: "cancelRun" },
-  { method: "POST", pattern: /^\/runs\/([^/]+)\/(archive|unarchive)$/, name: "archiveRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
@@ -155,6 +160,8 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
       query: false,
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
+    /** This server's own: where its OpenAPI document is, beside this one. */
+    links: { openapi: "/v2/openapi.json" },
     limits: {
       max_body_bytes: MAX_BODY,
       max_upload_bytes: null,
@@ -225,6 +232,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   const caps = capabilities(env, maxRuns);
+  const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
@@ -524,8 +532,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (found.name === "capabilities") return send(res, 200, caps);
-    if (found.name === "health") {
+    if (found.name === "getCapabilities") return send(res, 200, caps);
+    if (found.name === "getOpenapi") return send(res, 200, openapi);
+    if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
     }
@@ -533,16 +542,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
-    if (found.capability) {
-      const off: Record<string, string> = {
-        "home.export": "This server does not export a home yet.",
-        "home.import": "This server does not import a home yet.",
-        "runs.kill": "This server does not kill a run's process yet.",
-        "files.upload": "This server takes no uploads yet.",
-        quotes: "This server has no billing, so it gives no quotes.",
-      };
-      throw unsupported(found.capability, off[found.capability]!);
-    }
+    if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {
@@ -597,9 +597,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const moved = agents.setCurrent(entry, revision);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
-      case "archiveAgent": {
+      case "archiveAgent":
+      case "unarchiveAgent": {
         needAgent(id);
-        agents.store.setArchived("agent", id, second === "archive");
+        agents.store.setArchived("agent", id, found.name === "archiveAgent");
         const entry = needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
@@ -647,9 +648,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const view = await runs.view(run);
         return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
       }
-      case "archiveRun": {
+      case "archiveRun":
+      case "unarchiveRun": {
         const run = await needRun(id);
-        agents.store.setArchived("run", run.id, second === "archive");
+        agents.store.setArchived("run", run.id, found.name === "archiveRun");
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {
