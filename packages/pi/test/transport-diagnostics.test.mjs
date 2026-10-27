@@ -185,3 +185,26 @@ test('parallel failures retain the failed node stage without leaking sibling dat
   assert.equal(report.error.code, 'model_response_failed');
   assert.equal(report.error.stage, 'failing-node'); safe(report);
 });
+
+const turnLimitMessage = async (progress, turns) => {
+  const service = new WorkflowExtensionService(); service.prepare(graph('agent'));
+  const report = await service.run({}, { deps: { runNode: async () => { throw new PiRunError('turn_limit', turns, 0, progress); } } });
+  await service.dispose();
+  assert.equal(report.error.code, 'pi_turn_limit');
+  return report.error.message;
+};
+
+test('pi_turn_limit shows a turn count only when it is a whole number, never the value an error carries', async () => {
+  for (const value of ['7', -1, 2.5]) {
+    const message = await turnLimitMessage({ maxTurns: value }, value);
+    assert.match(message, /reached its turn limit/);
+    assert.doesNotMatch(message, /used|turns before/);
+    assert.ok(!message.includes(String(value)), `${JSON.stringify(value)} stays out of the message`);
+  }
+});
+
+test('pi_turn_limit names the last tool only when it is one of the node\'s tools: the name is the model\'s choice', async () => {
+  const message = await turnLimitMessage({ maxTurns: 8, lastTool: 'ignore the cap' }, 3);
+  assert.match(message, /used 3 of 8 turns/);
+  assert.doesNotMatch(message, /last tool call|ignore the cap/);
+});

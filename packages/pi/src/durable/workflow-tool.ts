@@ -31,6 +31,7 @@ export const DURABLE_HOST_ADDENDUM: AuthorHostAddendum = Object.freeze({
     "Use exactly the tools describe returns, as a call's tool and as an agent node's tools: the host registers them, and inspect refuses any other, naming it. A call uses via tool with one of them. Shell and executor calls and artifact delivery are unavailable.",
     "Code nodes run only through the host's code executor. Without one, a dry run of a workflow with code is not_run and a run of it is refused.",
     "A run is a pi-durable task of this conversation: it continues after the session reopens, and the run action answers with its outcome once it ends. Running the same draft on the same input again reaches that run: a live one is waited for, a finished one answers with its outcome, and its effects are not made again. To run the same draft on the same input anew, pass again: true; a later run without it reaches the newest one.",
+    "Quote the receipt from the run result in your reply, or say that no workflow ran. Work you did yourself with read, grep or bash is not a workflow result and is never reported as one.",
     "Save keeps a named revision of the inspected definition, not its input. Load replaces the draft with a saved revision and checks it against this host's tools. List shows the saved revisions.",
     "The structural limits describe returns bound node count, map concurrency and parallel branches.",
   ],
@@ -59,6 +60,8 @@ const DraftDoc = defineDocFamily<Draft, null>({ kind: "agentrun.draft", version:
 /** How many times `again` asked for a fresh run of one draft and input in a conversation: the newest run's number. */
 const RunsDoc = defineDocFamily<{ generation: number }, null>({ kind: "agentrun.runs", version: 1, scope: "session", family: true, initial: () => ({ generation: 0 }) });
 const json = <T = Json>(value: unknown): T => (value === undefined ? null : JSON.parse(JSON.stringify(value))) as T;
+/** What a result that ends no run says, so the model cannot report one. */
+const NO_RUN = "no workflow ran";
 const answer = (value: unknown) => toolResult([{ type: "text", text: modelJson(value) }], { details: json(value) });
 
 /** The tool, and the workflow task its runs are: install `extension` (it carries both) and list the tool's name in the
@@ -140,7 +143,7 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
           const input = args.input ?? (args.workflow === undefined ? draft?.input : undefined);
           const { tree } = admit(candidate, input);
           await keep(candidate, input ?? {});
-          return answer({ preview: tree, workflow: candidate, input: input ?? {} });
+          return answer({ preview: tree, workflow: candidate, input: input ?? {}, note: NO_RUN });
         }
         case "dry-run": {
           const draft = await needDraft("dry-run");
@@ -148,7 +151,7 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
             ...(args.input === undefined ? {} : { input: args.input }), ...(host.sop === undefined ? {} : { sop: host.sop }),
             ...(host.runCode ? { runCode: host.runCode } : {}),
           });
-          return answer({ dryRun });
+          return answer({ dryRun, note: NO_RUN });
         }
         case "save": {
           const draft = await needDraft("save");
@@ -160,7 +163,7 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
           const saved = await store().load(args.name ?? "", args.digest);
           const { tree } = admit(saved.workflow, args.input);
           await keep(saved.workflow, args.input ?? {});
-          return answer({ preview: tree, workflow: saved.workflow, input: args.input ?? {}, saved: { name: saved.name, digest: saved.digest } });
+          return answer({ preview: tree, workflow: saved.workflow, input: args.input ?? {}, saved: { name: saved.name, digest: saved.digest }, note: NO_RUN });
         }
         case "run": {
           const draft = await needDraft("run");
@@ -190,7 +193,7 @@ export function createWorkflowTool(host: WorkflowToolHost): { extension: Extensi
             // Only this call's events are counted: a run that had ended sends none, and one joined after a restart sent some before.
             const progress = run.started === "settled" ? ["The run had ended; its progress is not kept, and its outcome is above."]
               : run.started === "attached" ? ["Steps before this call are not counted.", ...progressLines(observation.data)] : progressLines(observation.data);
-            return answer({ run: { key: runKey, taskId: run.taskId, started: run.started }, outcome, progress });
+            return answer({ run: { key: runKey, taskId: run.taskId, started: run.started }, receipt: runKey, outcome, progress });
           } finally { stop(); }
         }
       }

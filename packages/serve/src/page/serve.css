@@ -39,6 +39,8 @@ input[type="checkbox"]:checked{background:var(--accent);border-color:var(--accen
 .run-form select{width:auto;min-width:14em}
 .problem{border:1px solid var(--red);color:var(--red);background:var(--red-soft);padding:10px 14px;margin:0 0 14px;font-size:13.5px;overflow-wrap:anywhere}
 .problem ul{margin:6px 0 0;padding-left:20px}
+.notice{border:1px solid var(--accent);background:var(--accent-soft);padding:10px 14px;margin:0 0 14px;font-size:13.5px;overflow-wrap:anywhere}
+.notice ul{margin:6px 0 10px;padding-left:20px}
 .answer-box{border:1px solid var(--purple);background:linear-gradient(var(--exit-soft),var(--exit-soft)),var(--panel)}
 .answer-box .question{font-size:15px;margin:0 0 12px;white-space:pre-wrap;overflow-wrap:anywhere}
 .more{margin:16px 0 0}

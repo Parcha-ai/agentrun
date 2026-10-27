@@ -8,7 +8,9 @@ services:
     dockerContext: .
     plan: starter
     numInstances: 1
-    healthCheckPath: /v2/capabilities
+    healthCheckPath: /v2/health
+    # Render waits 30 s after SIGTERM, above the image's 6 s drain. maxShutdownDelaySeconds would set it, but Render
+    # does not take it for a service with a persistent disk, as this one is.
     disk:
       name: agentrun-data
       mountPath: /data
@@ -20,7 +22,13 @@ services:
         generateValue: true
       - key: AGENT_MODEL
         sync: false
+      - key: AGENT_MODEL_BASE_URL
+        sync: false
+      - key: AGENT_MODEL_API_KEY
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
         sync: false

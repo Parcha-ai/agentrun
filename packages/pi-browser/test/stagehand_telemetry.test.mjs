@@ -24,7 +24,7 @@ const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: fals
 /** Stagehand as its default creates it: the control. */
 async function bare(target, pageUrl) {
   const { localBrowser, Stagehand } = await import("@browserbasehq/stagehand");
-  const browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl });
+  const browser = await localBrowser.connect({ cdpUrl: target.sdkCdpUrl, ...(target.extensionId ? { extensionId: target.extensionId } : {}) });
   const stagehand = await Stagehand.create({ browser, logging: { level: "off" } });
   const page = await stagehand.browser.context.activePage();
   await page.goto(pageUrl);
@@ -39,7 +39,7 @@ async function viaDriver(target, pageUrl) {
 }
 
 /** The POSTs to the trap's /v1/traces once `drive`'s Stagehand has closed. */
-async function exportsFor(drive) {
+async function exportsFor(drive, confineExtension = true) {
   const dir = await mkdtemp(path.join(process.env.TMPDIR || tmpdir(), "stagehand-telemetry-"));
   const cleanups = [() => rm(dir, { recursive: true, force: true })];
   try {
@@ -57,7 +57,7 @@ async function exportsFor(drive) {
     const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: path.join(dir, "profiles"), headless: true, args: [
       "--ignore-certificate-errors",
       `--host-resolver-rules=MAP example.com 127.0.0.1:${trapPort}, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost`,
-    ] } });
+    ], confineExtension } });
     const signal = new AbortController().signal;
     const ref = await provider.create(spec("telemetry"), signal);
     cleanups.unshift(() => provider.release(ref));
@@ -71,7 +71,8 @@ async function exportsFor(drive) {
 
 test("Stagehand's default exports its trace to example.com; the driver's sealed Stagehand keeps it on this host", { skip: SKIP, timeout: 120_000 }, async (t) => {
   let control;
-  try { control = await exportsFor(bare); } catch (error) {
+  // The control runs without the extension's connect policy, which would refuse the export itself: it is of the rig.
+  try { control = await exportsFor(bare, false); } catch (error) {
     if (skipIncapable(t, error)) return;
     throw error;
   }

@@ -18,7 +18,7 @@ const GENERATIVE_FIELDS = ["node", "label", "state", "instructions", "sopSection
 export const NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]: readonly string[] } = {
   chain: ["node", "steps"],
   code: ["node", "label", "code", "as"],
-  agent: [...GENERATIVE_FIELDS, "budget_usd", "context"],
+  agent: [...GENERATIVE_FIELDS, "budget_usd", "max_turns", "context"],
   decide: GENERATIVE_FIELDS,
   extract: GENERATIVE_FIELDS,
   report: ["node", "label", "state", "instructions", "sopSection", "requires", "tools", "effort", "thinking"],

@@ -57,11 +57,12 @@ export function extensionOrigin(directory: string = extensionDirectory()): strin
 
 /** Every argument a local Chrome is started with, but the page to open. The DevTools socket is the whole browser: Stagehand's own
  *  launcher allows every Origin (`*`), so a page the agent visits could drive the browser if it learned the socket's URL. Only the
- *  extension's socket carries an Origin (Node's clients send none), so only that Origin is allowed. */
-export function chromeArgs(options: { userDataDir: string; viewport: { width: number; height: number }; headless?: boolean; sandbox: boolean }): string[] {
+ *  extension's socket carries an Origin (Node's clients send none), so only that Origin is allowed. `extensionDir`: the directory the
+ *  browser will load the extension from, when it is not Stagehand's own (the cdp provider's per-lease copy). */
+export function chromeArgs(options: { userDataDir: string; viewport: { width: number; height: number }; headless?: boolean; sandbox: boolean; extensionDir?: string }): string[] {
   return [
     ...CHROME_FLAGS, ...(options.sandbox ? [] : ["--no-sandbox"]), ...(options.headless ? ["--headless=new"] : []),
-    "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--remote-allow-origins=${extensionOrigin()}`,
+    "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", `--remote-allow-origins=${extensionOrigin(options.extensionDir)}`,
     `--user-data-dir=${options.userDataDir}`, `--window-size=${options.viewport.width},${options.viewport.height}`,
   ];
 }
