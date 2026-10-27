@@ -121,6 +121,10 @@ test('a free route is forwarded without asking the runner, and reports no usage'
   const { p, forwarded, hooks } = await proxy(t, { refuse: 'turn_limit' });
   assert.equal((await send(p.url, { path: '/v1/count' })).status, 200, 'the runner refusing paid requests does not refuse a free one');
   assert.deepEqual([forwarded.length, hooks.before.length, hooks.after.length], [1, 0, 0]);
+  // Free is not unchecked: the body is still the policy's (the client asked for another model), and one it refuses is refused.
+  assert.equal(forwarded[0].body.model, 'session-model');
+  assert.equal((await send(p.url, { path: '/v1/count', body: { model: 'other', tools: [{ type: 'hosted' }] } })).status, 403);
+  assert.equal(forwarded.length, 1);
 });
 
 test("a listed header's value is the policy's: unknown betas are dropped, and none left drops the header", async (t) => {
