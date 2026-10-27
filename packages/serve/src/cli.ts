@@ -66,14 +66,7 @@ const given = process.env.AGENTRUN_TOKEN || undefined;
 process.stdout.on("error", () => undefined);
 // Accounts stay off unless AGENTRUN_ACCOUNTS=1; off, none of these settings is read.
 const accounts = process.env.AGENTRUN_ACCOUNTS === "1";
-let owner: { email: string; passwordFile: string } | undefined;
-if (accounts && (process.env.AGENTRUN_OWNER_EMAIL || process.env.AGENTRUN_OWNER_PASSWORD_FILE)) {
-  if (!process.env.AGENTRUN_OWNER_EMAIL || !process.env.AGENTRUN_OWNER_PASSWORD_FILE) {
-    console.error("AGENTRUN_OWNER_EMAIL and AGENTRUN_OWNER_PASSWORD_FILE go together: the owner's email, and a file holding their password");
-    process.exit(2);
-  }
-  owner = { email: process.env.AGENTRUN_OWNER_EMAIL, passwordFile: process.env.AGENTRUN_OWNER_PASSWORD_FILE };
-}
+const owner = accounts && process.env.AGENTRUN_OWNER_EMAIL ? { email: process.env.AGENTRUN_OWNER_EMAIL } : undefined;
 const authSecret = process.env.AGENTRUN_AUTH_SECRET || undefined;
 let serve: Serve;
 try {

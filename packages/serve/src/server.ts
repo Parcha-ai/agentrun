@@ -59,15 +59,15 @@ export type ServeOptions = {
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
-  /** People with a password and a role, kept in DIR/auth.sqlite (AGENTRUN_ACCOUNTS=1). Off, nothing of it exists. */
+  /** People with a role and no password, kept in DIR/auth.sqlite (AGENTRUN_ACCOUNTS=1). Off, nothing of it exists. */
   accounts?: boolean;
   /** With accounts: the origin people open (AGENTRUN_PUBLIC_URL); every link and the session cookie are built from it,
    *  never from Host. Required on an address that is not loopback. */
   publicUrl?: string;
   /** With accounts: the library's secret in place of DIR/.auth-secret (AGENTRUN_AUTH_SECRET). */
   authSecret?: string;
-  /** With accounts: the owner made at start when there is none (AGENTRUN_OWNER_EMAIL, AGENTRUN_OWNER_PASSWORD_FILE). */
-  owner?: { email: string; passwordFile: string };
+  /** With accounts: the owner made at start when there is none (AGENTRUN_OWNER_EMAIL). */
+  owner?: { email: string };
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
@@ -82,6 +82,9 @@ export type Serve = {
   setupUrl?: string;
   /** With accounts: makes a person server-side, the way in until invites. */
   addPerson?: (person: NewPerson) => Promise<{ id: string }>;
+  /** With accounts: signs in the person with this email through the same server-side sign-in setup uses, and gives
+   *  their session cookie as a Cookie header's value. For tests and embedders; no client reaches it. */
+  signInAs?: (email: string) => Promise<string>;
   close(): Promise<void>;
 };
 
@@ -821,7 +824,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     tokenFile,
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
-    ...(accounts ? { addPerson: (person: NewPerson) => accounts.addPerson(person) } : {}),
+    ...(accounts ? { addPerson: (person: NewPerson) => accounts.addPerson(person), signInAs: async (email: string) => (await accounts.signIn(email)).map((line) => line.split(";")[0]).join("; ") } : {}),
     async close() {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));

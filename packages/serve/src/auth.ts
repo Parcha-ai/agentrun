@@ -1,6 +1,8 @@
-// Accounts, behind AGENTRUN_ACCOUNTS=1: people with a password and a role, kept by Better Auth on node:sqlite in
+// Accounts, behind AGENTRUN_ACCOUNTS=1: people with a role and no password, kept by Better Auth on node:sqlite in
 // DIR/auth.sqlite. Serve keeps what the library does not: the setup code, the allowlist of its endpoints, the one write
-// gate (this server's Origin and a JSON body), the 30-day limit on a session, and the activity log.
+// gate (this server's Origin and a JSON body), the 30-day limit on a session, and the activity log. A session is made
+// only by the library's magic-link sign-in, run server-side: its token goes from the plugin's callback to the verify
+// call in memory, and none of its endpoints is a client's.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -10,6 +12,7 @@ import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { admin } from "better-auth/plugins/admin";
 import { adminAc, userAc } from "better-auth/plugins/admin/access";
+import { magicLink } from "better-auth/plugins/magic-link";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 
 export const AUTH_FILE = "auth.sqlite";
@@ -21,18 +24,16 @@ const DAY_S = 86_400;
 const MAX_SESSION_MS = 30 * DAY_S * 1000;
 const SETUP_TTL_MS = 30 * 60_000;
 const SETUP_TRIES = 5;
-const MIN_PASSWORD = 12;
-const MAX_PASSWORD = 128;
+/** How long a sign-in token lives between the plugin's callback and its verify call, which follows at once. */
+const LINK_TTL_S = 60;
 const MAX_BODY = 1 << 16;
 
-/** The library's endpoints a client may call, each with its one method. Every other path under /v2/auth is a 404, and
- *  no sign-up is among them: the owner is made by serve. None that takes or lists a session's token: it lives in the
- *  HttpOnly cookie only. */
+/** The library's endpoints a client may call, each with its one method. Every other path under /v2/auth is a 404: no
+ *  password endpoint, no magic-link one, no sign-up (the owner is made by serve). None that takes or lists a session's
+ *  token: it lives in the HttpOnly cookie only. */
 const ENDPOINTS: Record<string, string> = {
-  "/sign-in/email": "POST",
   "/sign-out": "POST",
   "/get-session": "GET",
-  "/change-password": "POST",
   "/revoke-other-sessions": "POST",
   "/update-user": "POST",
 };
@@ -49,10 +50,12 @@ export type AccountsOptions = {
   /** In place of DIR/.auth-secret: 32 characters or more. */
   secret?: string;
   /** Made the owner at start when there is none. */
-  owner?: { email: string; passwordFile: string };
+  owner?: { email: string };
 };
 
-export type NewPerson = { email: string; name: string; password: string; role: Role };
+export type NewPerson = { email: string; name: string; role: Role };
+/** Takes the token of a sign-in serve asked for itself, by the nonce it passed as the link's metadata. */
+type Deliver = (nonce: unknown, token: string) => void;
 type Person = { id: string; name: string; email: string; role: string | null; owner: number; banned: number | null; createdAt: string | number };
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
@@ -109,7 +112,17 @@ async function jsonBody(req: IncomingMessage): Promise<Record<string, unknown>> 
 /** The session cookie's name: `__Host-` on https, so no other host or path can set it; else one per port. */
 const sessionCookie = (baseUrl: string, port: number) => (baseUrl.startsWith("https://") ? "__Host-agentrun-session" : `agentrun-${port}-session`);
 
-function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number; origins: string[] }) {
+/** The sign-in headers the library records on a session: the browser's user agent and the client's address. */
+function signInHeaders(req?: IncomingMessage): Headers {
+  const headers = new Headers();
+  for (const name of ["user-agent", CLIENT_IP_HEADER]) {
+    const value = req?.headers[name];
+    if (typeof value === "string") headers.set(name, value);
+  }
+  return headers;
+}
+
+function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number; origins: string[] }, deliver?: Deliver) {
   const https = site?.baseUrl.startsWith("https://") ?? false;
   const name = sessionCookie(site?.baseUrl ?? "", site?.port ?? 0);
   return {
@@ -120,7 +133,8 @@ function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; p
     baseURL: site?.baseUrl ?? "http://serve",
     basePath: BASE_PATH,
     trustedOrigins: site?.origins ?? [],
-    emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: MIN_PASSWORD, maxPasswordLength: MAX_PASSWORD },
+    // No passwords: nobody signs in with one, and no credential is stored.
+    emailAndPassword: { enabled: false },
     // 7 days idle: a session used a day or more after its last refresh runs 7 days from then.
     session: { expiresIn: 7 * DAY_S, updateAge: DAY_S },
     user: { additionalFields: { owner: { type: "boolean" as const, defaultValue: false, required: false, input: false } } },
@@ -132,25 +146,23 @@ function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; p
       defaultCookieAttributes: { httpOnly: true, sameSite: "strict" as const, secure: https, path: "/" },
       ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
     },
-    plugins: [admin({ defaultRole: "member", adminRoles: ["admin"], roles: { admin: adminAc, member: userAc } })],
+    plugins: [
+      admin({ defaultRole: "member", adminRoles: ["admin"], roles: { admin: adminAc, member: userAc } }),
+      // Only a person who exists signs in; the token is stored hashed and consumed by its one verify. The link is never
+      // sent, logged or answered: the token goes to `deliver`, in memory, or nowhere.
+      magicLink({ disableSignUp: true, storeToken: "hashed", expiresIn: LINK_TTL_S, sendMagicLink: ({ token, metadata }) => deliver?.(metadata?.nonce, token) }),
+    ],
     telemetry: { enabled: false },
     logger: { level: "error" as const, log: (_level: string, message: string) => void process.stderr.write(`agentrun-serve: accounts: ${message}\n`) },
   };
 }
-const build = (db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number; origins: string[] }) => betterAuth(optionsOf(db, secret, site));
+const build = (db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number; origins: string[] }, deliver?: Deliver) => betterAuth(optionsOf(db, secret, site, deliver));
 type Auth = ReturnType<typeof build>;
 
 /** The accounts database, migrated, with its secret; the owner from the environment made. Opened before the server
  *  listens; `attach` gives it the server's fixed address once it does. */
 export async function openAccounts(options: AccountsOptions): Promise<Accounts> {
   if (options.secret !== undefined && (options.secret.length < 32 || /\s/.test(options.secret))) throw new Error("AGENTRUN_AUTH_SECRET must be 32 characters or more, with no whitespace");
-  let ownerPassword: string | undefined;
-  if (options.owner) {
-    ownerPassword = (await readFile(options.owner.passwordFile, "utf8").catch((error: Error) => {
-      throw new Error(`AGENTRUN_OWNER_PASSWORD_FILE: ${error.message}`);
-    })).replace(/\r?\n$/, "");
-    if (ownerPassword.length < MIN_PASSWORD || ownerPassword.length > MAX_PASSWORD) throw new Error(`the owner's password (AGENTRUN_OWNER_PASSWORD_FILE) must be ${MIN_PASSWORD} to ${MAX_PASSWORD} characters`);
-  }
   const secret = options.secret ?? (await secretIn(join(options.data, SECRET_FILE)));
   const file = join(options.data, AUTH_FILE);
   await writeFile(file, "", { flag: "a", mode: 0o600 });
@@ -173,7 +185,7 @@ export async function openAccounts(options: AccountsOptions): Promise<Accounts> 
       throw error;
     }
     const accounts = new Accounts(db, secret, options.token);
-    if (options.owner) await accounts.makeOwner(options.owner.email, ownerPassword!);
+    if (options.owner) await accounts.makeOwner(options.owner.email);
     return accounts;
   } catch (error) {
     db.close();
@@ -186,6 +198,8 @@ export class Accounts {
   private site: { baseUrl: string; origin: string; origins: string[]; cookie: string } | undefined;
   private setupCode: { code: string; until: number; tries: number } | null = null;
   private settingUp = false;
+  /** Sign-ins serve asked for and has not verified yet, by nonce: each takes its token from the plugin's callback. */
+  private readonly pending = new Map<string, (token: string) => void>();
 
   /** `secret` is the library's: never a run's. */
   constructor(private readonly db: DatabaseSync, readonly secret: string, private readonly token: string) {}
@@ -196,7 +210,9 @@ export class Accounts {
   attach(baseUrl: string, port: number, loopbackDefault = false): string | null {
     const origin = new URL(baseUrl).origin;
     const origins = loopbackDefault ? [...new Set([origin, `${new URL(baseUrl).protocol}//localhost:${port}`])] : [origin];
-    this.auth = build(this.db, this.secret, { baseUrl, port, origins });
+    this.auth = build(this.db, this.secret, { baseUrl, port, origins }, (nonce, token) => {
+      if (typeof nonce === "string") this.pending.get(nonce)?.(token);
+    });
     this.site = { baseUrl, origin, origins, cookie: sessionCookie(baseUrl, port) };
     if (this.hasOwner()) return null;
     this.setupCode = { code: randomBytes(16).toString("base64url"), until: Date.now() + SETUP_TTL_MS, tries: 0 };
@@ -231,14 +247,39 @@ export class Accounts {
   }
 
   /** The owner from the environment, made at start when there is none, before the server has an address. */
-  async makeOwner(email: string, password: string): Promise<void> {
-    if (!this.hasOwner()) await this.make({ email, name: email.split("@")[0]!, password, role: "admin" }, build(this.db, this.secret), true);
+  async makeOwner(email: string): Promise<void> {
+    if (!this.hasOwner()) await this.make({ email, name: email.split("@")[0]!, role: "admin" }, build(this.db, this.secret), true);
   }
 
-  private async make(person: NewPerson, auth: Auth, owner: boolean): Promise<{ id: string }> {
-    const { user } = await auth.api.createUser({ body: { email: person.email, name: person.name, password: person.password, role: person.role } });
+  /** The admin plugin's createUser with no password makes the user and no credential account: nobody's hash is kept. */
+  private async make(person: NewPerson, auth: Auth, owner: boolean): Promise<{ id: string; email: string }> {
+    const { user } = await auth.api.createUser({ body: { email: person.email, name: person.name, role: person.role } });
     if (owner) await (await auth.$context).internalAdapter.updateUser(user.id, { owner: true });
-    return { id: user.id };
+    return { id: user.id, email: user.email };
+  }
+
+  /** Signs in the person with `email`, who must exist, through the library's own magic-link sign-in run server-side:
+   *  its Set-Cookie lines. The token never leaves this call. */
+  async signIn(email: string, req?: IncomingMessage): Promise<string[]> {
+    const { auth } = this.ready();
+    const headers = signInHeaders(req);
+    const nonce = randomBytes(16).toString("base64url");
+    let token: string | undefined;
+    this.pending.set(nonce, (given) => void (token = given));
+    try {
+      await auth.api.signInMagicLink({ body: { email, metadata: { nonce } }, headers });
+    } finally {
+      this.pending.delete(nonce);
+    }
+    if (token === undefined) throw new Error("the sign-in made no token");
+    const verified = await auth.api.magicLinkVerify({ query: { token }, headers, returnHeaders: true }).catch((error: { headers?: Headers; message?: string }) => {
+      // The plugin refuses by redirecting to an error page; its reason is in the address.
+      const location = error.headers?.get?.("location");
+      throw new Error(`the sign-in was refused: ${(location && new URL(location, "http://serve").searchParams.get("error")) || error.message || "unknown"}`);
+    });
+    const cookies = verified.headers.getSetCookie();
+    if (!cookies.length) throw new Error("the sign-in set no session cookie");
+    return cookies;
   }
 
   // ---- who is asking ----------------------------------------------------------------------------------------------
@@ -292,8 +333,6 @@ export class Accounts {
         const extra = Object.keys(value).filter((key) => key !== "name");
         if (extra.length) throw invalid(extra.map((key) => ({ field: key, reason: "not_allowed", message: `update-user sets the name only; ${key} is not one of yours to set.` })));
       }
-      // A new password ends every other session of the person.
-      if (path === "/change-password") value.revokeOtherSessions = true;
       body = JSON.stringify(value);
     }
     const answer = await auth.handler(new Request(`${baseUrl}${raw}${search}`, { method, headers: headersOf(req), ...(body === undefined ? {} : { body }) }));
@@ -318,7 +357,8 @@ export class Accounts {
 
   // ---- setup --------------------------------------------------------------------------------------------------------
 
-  /** POST /v2/setup: the owner, made with the code from the server's log (or the token as a Bearer), and signed in. */
+  /** POST /v2/setup {code, name, email}: the owner, made with the code from the server's log (or the token as a Bearer),
+   *  and signed in on the 201. */
   async setup(req: IncomingMessage, res: ServerResponse): Promise<{ status: number; body: unknown }> {
     const { origins } = this.ready();
     const bearer = req.headers.authorization;
@@ -339,19 +379,17 @@ export class Accounts {
     const { auth } = this.ready();
     if (!isJson(req)) throw new ApiError("unsupported_media_type", "the body must be application/json");
     const body = await jsonBody(req);
-    const issues: InputIssue[] = Object.keys(body).filter((key) => !["code", "name", "email", "password"].includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
-    const { name, email, password } = body;
+    const issues: InputIssue[] = Object.keys(body).filter((key) => !["code", "name", "email"].includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: key === "password" ? "This server keeps no passwords." : `The body keeps no field ${key}.` }));
+    const { name, email } = body;
     if (typeof name !== "string" || !name.trim() || name.length > 100) issues.push({ field: "name", reason: name === undefined ? "missing" : "wrong_type", message: "name is 1 to 100 characters" });
     if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) issues.push({ field: "email", reason: email === undefined ? "missing" : "wrong_type", message: "email is an email address" });
-    if (typeof password !== "string" || password.length < MIN_PASSWORD || password.length > MAX_PASSWORD) issues.push({ field: "password", reason: password === undefined ? "missing" : "too_short", message: `password is ${MIN_PASSWORD} to ${MAX_PASSWORD} characters` });
     if (issues.length) throw invalid(issues);
     // A refused form keeps the code; a matching code is spent here, before the owner is made.
     if (!byToken) this.spendCode(body.code);
-    const { id } = await this.make({ email: email as string, name: (name as string).trim(), password: password as string, role: "admin" }, auth, true);
+    const made = await this.make({ email: email as string, name: (name as string).trim(), role: "admin" }, auth, true);
     this.setupCode = null;
-    const signedIn = await auth.api.signInEmail({ body: { email: email as string, password: password as string }, headers: headersOf(req), returnHeaders: true });
-    for (const cookie of signedIn.headers.getSetCookie()) res.appendHeader("set-cookie", cookie);
-    return { status: 201, body: this.view(this.row(id)!) };
+    for (const cookie of await this.signIn(made.email, req)) res.appendHeader("set-cookie", cookie);
+    return { status: 201, body: this.view(this.row(made.id)!) };
   }
 
   private spendCode(given: unknown): void {

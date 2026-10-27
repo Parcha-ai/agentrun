@@ -7,17 +7,15 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { ACCOUNT_ROUTES, permits, ROUTE_ROLES, ROUTES } from "../dist/server.js";
-import { asPerson, call, client, FAUX, follow, OWNER, scratch, signIn, withOwner } from "./support.mjs";
+import { asPerson, call, client, FAUX, follow, OWNER, scratch, withOwner } from "./support.mjs";
 
-const BO = { email: "bo@example.com", name: "Bo", password: "bo's long password" };
+const BO = { email: "bo@example.com", name: "Bo" };
 
 /** The owner's server with Bo, a member, signed in. */
 async function withMember(t) {
   const server = await withOwner(t);
   const { id } = await server.addPerson({ ...BO, role: "member" });
-  const { res, cookie } = await signIn(server, BO.email, BO.password);
-  assert.equal(res.status, 200, res.text);
-  return { ...server, bo: id, boCookie: cookie };
+  return { ...server, bo: id, boCookie: await server.signInAs(BO.email) };
 }
 
 test("one table names every route's least role; a route it does not name is denied to everyone, admins included", () => {
@@ -69,8 +67,7 @@ test("an admin changes a role or disables a person, which ends all their session
   const promoted = await ana("PATCH", `/people/${server.bo}`, { role: "admin" });
   assert.deepEqual([promoted.status, promoted.json.role], [200, "admin"]);
   assert.equal((await call(server.port, { path: "/v2/me", headers: { cookie: server.boCookie } })).status, 401, "a role change ends the person's sessions");
-  const again = await signIn(server, BO.email, BO.password);
-  const bo = asPerson(server, again.cookie);
+  const bo = asPerson(server, await server.signInAs(BO.email));
   assert.equal((await bo("GET", "/people")).status, 200, "the new session carries the new role");
   for (const body of [{ role: "member" }, { disabled: true }]) {
     const res = await bo("PATCH", `/people/${server.owner.id}`, body);
@@ -80,31 +77,32 @@ test("an admin changes a role or disables a person, which ends all their session
   const disabled = await ana("PATCH", `/people/${server.bo}`, { disabled: true });
   assert.deepEqual([disabled.status, disabled.json.disabled], [200, true]);
   assert.equal((await bo("GET", "/me")).status, 401, "disabling ends the person's sessions");
-  const refused = await signIn(server, BO.email, BO.password);
-  assert.equal(refused.res.status, 403, "and they cannot sign in");
-  assert.equal(refused.cookie, "");
+  await assert.rejects(server.signInAs(BO.email), /banned/i, "and they cannot sign in");
+  const db = new DatabaseSync(join(server.data, "auth.sqlite"), { readOnly: true });
+  t.after(() => db.close());
+  assert.equal(db.prepare("SELECT count(*) AS n FROM session WHERE userId = ?").get(server.bo).n, 0, "no session was made");
   const enabled = await ana("PATCH", `/people/${server.bo}`, { disabled: false });
   assert.deepEqual([enabled.status, enabled.json.disabled, enabled.json.role], [200, false, "admin"]);
 });
 
 test("a member cannot make themselves more through any endpoint the library serves: role, owner, banned and emailVerified stay the server's", async (t) => {
   const server = await withMember(t);
-  const raise = { role: "admin", owner: true, banned: false, emailVerified: true, banReason: "x" };
-  const first = await signIn(server, BO.email, BO.password, raise);
-  assert.equal(first.res.status, 200);
+  const db = new DatabaseSync(join(server.data, "auth.sqlite"), { readOnly: true });
+  t.after(() => db.close());
+  const row = () => ({ ...db.prepare(`SELECT name, role, owner, banned, banReason, emailVerified FROM "user" WHERE id = ?`).get(server.bo) });
+  const before = row();
+  const raise = { role: "admin", owner: true, banned: false, emailVerified: !before.emailVerified, banReason: "x" };
+  const other = await server.signInAs(BO.email);
   const bo = (path, body, cookie = server.boCookie) => call(server.port, { method: "POST", path: `/v2/auth${path}`, headers: { cookie, origin: server.origin, "content-type": "application/json" }, body });
   const update = await bo("/update-user", { name: "Bob", ...raise });
   assert.deepEqual([update.status, update.json.error.code, update.json.error.fields.map((f) => f.field).sort()], [422, "input_invalid", ["banReason", "banned", "emailVerified", "owner", "role"]]);
   assert.equal((await bo("/update-user", { name: "Bob" })).status, 200, "the name is theirs to set");
-  const changed = await bo("/change-password", { currentPassword: BO.password, newPassword: "bo's newer long password", ...raise });
-  assert.equal(changed.status, 200, changed.text);
-  assert.equal((await call(server.port, { path: "/v2/me", headers: { cookie: first.cookie } })).status, 401, "a new password ends the person's other sessions");
-  const now = changed.headers["set-cookie"].map((line) => line.split(";")[0]).join("; ");
-  for (const path of ["/revoke-other-sessions", "/sign-out"]) assert.ok([200, 400].includes((await bo(path, { token: "none", ...raise }, now)).status), path);
-  const db = new DatabaseSync(join(server.data, "auth.sqlite"), { readOnly: true });
-  t.after(() => db.close());
-  const row = db.prepare(`SELECT name, role, owner, banned, banReason, emailVerified FROM "user" WHERE id = ?`).get(server.bo);
-  assert.deepEqual({ ...row }, { name: "Bob", role: "member", owner: 0, banned: 0, banReason: null, emailVerified: 0 });
+  const revoked = await bo("/revoke-other-sessions", { token: "none", ...raise });
+  assert.equal(revoked.status, 200, revoked.text);
+  assert.equal((await call(server.port, { path: "/v2/me", headers: { cookie: other } })).status, 401, "it ended Bo's other session");
+  assert.equal((await bo("/sign-out", { token: "none", ...raise })).status, 200);
+  assert.deepEqual(row(), { ...before, name: "Bob" });
+  assert.deepEqual([row().role, row().owner, row().banned], ["member", 0, 0]);
 });
 
 test("who did it: every change to an agent or a run is kept with the principal that authenticated it, shown on the revision list and the activity routes, never on the contract's answers", async (t) => {

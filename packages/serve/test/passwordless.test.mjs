@@ -79,3 +79,28 @@ test("the setup and sign-in pages and their scripts ask for no password; the sig
     assert.doesNotMatch(text, /password/i, path);
   }
 });
+
+test("the server-side sign-in signs in only a person who exists, spends its one token, and leaves nothing of it in the log or the database", async (t) => {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => void (process.stderr.write = write));
+  const server = await serve(t, { accounts: true, log: (line) => void lines.push(line) });
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, authorization: `Bearer ${server.token}` }, body: { name: "Ana", email: "Ana@Example.com" } });
+  assert.equal(made.status, 201, made.text);
+  assert.equal(made.json.email, "ana@example.com");
+  const again = await server.signInAs("ana@example.com");
+  await assert.rejects(server.signInAs("nobody@example.com"), /refused: new_user_signup_disabled/);
+  const db = new DatabaseSync(join(server.data, "auth.sqlite"), { readOnly: true });
+  t.after(() => db.close());
+  assert.deepEqual(db.prepare(`SELECT email FROM "user"`).all().map((row) => row.email), ["ana@example.com"], "nobody is made by signing in");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM verification").get().n, 0, "every sign-in token is spent");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM session").get().n, 2);
+  const tokens = [cookieOf(made), again].map((cookie) => decodeURIComponent(cookie.split("=")[1]).split(".")[0]);
+  const logged = lines.join("");
+  for (const token of tokens) assert.ok(!logged.includes(token), "no session token in the log");
+  assert.doesNotMatch(logged, /magic|verify\?token=/i);
+});

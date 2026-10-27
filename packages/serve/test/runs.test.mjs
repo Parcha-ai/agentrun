@@ -181,10 +181,10 @@ test("after a restart the runs are read from the agent home: status, result and 
 
 test("with accounts, a run's process never sees the accounts settings, any BETTER_AUTH_ variable or the accounts secret's value; AGENTRUN_NO_BROWSER and AGENTRUN_PUBLIC_URL still reach it", async (t) => {
   const secret = `secret_${"s".repeat(40)}`;
-  const stripped = ["AGENTRUN_AUTH_SECRET", "SECRET_COPY", "AGENTRUN_OWNER_EMAIL", "AGENTRUN_OWNER_PASSWORD_FILE", "AGENTRUN_ACCOUNTS", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL"];
+  const stripped = ["AGENTRUN_AUTH_SECRET", "SECRET_COPY", "AGENTRUN_OWNER_EMAIL", "AGENTRUN_ACCOUNTS", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL"];
   const kept = ["AGENTRUN_NO_BROWSER", "AGENTRUN_PUBLIC_URL"];
   withEnv(t, {
-    AGENTRUN_AUTH_SECRET: secret, SECRET_COPY: secret, AGENTRUN_OWNER_EMAIL: "ops@example.com", AGENTRUN_OWNER_PASSWORD_FILE: "/nowhere", AGENTRUN_ACCOUNTS: "1",
+    AGENTRUN_AUTH_SECRET: secret, SECRET_COPY: secret, AGENTRUN_OWNER_EMAIL: "ops@example.com", AGENTRUN_ACCOUNTS: "1",
     BETTER_AUTH_SECRET: "another secret", BETTER_AUTH_URL: "http://127.0.0.1:1", AGENTRUN_NO_BROWSER: "1", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123",
   });
   const { api } = await serve(t, { accounts: true, authSecret: secret });

@@ -3,13 +3,13 @@
 // rate limits per client address, and the setup and sign-in pages.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { call, client, cookieOf, FAUX, follow, OWNER, SHAPES, scratch, serve, shapesOf, signIn, startRun, withOwner } from "./support.mjs";
+import { call, client, cookieOf, FAUX, follow, OWNER, SHAPES, scratch, serve, shapesOf, startRun, withOwner } from "./support.mjs";
 
 const json = { "content-type": "application/json" };
 const DAY_MS = 86_400_000;
@@ -158,29 +158,31 @@ test("the server's token as the Bearer stands in for the code, for scripts: no O
   assert.equal(two.setupUrl, undefined, "no setup code once there is an owner");
 });
 
-test("headless: AGENTRUN_OWNER_EMAIL with AGENTRUN_OWNER_PASSWORD_FILE makes the owner at start, and a password under 12 characters stops the start", async (t) => {
+test("headless: AGENTRUN_OWNER_EMAIL alone makes the owner at start, once; an address that is no email stops the start", async (t) => {
   const dir = await scratch(t);
-  const passwordFile = join(dir, "owner-password");
-  await writeFile(passwordFile, "kept out of the environment\n");
-  const server = await serve(t, { accounts: true, owner: { email: "ops@example.com", passwordFile } });
-  assert.equal(server.setupUrl, undefined);
-  const people = await call(server.port, { path: "/v2/people", headers: { authorization: `Bearer ${server.token}` } });
-  assert.deepEqual(people.json.people.map((p) => [p.email, p.role, p.owner]), [["ops@example.com", "admin", true]]);
-  const { res } = await signIn({ port: server.port, origin: `http://127.0.0.1:${server.port}` }, "ops@example.com", "kept out of the environment");
-  assert.equal(res.status, 200, "the file's last newline is not part of the password");
-  assert.equal((await call(server.port, { path: "/setup" })).headers.location, "/sign-in");
-  await writeFile(passwordFile, "too short\n");
-  await assert.rejects(started(t, join(dir, "other"), { owner: { email: "ops@example.com", passwordFile } }), /12/);
-  await assert.rejects(started(t, join(dir, "third"), { owner: { email: "ops@example.com", passwordFile: join(dir, "missing") } }), /AGENTRUN_OWNER_PASSWORD_FILE/);
+  const data = join(dir, "agents");
+  const one = await started(t, data, { owner: { email: "ops@example.com" } });
+  assert.equal(one.setupUrl, undefined);
+  const people = async (server) => (await call(server.port, { path: "/v2/people", headers: { authorization: `Bearer ${server.token}` } })).json.people.map((p) => [p.email, p.role, p.owner]);
+  assert.deepEqual(await people(one), [["ops@example.com", "admin", true]]);
+  const me = await call(one.port, { path: "/v2/me", headers: { cookie: await one.signInAs("ops@example.com") } });
+  assert.deepEqual([me.status, me.json.email, me.json.owner], [200, "ops@example.com", true]);
+  assert.equal((await call(one.port, { path: "/setup" })).headers.location, "/sign-in");
+  await one.close();
+  const two = await started(t, data, { owner: { email: "someone-else@example.com" } });
+  assert.deepEqual(await people(two), [["ops@example.com", "admin", true]], "an owner is made only when there is none");
+  await assert.rejects(started(t, join(dir, "other"), { owner: { email: "not an email" } }), /email/i);
 });
 
-test("the bin with AGENTRUN_ACCOUNTS=1 prints the setup link; an owner email without its password file, or a non-loopback address without AGENTRUN_PUBLIC_URL, stops it", { timeout: 30_000 }, async (t) => {
+test("the bin with AGENTRUN_ACCOUNTS=1 prints the setup link, none with AGENTRUN_OWNER_EMAIL; a non-loopback address without AGENTRUN_PUBLIC_URL stops it", { timeout: 30_000 }, async (t) => {
   const dir = await scratch(t);
   const on = await bin(t, ["--data", join(dir, "a"), "--port", "0"], { AGENTRUN_ACCOUNTS: "1" }, /Set up this server: .*\n/);
   assert.match(on.out, /^Set up this server: http:\/\/127\.0\.0\.1:\d+\/setup#code=[A-Za-z0-9_-]{22}$/m, on.out);
-  const half = await bin(t, ["--data", join(dir, "b"), "--port", "0"], { AGENTRUN_ACCOUNTS: "1", AGENTRUN_OWNER_EMAIL: "ops@example.com", AGENTRUN_OWNER_PASSWORD_FILE: "" });
-  assert.equal(half.code, 2, half.err);
-  assert.match(half.err, /AGENTRUN_OWNER_PASSWORD_FILE/);
+  const owned = await bin(t, ["--data", join(dir, "b"), "--port", "0"], { AGENTRUN_ACCOUNTS: "1", AGENTRUN_OWNER_EMAIL: "ops@example.com" });
+  assert.equal(owned.code, null, owned.err);
+  assert.doesNotMatch(owned.out, /Set up this server/);
+  const db = authDb(t, join(dir, "b"));
+  assert.deepEqual(db.prepare(`SELECT email, owner FROM "user"`).all().map((row) => [row.email, row.owner]), [["ops@example.com", 1]]);
   const open = await bin(t, ["--data", join(dir, "c"), "--port", "0", "--listen", "0.0.0.0"], { AGENTRUN_ACCOUNTS: "1", AGENTRUN_PUBLIC_URL: "" });
   assert.equal(open.code, 1, open.err);
   assert.match(open.err, /AGENTRUN_PUBLIC_URL/);
@@ -203,21 +205,22 @@ test("every link and the cookie come from the address fixed at start, never from
   const [pair, ...attributes] = line.split("; ");
   assert.match(pair, /^__Host-agentrun-session=/);
   assert.deepEqual(attributes.sort(), ["HttpOnly", "Max-Age=604800", "Path=/", "SameSite=Strict", "Secure"]);
-  const signedIn = await signIn({ port: server.port, origin: `http://127.0.0.1:${server.port}` }, OWNER.email, OWNER.password);
-  assert.equal(signedIn.res.status, 403, "the library trusts only the fixed origin");
-  const local = await signIn({ port: server.port, origin: `http://localhost:${server.port}` }, OWNER.email, OWNER.password);
-  assert.equal(local.res.status, 403, "with a public URL, localhost is not an origin either");
+  const out = (origin) => call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...json, host: "evil.example", origin, cookie: cookieOf(made) }, body: {} });
+  assert.equal((await out(`http://127.0.0.1:${server.port}`)).status, 403, "only the fixed origin may write");
+  assert.equal((await out(`http://localhost:${server.port}`)).status, 403, "with a public URL, localhost is not an origin either");
+  assert.equal((await out(publicUrl)).status, 200);
 });
 
 test("on plain http the cookie is agentrun-<port>-session: HttpOnly, SameSite=Strict, Path=/, no Domain; every sign-in makes a new session", async (t) => {
   const server = await withOwner(t);
-  const [pair, ...attributes] = (await signIn(server, OWNER.email, OWNER.password)).res.headers["set-cookie"][0].split("; ");
+  assert.equal(server.setCookie.length, 1);
+  const [pair, ...attributes] = server.setCookie[0].split("; ");
   assert.match(pair, new RegExp(`^agentrun-${server.port}-session=`));
   assert.deepEqual(attributes.sort(), ["HttpOnly", "Max-Age=604800", "Path=/", "SameSite=Strict"]);
-  const second = await signIn(server, OWNER.email, OWNER.password);
-  assert.notEqual(second.cookie, pair);
-  assert.notEqual(second.cookie, server.cookie);
-  for (const cookie of [pair, second.cookie]) assert.equal((await call(server.port, { path: "/v2/me", headers: { cookie } })).status, 200);
+  const second = await server.signInAs(OWNER.email);
+  assert.match(second, new RegExp(`^agentrun-${server.port}-session=[^;]+$`));
+  assert.notEqual(second, pair);
+  for (const cookie of [pair, second]) assert.equal((await call(server.port, { path: "/v2/me", headers: { cookie } })).status, 200);
 });
 
 test("a session lasts 7 days idle, each use a day or more on moves it, and serve refuses and deletes one older than 30 days", async (t) => {
@@ -234,15 +237,15 @@ test("a session lasts 7 days idle, each use a day or more on moves it, and serve
   const old = await call(server.port, { path: "/v2/me", headers: { cookie: server.cookie } });
   assert.deepEqual([old.status, old.json.error.code], [401, "unauthenticated"]);
   assert.equal(row(), undefined, "deleted");
-  const second = await signIn(server, OWNER.email, OWNER.password);
-  const secondToken = decodeURIComponent(second.cookie.split("=")[1]).split(".")[0];
+  const second = await server.signInAs(OWNER.email);
+  const secondToken = decodeURIComponent(second.split("=")[1]).split(".")[0];
   db.prepare("UPDATE session SET createdAt = ? WHERE token = ?").run(new Date(Date.now() - 31 * DAY_MS).toISOString(), secondToken);
-  const library = await call(server.port, { path: "/v2/auth/get-session", headers: { cookie: second.cookie } });
+  const library = await call(server.port, { path: "/v2/auth/get-session", headers: { cookie: second } });
   assert.deepEqual([library.status, library.json], [200, null], "the library's own endpoints never see it either");
   assert.equal(db.prepare("SELECT count(*) AS n FROM session WHERE token = ?").get(secondToken).n, 0);
 });
 
-test("under /v2/auth only the allowlisted endpoints answer, each on its one method; every other path, sign-up and the admin routes among them, is a 404", async (t) => {
+test("under /v2/auth only the allowlisted endpoints answer, each on its one method; every other path, the password and magic-link endpoints, sign-up and the admin routes among them, is a 404", async (t) => {
   const server = await withOwner(t);
   const headers = { cookie: server.cookie, origin: server.origin, ...json };
   for (const path of [
@@ -267,9 +270,8 @@ test("under /v2/auth only the allowlisted endpoints answer, each on its one meth
   const session = await call(server.port, { path: "/v2/auth/get-session", headers });
   assert.deepEqual([session.status, session.json.user.email, session.json.session.token], [200, OWNER.email, undefined]);
   assert.ok(!session.text.includes(token(server.cookie)), "get-session holds no token");
-  const again = await signIn(server, OWNER.email, OWNER.password);
-  assert.deepEqual([again.res.status, again.res.json.token], [200, undefined]);
-  assert.ok(!again.res.text.includes(token(again.cookie)), "the sign-in answer holds no token");
+  assert.ok(!server.setupText.includes(token(server.cookie)), "the setup answer that signed the owner in holds no token");
+  assert.equal("token" in server.owner, false);
 });
 
 test("one write gate in front of every route, the library's included: a cookie's write needs this server's Origin and a JSON body; a Bearer request needs neither", async (t) => {
@@ -316,20 +318,19 @@ test("the page's old cookie still works with accounts, and its writes must come 
 
 test("the library's rate limits count per client address, the socket's peer: a header a client sends never picks the bucket", async (t) => {
   const server = await withOwner(t);
-  const wrong = (from, i) => call(server.port, { method: "POST", path: "/v2/auth/sign-in/email", from, headers: { ...json, origin: server.origin, "x-agentrun-client-ip": `203.0.113.${i}`, "x-forwarded-for": `198.51.100.${i}` }, body: { email: OWNER.email, password: "not the password" } });
+  const ask = (from, i) => call(server.port, { path: "/v2/auth/get-session", from, headers: { cookie: server.cookie, "x-agentrun-client-ip": `203.0.113.${i % 250}`, "x-forwarded-for": `198.51.100.${i % 250}` } });
+  // The library's default: 100 requests to a path in 10 s from one address.
   const statuses = [];
-  for (let i = 0; i < 5; i++) statuses.push((await wrong("127.0.0.1", i)).status);
-  assert.ok(statuses.includes(429), `${statuses}`);
-  assert.equal(statuses[3], 429, `the fourth in 10 s, whatever X-Forwarded-For says: ${statuses}`);
-  assert.equal(statuses.at(-1), 429);
-  assert.equal((await wrong("127.0.0.2", 9)).status, 401, "another address has its own bucket");
+  for (let i = 0; i < 102; i++) statuses.push((await ask("127.0.0.1", i)).status);
+  assert.deepEqual([statuses.indexOf(429), statuses.at(-1)], [100, 429], `the 101st in 10 s, whatever the headers say: ${statuses.filter((s) => s === 429).length} refused`);
+  assert.equal((await ask("127.0.0.2", 9)).status, 200, "another address has its own bucket");
   assert.ok(authDb(t, server.data).prepare(`SELECT count(*) AS n FROM "rateLimit"`).get().n > 0, "kept in the accounts database");
 });
 
 test("the setup and sign-in pages: static, CSP 'self', no inline script; a browser that is not signed in gets setup with no owner, sign-in after; a session gets the page", async (t) => {
   const server = await serve(t, { accounts: true });
   const page = (path, headers) => call(server.port, { path, headers });
-  for (const path of ["/setup.js", "/sign-in.js", "/account.css"]) {
+  for (const path of ["/setup.js", "/account.css"]) {
     const file = await page(path);
     assert.equal(file.status, 200, path);
     assert.match(file.headers["content-security-policy"], /script-src 'self'/);
@@ -350,10 +351,8 @@ test("the setup and sign-in pages: static, CSP 'self', no inline script; a brows
   const signInPage = await page("/sign-in");
   assert.equal(signInPage.status, 200);
   assert.match((await page("/")).text, /<h1>Sign in<\/h1>/);
-  for (const html of [setupPage.text, signInPage.text]) {
-    assert.doesNotMatch(html, /<style|\sstyle=|\son[a-z]+=|https?:|<script>/i);
-    assert.match(html, /<script src="\/(setup|sign-in)\.js"><\/script>/);
-  }
+  for (const html of [setupPage.text, signInPage.text]) assert.doesNotMatch(html, /<style|\sstyle=|\son[a-z]+=|https?:|<script>/i);
+  assert.match(setupPage.text, /<script src="\/setup\.js"><\/script>/);
   const signedIn = await page("/", { cookie });
   assert.equal(signedIn.status, 200);
   assert.match(signedIn.text, /data-serve="store"/);
