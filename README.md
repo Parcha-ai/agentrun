@@ -7,8 +7,7 @@ revision it ran, so you can open any run of any agent and see what it did. Host 
 your machine or your own server, or with us when hosted AgentRun opens.
 
 1. **The platform.** Your agents, each one's revisions, and every run, behind one API (`/v2`) and one page. You run
-   it yourself today; hosted by us is coming. Bring your own agent: Codex, the Claude Agent SDK and any agent in a
-   container, each run in its own sandbox. Coming.
+   it yourself today; hosted by us is coming. Bring your own agent: Codex first, more harnesses later. Coming.
 2. **[AgentRun Server](packages/serve/README.md).** The part you host: one container, `ghcr.io/parcha-ai/agentrun-server`,
    that serves the `/v2` API and the page and keeps everything in one data directory. Apache-2.0.
 3. **[Building blocks](#building-blocks).** The open packages underneath, each usable on its own in your pi agent:
