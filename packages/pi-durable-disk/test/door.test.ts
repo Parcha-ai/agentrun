@@ -673,6 +673,39 @@ describe("the door hook: turns, children and stops", () => {
     }
   });
 
+  it("a child adopted after the stop finished, by a submit that ignored its abort, is killed at once: drain and fence", async () => {
+    for (const how of ["drain", "fence"] as const) {
+      const disk = new LocalDisk(`door-after-stop-${how}`);
+      let pid = 0;
+      try {
+        const gate = deferred<void>();
+        const { hook, calls } = scripted({
+          submit: async (_input, ctx) => {
+            await gate.promise;
+            const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+            child.unref();
+            pid = child.pid!;
+            ctx.adopt(pid);
+            return { accepted: true };
+          },
+        });
+        const s = await served(disk, hook, { abortMs: 200 });
+        const answered = submit(s.server, `${how}1`);
+        await until("the hook runs", () => calls.submit.length === 1);
+        await s.server.stopDoor(how === "fence" ? { now: true } : undefined);
+        gate.resolve();
+        await answered;
+        await until("the child adopted", () => pid > 0);
+        assert.ok(await waitGone(pid, 2_000), `a child adopted after the ${how} stop's kill pass never outlives it`);
+        await s.run.release();
+        await s.server.close();
+      } finally {
+        killQuietly(pid);
+        disk.remove();
+      }
+    }
+  });
+
   it("an app that releases the run itself, or fails in onOpen, leaves no adopted child behind", async () => {
     for (const how of ["released", "failed"] as const) {
       const disk = new LocalDisk(`door-app-${how}`);
