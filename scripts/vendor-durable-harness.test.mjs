@@ -61,6 +61,18 @@ test('each planted break goes red', async () => {
       upstream.files['src/kernel/errors.ts'].declarations = [];
       await writeFile(file, JSON.stringify(upstream));
     },
+    // A matched declaration changed in place, its name kept.
+    "a matched interface member's type changed": async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).replace(/(export interface EffectRecord \{[\s\S]*?)attempt: number;/, '$1attempt: string;')),
+    'a member upstream does not have added to a matched interface': async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).replace('export interface EffectRecord {', 'export interface EffectRecord {\n  owner: string;')),
+    "a matched class's body changed": async (dir) => writeFile(join(dir, 'src/kernel/errors.ts'), (await readFile(join(dir, 'src/kernel/errors.ts'), 'utf8')).replace('this.name = "EffectFailure";', 'this.name = "Failure";')),
   };
   for (const [name, plant] of Object.entries(planted)) assert.ok((await provenanceProblems(await copy(plant))).length > 0, `${name} was not caught`);
+});
+
+test('a comparison that cannot run fails closed: a missing or erroring diff is an error, never zero changed lines', async () => {
+  await assert.rejects(changedLines(packageDir, { diff: join(scratch, 'no-such-diff') }), /diff/);
+  // A program that exits with an error (not diff's 1 for "the files differ").
+  await assert.rejects(changedLines(packageDir, { diff: process.execPath }), /diff/);
+  // diff itself still counts: a copy that differs is not an error.
+  assert.ok(Object.values(await changedLines(packageDir)).some((n) => n > 0));
 });
