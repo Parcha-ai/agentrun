@@ -268,3 +268,11 @@ test("a sign-in from a new address when the limit's table is full is a 429 at th
   assert.deepEqual([full.status, full.json.error?.code, full.headers["retry-after"], full.headers["set-cookie"]], [429, "rate_limited", "900", undefined], full.text);
   assert.ok(lines.some((line) => / event=auth_failed route=\/v2\/auth\/sign-in reason=sign_in_table_full$/.test(line)), lines.join("\n"));
 });
+
+test("the sign-in page's forgot line names the data directory: reset-password --data DIR, and the image's /data", async (t) => {
+  const server = await owned(t);
+  const page = await call(server.port, { path: "/sign-in" });
+  assert.equal(page.status, 200);
+  assert.match(page.text, /agentrun-serve reset-password --data DIR/);
+  assert.match(page.text, /reset-password --data \/data/);
+});
