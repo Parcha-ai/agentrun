@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,41 @@ async function started(name: string, flags: string[], env: Record<string, string
 }
 
 describe("the door hook through the CLI", () => {
+  it("an instance killed while its hook holds an input: the next instance answers that requestId UNKNOWN and never calls the hook again", { timeout: 90_000 }, async () => {
+    const dir = scratchRoot("door-cli-kill");
+    let pid = 0;
+    const instances: ReturnType<typeof instance>[] = [];
+    try {
+      const out = join(dir.root, "out");
+      mkdirSync(out);
+      const root = join(dir.root, "run");
+      const submitTo = (url: string, signal?: AbortSignal) =>
+        fetch(new URL("/submit", url), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: "k1", content: "hello" }), ...(signal ? { signal } : {}) });
+      const first = instance(root, out, [], { PDA_DOOR_HANG: "1" });
+      instances.push(first);
+      const up = await until("the first instance's serve address", () => first.events.find((e) => e.event === "running"), 30_000);
+      const gone = new AbortController();
+      void submitTo(up.serve as string, gone.signal).catch(() => undefined);
+      await until("the hook's call", () => existsSync(join(out, "child.pid")), 10_000);
+      pid = Number(readFileSync(join(out, "child.pid"), "utf8"));
+      first.kill();
+      await first.exited;
+      gone.abort();
+      const second = instance(root, out, [], {});
+      instances.push(second);
+      const again = await until("the second instance's serve address", () => second.events.find((e) => e.event === "running"), 30_000);
+      const res = await submitTo(again.serve as string);
+      const body = (await res.json()) as { status: string; message: string };
+      assert.deepEqual([res.status, body.status], [504, "UNKNOWN"], second.stderr());
+      assert.match(body.message, /whether the hook took it is unknown/);
+      assert.deepEqual(readFileSync(join(out, "calls"), "utf8").split("\n").filter(Boolean), ["k1"], "the hook was called once, by the killed instance");
+    } finally {
+      for (const i of instances) i.kill();
+      killQuietly(pid);
+      dir.remove();
+    }
+  });
+
   it("a submit reaches the app's hook in the instance; SIGTERM with a stuck hook.abort drains, exits 0 and leaves no child", { timeout: 60_000 }, async () => {
     const s = await started("door-cli-term", [], { PDA_DOOR_BUSY: "1", PDA_DOOR_ABORT: "stuck" });
     try {

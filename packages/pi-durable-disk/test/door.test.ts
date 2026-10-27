@@ -219,6 +219,14 @@ describe("the door hook: admission", () => {
       assert.deepEqual((await doorEntries(run)).map((e) => [e.kind, e.data.status]), [["door.input", "ADMITTED"]]);
       await run.release();
       await server.close();
+      // The next instance answers that record UNKNOWN: the hook may or may not have been called, and never is again.
+      const next = scripted();
+      const s = await served(disk, next.hook);
+      const retried = await submit(s.server, "late-fence");
+      assert.deepEqual([retried.status, retried.body.status], [504, "UNKNOWN"]);
+      assert.equal(next.calls.submit.length, 0);
+      await s.run.release();
+      await s.server.close();
     } finally {
       disk.remove();
     }
@@ -310,7 +318,7 @@ describe("the door hook: outcomes", () => {
     }
   });
 
-  it("UNKNOWN and ADMITTED records outlive the process: the next incarnation answers them and never calls submit for them", async () => {
+  it("UNKNOWN and ADMITTED records outlive the process: the next incarnation answers both UNKNOWN and never calls submit for them", async () => {
     const disk = new LocalDisk("door-restart");
     try {
       const one = scripted({ submit: () => new Promise(() => {}) });
@@ -318,7 +326,7 @@ describe("the door hook: outcomes", () => {
       assert.equal((await submit(a.server, "unknown")).status, 504);
       await a.run.release();
       await a.server.close();
-      // A process that dies while its hook holds the input leaves the record ADMITTED.
+      // A process that goes away while its hook holds the input leaves the record ADMITTED, which no one now serves.
       const two = scripted({ submit: () => new Promise(() => {}) });
       const b = await served(disk, two.hook, { submitMs: 60_000 });
       const pending = submit(b.server, "admitted").catch(() => undefined);
@@ -332,7 +340,8 @@ describe("the door hook: outcomes", () => {
       const unknown = await submit(c.server, "unknown");
       assert.deepEqual([unknown.status, unknown.body.status], [504, "UNKNOWN"]);
       const admitted = await submit(c.server, "admitted");
-      assert.deepEqual([admitted.status, admitted.body.status, admitted.body.generation], [202, "ADMITTED", 3]);
+      assert.deepEqual([admitted.status, admitted.body.error, admitted.body.status], [504, "UNKNOWN", "UNKNOWN"], "an earlier instance's ADMITTED is not a hook running here");
+      assert.match(admitted.body.message, /admitted by an earlier instance, or before the lease was lost: whether the hook took it is unknown/);
       assert.equal(three.calls.submit.length, 0, "the resume submitted nothing again");
       await c.run.release();
       await c.server.close();
