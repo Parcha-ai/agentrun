@@ -102,6 +102,28 @@ test("Learn builds on the agent's current revision: an edit made since the run i
   assert.deepEqual([newest.definition.instructions, newest.definition.tools], ["Answer briefly.", ["learn", "read"]]);
 });
 
+test("a learned revision is exactly as runnable as its source: Learn adds skills, which change no blocker or warning, so it skips the save check", async (t) => {
+  const { blockersOf } = await import("../dist/runnable.js");
+  const { api } = await serve(t);
+  const runId = await ran(api, "kept", "Learn the rate limit.", { tools: ["learn"] });
+  // The source: the current revision, with a tool this host binds but whose variables it does not set (a warning).
+  const edit = await api("PUT", "/agents/kept/definition", { definition: { instructions: "Answer.", tools: ["learn", "browser"] } });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  const source = (await api("GET", "/agents/kept")).body.definition;
+  const learned = await api("POST", "/agents/kept/learn", { run_id: runId });
+  assert.equal(learned.status, 201, JSON.stringify(learned.body));
+  const made = (await api("GET", "/agents/kept")).body.definition;
+  assert.notDeepEqual(made.skills, source.skills, "the learned revision differs from its source by its skills");
+  // The whole definition, as serve hands a revision to the check: a check that came to read skills would see them.
+  const shape = (definition) => ({ kind: "agentic", ...definition });
+  for (const env of [{}, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" }]) {
+    const [before, after] = [await blockersOf(env, shape(source)), await blockersOf(env, shape(made))];
+    assert.deepEqual(after, before, JSON.stringify(env));
+  }
+  const warned = await blockersOf({}, shape(source));
+  assert.ok(warned.some((b) => b.reason === "not_set_up_here" && b.host), "the case with a warning is a real one");
+});
+
 /** One request with every header the caller names, Host and Origin included (fetch sets those itself). */
 function call(port, { method = "GET", path, headers = {}, body }) {
   return new Promise((resolve, reject) => {
