@@ -38,7 +38,9 @@ export type EffectRequest = {
 export type EffectVerdict = { irreversible: number; telemetry: number; queryOnly: number };
 
 export type Decisions = {
-  classifyPage?(page: PageForJudgment): Promise<PageVerdict>;
+  /** `signal`, when given, is aborted when the answer is no longer wanted (a search's snippet screen ran out of time or the run was
+   *  cancelled): a judge that honors it stops paying for work nobody reads. */
+  classifyPage?(page: PageForJudgment, signal?: AbortSignal): Promise<PageVerdict>;
   judgeEffect?(request: EffectRequest): Promise<EffectVerdict | null>;
   /** Under the `ask` policy: approve a held request. Absent, unanswered within `batchTimeoutMs` or cut, it is refused. */
   approveEffect?(request: EffectRequest, verdict: EffectVerdict | null): Promise<boolean>;

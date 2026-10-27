@@ -236,6 +236,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/pi-agent-learn`](packages/pi-agent-learn/README.md) | An agent that learns in its own git repository: notes curated into commits on `main`, a `<learned>` section read at a fixed commit, saved workflows promoted and demoted on receipts; start at [`examples/agent-learn`](examples/agent-learn/README.md) (`npm run demo:learn`, no key) |
 | [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one pack. An agent's sign-ins are saved in its home, so its next run starts signed in |
 | [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked |
+| [`@parcha/agentrun-adapters`](packages/run-adapters/README.md) | Held, not on npm yet. The seam for agent harnesses other than Pi, starting with Codex: `createHarnessRunner` runs a DSL node on a harness adapter, durable in AgentRun's own store |
 
 Every published package is at one version under npm's `beta` dist-tag; `npm view @parcha/agentrun-dsl dist-tags` prints it. The status column of [Use one piece](#use-one-piece) says which packages are published. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#contracts-and-limits).
 
@@ -244,3 +245,17 @@ Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps
 For development setup and checks, see [Contributing](CONTRIBUTING.md). [Open an issue](https://github.com/Parcha-ai/agentrun/issues) for bugs or proposals.
 
 Code and documentation use [Apache-2.0](LICENSE). Copyright 2026 Parcha Labs, Inc. Dependencies retain their own licenses. Built by [Grep.ai](https://grep.ai).
+
+## Acknowledgements
+
+AgentRun builds on these projects. Each keeps its own license.
+
+- [Pi](https://github.com/earendil-works/pi) by Earendil Works and Mario Zechner (MIT): `@earendil-works/pi-ai`, `pi-agent-core`, `pi-coding-agent`, `pi-tui`, `pi-durable`, `chord` and `pi-codemode`, the agent loop and the durable runtime every package here runs on.
+- [Stagehand](https://github.com/browserbase/stagehand) by Browserbase (MIT): browser automation in `@parcha/pi-browser`, which also vendors part of Stagehand's facade (see [its NOTICE](packages/pi-browser/NOTICE)).
+- The [Browserbase Node SDK](https://github.com/browserbase/sdk-node) (Apache-2.0): Browserbase sessions in `@parcha/pi-browser`.
+- The [TypeSafe JavaScript SDK](https://github.com/typesafe-ai/typesafe-sdk-js) (MIT): Jev's typed decisions in `@parcha/agentrun-jev`.
+- Archil's [disk SDK](https://github.com/archil-data/archil-sdk) (MIT): the network disk under `@parcha/pi-durable-disk`.
+- The document readers in `@parcha/pi-vision`: [@hyzyla/pdfium](https://github.com/hyzyla/pdfium) (MIT, with Google's PDFium), [unpdf](https://github.com/unjs/unpdf) (MIT, with Mozilla's PDF.js), [Photon](https://github.com/silvia-odwyer/photon) (Apache-2.0), [xmldom](https://github.com/xmldom/xmldom) (MIT) and [fflate](https://github.com/101arrowz/fflate) (MIT).
+- [PDF.js](https://github.com/mozilla/pdf.js) by Mozilla (Apache-2.0), vendored in `apps/viewer` with the OpenJPEG decoder (BSD-2-Clause) and PDFium's JBIG2 decoder (BSD-3-Clause) it bundles.
+- [TypeBox](https://github.com/sinclairzx81/typebox), [Zod](https://github.com/colinhacks/zod), [undici](https://github.com/nodejs/undici), [node-html-parser](https://github.com/taoqf/node-fast-html-parser), [node-html-markdown](https://github.com/crosstype/node-html-markdown) and [htmlparser2](https://github.com/fb55/htmlparser2), all MIT.
+- [vercel-labs/durable-harness](https://github.com/vercel-labs/durable-harness) (Apache-2.0): AgentRun's durable Codex harness builds on its ideas and code. What `@parcha/agentrun-adapters` copies is listed in its `vendor/durable-harness/UPSTREAM.json` and credited in its [NOTICE](packages/run-adapters/NOTICE).

@@ -3,7 +3,7 @@
 // when there is one.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -36,6 +36,15 @@ test('the build is one classic script and the page, with a gallery of exactly th
     assert.ok(existsSync(join(out, 'site', 'recordings', id, 'events.jsonl')), `${id} is copied beside the page`);
   }
   assert.match(script, /No recordings yet\./, 'an empty gallery still says so');
+});
+
+test('the command line builds when it is run through a symlinked path, as from macOS\'s temp directory', (t) => {
+  const out = mkdtempSync(join(tmpdir(), 'viewer-link-'));
+  t.after(() => rmSync(out, { recursive: true, force: true }));
+  symlinkSync(new URL('..', import.meta.url).pathname, join(out, 'viewer'));
+  const run = spawnSync(process.execPath, [join(out, 'viewer', 'build.mjs'), join(out, 'site')], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(existsSync(join(out, 'site', 'index.html')), 'the build wrote the page');
 });
 
 test('a module imports names from the viewer\'s own modules only: no package, and no bare side-effect import', () => {

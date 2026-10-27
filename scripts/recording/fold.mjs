@@ -4,7 +4,6 @@
 // `node scripts/recording/fold.mjs <recording-dir>` prints the counters as JSON.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { counterFold, countersOf } from '../../apps/viewer/src/counters.ts';
 
 /** The events of a recording directory, parsed. */
@@ -13,7 +12,7 @@ export const readEvents = (dir) => readFileSync(join(dir, 'events.jsonl'), 'utf8
 /** The counters at the end of a recording's lines. */
 export const fold = (lines) => countersOf(lines.reduce((state, line) => (counterFold.accepts(line) ? counterFold.reduce(state, line) : state), counterFold.init()), true);
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   if (!process.argv[2]) { console.error('usage: node scripts/recording/fold.mjs <recording-dir>'); process.exit(2); }
   console.log(JSON.stringify(fold(readEvents(process.argv[2])), null, 2));
 }
