@@ -341,6 +341,19 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   never curated without a person, at start or after. A judge call that does not answer in 2 minutes, or one still out
   when the server closes, is let go: nothing is curated, and the run waits as `no_judge` (`the judge did not answer`)
   for the next start, so a hung judge never holds shutdown.
+- The learning routes, this server's own under `/v2`:
+  - `GET /runs/{id}/learning`: the run's learning state (`off` for an agent that does not learn).
+  - `GET /runs/{id}/learning/memo`: the memo, from `main` once merged, else from the run's branch.
+  - `GET /runs/{id}/learning/diff`: `proposed` (the branch against its base) or `landed` (what the merge took),
+    64 KB a file, 200 files and 1 MB in all, then `truncated`.
+  - `POST /runs/{id}/learning/approve` and `POST /runs/{id}/learning/refuse` (`{reason}`, one line): a held plan;
+    `409 not_awaiting_approval` when none waits. Who decided is the credential's, never the body's.
+  - `GET /agents/{id}/learning` (its notes, skills and workflows at `main`), `GET /agents/{id}/learning/files/{path}`
+    (one file at `main`, a plain path under 64 KB), `GET /agents/{id}/learning/log` (the merges, newest first, `limit`
+    at most 100, then `cursor`), and `POST /agents/{id}/learning/retire` (`{id, reason}`).
+  Reads come from the bare repository with git's plumbing, which takes no lock. Every text passes through the host's
+  secrets at read time, so a value made secret after a proposal reads `[redacted]`, and a file holding one shows its
+  path and `withheld` only. The memo and a file answer with their own type, `nosniff`, and a `sandbox` policy.
 - Propose and review guard every write against one list of this host's secrets: the server's token, the door token,
   `TYPESAFE_API_KEY`, and every variable whose name ends in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`.
 - The run's state records the review: `merged` with the merge and the verdict, `awaiting_approval`, and the judge's cost

@@ -3,7 +3,7 @@
 // and passes through the host's secrets at read time. The faux model; a faux screen and a scripted judge.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { learningId, renderLearning } from "@parcha/pi-agent-learn";
@@ -190,28 +190,37 @@ test("retire is a member's act: the note is retired on main and leaves the index
   assert.equal((await api("POST", "/agents/calc/learning/retire", { id, reason: "Again." })).body.status, "unchanged");
 });
 
-test("the diff is bounded: 64 KB a file, then 1 MB and 200 files in all, each marked truncated", async (t) => {
+test("the diff is bounded: 64 KB a file, 200 files, and 1 MB in all, each marked truncated", async (t) => {
   const { api, data } = await serve(t, { learning: { judge } });
   await api("POST", "/agents", agent("calc", { learning: "auto" }));
-  const runId = await learned(api, data, "calc");
-  const files = { "notes/big.md": `${"x".repeat(99)}\n`.repeat(1000) };
-  for (let i = 0; i < 210; i++) files[`notes/f${String(i).padStart(3, "0")}.md`] = `${"y".repeat(99)}\n`.repeat(60);
-  await plant(t, data, "calc", runId, files);
-  const diff = await api("GET", `/runs/${runId}/learning/diff`);
-  assert.equal(diff.status, 200);
-  assert.ok(diff.body.files.length <= 200, `${diff.body.files.length} files`);
-  assert.equal(diff.body.truncated, true);
-  assert.ok(Buffer.byteLength(JSON.stringify(diff.body)) < 1.2 * 1024 * 1024, "about 1 MB in all");
-  const big = diff.body.files.find((f) => f.path === "notes/big.md");
-  assert.ok(big && big.truncated === true && Buffer.byteLength(big.diff ?? "") <= 64 * 1024, "64 KB a file");
+  const many = await learned(api, data, "calc");
+  const tiny = {};
+  for (let i = 0; i < 205; i++) tiny[`notes/t${String(i).padStart(3, "0")}.md`] = `note ${i}\n`;
+  await plant(t, data, "calc", many, tiny);
+  const counted = await api("GET", `/runs/${many}/learning/diff`);
+  assert.equal(counted.status, 200);
+  assert.deepEqual([counted.body.files.length, counted.body.truncated], [200, true], "200 files at most");
+  const heavy = await learned(api, data, "calc");
+  const big = { "notes/big.md": `${"x".repeat(99)}\n`.repeat(1000) };
+  for (let i = 0; i < 20; i++) big[`notes/h${String(i).padStart(2, "0")}.md`] = `${"y".repeat(99)}\n`.repeat(600);
+  await plant(t, data, "calc", heavy, big);
+  const sized = await api("GET", `/runs/${heavy}/learning/diff`);
+  assert.equal(sized.body.truncated, true);
+  assert.ok(sized.body.files.length < 21, `${sized.body.files.length} files: cut at 1 MB`);
+  assert.ok(Buffer.byteLength(JSON.stringify(sized.body)) < 1.1 * 1024 * 1024, "about 1 MB in all");
+  const one = sized.body.files.find((f) => f.path === "notes/big.md");
+  assert.ok(one && one.truncated === true && Buffer.byteLength(one.diff ?? "") <= 64 * 1024, "64 KB a file");
 });
 
 test("reads are from the bare repository: 20 log and diff reads at once all answer", async (t) => {
   const { api, data } = await serve(t, { learning: { judge } });
   await api("POST", "/agents", agent("calc", { learning: "auto" }));
   const runId = await learned(api, data, "calc");
+  const dir = join(data, "agents", "calc");
+  const before = (await readdir(dir)).sort();
   const answers = await Promise.all(Array.from({ length: 20 }, (_, i) => api("GET", i % 2 ? "/agents/calc/learning/log" : `/runs/${runId}/learning/diff`)));
   assert.deepEqual(answers.map((a) => a.status), Array(20).fill(200), JSON.stringify(answers.find((a) => a.status !== 200)?.body));
+  assert.deepEqual((await readdir(dir)).sort(), before, "no clone was made to read: the reads are the bare repository's");
 });
 
 test("secrets: a note with the door token shows its path and reason only, and the token is in no answer; a value made secret after the proposal is redacted on read", async (t) => {
@@ -220,7 +229,8 @@ test("secrets: a note with the door token shows its path and reason only, and th
   const runId = await learned(first.api, first.data, "calc");
   const door = (await readFile(join(first.data, ".door-token"), "utf8")).trim();
   const late = "late-secret-value-7Qp2Lm9x";
-  await plant(t, first.data, "calc", runId, { "notes/door.md": `Knock with ${door}.\n`, "notes/late.md": `Ask for ${late} at the desk.\n` });
+  const memoText = show(bareOf(first.data, "calc"), `runs/${runId}`, `memos/${runId}.md`);
+  await plant(t, first.data, "calc", runId, { "notes/door.md": `Knock with ${door}.\n`, "notes/late.md": `Ask for ${late} at the desk.\n`, [`memos/${runId}.md`]: `${memoText}\nAsk for ${late} at the desk.\n` });
   const before = await first.api("GET", `/runs/${runId}/learning/diff`);
   assert.equal(before.status, 200, "the diff route answers");
   const doorFile = before.body.files.find((f) => f.path === "notes/door.md");
@@ -235,5 +245,8 @@ test("secrets: a note with the door token shows its path and reason only, and th
   const after = await again.api("GET", `/runs/${runId}/learning/diff`);
   const text = JSON.stringify(after.body);
   assert.equal(text.includes(late), false, "the value is a secret now, and does not come back out");
-  assert.ok(text.includes("[redacted]") || after.body.files.find((f) => f.path === "notes/late.md")?.withheld, "it is redacted or withheld");
+  assert.equal(after.body.files.find((f) => f.path === "notes/late.md")?.withheld, "secret_value", "a file holding it shows its path and the rule");
+  const memo = await again.api("GET", `/runs/${runId}/learning/memo`);
+  assert.equal(memo.body.includes(late), false, "nor out of the memo");
+  assert.match(memo.body, /Ask for \[redacted\] at the desk\./, "where it reads [redacted]");
 });
