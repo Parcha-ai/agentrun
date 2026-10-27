@@ -141,6 +141,22 @@ test("a run's first message waits for a process slower to come up than a request
   assert.equal(last.status, "completed", JSON.stringify(last));
 });
 
+test("a run whose first message never landed before the server stopped gets it from the next server, however slow its process", async (t) => {
+  const SLOW = new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname;
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s" });
+  const api = client(one.baseUrl, one.token);
+  assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // Stopped while the run's process is still loading: its first message has not reached it.
+  await one.close();
+  const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s", readyTimeoutMs: 1_000 });
+  t.after(() => two.close());
+  const { last } = await follow(client(two.baseUrl, two.token), run.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify(last));
+});
+
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
   const { data } = await serve(t);
   const zero = await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 }).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
