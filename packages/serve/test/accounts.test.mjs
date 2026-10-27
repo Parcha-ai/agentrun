@@ -49,14 +49,14 @@ async function bin(t, args, env, done = /\?token=.*\n/) {
   return { out, err, code };
 }
 
-test("accounts are on by default: the bin prints a setup link with no AGENTRUN_ACCOUNTS, none with AGENTRUN_ACCOUNTS=0, and on a non-loopback address without AGENTRUN_PUBLIC_URL it runs on its token and says why", { timeout: 60_000 }, async (t) => {
-  const on = await bin(t, ["--data", join(await scratch(t), "agents"), "--port", "0"], { AGENTRUN_ACCOUNTS: "" }, /Set up this server: .*\n/);
-  assert.match(on.out, /Set up this server: http:\/\/127\.0\.0\.1:\d+\/setup#code=/, on.err);
-  const off = await bin(t, ["--data", join(await scratch(t), "agents"), "--port", "0"], { AGENTRUN_ACCOUNTS: "0" });
-  assert.doesNotMatch(off.out, /Set up this server/);
-  const open = await bin(t, ["--data", join(await scratch(t), "agents"), "--listen", "0.0.0.0", "--port", "0"], { AGENTRUN_ACCOUNTS: "", AGENTRUN_TOKEN: "not-a-secret-not-a-secret-not-a-secret" });
-  assert.doesNotMatch(open.out, /Set up this server/);
-  assert.match(open.err, /accounts are off: on 0\.0\.0\.0, which is not loopback, set AGENTRUN_PUBLIC_URL/);
+test("accounts are on by default: with no AGENTRUN_PUBLIC_URL the bin prints the owner's account page with no code, on loopback and on 0.0.0.0; AGENTRUN_ACCOUNTS=0 turns them off", { timeout: 60_000 }, async (t) => {
+  const done = /Create the owner's account: .*\n/;
+  const on = await bin(t, ["--data", join(await scratch(t), "agents"), "--port", "0"], { AGENTRUN_ACCOUNTS: "", AGENTRUN_PUBLIC_URL: "" }, done);
+  assert.match(on.out, /^Create the owner's account: http:\/\/127\.0\.0\.1:\d+\/setup \(/m, on.err);
+  const open = await bin(t, ["--data", join(await scratch(t), "agents"), "--listen", "0.0.0.0", "--port", "0"], { AGENTRUN_ACCOUNTS: "", AGENTRUN_PUBLIC_URL: "", AGENTRUN_TOKEN: "not-a-secret-not-a-secret-not-a-secret" }, done);
+  assert.match(open.out, /^Create the owner's account: http:\/\/127\.0\.0\.1:\d+\/setup \(/m, open.err);
+  const off = await bin(t, ["--data", join(await scratch(t), "agents"), "--port", "0"], { AGENTRUN_ACCOUNTS: "0", AGENTRUN_PUBLIC_URL: "" });
+  assert.doesNotMatch(off.out, /Create the owner's account|Set up this server/);
 });
 
 test("with accounts on: auth.sqlite (WAL) and .auth-secret are 0600, each start prints a fresh 128-bit setup code, the secret is kept, and the contract's answers keep their keys", async (t) => {
@@ -184,23 +184,19 @@ test("headless: AGENTRUN_OWNER_EMAIL alone makes the owner at start, once; an ad
   await assert.rejects(started(t, join(dir, "other"), { owner: { email: "not an email" } }), /email/i);
 });
 
-test("the bin with AGENTRUN_ACCOUNTS=1 prints the setup link, none with AGENTRUN_OWNER_EMAIL; a non-loopback address without AGENTRUN_PUBLIC_URL stops it", { timeout: 30_000 }, async (t) => {
+test("the bin with AGENTRUN_PUBLIC_URL prints the setup link with its code, at the public address; none with AGENTRUN_OWNER_EMAIL", { timeout: 30_000 }, async (t) => {
   const dir = await scratch(t);
-  const on = await bin(t, ["--data", join(dir, "a"), "--port", "0"], { AGENTRUN_ACCOUNTS: "1" }, /Set up this server: .*\n/);
-  assert.match(on.out, /^Set up this server: http:\/\/127\.0\.0\.1:\d+\/setup#code=[A-Za-z0-9_-]{22}$/m, on.out);
+  const on = await bin(t, ["--data", join(dir, "a"), "--port", "0"], { AGENTRUN_ACCOUNTS: "1", AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" }, /Set up this server: .*\n/);
+  assert.match(on.out, /^Set up this server: http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22}$/m, on.out);
   const owned = await bin(t, ["--data", join(dir, "b"), "--port", "0"], { AGENTRUN_ACCOUNTS: "1", AGENTRUN_OWNER_EMAIL: "ops@example.com" });
   assert.equal(owned.code, null, owned.err);
-  assert.doesNotMatch(owned.out, /Set up this server/);
+  assert.doesNotMatch(owned.out, /Set up this server|Create the owner's account/);
   const db = authDb(t, join(dir, "b"));
   assert.deepEqual(db.prepare(`SELECT email, owner FROM "user"`).all().map((row) => [row.email, row.owner]), [["ops@example.com", 1]]);
-  const open = await bin(t, ["--data", join(dir, "c"), "--port", "0", "--listen", "0.0.0.0"], { AGENTRUN_ACCOUNTS: "1", AGENTRUN_PUBLIC_URL: "" });
-  assert.equal(open.code, 1, open.err);
-  assert.match(open.err, /AGENTRUN_PUBLIC_URL/);
 });
 
 test("every link and the cookie come from the address fixed at start, never from Host: https gives __Host-agentrun-session, Secure, and only that origin may write", async (t) => {
   const dir = await scratch(t);
-  await assert.rejects(started(t, join(dir, "a"), { host: "0.0.0.0" }), /AGENTRUN_PUBLIC_URL/);
   await assert.rejects(started(t, join(dir, "b"), { publicUrl: "https://agentrun.example.com/sub" }), /origin/);
   const publicUrl = "https://agentrun.example.com";
   const server = await serve(t, { accounts: true, host: "0.0.0.0", publicUrl });

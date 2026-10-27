@@ -88,7 +88,7 @@ test("with the cookie: the page is the store page with serve.js before page.js, 
   assert.equal(page.headers["x-content-type-options"], "nosniff");
   assert.equal(page.headers["referrer-policy"], "no-referrer");
   assert.equal(page.headers["cache-control"], "no-store");
-  assert.deepEqual([...page.text.matchAll(/<(?:script src|link rel="stylesheet" href)="([^"]+)"/g)].map((m) => m[1]), ["/page.css", "/serve.css", "/graph.js", "/serve.js", "/page.js"]);
+  assert.deepEqual([...page.text.matchAll(/<(?:script src|link rel="stylesheet" href)="([^"]+)"/g)].map((m) => m[1]), ["/page.css", "/serve.css", "/graph.js", "/serve.js", "/page.js", "/people.js"]);
   assert.match(page.text, /<html lang="en" data-serve="store">/);
   assert.doesNotMatch(page.text, /<style|\sstyle=|\son[a-z]+=|https?:|<script>/i);
   for (const route of ["/page.css", "/page.js", "/graph.js"]) assert.equal((await call(port, { path: route })).text, await readFile(STORE_PAGE_FILES[route].path, "utf8"), `${route} is pi-durable-agent's own`);
