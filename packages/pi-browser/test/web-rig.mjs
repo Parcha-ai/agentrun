@@ -22,7 +22,9 @@ export async function startFake(sites) {
         ledger.search.push(body);
         if (body.query === "limited") { res.statusCode = 429; res.end("{}"); return; }
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ results: Array.from({ length: Math.min(body.n, 3) }, (_, i) => ({ url: `https://found.example/${i}${body.query === "tokens" ? "?apikey=SEARCHSENTINEL99" : ""}`, title: `Hit ${i}`, ...(i === 0 ? { author: "A. Writer", published: "2026-09-01" } : {}), snippet: "dropped" })) }));
+        // Hit 0's snippet runs past the bound with its whitespace uncollapsed, hit 1's carries a credential in a link, hit 2 has none.
+        const snippets = [`  Hit\n\n zero   says ${"word ".repeat(200)}`, `See https://found.example/1?token=SNIPPETSENTINEL33 or [the filing](https://found.example/f?token=SNIPPETSENTINEL33) ![logo](https://cdn.example/l.png) for more`, null];
+        res.end(JSON.stringify({ results: Array.from({ length: Math.min(body.n, 3) }, (_, i) => ({ url: `https://found.example/${i}${body.query === "tokens" ? "?apikey=SEARCHSENTINEL99" : ""}`, title: `Hit ${i}`, ...(i === 0 ? { author: "A. Writer", published: "2026-09-01" } : {}), snippet: snippets[i] })) }));
         return;
       }
       ledger.fetch.push(body);

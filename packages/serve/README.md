@@ -54,6 +54,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -108,7 +109,8 @@ The banner's `Open` line is in the log of the start that made the token. On a st
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (`127.0.0.1:7340`, or `AGENTRUN_PORT`, which the printed link follows), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
-every route but `GET /v2/capabilities` still needs the token.
+every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
+`render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
 `/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
@@ -126,6 +128,33 @@ it as if it had no agents.
 To keep those agents and their runs, keep the earlier version on that data directory. To start this version, give it a
 new data directory (a new volume), or move the old homes out of the one you have. Then create the agents again, here or
 through `POST /v2/agents`. Their earlier runs stay readable where you moved them, with the earlier version.
+
+## Capacity and health
+
+Each run is a process of its own, about 67 MiB of private memory (measured with the faux model; an independent test of
+the image measured 20 runs at 1.22 GiB), beside the server's own 100 MiB or so. So the server caps the runs it holds at
+once (each run with a live process: working, or waiting for an answer), by default
+
+    max_concurrent_runs = max(1, floor((memory − 128 MiB) / 72 MiB))
+
+where memory is the container's limit when it has one (cgroup), else the machine's: 5 runs on a 512 MB instance, 12 on
+1 GB, 112 on 8 GB. `--max-runs N` or `AGENTRUN_MAX_RUNS` sets it instead; capabilities report it in
+`limits.max_concurrent_runs`. Over it, `POST /agents/{id}/runs` is `429 rate_limited` with `retry-after` and nothing
+starts: there is no queue, so the client tries again once a run ends. A message to a run already going is never
+refused. A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
+counts only its own runs, and a run could be relaunched twice).
+
+`GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
+when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
+and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`, or
+`disk: "cannot_check"` when the free space cannot be read) otherwise.
+It names no path, size or version. One route serves as both liveness and readiness: any answer says the server is up,
+and a 200 says it can work, and the platforms here take one path.
+
+A run whose end the agent store cannot take (a full disk) still ends: a cancel makes it `cancelled`, with its cost from
+its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
+run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
+of a process that is gone is not trusted.
 
 ## Models
 
@@ -172,6 +201,8 @@ it is never off, and a model node that names its own thinking level keeps it.
 
 | Route | Here |
 | --- | --- |
+| `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
+| `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` and the operations it answers `501` marked `x-agentrun-serve-unsupported`; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |

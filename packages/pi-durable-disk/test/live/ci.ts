@@ -523,7 +523,7 @@ export function holdLock(lock: string): Promise<boolean> {
   });
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (import.meta.main) {
   const [verb, ...rest] = process.argv.slice(2);
   const env = process.env as Env;
   if (verb === "all") {

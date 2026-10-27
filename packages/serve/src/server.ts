@@ -12,6 +12,8 @@ import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agen
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
+import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
+import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { answerPage } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -53,11 +55,19 @@ export type ServeOptions = {
   allowHosts?: string[];
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** The most runs at once (default: AGENTRUN_MAX_RUNS, else from this host's memory: host.ts); over it, 429. */
+  maxRuns?: number;
+  /** Free disk under the data directory below which GET /v2/health fails (default 64 MiB, or AGENTRUN_MIN_FREE_MB). */
+  minFreeBytes?: number;
+  /** How often a carry back the store refused is tried again while the server lives (default 30 s). */
+  settleRetryMs?: number;
   /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
   log?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
+  /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
+  readyTimeoutMs?: number;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
@@ -80,16 +90,20 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 
-type Route = { method: string; pattern: RegExp; name: string; capability?: string };
-const ROUTES: Route[] = [
-  { method: "GET", pattern: /^\/capabilities$/, name: "capabilities" },
+/** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off. */
+export type Route = { method: string; pattern: RegExp; name: string; capability?: string };
+export const ROUTES: readonly Route[] = [
+  { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
+  { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
+  { method: "GET", pattern: /^\/health$/, name: "getHealth" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
-  { method: "POST", pattern: /^\/agents\/([^/]+)\/(archive|unarchive)$/, name: "archiveAgent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
@@ -100,7 +114,8 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, name: "cancelRun" },
-  { method: "POST", pattern: /^\/runs\/([^/]+)\/(archive|unarchive)$/, name: "archiveRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/archive$/, name: "archiveRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
@@ -111,7 +126,7 @@ const ROUTES: Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env) {
+export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env)) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -145,12 +160,14 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
       query: false,
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
+    /** This server's own: where its OpenAPI document is, beside this one. */
+    links: { openapi: "/v2/openapi.json" },
     limits: {
       max_body_bytes: MAX_BODY,
       max_upload_bytes: null,
       max_files_per_run: 0,
       max_message_chars: MAX_MESSAGE,
-      max_concurrent_runs: null,
+      max_concurrent_runs: maxRuns,
       timeline_max_wait_ms: MAX_WAIT_MS,
       timeline_page_rows: PAGE_ROWS,
       idempotency_ttl_s: IDEMPOTENCY_TTL_S,
@@ -210,9 +227,14 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
-  const caps = capabilities(env);
+  const maxRuns = maxRunsOf(process.env, options.maxRuns);
+  const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
+  if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
+  const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
+  const caps = capabilities(env, maxRuns);
+  const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -510,21 +532,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!matching.length) throw new ApiError("not_found", `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
-    if (found.name === "capabilities") return send(res, 200, caps);
+    if (found.name === "getCapabilities") return send(res, 200, caps);
+    if (found.name === "getOpenapi") return send(res, 200, openapi);
+    if (found.name === "getHealth") {
+      const health = await healthOf(data, minFreeBytes);
+      return send(res, health.status === "ok" ? 200 : 503, health);
+    }
     if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
       throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
     }
-    if (found.capability) {
-      const off: Record<string, string> = {
-        "home.export": "This server does not export a home yet.",
-        "home.import": "This server does not import a home yet.",
-        "runs.kill": "This server does not kill a run's process yet.",
-        "files.upload": "This server takes no uploads yet.",
-        quotes: "This server has no billing, so it gives no quotes.",
-      };
-      throw unsupported(found.capability, off[found.capability]!);
-    }
+    if (found.capability) throw unsupported(found.capability, UNSUPPORTED[found.capability]!);
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
     switch (found.name) {
@@ -579,9 +597,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const moved = agents.setCurrent(entry, revision);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
-      case "archiveAgent": {
+      case "archiveAgent":
+      case "unarchiveAgent": {
         needAgent(id);
-        agents.store.setArchived("agent", id, second === "archive");
+        agents.store.setArchived("agent", id, found.name === "archiveAgent");
         const entry = needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
@@ -629,9 +648,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const view = await runs.view(run);
         return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
       }
-      case "archiveRun": {
+      case "archiveRun":
+      case "unarchiveRun": {
         const run = await needRun(id);
-        agents.store.setArchived("run", run.id, second === "archive");
+        agents.store.setArchived("run", run.id, found.name === "archiveRun");
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {

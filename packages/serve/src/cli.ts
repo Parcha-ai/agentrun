@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { banner } from "./print.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--drain-timeout D]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -14,6 +14,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
   --port N          the port (default ${DEFAULT_PORT}; 0 is any free port)
   --faux MODULE     answer every model request from MODULE's default export: no key, no network
   --allow-host NAME another Host name to accept (repeatable)
+  --max-runs N      the most runs at once (default AGENTRUN_MAX_RUNS, else from this host's memory: (memory - 128 MiB)
+                    / 72 MiB, at least 1); over it a new run is 429
   --drain-timeout D how long a busy run may finish its turn when the server stops (default 30s; the image's is 6s, inside
                     Docker's 10 s grace); a run cut off resumes at the next start
 
@@ -34,6 +36,7 @@ try {
       port: { type: "string" },
       faux: { type: "string" },
       "allow-host": { type: "string", multiple: true, default: [] },
+      "max-runs": { type: "string" },
       "drain-timeout": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -68,6 +71,7 @@ let serve: Serve;
 try {
   serve = await startServe({
     data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
+    ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
   });
 } catch (error) {
