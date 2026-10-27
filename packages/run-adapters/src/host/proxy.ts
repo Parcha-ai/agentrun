@@ -210,6 +210,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let route: ProxyRoute;
     let query: string;
     try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", req.url ?? "")); } catch (error) {
+      // Without the key every request that is not a local route gets the same answer, so the table can't be mapped.
+      if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
       const e = error as ProxyRefusal;
       return refuse(res, e.status ?? 403, e.message, req);
     }

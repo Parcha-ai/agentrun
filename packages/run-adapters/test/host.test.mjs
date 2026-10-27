@@ -124,8 +124,11 @@ test("a local route is answered by the proxy with its status alone, with or with
     assert.deepEqual([hello.status, hello.text, hello.headers['content-length']], [200, '', '0'], `key ${key}`);
   }
   assert.deepEqual([forwarded.length, hooks.before.length, hooks.after.length], [0, 0, 0]);
-  // Every other route still needs it, a free one too.
+  // Every other route still needs it, a free one too; and without it a path the table lacks gets the same 401, so
+  // the table can't be mapped without the key.
   assert.equal((await send(p.url, { path: '/v1/count', key: null })).status, 401);
+  for (const path of ['/v1/files', '/v1/test?x=1', '/../etc']) assert.equal((await send(p.url, { path, key: null })).status, 401, path);
+  assert.equal(forwarded.length, 0);
 });
 
 test('a free route is forwarded without asking the runner, and reports no usage', async (t) => {
