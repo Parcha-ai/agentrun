@@ -249,7 +249,8 @@ test("under /v2/auth only the allowlisted endpoints answer, each on its one meth
     "/v2/auth/sign-up/email", "/v2/auth/admin/set-role", "/v2/auth/admin/create-user", "/v2/auth/admin/list-users", "/v2/auth/admin/ban-user", "/v2/auth/delete-user",
     "/v2/auth/change-email", "/v2/auth/forget-password", "/v2/auth/request-password-reset", "/v2/auth/reset-password", "/v2/auth/send-verification-email", "/v2/auth/verify-email",
     "/v2/auth/sign-in/social", "/v2/auth/sign-in/magic-link", "/v2/auth/list-accounts", "/v2/auth/ok", "/v2/auth/error", "/v2/auth/update-session",
-    "/v2/auth/list-sessions", "/v2/auth/revoke-session",
+    "/v2/auth/list-sessions", "/v2/auth/revoke-session", "/v2/auth/sign-in/email", "/v2/auth/change-password", "/v2/auth/verify-password", "/v2/auth/set-password",
+    "/v2/auth/magic-link/verify",
     "/v2/auth/sign-in/email/", "/v2/auth//sign-in/email", "/v2/auth/./sign-in/email", "/v2/auth/sign-in/%65mail", "/v2/auth/update-user/../admin/set-role", "/v2/auth/Sign-In/Email", "//v2/auth/sign-in/email",
   ]) {
     for (const method of ["GET", "POST"]) {
