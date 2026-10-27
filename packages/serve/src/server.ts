@@ -65,6 +65,8 @@ export type ServeOptions = {
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
+  /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
+  readyTimeoutMs?: number;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
@@ -224,7 +226,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   const caps = capabilities(env, maxRuns);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
