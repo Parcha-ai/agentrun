@@ -1,0 +1,59 @@
+{
+  "shared": [
+    "browser",
+    "fetch_page"
+  ],
+  "harnesses": {
+    "claude-code": [
+      "Agent",
+      "Bash",
+      "BashOutput",
+      "Edit",
+      "ExitPlanMode",
+      "Glob",
+      "Grep",
+      "KillShell",
+      "LS",
+      "MultiEdit",
+      "NotebookEdit",
+      "Read",
+      "Skill",
+      "SlashCommand",
+      "Task",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "Write"
+    ],
+    "codex": [
+      "apply_patch",
+      "close_agent",
+      "container.exec",
+      "exec_command",
+      "list_mcp_resource_templates",
+      "list_mcp_resources",
+      "local_shell",
+      "read_mcp_resource",
+      "request_user_input",
+      "send_input",
+      "shell",
+      "shell_command",
+      "spawn_agent",
+      "update_plan",
+      "view_image",
+      "wait_agent",
+      "web_search",
+      "write_stdin"
+    ],
+    "pi": [
+      "bash",
+      "edit",
+      "find",
+      "grep",
+      "ls",
+      "powershell",
+      "read",
+      "write"
+    ]
+  }
+}

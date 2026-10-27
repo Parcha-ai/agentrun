@@ -1,0 +1,64 @@
+{
+  "name": "@parcha/agentrun-learn",
+  "version": "0.1.0-beta.27",
+  "private": true,
+  "description": "Self-learning on any harness, as files: the layout of an agent's own git repository, the memo and note formats, and a structural checker for a run's branch that runs in a plain checkout, a pre-push hook or CI.",
+  "keywords": [
+    "agentrun",
+    "agent",
+    "learning",
+    "git",
+    "workflow"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "agentrun-learn": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tools.json": "./tools.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "SPEC.md",
+    "tools.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && (test -f ../dsl/dist/index.d.ts || npm --prefix ../dsl run build) && tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "@parcha/agentrun-dsl": "0.1.0-beta.27"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/learn"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}
