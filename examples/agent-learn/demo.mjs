@@ -300,8 +300,9 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const vault = [`demo-vault-${randomBytes(16).toString('hex')}`];
   const asked = [];
   const judge = scriptedJudge(asked);
-  // The injection screen stays scripted, like the judge: it finds nothing planted in what the runs propose.
-  const screen = async () => 0.02;
+  // The injection screen stays scripted, like the judge: it finds nothing planted in what the runs propose. A real host
+  // passes its page judge and its page-injection threshold.
+  const screen = { classify: async () => 0.02, threshold: 0.5 };
   const modelFor = (script) => (live ? liveModel(env) : scriptedModel(script));
   const proposed = (sha, runId) => {
     const files = gitRead(bare, ['diff-tree', '-r', '--no-commit-id', '--name-only', `${sha}^`, sha]).toString('utf8').trim().split('\n').filter(Boolean);

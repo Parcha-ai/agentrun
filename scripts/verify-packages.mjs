@@ -544,7 +544,7 @@ const start = async (repo: Repo, harness: Parameters<typeof seedLearning>[0]['ta
 };
 const code = (error: unknown) => (error instanceof LearnError ? error.code : undefined);
 // The curator writes main; its judge is the DSL's System One port.
-const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ repo, judge, thresholds: { general: { yes: 0.9 } }, screen: async () => 0, tools: ['fetch_page'] });
+const curated = (repo: Repo, judge: Judge): Promise<CurateReport> => curate({ repo, judge, thresholds: { general: { yes: 0.9 } }, screen: { classify: async () => 0, threshold: 0.5 }, tools: ['fetch_page'] });
 void [start, code, curated, agentLearn({ guard, secrets: () => [] })];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'learn-consumer.ts'], consumer);

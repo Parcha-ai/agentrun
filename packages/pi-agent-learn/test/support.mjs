@@ -32,8 +32,9 @@ export const AGENT_FILES = {
 
 export const SHA = "0".repeat(40);
 
-/** An injection screen that finds nothing planted, and the host's tool list the test workflows bind. */
-export const SCREEN_PASS = async () => 0.05;
+/** An injection screen that finds nothing planted (a host passes its page judge and its page-injection threshold), and
+ *  the host's tool list the test workflows bind. */
+export const SCREEN_PASS = { classify: async () => 0.05, threshold: 0.6 };
 export const HOST_TOOLS = Object.freeze(["prices.quote"]);
 
 /** A learning as curation would write it. */
