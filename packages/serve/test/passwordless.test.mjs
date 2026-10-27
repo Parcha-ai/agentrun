@@ -104,3 +104,24 @@ test("the server-side sign-in signs in only a person who exists, spends its one 
   for (const token of tokens) assert.ok(!logged.includes(token), "no session token in the log");
   assert.doesNotMatch(logged, /magic|verify\?token=/i);
 });
+
+test("a setup whose sign-in fails makes no owner and keeps its code, so the same code sets up the server on the next try", async (t) => {
+  const { Accounts } = await import("../dist/auth.js");
+  const server = await serve(t, { accounts: true });
+  const origin = `http://127.0.0.1:${server.port}`;
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  const signIn = Accounts.prototype.signIn;
+  Accounts.prototype.signIn = async () => {
+    throw new Error("the sign-in failed on purpose");
+  };
+  t.after(() => void (Accounts.prototype.signIn = signIn));
+  const failed = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { code, name: "Ana", email: "ana@example.com" } });
+  assert.equal(failed.status, 500, failed.text);
+  Accounts.prototype.signIn = signIn;
+  const db = new DatabaseSync(join(server.data, "auth.sqlite"), { readOnly: true });
+  t.after(() => db.close());
+  assert.equal(db.prepare(`SELECT count(*) AS n FROM "user"`).get().n, 0, "the owner made before the failed sign-in is gone");
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { code, name: "Ana", email: "ana@example.com" } });
+  assert.equal(made.status, 201, made.text);
+  assert.equal(db.prepare(`SELECT count(*) AS n FROM "user" WHERE owner = 1`).get().n, 1);
+});
