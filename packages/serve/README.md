@@ -324,8 +324,19 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   between a carry back and its proposal loses nothing. The commit's `Run-Id` trailer makes a second proposal of the
   same run add nothing. A proposal that fails (a push the repository refuses) is logged; the run has ended as it would
   have, and the next start proposes it. A run that learned nothing leaves no branch.
-- Nothing merges into `main` yet. A run's branch stays a proposal until review and merge exist, and those wait for an
-  injection screen on this server.
+- Then the server reviews the proposal, in the same queue, through a clone of its own, `DATA/agents/<id>/curator`:
+  `@parcha/pi-agent-learn`'s curate, with the checker on the tools this server binds (`read`, `write`, `edit`), the
+  injection screen, and the judge. The agent's current revision decides how. `auto` merges what passes into `main`, a
+  merge whose second parent is the run as it lands, and `approve` holds the plan in `<run id>.plan.json` until a person
+  approves or refuses it (`learning.approve` and `learning.refuse` on the server, each naming who decided; a plan that
+  `main` moved under is planned again). A merged branch is deleted while it is still at the commit proposed.
+- The screen is a host's (`learning.screen` in `startServe`'s options: a page judge and its threshold), and the judge is
+  Jev on `TYPESAFE_API_KEY`, which no run's process gets. With no screen or no judge, nothing is curated: the branch
+  waits, the run's state says `no injection screen on this server` or `no judge on this server`, and the next start
+  reviews it once both are there. A run whose agent no longer learns is left too (`off`). A run awaiting approval is
+  never curated without a person, at start or after.
+- The run's state records the review: `merged` with the merge and the verdict, `awaiting_approval`, and the judge's cost
+  in `review_usd`, the agent's learning cost: a run's own cost never moves once it ended.
 
 ## Spend cap
 

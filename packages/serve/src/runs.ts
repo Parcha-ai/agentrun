@@ -194,9 +194,14 @@ export type RunsOptions = {
   log?: (event: string, fields: Record<string, string | number>) => void; afterCarryBack?: (run: Run) => void | Promise<void>;
 };
 
-/** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
- *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
+/** The server's own variables, which a run's process never gets: the API token, by name or by value, and the judge's
+ *  TYPESAFE_API_KEY. Model keys, the AGENT_MODEL variables and the rest of the environment pass; the door token goes by
+ *  file. */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "TYPESAFE_API_KEY"]);
+/** The values a run's process never gets, the one list of this server's secrets: the API token, the door token, and each
+ *  server-only variable's value. */
+export const serverSecrets = (env: NodeJS.ProcessEnv, token: string, doorToken: string): string[] =>
+  [...new Set([token, doorToken, ...[...SERVER_ONLY].map((name) => env[name] ?? "")])].filter((value) => value.trim() !== "");
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
   Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
 

@@ -13,9 +13,10 @@ import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { catchUp, hostCommit, learningBlocker, proposeFor, readyToRun } from "./learning.js";
+import { type LearningOptions, Review } from "./review.js";
 import { answerPage } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { type CarryBackRetry, type Run, Runs, serverSecrets, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
@@ -59,10 +60,20 @@ export type ServeOptions = {
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
+  /** Review's injection screen (the browser lane's page judge and its threshold) and, for tests, its judge. Without a
+   *  screen, or a judge (Jev on TYPESAFE_API_KEY), no learning merges, and each run's learning state says why. */
+  learning?: LearningOptions;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; close(): Promise<void> };
+/** `learning` reviews, approves and refuses a learning run's proposal; `settled` is the start-time pass. */
+export type ServeLearning = {
+  review(agentId: string, runId: string): Promise<unknown>;
+  approve(agentId: string, runId: string, principal: string): Promise<{ status: string }>;
+  refuse(agentId: string, runId: string, principal: string, reason: string): Promise<{ status: string }>;
+  settled(): Promise<void>;
+};
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; learning: ServeLearning; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -215,7 +226,16 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A new agent learns where this host can keep its learning repository.
   const agents = new Agents(data, (await learningBlocker(env)) === undefined ? "auto" : "off");
   // Once a learning run's end is written, what it learned is proposed as its branch.
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents.store, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const review = new Review({
+    data, agents, env, secrets: () => serverSecrets(env, token, doorToken), ...options.learning,
+    ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}),
+  });
+  // Then review curates it, in the same queue.
+  const proposeThenReview = async (run: Run) => {
+    const proposed = await proposeFor(data, agents.store, run.id);
+    if (proposed?.status === "proposed" || proposed?.status === "already") await review.run(run.agentId, run.id);
+  };
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: proposeThenReview, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -238,7 +258,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
   // Ended runs of learning agents that were never proposed: a server that stopped between a carry back and its proposal.
   // A host commit that failed is made again by the agent's next save or run.
+  // Then review takes up every run proposed or waiting, and deletes merged branches it had not deleted yet.
   const caughtUp = catchUp(data, agents.store, (runId, error) => void process.stderr.write(`agentrun-serve: run ${runId}: not proposed: ${error.message}\n`))
+    .then(() => review.startPass())
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: learning catch-up: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
@@ -714,6 +736,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     token,
     tokenFile,
     tokenMade: stored?.made ?? false,
+    learning: {
+      review: (agentId, runId) => review.run(agentId, runId),
+      approve: (agentId, runId, principal) => review.approve(agentId, runId, principal),
+      refuse: (agentId, runId, principal, reason) => review.refuse(agentId, runId, principal, reason),
+      settled: () => caughtUp,
+    },
     async close() {
       await runs.close();
       await caughtUp;

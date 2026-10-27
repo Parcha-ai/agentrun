@@ -149,10 +149,18 @@ export async function readyToRun(data: string, entry: AgentEntry, current: () =>
   if (!main) await hostCommit(data, id, () => ({ ...entry, revision, version }));
 }
 
-/** What the server recorded for a run of a learning agent once it proposed it. D extends it with what review did. */
-export type RunState = { state: "proposed" | "empty" | "refused"; branch?: string; base?: string; sha?: string; reasons?: string[] };
+/** What the server recorded for a run of a learning agent: its proposal (`proposed`, `empty`, `refused` by the guard), then
+ *  its review (review.ts): `merged`, `awaiting_approval`, or waiting on this server (`no_screen`, `no_judge`) or on the
+ *  agent (`off`), with `reason` in words. */
+export type RunState = {
+  state: "proposed" | "empty" | "refused" | "merged" | "awaiting_approval" | "no_screen" | "no_judge" | "off";
+  branch?: string; base?: string; sha?: string; reasons?: string[];
+  reason?: string; merge?: string; verdict?: unknown; review_usd?: number; decided_by?: string; decision?: "approve" | "refuse"; pruned?: boolean;
+};
 
-const runStateFile = (data: string, agentId: string, runId: string) => join(agentDir(data, agentId), "learning", "runs", `${runId}.json`);
+/** Where an agent's per-run learning files are: `<run id>.json`, and review's `<run id>.plan.json`. */
+export const learningRunsDir = (data: string, agentId: string): string => join(agentDir(data, agentId), "learning", "runs");
+const runStateFile = (data: string, agentId: string, runId: string) => join(learningRunsDir(data, agentId), `${runId}.json`);
 
 export async function readRunState(data: string, agentId: string, runId: string): Promise<RunState | undefined> {
   const text = await readFile(runStateFile(data, agentId, runId), "utf8").catch(() => undefined);

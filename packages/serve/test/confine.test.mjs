@@ -41,8 +41,9 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   await other.done();
   // The server records that run's proposal beside the agent's repository once its end is carried back.
   const recorded = join(data, "agents", "probe", "learning", "runs", `${other.runId}.json`);
-  for (let i = 0; !(await exists(recorded)); i++) {
-    assert.ok(i < 400, "the other run's proposal is recorded");
+  // Review takes it up once it is proposed; with no screen here it records that and stops.
+  for (let i = 0; !(await exists(recorded)) || JSON.parse(await readFile(recorded, "utf8")).state === "proposed"; i++) {
+    assert.ok(i < 400, "the other run's proposal is recorded and reviewed");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const record = await readFile(recorded, "utf8");

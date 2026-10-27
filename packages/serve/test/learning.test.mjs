@@ -22,6 +22,8 @@ const agent = (id, extra = {}) => {
 };
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
+/** A proposal, as review leaves it on a server with no injection screen (review.test.mjs covers what review does). */
+const PROPOSED = ["proposed", "no_screen"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const bareOf = (data, id) => join(data, "agents", id, "learning.git");
 const git = (dir, ...args) => execFileSync("git", ["--git-dir", dir, ...args], { encoding: "utf8" }).trim();
@@ -96,7 +98,7 @@ test("the learn tool comes with learning: naming it while learning is off is ref
   assert.equal(named.status, 201, "naming it while learning is on is allowed");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   await follow(api, run.run_id, ["completed"]);
-  assert.equal((await stateOf(data, "calc", run.run_id)).state, "proposed", "and the run gets one learn tool");
+  assert.ok(PROPOSED.includes((await stateOf(data, "calc", run.run_id)).state), "and the run gets one learn tool");
 });
 
 test("an agent that learns has a repository beside the store whose main holds AGENTS.md and agent.json for its current revision, one host commit per change", async (t) => {
@@ -151,7 +153,8 @@ test("a run starts from main's notes at one commit: they are in its workspace an
   const bare = bareOf(data, "calc");
   const branch = `runs/${run.run_id}`;
   const state = await stateOf(data, "calc", run.run_id);
-  assert.deepEqual(state, { state: "proposed", branch, base, sha: tip(bare, branch) }, "the server records what it proposed");
+  assert.deepEqual({ ...state, state: "proposed", reason: undefined }, { state: "proposed", branch, base, sha: tip(bare, branch), reason: undefined }, "the server records what it proposed");
+  assert.ok(PROPOSED.includes(state.state));
   assert.ok(branches(bare).includes(branch), `the run leaves ${branch}`);
   assert.equal(git(bare, "merge-base", branch, "main"), base, "the branch starts from the commit the run was seeded from");
   const memo = front(show(bare, branch, `memos/${run.run_id}.md`));
@@ -308,7 +311,7 @@ test("a push that fails ends the run as it would have; the next start proposes i
     const closeNext = once(next);
     api = client(next.baseUrl, next.token);
     const state = await stateOf(data, "calc", run.run_id);
-    assert.equal(state.state, "proposed");
+    assert.ok(PROPOSED.includes(state.state), state.state);
     await closeNext();
     const at = (await stat(stateFile)).mtimeMs;
     if (start === 1) assert.equal(at, written, "a run with a recorded proposal is not proposed again");
