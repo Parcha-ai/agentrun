@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { serveRun, type RunServer } from "../src/serve.ts";
@@ -21,6 +22,21 @@ const mask = (text: string) =>
     .replace(/"durationMs":\d+/g, '"durationMs":<ms>')
     .replace(/\b1[0-9]{12}\b/g, "<ms>")
     .replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z/g, "<iso>");
+
+type Wire = { type?: string; inputs?: unknown; record?: unknown; message?: { role?: string }; entry?: { kind?: string; id?: number }; entries?: { kind?: string; id?: number }[] };
+/** The door's own envelope of a frame: its event; each event's type and the door's fields; pi's messages and entries by
+ *  their role, kind and id only. */
+const envelope = (frame: string) => {
+  const data = JSON.parse(frame.slice(frame.indexOf("data: ") + 6).replace(/<ms>/g, "0")) as Wire | Wire[];
+  const event = (e: Wire) => ({
+    type: e.type,
+    ...(e.inputs !== undefined ? { inputs: e.inputs } : {}),
+    ...(e.record !== undefined ? { record: e.record } : {}),
+    ...(e.message ? { message: e.message.role } : {}),
+    ...(e.entry ? { entry: [e.entry.kind, e.entry.id] } : {}),
+  });
+  return { event: frame.slice(0, frame.indexOf("\n")), data: Array.isArray(data) ? data.map(event) : { type: data.type, entries: (data.entries ?? []).map((e) => [e.kind, e.id]) } };
+};
 
 type Answer = { route: string; status: number; headers: Record<string, string>; body: string };
 
@@ -84,17 +100,18 @@ test("with no hook, the door answers a recorded exchange as it did before the ho
     await server.close();
 
     const events = { route: "GET /events", headers, frames: mask(streamed).split("\n\n").filter(Boolean) };
-    const recorded = { answers, events };
+    // pi-durable's own payloads (messages, entries, usage, the snapshot's state) pass through the door, and each pi
+    // version shapes them a little differently (1.0.4 has no durationMs, 1.2 adds the snapshot's nestedTools). So the
+    // door's envelope is compared on every pi the peers accept: each frame's event, each event's type and the door's
+    // own fields, pi's messages and entries by their role, kind and id. The whole exchange is compared byte for byte on
+    // the pi it was recorded with.
+    const piDurable = (createRequire(import.meta.url)("@earendil-works/pi-durable/package.json") as { version: string }).version;
+    const recorded = { piDurable, answers, events };
     if (process.env.PDA_RECORD_DOOR === "1") writeFileSync(FIXTURE, `${JSON.stringify(recorded, null, 2)}\n`);
     const expected = JSON.parse(readFileSync(FIXTURE, "utf8")) as typeof recorded;
     assert.deepEqual(answers, expected.answers);
-    // The snapshot is pi-durable's own state, passed through: a later pi may add a field to it (1.2 adds nestedTools),
-    // but every field this door answered before must come back unchanged. Every other frame is compared whole.
-    const snapshotOf = (frame: string) => JSON.parse(frame.slice(frame.indexOf("data: ") + 6).replace(/<ms>/g, "0")) as Record<string, unknown>;
-    assert.deepEqual({ ...events, frames: events.frames.slice(1) }, { ...expected.events, frames: expected.events.frames.slice(1) });
-    assert.ok(events.frames[0]!.startsWith("event: snapshot\n") && expected.events.frames[0]!.startsWith("event: snapshot\n"));
-    const [now, before] = [snapshotOf(events.frames[0]!), snapshotOf(expected.events.frames[0]!)];
-    for (const key of Object.keys(before)) assert.deepEqual(now[key], before[key], `the snapshot's ${key}`);
+    assert.deepEqual({ ...events, frames: events.frames.map(envelope) }, { ...expected.events, frames: expected.events.frames.map(envelope) });
+    if (piDurable === expected.piDurable) assert.deepEqual(events, expected.events);
   } finally {
     disk.remove();
   }

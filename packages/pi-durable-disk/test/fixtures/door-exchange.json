@@ -1,4 +1,5 @@
 {
+  "piDurable": "1.1.0",
   "answers": [
     {
       "route": "GET /status",
