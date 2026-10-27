@@ -187,7 +187,12 @@ export function statusOf(run: Run): { status: Status; state: State } {
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** `token` is the server's own: no run's process sees it. */
 /** `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; log?: (event: string, fields: Record<string, string | number>) => void };
+/** `afterCarryBack` runs once a run's end is written in the store, outside its settle: what it does never holds the run,
+ *  and an error it throws is said and goes no further. */
+export type RunsOptions = {
+  agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry;
+  log?: (event: string, fields: Record<string, string | number>) => void; afterCarryBack?: (run: Run) => void | Promise<void>;
+};
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -229,6 +234,8 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** What `afterCarryBack` is still doing: `close` waits for it. */
+  private readonly afters = new Set<Promise<void>>();
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -663,6 +670,14 @@ export class Runs {
     run.settled = true;
     run.updatedAt = new Date().toISOString();
     this.refresh(run);
+    const after = this.options.afterCarryBack;
+    if (after) {
+      const done: Promise<void> = Promise.resolve()
+        .then(() => after(run))
+        .catch((error: Error) => warn(run.id, `after its carry back: ${error.message}`))
+        .finally(() => this.afters.delete(done));
+      this.afters.add(done);
+    }
   }
 
   /** After refusal `attempt` because `what` is busy: waits out the next delay and says whether to try again. */
@@ -789,6 +804,7 @@ export class Runs {
     for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphan && alive(run.orphan)) && Date.now() < deadline; ) await sleep(100);
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
+    await Promise.all(this.afters);
     for (const run of this.runs.values()) run.feed?.abort();
   }
 

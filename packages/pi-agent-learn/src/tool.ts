@@ -1,6 +1,9 @@
+import { existsSync } from "node:fs";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, defineTool, type Session, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
+import { recordingLines } from "@parcha/agentrun-pi/durable";
+import { LearnError } from "./errors.js";
 import { CAPS, WORKFLOW_NAME } from "./layout.js";
 import { seededIds } from "./section.js";
 import { SeedDoc } from "./seed.js";
@@ -9,18 +12,25 @@ import { type Candidate, type Guard, LEARN_TYPES, type LearnType, type Refusal }
 type Stored = { callId: string; type: LearnType; text: string; evidence: string[]; id?: string };
 type CandidatesState = { byCall: Record<string, Stored>; order: string[] };
 
+const CANDIDATES = "learn.candidates";
+
 /** The run's candidates, one per `learn` call id, in the order they were first noted. */
-export const CandidatesDoc = defineDoc<CandidatesState>({ kind: "learn.candidates", version: 1, scope: "session", initial: () => ({ byCall: {}, order: [] }) });
+export const CandidatesDoc = defineDoc<CandidatesState>({ kind: CANDIDATES, version: 1, scope: "session", initial: () => ({ byCall: {}, order: [] }) });
+
+const inOrder = (doc: CandidatesState): Candidate[] => doc.order.map((callId) => structuredClone(doc.byCall[callId]!) as Candidate);
 
 /** The run's candidates, in the order it noted them. A Harness is a valid `target`. */
 export async function collectCandidates(target: Pick<Session, "snapshot">, context: Context = BACKGROUND_CONTEXT): Promise<Candidate[]> {
   const doc = await target.snapshot(CandidatesDoc, context);
-  return doc ? doc.order.map((callId) => structuredClone(doc.byCall[callId]!) as Candidate) : [];
+  return doc ? inOrder(doc) : [];
 }
 
-/** Not read yet. */
-export function readCandidates(_store: string): Candidate[] {
-  return [];
+/** The candidates of a run no process holds open, from its store file: one read transaction, never written. A host
+ *  that ran the agent in another process reads them here once that process let go of the store. */
+export function readCandidates(store: string): Candidate[] {
+  if (typeof store !== "string" || !existsSync(store)) throw new LearnError("missing", "the run's store file is not there");
+  const doc = recordingLines(store).lines.findLast((line) => line.kind === CANDIDATES)?.data.value as CandidatesState | undefined;
+  return doc ? inOrder(doc) : [];
 }
 
 type ToolContent = { type: "text"; text: string }[];

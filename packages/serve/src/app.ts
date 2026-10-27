@@ -14,7 +14,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { learningOf, runLearning } from "./learning.js";
+import { LEARN_TOOL, learningOf, runLearning } from "./learning.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
 import { isObject, skillNames } from "./validate.js";
 
@@ -84,14 +84,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic") {
     registry.install(defineExtension({ name: "person", tools: [askPerson] }));
     const bound = new Map<string, ToolRegistration>([...fileTools, [ASK_TOOL, askPerson as ToolRegistration]]);
-    const tools = revision.body.tools.map((name) => {
+    const learns = learningOf(revision) !== "off";
+    // The learn tool comes with learning, below.
+    const tools = revision.body.tools.filter((name) => !(learns && name === LEARN_TOOL)).map((name) => {
       const tool = (BOUND_TOOLS as readonly string[]).includes(name) ? bound.get(name) : undefined;
       if (!tool) throw new Error(`the revision names the tool ${name}, which agentrun-serve does not bind (it binds ${BOUND_TOOLS.join(", ")})`);
       return tool;
     });
     // A learning run starts from its agent's repository at one commit: the notes and the skills the agent wrote there,
     // and the learn tool for what it learns now.
-    const learning = learningOf(revision) === "off" ? undefined : await runLearning(where, run.agent, skillNames(Object.keys(revision.body.skills)), join(where.store, RUN_STORE_FILE), process.env);
+    const learning = !learns ? undefined : await runLearning(where, run.agent, skillNames(Object.keys(revision.body.skills)), join(where.store, RUN_STORE_FILE), process.env);
     if (learning) registry.install(learning.extension);
     const instructions = await promptOf(revision.body.instructions, [...Object.keys(revision.body.skills), ...(learning?.skillFiles ?? [])], where.work);
     return {

@@ -53,7 +53,7 @@ export class Agents {
   }
 
   /** The revision a checked definition makes; `files` are its skill files by path. An agentic definition without
-   *  `learning` takes `learning`. */
+   *  `learning` takes `learning`; `learning: null` is off. */
   private revisionOf(definition: Json, files: Record<string, string>, note: string | undefined, learning: LearningMode): NewRevision {
     const issues = skillIssues(definition.skills, Object.keys(files));
     if (issues.length) throw invalid(issues);
@@ -61,7 +61,7 @@ export class Agents {
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
     return {
       kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
-      learning: (definition.learning as LearningMode | undefined) ?? learning, ...common,
+      learning: definition.learning === null ? "off" : ((definition.learning as LearningMode | undefined) ?? learning), ...common,
     };
   }
 
@@ -122,7 +122,7 @@ export class Agents {
       const texts = this.texts(held.map(([, sha]) => sha));
       files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
     }
-    // An edit that leaves learning out keeps the current revision's.
+    // An edit that leaves learning out keeps the current revision's, unlike every other field.
     const revision = this.revisionOf(definition, files, note, entry.revision?.kind === "agentic" ? (entry.revision.body.learning ?? "off") : "off");
     await this.checked(revision);
     await check?.(revision);
@@ -197,7 +197,7 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as `POST /agents` takes one, numbered. */
 export function definitionOf(agent: Agent, revision: Revision, version: number): Json {
   const body = revision.kind === "agentic"
-    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), learning: revision.body.learning ?? "off" }
+    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), ...(revision.body.learning ? { learning: revision.body.learning } : {}) }
     : { workflow: revision.body.workflow };
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
 }

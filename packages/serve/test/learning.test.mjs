@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { learningId, renderLearning } from "@parcha/pi-agent-learn";
@@ -12,7 +12,14 @@ import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
-import { agent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+
+/** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
+const agent = (id, extra = {}) => {
+  const made = offAgent(id, extra);
+  if (!("learning" in extra)) delete made.definition.learning;
+  return made;
+};
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -271,28 +278,41 @@ test("the server proposes once the run's end is written, so the memo carries the
 
 test("a push that fails ends the run as it would have; the next start proposes it, once, and a start after that proposes nothing", async (t) => {
   const data = join(await scratch(t), "agents");
+  const once = (server) => {
+    let closing;
+    const close = () => (closing ??= server.close());
+    t.after(close);
+    return close;
+  };
   const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const closeFirst = once(first);
   let api = client(first.baseUrl, first.token);
   await api("POST", "/agents", agent("calc"));
   const bare = bareOf(data, "calc");
   // No new ref can be written in the repository: the run's push fails.
   await chmod(join(bare, "refs", "heads"), 0o555);
-  t.after(() => chmod(join(bare, "refs", "heads"), 0o755));
+  t.after(() => chmod(join(bare, "refs", "heads"), 0o755).catch(() => undefined));
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   const { last } = await follow(api, run.run_id, ["completed"]);
   assert.equal(last.final, true);
   assert.equal(storeRun(data, run.run_id).state, "completed", "the run ends completed");
   await sleep(1_000);
-  await first.close();
+  await closeFirst();
   assert.equal(await readRunState(data, "calc", run.run_id), undefined, "nothing was proposed");
   assert.equal(branches(bare).includes(`runs/${run.run_id}`), false);
   await chmod(join(bare, "refs", "heads"), 0o755);
+  const stateFile = join(bare, "..", "learning", "runs", `${run.run_id}.json`);
+  let written;
   for (let start = 0; start < 2; start++) {
     const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    const closeNext = once(next);
     api = client(next.baseUrl, next.token);
     const state = await stateOf(data, "calc", run.run_id);
     assert.equal(state.state, "proposed");
-    await next.close();
+    await closeNext();
+    const at = (await stat(stateFile)).mtimeMs;
+    if (start === 1) assert.equal(at, written, "a run with a recorded proposal is not proposed again");
+    written = at;
     assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, `one commit for the run after start ${start + 1}`);
     assert.equal(git(bare, "log", "--format=%(trailers:key=Run-Id,valueonly)", `runs/${run.run_id}`, "-1"), run.run_id);
   }
@@ -327,7 +347,7 @@ test("on a host without git 2.40 a new agent does not learn, one that asks to sa
   const { api, data } = await serve(t);
   const plain = await api("POST", "/agents", agent("plain"));
   assert.equal(plain.status, 201);
-  assert.equal(plain.body.definition.learning, "off", "a new agent learns only where it can");
+  assert.equal(plain.body.definition.learning, undefined, "a new agent learns only where it can");
   assert.deepEqual(plain.body.warnings, []);
   const asked = await api("POST", "/agents", agent("asked", { learning: "auto" }));
   assert.equal(asked.status, 201);

@@ -3,21 +3,22 @@
 // person wrote; the repository holds what the agent learned (notes, INDEX.md, the skills it wrote, workflow drafts, memos).
 // Its main carries AGENTS.md and agent.json, which the host writes for the agent's current revision, so a clone made
 // outside this server still reads as the agent's. Each run starts from main at one commit, which it journals in its own
-// store, and the server proposes what the run learned as `runs/<run id>` once the run's process has let go of its store.
+// store, and once the run's end is carried back the server proposes what it learned as `runs/<run id>`, recording the
+// proposal in `<data>/agents/<id>/learning/runs/<run id>.json`. Every write to an agent's repository goes through one
+// queue per agent in this process; a run's process only reads, through a clone of its own.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
-import type { LearningMode, Revision } from "@parcha/pi-durable-agent";
-import type { TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import type { AgentStoreReader, LearningMode, Revision, RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, BeforeResume } from "@parcha/pi-durable-disk";
 import type { ProposeResult } from "@parcha/pi-agent-learn";
 import type { GitIdentity, Repo } from "@parcha/pi-git-remote";
 import { type AgentEntry, definitionOf } from "./agents.js";
 import { readJson, RUN_META } from "./files.js";
-import type { Status } from "./runs.js";
 import { isObject } from "./validate.js";
 
 export const LEARN_TOOL = "learn";
@@ -27,8 +28,8 @@ const HOST_CLONE = "host.git";
 /** A run's own clone, beside its store and outside its work, so no tool of the run can reach it. */
 const RUN_CLONE = "learning.git";
 const IDENTITY: GitIdentity = { name: "agentrun-serve", email: "serve@agentrun.invalid" };
-/** The tools whose calls bring nothing from outside the run into it. A call of any other tool (`fetch_page`, the
- *  browser's, or one this list does not know) makes the run untrusted. */
+/** The tools whose calls bring nothing from outside the run into it. Any other tool (`fetch_page`, the browser's, or one
+ *  this list does not know) is external, and a run that called one is untrusted. */
 const TRUSTED_TOOLS = new Set(["read", "write", "edit", "ask_person", LEARN_TOOL]);
 /** A skill the agent wrote, at `.agents/skills/<name>/SKILL.md` on main. */
 const LEARNED_SKILL = /^\.agents\/skills\/([a-z0-9][a-z0-9._-]{0,63})\/SKILL\.md$/;
@@ -65,13 +66,28 @@ export function learningBlocker(env: NodeJS.ProcessEnv): Promise<string | undefi
 export const learningOf = (revision: Revision | null | undefined): LearningMode => (revision?.kind === "agentic" ? (revision.body.learning ?? "off") : "off");
 
 export const repoOf = (data: string, agentId: string): string => join(data, "agents", agentId, REPO);
+const agentDir = (data: string, agentId: string): string => join(data, "agents", agentId);
 
-/** A run's outcome as its memo says it: serve's `cancelled` is the layout's `stopped`. */
-export const outcomeOf = (status: Status | string): "completed" | "failed" | "stopped" => (status === "completed" ? "completed" : status === "cancelled" ? "stopped" : "failed");
+/** How a run ended in the store, as its memo says it. */
+export const outcomeOf = (state: RunRow["state"]): "completed" | "failed" | "stopped" => (state === "completed" ? "completed" : state === "stopped" ? "stopped" : "failed");
 
-/** Whether the run read content from outside it: it called a tool other than the file tools, `ask_person` and `learn`. */
-export const untrustedOf = (rows: readonly Pick<TimelineEvent, "kind" | "tool_name">[]): boolean =>
-  rows.some((row) => row.kind === "tool_use" && typeof row.tool_name === "string" && !TRUSTED_TOOLS.has(row.tool_name));
+/** Whether a tool brings content from outside the run into it. */
+export const isExternal = (tool: string): boolean => !TRUSTED_TOOLS.has(tool);
+
+/** Whether the run in `storeFile` called an external tool: every tool call its conversations hold, whatever it answered. */
+function externalUsed(storeFile: string): boolean {
+  const db = new DatabaseSync(storeFile, { readOnly: true });
+  try {
+    for (const row of db.prepare("SELECT record FROM entries").iterate()) {
+      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { content?: unknown }[] };
+      const content = entry.kind === "pi.assistant" ? entry.model?.[0]?.content : undefined;
+      if (Array.isArray(content) && content.some((block) => isObject(block) && block.type === "toolCall" && typeof block.name === "string" && isExternal(block.name))) return true;
+    }
+    return false;
+  } finally {
+    db.close();
+  }
+}
 
 /** The values of `env`'s keys, tokens, secrets and passwords. */
 export const secretsOf = (env: NodeJS.ProcessEnv): string[] =>
@@ -80,9 +96,12 @@ export const secretsOf = (env: NodeJS.ProcessEnv): string[] =>
 /** The run's input values: a learning states the rule, and never repeats the case. */
 export const caseValuesOf = (input: unknown): string[] => (isObject(input) ? Object.values(input).filter((value): value is string => typeof value === "string") : []);
 
-/** One write at a time per repository in this process: the host commit and the proposals. */
 const queues = new Map<string, Promise<unknown>>();
-function serial<T>(key: string, work: () => Promise<T>): Promise<T> {
+
+/** Runs `work` once every write queued before it for the agent's repository has finished: one at a time per agent, in
+ *  this process. The host commit and the proposals go through it, and so must anything else that writes the repository. */
+export function withAgentRepo<T>(data: string, agentId: string, work: () => Promise<T>): Promise<T> {
+  const key = agentDir(data, agentId);
   const next = (queues.get(key) ?? Promise.resolve()).then(work, work);
   const settled = next.catch(() => undefined);
   queues.set(key, settled);
@@ -90,9 +109,11 @@ function serial<T>(key: string, work: () => Promise<T>): Promise<T> {
   return next;
 }
 
-/** The agent's bare repository, made empty on first use, and a clone of it in `clone`. */
-async function openClone(bare: string, clone: string): Promise<Repo> {
+/** The agent's repository, made empty and bare on first use, through a clone of the caller's in `clone`. A writer calls
+ *  it inside `withAgentRepo`. */
+export async function openAgentRepo(data: string, agentId: string, clone: string): Promise<Repo> {
   const { local, openRepo } = await import("@parcha/pi-git-remote");
+  const bare = repoOf(data, agentId);
   if (!existsSync(bare)) {
     await mkdir(dirname(bare), { recursive: true, mode: 0o700 });
     await promisify(execFile)("git", ["-c", "core.hooksPath=/dev/null", "init", "-q", "--bare", "--template=", "-b", "main", bare]);
@@ -100,17 +121,18 @@ async function openClone(bare: string, clone: string): Promise<Repo> {
   return openRepo({ dir: clone, remote: local(bare), identity: IDENTITY });
 }
 
-/** The host's commit on main of `entry`'s current revision: AGENTS.md (its instructions) and agent.json (its definition).
- *  Nothing for an agent that does not learn or on a host that cannot, and no commit when main holds both already. Main's
- *  other files stay. */
-export async function hostCommit(data: string, entry: AgentEntry): Promise<{ sha: string; created: boolean } | undefined> {
-  const { agent, revision, version } = entry;
-  if (!revision || revision.kind !== "agentic" || learningOf(revision) === "off" || (await learningBlocker(process.env))) return undefined;
-  const bare = repoOf(data, agent.id);
-  return serial(bare, async () => {
-    const repo = await openClone(bare, join(dirname(bare), HOST_CLONE));
-    const files = { "AGENTS.md": `${revision.body.instructions.trim()}\n`, "agent.json": `${JSON.stringify(definitionOf(agent, revision, version), null, 2)}\n` };
-    const made = await repo.commitTo("main", { files, message: `host: revision ${version} of ${agent.id}`, trailers: { Revision: revision.id } });
+/** The host's commit on main of the agent's current revision, read by `current` when its turn in the queue comes:
+ *  AGENTS.md (its instructions) and agent.json (its definition). Nothing for an agent that does not learn or on a host
+ *  that cannot, and no commit when main holds both already. Main's other files stay. */
+export async function hostCommit(data: string, agentId: string, current: () => AgentEntry | null): Promise<{ sha: string; created: boolean } | undefined> {
+  if (await learningBlocker(process.env)) return undefined;
+  return withAgentRepo(data, agentId, async () => {
+    const entry = current();
+    const revision = entry?.revision;
+    if (!entry || revision?.kind !== "agentic" || learningOf(revision) === "off") return undefined;
+    const repo = await openAgentRepo(data, agentId, join(agentDir(data, agentId), HOST_CLONE));
+    const files = { "AGENTS.md": `${revision.body.instructions.trim()}\n`, "agent.json": `${JSON.stringify(definitionOf(entry.agent, revision, entry.version), null, 2)}\n` };
+    const made = await repo.commitTo("main", { files, message: `host: revision ${entry.version} of ${agentId}`, trailers: { Revision: revision.id } });
     if (made.created) await repo.push(made.sha, "main");
     return made;
   });
@@ -118,12 +140,31 @@ export async function hostCommit(data: string, entry: AgentEntry): Promise<{ sha
 
 /** Before a run of `revision` (number `version`) of `entry`'s agent starts: when it learns, main holds the current
  *  revision's host commit, or the run's own when the current one does not learn and main has none yet. */
-export async function readyToRun(data: string, entry: AgentEntry, revision: Revision, version: number): Promise<void> {
+export async function readyToRun(data: string, entry: AgentEntry, current: () => AgentEntry | null, revision: Revision, version: number): Promise<void> {
   if (learningOf(revision) === "off") return;
-  if (learningOf(entry.revision) !== "off") return void (await hostCommit(data, entry));
-  const bare = repoOf(data, entry.agent.id);
+  const id = entry.agent.id;
+  if (learningOf(entry.revision) !== "off") return void (await hostCommit(data, id, current));
+  const bare = repoOf(data, id);
   const main = existsSync(bare) ? await promisify(execFile)("git", ["--git-dir", bare, "rev-parse", "--verify", "-q", "main^{commit}"]).then(() => true, () => false) : false;
-  if (!main) await hostCommit(data, { ...entry, revision, version });
+  if (!main) await hostCommit(data, id, () => ({ ...entry, revision, version }));
+}
+
+/** What the server recorded for a run of a learning agent once it proposed it. D extends it with what review did. */
+export type RunState = { state: "proposed" | "empty" | "refused"; branch?: string; base?: string; sha?: string; reasons?: string[] };
+
+const runStateFile = (data: string, agentId: string, runId: string) => join(agentDir(data, agentId), "learning", "runs", `${runId}.json`);
+
+export async function readRunState(data: string, agentId: string, runId: string): Promise<RunState | undefined> {
+  const text = await readFile(runStateFile(data, agentId, runId), "utf8").catch(() => undefined);
+  return text === undefined ? undefined : (JSON.parse(text) as RunState);
+}
+
+/** Written whole: a reader sees the old state or the new one. */
+export async function writeRunState(data: string, agentId: string, runId: string, state: RunState): Promise<void> {
+  const file = runStateFile(data, agentId, runId);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(`${file}.partial`, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+  await rename(`${file}.partial`, file);
 }
 
 /** A run's released store as `proposeLearning` reads it: each document's latest value, read-only. */
@@ -136,32 +177,52 @@ function releasedStore(file: string) {
   };
 }
 
-export type ProposeRunOptions = {
-  data: string;
-  agentId: string;
-  runId: string;
-  /** The run's store, which no process holds any more. */
-  storeFile: string;
-  outcome: Status;
-  costUsd?: number;
-  untrusted: boolean;
-  /** Plaintext values the server holds as secrets, and the run's input values: the guard refuses a note holding one. */
-  secrets: readonly string[];
-  caseValues: readonly string[];
-};
+type Runs = Pick<AgentStoreReader, "readRun" | "readRevision">;
 
-/** What the run learned, proposed as `runs/<run id>` from the commit it was seeded from, with the host's memo. The
- *  `Run-Id` trailer makes a second call for the same run answer `already`. */
-export async function proposeRun(options: ProposeRunOptions): Promise<ProposeResult> {
-  if (!existsSync(options.storeFile)) return { status: "empty" };
-  const bare = repoOf(options.data, options.agentId);
-  return serial(bare, async () => {
-    const [{ proposeLearning }, repo] = await Promise.all([import("@parcha/pi-agent-learn"), openClone(bare, join(dirname(bare), HOST_CLONE))]);
-    return proposeLearning({
-      repo, runId: options.runId, target: releasedStore(options.storeFile) as never, outcome: outcomeOf(options.outcome), untrusted: options.untrusted,
-      secrets: options.secrets, caseValues: options.caseValues, ...(options.costUsd === undefined ? {} : { costUsd: options.costUsd }),
+/** What the ended run `runId` learned, proposed as `runs/<run id>` from the commit it was seeded from, with the host's memo:
+ *  its outcome and cost as the carry back wrote them, and `untrusted` when it called an external tool. Undefined while the
+ *  run has not ended, and for a run whose revision does not learn. The `Run-Id` trailer makes a second call `already`. */
+export async function proposeFor(data: string, store: Runs, runId: string): Promise<ProposeResult | undefined> {
+  const row = store.readRun(runId);
+  if (!row || row.state === "running" || learningOf(store.readRevision(row.revision)) === "off") return undefined;
+  const dir = join(data, "runs", runId);
+  const storeFile = join(dir, "store", "run.sqlite");
+  if (!existsSync(storeFile)) {
+    await writeRunState(data, row.agent, runId, { state: "empty" });
+    return { status: "empty" };
+  }
+  const [{ proposeLearning, SeedDoc }, meta] = await Promise.all([import("@parcha/pi-agent-learn"), readJson(join(dir, RUN_META))]);
+  return withAgentRepo(data, row.agent, async () => {
+    const repo = await openAgentRepo(data, row.agent, join(agentDir(data, row.agent), HOST_CLONE));
+    const target = releasedStore(storeFile);
+    const result = await proposeLearning({
+      repo, runId, target: target as never, outcome: outcomeOf(row.state), untrusted: externalUsed(storeFile),
+      secrets: secretsOf(process.env), caseValues: caseValuesOf(meta?.input), ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }),
     });
+    const base = ((await target.snapshot(SeedDoc as never)) as { sha?: string } | undefined)?.sha;
+    await writeRunState(data, row.agent, runId, result.status === "proposed" || result.status === "already"
+      ? { state: "proposed", branch: `runs/${runId}`, ...(base ? { base } : {}), sha: result.sha }
+      : result.status === "refused" ? { state: "refused", reasons: result.refusals.map((r) => r.detail ?? r.reason) } : { state: "empty" });
+    return result;
   });
+}
+
+/** At start: every ended run of a learning revision that has no recorded proposal is proposed, so a server that stopped
+ *  between a carry back and its proposal loses nothing. Returns the runs it proposed. */
+export async function catchUp(data: string, store: Runs & Pick<AgentStoreReader, "listRuns">, log: (runId: string, error: Error) => void): Promise<string[]> {
+  const learns = new Map<string, boolean>();
+  const done: string[] = [];
+  for (const row of store.listRuns()) {
+    if (row.state === "running") continue;
+    if (!learns.has(row.revision)) learns.set(row.revision, learningOf(store.readRevision(row.revision)) !== "off");
+    if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
+    try {
+      if (await proposeFor(data, store, row.id)) done.push(row.id);
+    } catch (error) {
+      log(row.id, error as Error);
+    }
+  }
+  return done;
 }
 
 /** What a learning run's process adds: the `learn` tool and the `<learned>` section, the skills the agent wrote (their
@@ -178,7 +239,7 @@ export async function runLearning(where: AppContext, agentId: string, ownSkills:
   const [learn, { modeRefusal }, meta] = await Promise.all([import("@parcha/pi-agent-learn"), import("@parcha/pi-git-remote"), readJson(join(where.root, RUN_META))]);
   const bare = repoOf(resolve(where.root, "..", ".."), agentId);
   if (!existsSync(bare)) throw new Error(`the agent ${agentId} learns, and its repository ${REPO} is not there`);
-  const repo = await openClone(bare, join(where.root, RUN_CLONE));
+  const repo = await openAgentRepo(resolve(where.root, "..", ".."), agentId, join(where.root, RUN_CLONE));
   await repo.fetch();
   const journaled = existsSync(storeFile) ? ((await releasedStore(storeFile).snapshot(learn.SeedDoc as never)) as { sha?: string } | undefined)?.sha : undefined;
   const sha = journaled || (await repo.resolve("main"));
@@ -201,15 +262,4 @@ export async function runLearning(where: AppContext, agentId: string, ownSkills:
     skillFiles,
     beforeResume: async ({ harness }) => void (await learn.seedLearning({ repo, ref: sha, target: harness as never, into: where.work })),
   };
-}
-
-// Not built yet: the shapes PR D builds on.
-export const isExternal = (_tool: string): boolean => false;
-export const openAgentRepo = (data: string, agentId: string, clone: string): Promise<Repo> => openClone(repoOf(data, agentId), clone);
-export const withAgentRepo = <T>(_data: string, _agentId: string, work: () => Promise<T>): Promise<T> => work();
-export async function readRunState(_data: string, _agentId: string, _runId: string): Promise<unknown> {
-  return undefined;
-}
-export async function proposeFor(_data: string, _store: unknown, _runId: string): Promise<unknown> {
-  return undefined;
 }

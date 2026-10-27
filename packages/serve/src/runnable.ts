@@ -4,7 +4,7 @@
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import type { InputIssue } from "./errors.js";
-import { learningBlocker } from "./learning.js";
+import { LEARN_TOOL, learningBlocker } from "./learning.js";
 import { chooseModel, nodeTiers } from "./model.js";
 
 /** A revision's body as it is saved or stored. */
@@ -23,13 +23,16 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const out: Blocker[] = [];
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
+    const learning = revision.learning !== undefined && revision.learning !== "off";
     (revision.tools ?? []).forEach((tool, index) => {
-      if (!(BOUND_TOOLS as readonly string[]).includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
+      // The learn tool comes with learning: naming it is a no-op then, and a mistake without it.
+      if (tool === LEARN_TOOL && !learning) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: "The learn tool comes with learning, which is off for this definition.", fix: "Set definition.learning to auto or approve, or remove learn from definition.tools.", host: false, tool });
+      else if (tool !== LEARN_TOOL && !(BOUND_TOOLS as readonly string[]).includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
     });
     const chosen = await chooseModel(env, revision.model);
     if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
-    const learns = revision.learning !== undefined && revision.learning !== "off" ? await learningBlocker(env) : undefined;
-    if (learns) out.push({ field: "definition.learning", reason: NOT_SET_UP, message: `${learns} Install it, or set definition.learning to off.`, host: true });
+    const learns = learning ? await learningBlocker(env) : undefined;
+    if (learns) out.push({ field: "definition.learning", reason: NOT_SET_UP, message: `${learns} Install it, or set definition.learning to null.`, host: true });
     return out;
   }
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
@@ -50,4 +53,4 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
 }
 
 /** A blocker as a field issue, for a 422 or a warning. */
-export const issueOf = ({ field, reason, message }: Blocker): InputIssue => ({ field, reason, message });
+export const issueOf = ({ field, reason, message, fix }: Blocker): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });

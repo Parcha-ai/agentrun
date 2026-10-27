@@ -12,7 +12,7 @@ import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agen
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
-import { hostCommit, learningBlocker, readyToRun } from "./learning.js";
+import { catchUp, hostCommit, learningBlocker, proposeFor, readyToRun } from "./learning.js";
 import { answerPage } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -214,7 +214,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const caps = capabilities(env);
   // A new agent learns where this host can keep its learning repository.
   const agents = new Agents(data, (await learningBlocker(env)) === undefined ? "auto" : "off");
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  // Once a learning run's end is written, what it learned is proposed as its branch.
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents.store, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -235,13 +236,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const host = options.host ?? "127.0.0.1";
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+  // Ended runs of learning agents that were never proposed: a server that stopped between a carry back and its proposal.
+  // A host commit that failed is made again by the agent's next save or run.
+  const caughtUp = catchUp(data, agents.store, (runId, error) => void process.stderr.write(`agentrun-serve: run ${runId}: not proposed: ${error.message}\n`))
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: learning catch-up: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
   /** The host commit of an agent's current revision on its learning repository's main. The revision is written either
    *  way: a failed commit is said, and the agent's next run makes it before it starts. */
   async function hostCommitted(entry: AgentEntry): Promise<void> {
-    await hostCommit(data, entry).catch((error: Error) => void process.stderr.write(`agentrun-serve: agent ${entry.agent.id}: the learning repository's host commit failed: ${error.message}\n`));
+    await hostCommit(data, entry.agent.id, () => agents.get(entry.agent.id)).catch((error: Error) => void process.stderr.write(`agentrun-serve: agent ${entry.agent.id}: the learning repository's host commit failed: ${error.message}\n`));
   }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
@@ -360,7 +365,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
       await runnable(revision);
-      await readyToRun(data, entry, revision, version);
+      await readyToRun(data, entry, () => agents.get(entry.agent.id), revision, version);
       const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
@@ -711,6 +716,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     tokenMade: stored?.made ?? false,
     async close() {
       await runs.close();
+      await caughtUp;
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
     },
