@@ -88,6 +88,33 @@ test("tools: a node's [] gives none, an absent list gives every registered tool,
   assert.equal(adapter.requests, 2, 'the refused node spent nothing');
 });
 
+/** The adapter, keeping the tools the runner hands each session: a harness that calls one after its node ended. */
+function keptTools(adapter) {
+  const kept = [];
+  const open = adapter.open.bind(adapter);
+  adapter.open = async (spec, io) => { kept.push(new Map(spec.tools.map((t) => [t.name, t]))); return open(spec, io); };
+  return { adapter, kept };
+}
+const REFUSED = (error) => error.message === 'the session has stopped; tool execution refused';
+
+test('a host tool called after an accepted submit, or after the node stopped, never runs: the call rejects', async () => {
+  let ran = 0;
+  const counting = { ...lookup, call: async () => { ran += 1; return { text: 'found' }; } };
+  // In the same turn as the accepted submit: the harness's call is answered an error, and the tool does not run.
+  const ends = [];
+  const after = keptTools(fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }, { call: 'lookup' }] }));
+  const runner = createHarnessRunner(after.adapter, { store: memorySessionStore(), tools: [counting], onEvent: (e) => { if (e.type === 'tool_end') ends.push([e.name, e.isError]); } });
+  assert.deepEqual(await runner(stepRequest({ tools: ['lookup'] })), { answer: 'ok' });
+  assert.deepEqual(ends, [['submit', false], ['lookup', true]]);
+  // Later, from a harness still holding the tool: the call rejects with the refusal.
+  await assert.rejects(after.kept[0].get('lookup').call({}, { callId: 'late', signal: new AbortController().signal }), REFUSED);
+  // After a stop (here no_progress): the node failed, and a call that arrives afterwards rejects.
+  const stopped = keptTools(fauxAdapter({ script: () => [] }));
+  await assert.rejects(createHarnessRunner(stopped.adapter, { store: memorySessionStore(), tools: [counting] })(stepRequest({ tools: ['lookup'] })), (error) => error.reason === 'no_progress');
+  await assert.rejects(stopped.kept[0].get('lookup').call({}, { callId: 'late', signal: new AbortController().signal }), REFUSED);
+  assert.equal(ran, 0, 'the host tool never ran');
+});
+
 test('a fork is refused at create time, final, before anything is spent', async () => {
   const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }] });
   const recovery = memoryStore();
