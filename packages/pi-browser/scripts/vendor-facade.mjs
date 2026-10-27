@@ -10,7 +10,7 @@
  *           commit or that imports a file the manifest does not list, then write them and UPSTREAM.json
  */
 import { createHash } from "node:crypto";
-import fs from "node:fs";
+import fs, { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -98,7 +98,9 @@ export async function vendor(commit, release, { dir = FACADE_DIR, io = github } 
   return manifest;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node resolves the module URL through symlinks but not argv[1]: compare the resolved path.
+const isMain = () => { try { return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); } catch { return false; } };
+if (process.argv[1] && isMain()) {
   const argv = process.argv.slice(2);
   const value = (flag) => { const i = argv.indexOf(flag); return i === -1 ? undefined : argv[i + 1]; };
   if (argv.includes("--check")) {
