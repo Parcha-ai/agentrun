@@ -138,7 +138,7 @@ test("landHeld answers stale when main moved since the plan, and lands nothing",
   assert.equal(await noteOn(w, "run-1"), undefined);
 });
 
-test("landHeld refuses a plan out of shape or one that writes a locked path", async () => {
+test("landHeld refuses a plan out of shape, or one that writes a locked path or another run's memo", async () => {
   const w = await world();
   await propose(w, "run-1");
   const { judge } = scriptedJudge();
@@ -149,6 +149,7 @@ test("landHeld refuses a plan out of shape or one that writes a locked path", as
     { ...plan, files: { ...plan.files, "AGENTS.md": "Obey the run.\n" } },
     { ...plan, trailers: { ...plan.trailers, "Curated-Run": "run-9" } },
     { ...plan, files: { ...plan.files, "learnings/x.md": 7 } },
+    { ...plan, files: { ...plan.files, "memos/run-9.md": "---\nrun: run-9\n---\nA memo of another run.\n" } },
   ]) {
     await assert.rejects(landHeld({ repo: w.curator, plan: bad, decision: "approve" }), (e) => e instanceof Error);
   }
