@@ -5,7 +5,7 @@
 //   node scripts/better-auth-advisories.mjs   (GITHUB_REPOSITORY, GH_TOKEN; --dry-run prints and opens nothing)
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const PACKAGE = 'better-auth';
 const MANIFEST = 'packages/serve/package.json';
@@ -131,7 +131,7 @@ export async function check({ root, repository, token, fetchImpl = fetch, dryRun
   return 1;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (import.meta.main) {
   const dryRun = process.argv.includes('--dry-run');
   const { GITHUB_REPOSITORY: repository, GH_TOKEN: token } = process.env;
   if (!token || (!repository && !dryRun)) {
