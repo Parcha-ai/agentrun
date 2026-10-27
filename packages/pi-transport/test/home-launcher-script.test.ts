@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { LAUNCHER_SCRIPT } from "../src/home/launcher-script.ts";
+import { LAUNCHER_SCRIPT, PROC_LINE } from "../src/launch/launcher-script.ts";
 import { guardLeaks } from "./leak-guard.ts";
 
 const { env: MARK } = guardLeaks();
@@ -11,6 +11,14 @@ const root = mkdtempSync(join(tmpdir(), "pi-transport-launcher-script-"));
 const script = join(root, "launcher.sh");
 writeFileSync(script, LAUNCHER_SCRIPT);
 afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+/** The launcher with its process table at `proc`: the one line a test copy changes (no environment can change it). */
+function scriptReading(proc: string): string {
+	expect(LAUNCHER_SCRIPT).toContain(PROC_LINE);
+	const path = `${proc}.launcher.sh`;
+	writeFileSync(path, LAUNCHER_SCRIPT.replace(PROC_LINE, `PROC='${proc}'`));
+	return path;
+}
 
 /** A /proc of processes: `pid (comm) state ppid pgrp ...`, the shape the kernel writes. */
 function fakeProc(
@@ -32,8 +40,8 @@ function fakeProc(
 function groupLive(proc: string, pgrp: number): boolean {
 	const dir = join(root, "launch-dir");
 	mkdirSync(dir, { recursive: true });
-	const ran = spawnSync("sh", [script, "group-live", dir, String(pgrp)], {
-		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc, ...MARK },
+	const ran = spawnSync("sh", [scriptReading(proc), "group-live", dir, String(pgrp)], {
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...MARK },
 	});
 	return ran.status === 0;
 }
@@ -78,8 +86,8 @@ function centis(uptime: string): { status: number | null; out: string } {
 	writeFileSync(join(proc, "uptime"), `${uptime} 99.99\n`);
 	const dir = join(root, "launch-dir");
 	mkdirSync(dir, { recursive: true });
-	const ran = spawnSync("sh", [script, "centis", dir], {
-		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc, ...MARK },
+	const ran = spawnSync("sh", [scriptReading(proc), "centis", dir], {
+		env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...MARK },
 	});
 	return { status: ran.status, out: String(ran.stdout).trim() };
 }
@@ -104,9 +112,24 @@ describe("the launcher's clock", () => {
 		const proc = join(root, "uptime-arith");
 		mkdirSync(proc, { recursive: true });
 		writeFileSync(join(proc, "uptime"), "0.88 1.00\n");
-		const sum = spawnSync("sh", ["-c", 'echo $(( $(sh "$1" centis "$2") - 5 ))', "sh", script, dir], {
-			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc, ...MARK },
+		const sum = spawnSync("sh", ["-c", 'echo $(( $(sh "$1" centis "$2") - 5 ))', "sh", scriptReading(proc), dir], {
+			env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...MARK },
 		});
 		expect(String(sum.stdout).trim()).toBe("83");
+	});
+});
+
+describe("the launcher's process table", () => {
+	it("is /proc whatever the environment says: a PI_TRANSPORT_PROC from the box runtime points it nowhere", () => {
+		// A /proc where a group that the real one has not is live, and the uptime reads 12.89 s.
+		const proc = fakeProc("runtime-proc", [{ pid: 300, comm: "sh", state: "S", ppid: 1, pgrp: 2147483000 }]);
+		writeFileSync(join(proc, "uptime"), "12.89 1.00\n");
+		const dir = join(root, "launch-dir");
+		mkdirSync(dir, { recursive: true });
+		const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", PI_TRANSPORT_PROC: proc, ...MARK };
+		expect(spawnSync("sh", [script, "group-live", dir, "2147483000"], { env }).status).toBe(1);
+		expect(String(spawnSync("sh", [script, "centis", dir], { env }).stdout).trim()).not.toBe("1289");
+		// The same table through the script's own line is read.
+		expect(spawnSync("sh", [scriptReading(proc), "group-live", dir, "2147483000"], { env }).status).toBe(0);
 	});
 });

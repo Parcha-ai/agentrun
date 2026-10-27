@@ -15,7 +15,10 @@ const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 /** Every target that must be refused, and whether a first hop is dialled before the refusal (a redirect's). */
 const HOSTILE = [
   ["http://127.0.0.1:9421/v1/models", false],
+  ["http://127.0.0.1/", false],
   ["http://localhost:8080/", false],
+  ["http://localhost/", false],
+  ["http://public.example:8080/", false],
   ["http://app.localhost/", false],
   ["http://169.254.169.254/latest/meta-data/", false],
   ["http://10.0.0.1/", false],
@@ -56,6 +59,8 @@ test("the tool refuses every private, local and non-http(s) target before it is 
   assert.deepEqual(net.dialled, ["http://public.example/"]);
   assert.deepEqual(await fetchPage("http://public.example/notes.txt", network()), { ok: true, url: "http://public.example/notes.txt", status: 200, title: "", text: "Plain notes.", links: [] });
   assert.match((await fetchPage("http://public.example/image.png", network())).refused, /image\/png is not text/);
+  assert.equal((await fetchPage("http://public.example:8080/", network())).refused, "refused: port 8080 is not 80 or 443", "a public host on another port");
+  for (const url of ["http://public.example:80/", "http://public.example:443/", "https://public.example:443/"]) assert.notEqual((await fetchPage(url, network())).refused?.startsWith("refused: port"), true, url);
   assert.deepEqual(await fetchPage("http://public.example/missing", network()), { ok: false, url: "http://public.example/missing", status: 404, title: "", text: "", links: [], error: "the page answered 404" });
   assert.deepEqual(await fetchPage("not a url", network()), { ok: false, url: "not a url", status: 0, title: "", text: "", links: [], error: "url is not an absolute URL" });
   assert.match((await fetchPage("http://nowhere.example/", network())).error, /ENOTFOUND/);
@@ -95,7 +100,7 @@ test("an agentic run's fetch_page in its own process: every hostile target refus
   assert.deepEqual(dialled, ["http://redirect.example/", "http://renamed.example/", "http://public.example/"], "only public addresses were dialled");
 });
 
-test("a workflow's call node runs fetch_page: the Page is its output, a refusal is ok false and the workflow goes on; a call to a tool outside the table is 409", async (t) => {
+test("a workflow's call node runs fetch_page: the Page is its output, a refusal is ok false and the workflow goes on; a call to a tool outside the table is refused at save (422)", async (t) => {
   const { api } = await serve(t, { fauxWeb: FAUX_WEB });
   const flow = {
     v: 2, name: "read-site",
@@ -130,13 +135,12 @@ test("a workflow's call node runs fetch_page: the Page is its output, a refusal 
   assert.equal(fedRun.status, 202, JSON.stringify(fedRun.body));
   await follow(api, fedRun.body.run_id, ["completed"]);
   assert.deepEqual((await api("GET", `/runs/${fedRun.body.run_id}`)).body.result.output, { answer: 42 });
-  // A call to a tool outside the table, or to one no call node may run, is refused before anything starts.
+  // A call to a tool outside the table, or to one no call node may run, is refused when the workflow is saved.
   for (const tool of ["http_get", "read"]) {
     const other = structuredClone(flow);
     other.root.steps[0].tool = tool;
-    assert.equal((await api("POST", "/agents", { definition: { id: `call-${tool}`, name: tool, workflow: other, tools: [tool] } })).status, 201);
-    const refused = await api("POST", `/agents/call-${tool}/runs`, { input: { website: "http://public.example/" } });
-    assert.deepEqual([refused.status, refused.body.error.details.unbound], [409, [tool]], tool);
-    assert.match(refused.body.error.message, /call nodes run the tools fetch_page/);
+    const refused = await api("POST", "/agents", { definition: { id: `call-${tool}`, name: tool, workflow: other, tools: [tool] } });
+    assert.deepEqual([refused.status, refused.body.error.fields.map((f) => f.field)], [422, ["definition.workflow"]], tool);
+    assert.match(refused.body.error.fields[0].message, new RegExp(`call nodes run the tools fetch_page here; this workflow also calls ${tool}\\.`));
   }
 });

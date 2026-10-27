@@ -95,14 +95,13 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   assert.ok(store.prepare("SELECT sql FROM sqlite_master WHERE name = 'agents'").get().sql.startsWith("CREATE TABLE"), "the edit did not land");
 });
 
-test("no path offers a shell: an agentic revision naming bash is not runnable, and a run or a workflow node that calls bash anyway runs no command", async (t) => {
+test("no path offers a shell: an agentic revision naming bash is not saved, and a run or a workflow node that calls bash anyway runs no command", async (t) => {
   const { api, data } = await serve(t, { faux: PROBE });
   const pwned = join(data, "pwned");
   const commands = ["cat ../../../.token", `ls ${data}`, "env", "cat /proc/1/environ", "touch ../../../pwned", `touch ${pwned}`];
   const calls = commands.map((command) => ({ tool: "bash", args: { command } }));
-  assert.equal((await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"] } })).status, 201);
-  const shell = await api("POST", "/agents/shell/runs", { input: { content: "x" } });
-  assert.deepEqual([shell.status, shell.body.error.code, shell.body.error.details.unbound], [409, "agent_not_runnable", ["bash"]]);
+  const shell = await api("POST", "/agents", { definition: { id: "shell", name: "shell", instructions: "Probe.", tools: ["read", "bash"] } });
+  assert.deepEqual([shell.status, shell.body.error.code, shell.body.error.fields.map((f) => f.field)], [422, "input_invalid", ["definition.tools[1]"]]);
   // An agent that does not name bash, whose model calls it by name.
   assert.equal((await api("POST", "/agents", { definition: { id: "quiet", name: "quiet", instructions: "Probe.", tools: ["read", "write", "edit"] } })).status, 201);
   const agentic = await (await probed(api, data, "quiet", calls)).done();
@@ -118,12 +117,11 @@ test("no path offers a shell: an agentic revision naming bash is not runnable, a
     assert.deepEqual([node[commands.length].tool, node[commands.length].error, node[commands.length].text], ["write", true, "<harness>\n[error] Tool write is not available\n</harness>"]);
     assert.equal(node.at(-1).tool, "submit", "the node still delivers its record");
   }
-  // A workflow node that names bash is refused before anything starts.
+  // A workflow node that names bash is refused before anything is saved.
   const flow = answerFlow();
   flow.root.steps[0].tools = ["bash"];
-  assert.equal((await api("POST", "/agents", { definition: { id: "node-bash", name: "node-bash", workflow: flow, tools: ["bash"] } })).status, 201);
-  const refused = await api("POST", "/agents/node-bash/runs", { input: { question: "x" } });
-  assert.deepEqual([refused.status, refused.body.error.details.unbound], [409, ["bash"]]);
+  const refused = await api("POST", "/agents", { definition: { id: "node-bash", name: "node-bash", workflow: flow, tools: ["bash"] } });
+  assert.deepEqual([refused.status, refused.body.error.fields.map((f) => f.field)], [422, ["definition.workflow"]]);
   assert.equal(await exists(pwned), false, "no command ran");
   assert.equal(await exists(join(data, "evil.txt")), false);
 });

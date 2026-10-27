@@ -125,15 +125,17 @@ test("ask_person reaches only an agent that names it: one that does not goes on 
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, '{"region":"us"}');
 });
 
-test("a run whose cost estimate passes its max_cost_usd ends failed with spend_cap_reached", async (t) => {
+test("a run whose next request could pass its max_cost_usd ends failed with spend_cap_reached, and the request is not sent", async (t) => {
   const { api } = await serve(t, { faux: new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", { definition: { id: "pricey", version: 1, name: "pricey", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
   const started = await api("POST", "/agents/pricey/runs", { input: { content: "What is six times seven?" }, max_cost_usd: 0.01 });
   assert.equal(started.body.cost.cap_usd, 0.01);
-  await follow(api, started.body.run_id, ["failed"]);
+  const { rows } = await follow(api, started.body.run_id, ["failed"]);
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(run.error.code, "spend_cap_reached");
-  assert.ok(run.cost.usd > 0.01);
+  assert.match(run.error.message, /^the next model request was not sent/);
+  assert.equal(run.cost.usd, 0, "nothing was spent");
+  assert.equal(rows.some((r) => r.kind === "final_answer"), false);
 });
 
 test("the timeline as server-sent events: one rows event per change with id = next_after, then end terminal", async (t) => {

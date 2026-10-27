@@ -19,6 +19,10 @@ pi --offline
 
 `pi --offline` opens Pi's terminal interface, so run it in an interactive terminal; with no terminal attached it prints nothing and exits. `-l` writes project settings in `.pi/settings.json`. Omit it to install for all your Pi sessions. `--offline` skips startup downloads; it does not disable model calls. No AgentRun checkout or build is needed.
 
+If `pi install ... -l` stops with `Project is not trusted. Use --approve to modify local package config.`, the project is not yet trusted in Pi. Add `--approve` to the install line: `pi install npm:@parcha/agentrun-pi@beta -l --approve`.
+
+Pi starts with `read`, `bash`, `edit` and `write` active. AgentRun's read-only tools are `read`, `grep`, `find` and `ls`, and a workflow can use only the tools that are active. To use all four read-only tools, start Pi with `pi --tools read,grep,find,ls,agentrun`. Keep `agentrun` in the list. Without it, Pi disables the AgentRun tool, and the session shows a warning with the line to use. A workflow that needs a tool which is not active is refused, and the refusal names that tool.
+
 On first launch, Pi asks "Trust project folder?" before loading the extension, with five choices: Trust, Trust parent folder, Trust (this session only), Do not trust, and Do not trust (this session only). Choose Trust, or Trust (this session only), to load it. If Pi is already open, use `/reload`. The current draft is restored from a persisted Pi session branch when available; named definition saves are stored separately.
 
 With no model configured, `pi --offline` prints two warnings at startup: `Warning: fd not found. Offline mode enabled, skipping download.` (the optional `fd` tool is not installed and `--offline` skips fetching it) and `Warning: No models available. Use /login to log into a provider via OAuth or API key.` Both are expected here and the scripted demo needs neither. The `[Skills]` list shows `agentrun-author` and the `[Extensions]` list shows `@parcha/agentrun-pi` when the extension loaded.
@@ -83,7 +87,8 @@ Loading starts with empty input and does not execute. A save retains the definit
 | `/agentrun load <name> [digest]` | Load the newest or exact revision; input starts empty. |
 | `/agentrun list` | List saved revisions. |
 | `/agentrun history` | Inspect retained run receipts on this Pi branch. |
-| `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration without making provider calls. |
+| `/agentrun status` | Check skill discovery, active Pi selection, and Jev configuration (TypeSafe or OpenRouter) without making provider calls. |
+| `/agentrun limits` | Show the limits in force, and the turn limit of each node that runs in a Pi session (agent, decide, extract, report) in the current workflow and where it comes from. Makes no model call. |
 | `/agentrun stop` | Request cancellation of the running workflow. |
 
 A progress widget shows active steps and the number finished. Results distinguish completion, escalation, failure, and interruption. Decision records show supplied evidence, criteria, answer, and route, not hidden reasoning or proof of correctness.
@@ -116,7 +121,7 @@ The argument is a project directory, not the workflows directory: the extension 
 | `/agentrun demo live` | Real Pi agent steps and Jev system one decisions over the same fictional sources. |
 | `/agentrun triage` | A second scripted workflow, support-ticket triage over a fictional ticket, without model calls. |
 
-Live mode uses your active Pi model and requires configured TypeSafe access for Jev. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
+Live mode uses your active Pi model and needs a TypeSafe key or an OpenRouter key for Jev: `TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY` to reach Jev through OpenRouter, which is used when `TYPESAFE_API_KEY` is not set. `/agentrun status` says which one Jev uses. It still does not search the web or prove accuracy on real research. See the [Jev adapter configuration](https://github.com/Parcha-ai/agentrun/tree/main/packages/jev#readme). Live calls can incur usage charges; scripted mode needs no provider access.
 
 ## Tools and execution
 
@@ -184,6 +189,8 @@ All options are optional; the default export retains ordinary Pi setup. `hostToo
 
 Hosts may supply `runtimeLimits` to lower a finite limit or explicitly disable it with `null`: `deadlineMs`, `modelRequests`, `judgeCalls`, `toolAttempts`, `nodeMaxTurns`, `nodeMaxSubmissions`, and `nodeTimeoutMs`. Omitted values keep existing finite defaults. Disabling all seven removes extension inference/time admission caps while preserving operator cancellation, schema validation, graph structure, concurrency, and trace/data guards. This is host configuration; neither a workflow nor an author tool argument can change it. Tool-specific timeouts and provider limits are separate host/tool contracts.
 
+A node's turns are bounded per attempt. `nodeMaxTurns` (default 40) is the most any node gets and the cap on what a node may ask for. A node that names no `max_turns` gets 20 turns when it can only read (no `bash`, `edit` or `write` among its tools, and the host supplies no `hostTools`), and 8 otherwise, never above the cap. An agent node's `max_turns` sets its own limit within the cap; inspection refuses a node that asks for more, naming the cap. A node that reaches its turn limit is not tried again: the run fails with `pi_turn_limit`, which says how many turns the node used of its limit and its last tool call. `describe` reports the two defaults as `nodeTurnDefaults`.
+
 Trace retention is **not an execution budget**. A run keeps recent sanitized events
 within a bounded in-memory report and continues when that retention fills. The
 report's `trace` counts received, retained, dropped and rejected events/bytes;
@@ -224,7 +231,7 @@ For a standalone application, `createPiRunner(options)` accepts a configured SDK
 
 LLM `instructions` are literal text. Refer to "the text field in the JSON input" and declare `requires: ["text"]`; `{text}` inside instructions stays literal. An optional node `state` map scopes the JSON user message. Placeholder substitution applies to designated fields such as `state` and `call.args`.
 
-The child model delivers `{value: result}` through its `submit` tool. Schema and review rejections return feedback to the same session. Exhausting a turn, submission, timeout, or cancellation limit throws `PiRunError`; a rejected draft is never returned as success. A host can explicitly pass `null` for runner `maxTurns`, `maxSubmissions`, or `timeoutMs` to disable that limit. Omission keeps the default; external cancellation still interrupts unlimited runs.
+The child model delivers `{value: result}` through its `submit` tool. Schema and review rejections return feedback to the same session. Exhausting a turn, submission, timeout, or cancellation limit throws `PiRunError`; a rejected draft is never returned as success. A node's `maxTurns` (an agent node's `max_turns`) sets its turn limit within the runner's `maxTurns`, which caps it; a node that asks for more is refused. A turn limit's `PiRunError` carries `turns`, `maxTurns` and the last tool's name (`lastTool`), and is marked `final`, so a recovery driver gives it no second attempt. A host can explicitly pass `null` for runner `maxTurns`, `maxSubmissions`, or `timeoutMs` to disable that limit. Omission keeps the default; external cancellation still interrupts unlimited runs.
 
 ## SDK: retain candidates and check fixed fixtures
 
