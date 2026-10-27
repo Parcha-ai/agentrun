@@ -33,12 +33,19 @@ async function probed(api, data, agent, probe, workflow = false) {
   return { runId: run.body.run_id, done: async () => (await follow(api, run.body.run_id, ["completed"]), answers(data, run.body.run_id)) };
 }
 
-test("read, write and edit reach nothing outside work/: the tokens, the store, another run, /proc, a planted link, the data directory, /tmp, the agent's learning repository and the run's clone of it", async (t) => {
+test("read, write and edit reach nothing outside work/: the tokens, the store, another run, /proc, a planted link, the data directory, /tmp, and anything under the agent's directory (its learning repository, the clones of it, and the per-run learning states)", async (t) => {
   const { api, data } = await serve(t, { faux: PROBE });
   assert.equal((await api("POST", "/agents", { definition: { id: "probe", name: "probe", instructions: "Probe.", tools: ["read", "write", "edit"] } })).status, 201);
   // Another run of the same agent, with a secret in its own work/.
   const other = await probed(api, data, "probe", []);
   await other.done();
+  // The server records that run's proposal beside the agent's repository once its end is carried back.
+  const recorded = join(data, "agents", "probe", "learning", "runs", `${other.runId}.json`);
+  for (let i = 0; !(await exists(recorded)); i++) {
+    assert.ok(i < 400, "the other run's proposal is recorded");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const record = await readFile(recorded, "utf8");
   const secret = join(data, "runs", other.runId, "work", "secret.txt");
   await writeFile(secret, "another run's secret");
   // And a secret in that run's tmp/, the one place besides work/ a run may read: its own, not another's.
@@ -72,6 +79,13 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
     ["write", { path: "../learning.git/hooks/post-checkout", content: "#!/bin/sh\nexit 0\n" }],
     ["edit", { path: "../../../agents/probe/learning.git/HEAD", edits: [{ oldText: "refs/heads/main", newText: "refs/heads/evil" }] }],
     ["edit", { path: "../learning.git/HEAD", edits: [{ oldText: "refs/heads/main", newText: "refs/heads/evil" }] }],
+    // Everything else under the agent's directory: the server's clone, a curator's, and the per-run learning states.
+    ["read", { path: "../../../agents/probe/host.git/HEAD" }],
+    ["read", { path: `../../../agents/probe/learning/runs/${other.runId}.json` }],
+    ["write", { path: `../../../agents/probe/learning/runs/${other.runId}.json`, content: '{"state":"merged"}' }],
+    ["write", { path: `../../../agents/probe/learning/runs/${other.runId}.plan.json`, content: "{}" }],
+    ["edit", { path: `../../../agents/probe/learning/runs/${other.runId}.json`, edits: [{ oldText: "state", newText: "evil" }] }],
+    ["write", { path: "../../../agents/probe/curator/HEAD", content: "ref: refs/heads/evil\n" }],
   ];
   const control = [["write", { path: "inside.txt", content: "inside" }], ["read", { path: "inside.txt" }], ["read", { path: "../tmp/note.txt" }]];
   const run = await probed(api, data, "probe", [{ wait: go }, ...[...attempts, ...control].map(([tool, args]) => ({ tool, args }))]);
@@ -89,6 +103,9 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   assert.equal(await readFile(join(clone, "HEAD"), "utf8"), "ref: refs/heads/main\n");
   assert.equal(await exists(join(repo, "hooks", "pre-receive")), false);
   assert.equal(await exists(join(clone, "hooks", "post-checkout")), false);
+  assert.equal(await readFile(recorded, "utf8"), record, "the recorded proposal is unchanged");
+  assert.equal(await exists(join(data, "agents", "probe", "learning", "runs", `${other.runId}.plan.json`)), false);
+  assert.equal(await exists(join(data, "agents", "probe", "curator")), false);
   assert.equal(said.length, attempts.length + control.length);
   attempts.forEach(([tool, args], i) => {
     assert.equal(said[i].tool, tool);
