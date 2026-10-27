@@ -88,7 +88,7 @@ export function runBranchFiles(input: RunBranchInput): Record<string, string> {
     const dir = repoWorkflowDir(draft.name);
     if (draft.workflow !== undefined) files[`${dir}/workflow.json`] = `${JSON.stringify(draft.workflow, null, 2)}\n`;
     const description = draft.description?.trim();
-    files[`${dir}/README.md`] = `# ${draft.name}\n\n${description || `A workflow run ${runId} saved.`}\n`;
+    files[`${dir}/README.md`] = `# ${draft.name}\n${description ? `\n${description}\n` : ""}`;
     learned.push(`- ${dir}/: ${draft.workflow === undefined ? "when to use a workflow on main" : "a workflow draft"}`);
   }
   if (fresh.length || used.size) {

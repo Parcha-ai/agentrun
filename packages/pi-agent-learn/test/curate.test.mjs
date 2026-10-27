@@ -528,7 +528,7 @@ test("a run's saved workflow records go to the admitter; its files land, a rules
   assert.deepEqual((await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: bare.curator, judge, admitWorkflow: null })).runs[0].held, [{ candidate: 1, workflow: "kyb", reason: "no workflow admitter is installed" }]);
 });
 
-test("a workflow's README is judged like a note: a general one lands on main as the agent wrote it, one about this case is refused with its workflow, and the admitter never sees it", async () => {
+test("a workflow's README is judged like a note: a general one lands on main as the agent wrote it, one about this case leaves a pointer to the skill, and the admitter never sees it", async () => {
   const w = await world();
   const when = (id, text) => ({ callId: `call-${id}`, type: "workflow", id, text, evidence: [] });
   const described = (runId, name, text) => ({ ...draftOf(runId, name), [`workflows/${name}/README.md`]: `# ${name}\n\n${text}\n` });
@@ -538,13 +538,12 @@ test("a workflow's README is judged like a note: a general one lands on main as 
   const seen = [];
   const { judge, calls } = fakeJudge([{ q: "general", text: "Acme Widgets", p: 0.05 }]);
   const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: w.curator, judge, admitWorkflow: async (input) => (seen.push(input.workflow), admitted(input.workflow.name)) });
-  assert.deepEqual(seen.map((s) => [s.name, s.description]), [["kyb", undefined], ["plain", undefined]], "the admitter never sees the README");
-  assert.deepEqual(report.runs.map((r) => r.accepted.map((a) => a.workflow)), [["kyb"], [], ["plain"]]);
-  assert.deepEqual(report.runs[1].refused.map((r) => [r.workflow, r.reason]), [["acme", "about this case, not general (0.05)"]]);
-  assert.deepEqual(calls.map((c) => Object.keys(c.questions)[0]), ["general", "workflowCase", "general", "workflowCase"], "a README with no text of the agent's is asked nothing");
+  assert.deepEqual(seen.map((s) => [s.name, s.description]), [["kyb", undefined], ["acme", undefined], ["plain", undefined]], "the admitter never sees the README");
+  assert.deepEqual(report.runs.map((r) => [r.accepted.map((a) => a.workflow), r.refused, r.held]), [[["kyb"], [], []], [["acme"], [], []], [["plain"], [], []]], "the README's verdict never holds the workflow");
+  assert.equal(report.runs[1].accepted[0].reason, "trial; its README is not landed: about this case, not general (0.05)");
+  assert.deepEqual(calls.map((c) => Object.keys(c.questions)[0]), ["narrowsRules", "general", "workflowCase", "narrowsRules", "general", "workflowCase", "workflowCase"], "a README is asked a note's questions; one with no text of the agent's is asked nothing");
   assert.equal(await w.curator.read("workflows/kyb/README.md", "main"), "# kyb\n\nA US company to check against its state registry.\n", "the agent's README, as written");
-  assert.equal(await w.curator.read("workflows/acme/README.md", "main"), undefined);
-  assert.equal(await w.curator.read("workflows/plain/README.md", "main"), "# plain\n\nThe plain workflow. When to use it: `.agents/skills/plain/SKILL.md`.\n");
+  assert.equal(await w.curator.read("workflows/acme/README.md", "main"), undefined, "a README that did not pass never lands (the pointer README needs a real record: workflow-provenance)");
   assert.doesNotMatch(await w.curator.read(".agents/skills/kyb/SKILL.md", "main"), /registry/, "the skill is the admitter's, from the document");
 });
 

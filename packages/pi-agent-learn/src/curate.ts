@@ -505,6 +505,10 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const usedOnce = new Set<string>();
   const rules = options.rules ?? (await repo.read(LAYOUT.rules, main)) ?? "";
   const workflows = new Map<string, { candidate: number; untrusted: boolean }>();
+  /** The workflows whose README this run wrote and curation passed. */
+  const described = new Set<string>();
+  const readmeKept = new Map<string, string>();
+  const admittedHere = new Set<string>();
 
   const ask = async (q: Question, state: Record<string, unknown>): Promise<Asked> => {
     const key = sha256(JSON.stringify([q, state]));
@@ -595,8 +599,14 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         lists.refused.push({ candidate: at, workflow: name, reason: `a second description of the same workflow in this run (#${workflows.get(name)!.candidate} is the one kept)` });
         continue;
       }
-      // A workflow is judged on itself below, never on the agent's note, and the note is written nowhere: a run that read
-      // untrusted content puts no words of its own into a later prompt this way.
+      // The agent's README, its words on when the workflow applies, is judged like a note and lands with the workflow when
+      // it passes; one that does not leaves the workflow to be judged on its document below, with a README that points at
+      // its skill. The admitter never sees the README.
+      if (candidate.text.trim() !== "") {
+        const verdict = await atomic({ type, text: candidate.text }, candidate.untrusted === true);
+        if (verdict) readmeKept.set(name, `its README is not landed: ${verdict.reason}`);
+        else described.add(name);
+      }
       workflows.set(name, { candidate: at, untrusted: candidate.untrusted === true });
       continue;
     }
@@ -790,7 +800,8 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
     Object.assign(workflowFiles, result.files);
     workflowNames.add(name);
-    lists.accepted.push({ ...item, reason });
+    admittedHere.add(name);
+    lists.accepted.push({ ...item, reason: readmeKept.has(name) ? `${reason}; ${readmeKept.get(name)}` : reason });
   }
 
   // The derived index stays under its cap: archive the least-used older learnings first, this run's own only after them.
@@ -809,9 +820,12 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   }
 
   const files: Record<string, string | null> = { ...workflowFiles };
-  // Each workflow whose live revision changed: its document beside the records, and a README that points at its skill.
+  // Each workflow whose live revision changed: its document beside the records, and the README this run wrote and curation
+  // passed, else one that points at its skill when main has none.
   for (const name of workflowNames) {
     const dir = repoWorkflowDir(name);
+    const readme = admittedHere.has(name) && described.has(name) ? runFiles[`${dir}/README.md`] : undefined;
+    if (typeof readme === "string") files[`${dir}/README.md`] = readme;
     const latest = workflowFiles[`${dir}/latest`];
     if (typeof latest !== "string" || !/^[0-9a-f]{64}\n$/.test(latest)) continue;
     const digest = latest.slice(0, 64);
@@ -819,9 +833,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     const revision = typeof record === "string" ? await revisionOf(name, { latest, [`${digest}.json`]: record }) : undefined;
     if (!revision) continue;
     files[`${dir}/workflow.json`] = `${JSON.stringify(revision.workflow, null, 2)}\n`;
-    // Never the run's own README: a run that read untrusted content puts no words of its own on main this way. The skill
-    // says when to use the workflow.
-    if ((await repo.read(`${dir}/README.md`, main)) === undefined) files[`${dir}/README.md`] = `# ${name}\n\nThe ${name} workflow. When to use it: \`${LAYOUT.skills}/${name}/SKILL.md\`.\n`;
+    if (typeof readme !== "string" && (await repo.read(`${dir}/README.md`, main)) === undefined) files[`${dir}/README.md`] = `# ${name}\n\nThe ${name} workflow. When to use it: \`${LAYOUT.skills}/${name}/SKILL.md\`.\n`;
   }
   const memo = runFiles[memoPath(runId)];
   if (typeof memo === "string") files[memoPath(runId)] = memo;

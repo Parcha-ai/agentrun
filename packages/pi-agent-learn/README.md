@@ -373,9 +373,12 @@ const report = await curate({ repo, judge });
 
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
-judgment. A workflow is judged on itself, never on the agent's note: a `learn` call of type `workflow` is asked no
-question and its text reaches no file, so a run that read untrusted content puts none of its own words into a later
-prompt. `narrowsRules` is not asked of a workflow either: a workflow is by design a slice of the job (it reads what it
+judgment. A workflow is judged on itself, never on the agent's note. The note, the text of a `learn` call of type
+`workflow`, is the draft's `README.md`: when the run wrote one, it passes the injection screen with the draft and is asked
+a note's questions (`narrowsRules` when there are rules, `fromContent` when the run is untrusted, and `general`). One that
+passes lands on main as the agent wrote it, with the workflow; one that is refused or held stays off main, the workflow is
+judged as if it had none, and the run's report says so on the workflow's line. `narrowsRules` is not asked of the
+workflow's document: a workflow is by design a slice of the job (it reads what it
 reads and hands the rest back), so measured against rules written for the agent it always looks narrower, and it cannot
 change the rules that bind the agent that runs it. Its draft is read back as the records the DSL's store writes for it, `workflowCase` is asked of
 the document (one the store refuses, or one that runs code, goes straight to the hook, which refuses or holds it), and
@@ -389,8 +392,8 @@ this package's types, and `workflowAdmitter()` and `usesSettler()` are their imp
 `settleUses` is omitted, curate uses them, so a host cannot forget the workflow pieces, and `null` turns one off. When the
 `<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
 run's new ones last, and the report names each. A workflow whose live revision changed gets its document,
-`workflows/<name>/workflow.json`, beside its records, and a `README.md` that points at its skill; the run's own README, the
-agent's note, never reaches main.
+`workflows/<name>/workflow.json`, beside its records, and the run's README when it passed, else, when main has none, a
+`README.md` that points at its skill.
 
 Run branches are read from `runs` when the host keeps them apart from main (a hidden namespace for runs, as
 code.storage's ephemeral branches are); it defaults to `repo`. Curation only reads `runs` and only writes `repo`.
