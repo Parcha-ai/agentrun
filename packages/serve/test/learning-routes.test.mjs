@@ -169,6 +169,7 @@ test("an agent's learning at main, one file, and the log of merges: newest first
   assert.equal((await api("GET", "/agents/calc/learning/files/learnings/L-ffffffffffff.md")).status, 404);
   const log = await api("GET", "/agents/calc/learning/log");
   assert.deepEqual(log.body.merges.map((m) => m.run), [two, one], "newest first");
+  assert.deepEqual(Object.keys(log.body.merges[0]).sort(), ["at", "run", "sha", "subject"], "no count read out of a commit's words: the run's verdict has them");
   const page = await api("GET", "/agents/calc/learning/log?limit=1");
   assert.deepEqual(page.body.merges.map((m) => m.run), [two]);
   assert.deepEqual((await api("GET", `/agents/calc/learning/log?limit=1&cursor=${encodeURIComponent(page.body.next_cursor)}`)).body.merges.map((m) => m.run), [one]);
@@ -249,4 +250,63 @@ test("secrets: a note with the door token shows its path and reason only, and th
   const memo = await again.api("GET", `/runs/${runId}/learning/memo`);
   assert.equal(memo.body.includes(late), false, "nor out of the memo");
   assert.match(memo.body, /Ask for \[redacted\] at the desk\./, "where it reads [redacted]");
+});
+
+/** Commits `files` on agent `id`'s main as a curator would, with `message` and `trailers`. */
+async function onMain(t, data, id, files, message, trailers = {}) {
+  const repo = await openRepo({ dir: join(await scratch(t), "curator"), remote: local(bareOf(data, id)) });
+  const made = await repo.commitTo("main", { files, message, trailers });
+  await repo.push(made.sha, "main");
+  return made.sha;
+}
+
+test("the log reads the Curated-Run trailer, never a commit's words: a subject in other words changes nothing but the subject", async (t) => {
+  const { api, data } = await serve(t, { learning: { judge } });
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  await onMain(t, data, "calc", { "memos/run-x.md": "memo\n" }, "Merged what run-x taught: 7 accepted, 2 refused", { "Curated-Run": "run-x" });
+  const [entry] = (await api("GET", "/agents/calc/learning/log")).body.merges;
+  assert.deepEqual([entry.run, entry.subject], ["run-x", "Merged what run-x taught: 7 accepted, 2 refused"]);
+  assert.deepEqual(Object.keys(entry).sort(), ["at", "run", "sha", "subject"], "no count parsed from the words");
+});
+
+/** Commits `files` on main in commits of at most 200 paths: a commit writes at most 256. */
+async function inChunks(t, data, id, files) {
+  const entries = Object.entries(files);
+  for (let i = 0; i < entries.length; i += 200) await onMain(t, data, id, Object.fromEntries(entries.slice(i, i + 200)), `curator: files ${i}`);
+}
+
+test("the agent's learning is truncated by its notes, not by its other files", async (t) => {
+  const { api, data } = await serve(t, { learning: { judge } });
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  const drafts = {};
+  for (let i = 0; i < 600; i++) drafts[`workflows/w${String(i).padStart(3, "0")}/README.md`] = `# w${i}\n`;
+  await inChunks(t, data, "calc", drafts);
+  const many = await api("GET", "/agents/calc/learning");
+  assert.equal(many.status, 200);
+  assert.equal(many.body.truncated, undefined, "600 drafts are not 500 notes");
+  const notes = {};
+  for (let i = 0; i < 501; i++) notes[`learnings/L-${i.toString(16).padStart(12, "0")}.md`] = "not a note\n";
+  await inChunks(t, data, "calc", notes);
+  const full = await api("GET", "/agents/calc/learning");
+  assert.deepEqual([full.body.notes.length, full.body.truncated], [500, true]);
+});
+
+test("nothing person-identifying reaches main: approve, refuse and retire by an accounts-shaped principal write its id and never its email", async (t) => {
+  const lines = [];
+  const principal = () => ({ id: "acct_7f3a91", email: "ana@example.com" });
+  const { api, data } = await serve(t, { learning: { screen: SCREEN, judge, principal }, log: (line) => lines.push(line) });
+  await api("POST", "/agents", agent("calc", { learning: "approve" }));
+  const one = await learned(api, data, "calc");
+  assert.equal((await api("POST", `/runs/${one}/learning/approve`, {})).status, 200);
+  const two = await learned(api, data, "calc", "A filing's date is its acceptance date, not the date it was signed.");
+  assert.equal((await api("POST", `/runs/${two}/learning/refuse`, { reason: "Too close to one case." })).status, 200);
+  assert.equal((await readRunState(data, "calc", one)).decided_by, "acct_7f3a91");
+  const retired = await api("POST", "/agents/calc/learning/retire", { id: learningId(one, RATE_LIMIT), reason: "The registry dropped its limit." });
+  assert.equal(retired.body.status, "retired", JSON.stringify(retired.body));
+  const bare = bareOf(data, "calc");
+  const history = git(bare, "log", "--format=%B", "main");
+  assert.match(history, /acct_7f3a91/, "the retire names the stable account id");
+  const everything = git(bare, "rev-list", "--objects", "--all").split("\n").map((line) => git(bare, "cat-file", "-p", line.split(" ")[0])).join("\n");
+  assert.equal(everything.includes("ana@example.com"), false, "no email anywhere in the repository");
+  assert.ok(lines.some((line) => /learning_retired/.test(line) && /acct_7f3a91/.test(line)), "who retired it is in the log");
 });
