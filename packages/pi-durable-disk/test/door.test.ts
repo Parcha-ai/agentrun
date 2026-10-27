@@ -58,12 +58,13 @@ async function doorEntries(run: DurableRun): Promise<{ kind: string; data: Recor
   return [...page.items].sort((x, y) => Number(x.id) - Number(y.id)).filter((e) => e.kind.startsWith("door.")).map((e) => ({ kind: e.kind, data: e.data as Record<string, unknown> }));
 }
 
-async function served(disk: LocalDisk, hook: DoorHook, extra: { token?: string; submitMs?: number; abortMs?: number; decorateStore?: (db: SqliteDatabase) => SqliteDatabase } = {}) {
+async function served(disk: LocalDisk, hook: DoorHook, extra: { token?: string; submitMs?: number; abortMs?: number; decorateStore?: (db: SqliteDatabase) => SqliteDatabase; onIdle?: () => void } = {}) {
   const app = lifecycleApp(newCounters());
   const fenced: unknown[] = [];
   const server = await serveRun({
     root: { agent: app.agent },
     ...(extra.token ? { token: extra.token } : {}),
+    ...(extra.onIdle ? { onIdle: extra.onIdle } : {}),
     doorTimeouts: { submitMs: extra.submitMs ?? 5_000, abortMs: extra.abortMs ?? 1_000 },
   });
   const run = await openOn(disk, REF, app, { fenced, ...(extra.decorateStore ? { decorateStore: extra.decorateStore } : {}) });
@@ -514,6 +515,160 @@ describe("the door hook: abort, status, events", () => {
   });
 });
 
+describe("the door hook: turns, children and stops", () => {
+  const types = (stream: ReturnType<typeof openEvents>) => stream.events().filter((e) => e.type === "run_start" || e.type === "run_end").map((e) => e.type);
+
+  it("a submit that fails ends only a turn it started: another call's open turn stays open until its own end", async () => {
+    const disk = new LocalDisk("door-own-turn");
+    try {
+      let first!: DoorContext;
+      const { hook, state } = scripted({
+        submit: async (input, ctx) => {
+          if (input.requestId === "a1") {
+            first = ctx;
+            ctx.emit({ type: "run_start" });
+            state.busy = true;
+            return { accepted: true };
+          }
+          throw new Error("refused before it took the input");
+        },
+      });
+      const s = await served(disk, hook);
+      const stream = openEvents(s.server);
+      await stream.ready;
+      await until("the snapshot", () => stream.frames().length >= 1);
+      assert.equal((await submit(s.server, "a1")).status, 200);
+      await until("a1's run_start", () => types(stream).length === 1);
+      assert.equal((await submit(s.server, "b1")).status, 500);
+      await sleep(200);
+      assert.deepEqual(types(stream), ["run_start"], "b1's failure left a1's turn open");
+      state.busy = false;
+      first.emit({ type: "run_end" });
+      await until("a1's run_end", () => types(stream).length === 2, 2_000);
+      assert.deepEqual(types(stream), ["run_start", "run_end"]);
+      stream.close();
+      await s.run.release();
+      await s.server.close();
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a submit the hook never answers ends its turn once the abort leaves the hook idle, as POST /abort does", async () => {
+    const disk = new LocalDisk("door-timeout-turn");
+    try {
+      const { hook } = scripted({
+        submit: async (_input, ctx) => {
+          ctx.emit({ type: "run_start" });
+          return new Promise<Outcome>(() => {});
+        },
+        abort: async () => "aborted",
+      });
+      const s = await served(disk, hook, { submitMs: 200, abortMs: 200 });
+      const stream = openEvents(s.server);
+      await stream.ready;
+      await until("the snapshot", () => stream.frames().length >= 1);
+      assert.equal((await submit(s.server, "h1")).body.status, "UNKNOWN");
+      await until("the run_end", () => types(stream).length === 2, 2_000);
+      assert.deepEqual(types(stream), ["run_start", "run_end"]);
+      stream.close();
+      await s.run.release();
+      await s.server.close();
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a turn that ends with no commit tells the instance it is idle, so parking looks again", async () => {
+    const disk = new LocalDisk("door-idle");
+    try {
+      let idle = 0;
+      let turn!: DoorContext;
+      const { hook, state } = scripted({
+        submit: async (_input, ctx) => {
+          turn = ctx;
+          ctx.emit({ type: "run_start" });
+          state.busy = true;
+          return { accepted: true };
+        },
+      });
+      const s = await served(disk, hook, { onIdle: () => void idle++ });
+      assert.equal((await submit(s.server, "i1")).status, 200);
+      const before = idle;
+      state.busy = false;
+      turn.emit({ type: "run_end" });
+      await until("the idle look", () => idle > before, 2_000);
+      await s.run.release();
+      await s.server.close();
+    } finally {
+      disk.remove();
+    }
+  });
+
+  it("a child adopted after the stop began is killed too, and the stop aborts every submit still running", async () => {
+    const disk = new LocalDisk("door-late-child");
+    let pid = 0;
+    try {
+      const gate = deferred<void>();
+      const { hook, calls } = scripted({
+        submit: async (_input, ctx) => {
+          await gate.promise;
+          const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+          child.unref();
+          pid = child.pid!;
+          ctx.adopt(pid);
+          return { accepted: true };
+        },
+      });
+      const s = await served(disk, hook, { abortMs: 200 });
+      const answered = submit(s.server, "l1");
+      await until("the hook runs", () => calls.submit.length === 1);
+      const stopped = s.server.stopDoor();
+      assert.equal(calls.signals[0]!.aborted, true, "the stop aborted the submit in flight");
+      gate.resolve();
+      await stopped;
+      await answered;
+      await until("the child adopted", () => pid > 0);
+      assert.ok(await waitGone(pid, 2_000), "a child adopted while the instance stops never outlives it");
+      await s.run.release();
+      await s.server.close();
+    } finally {
+      killQuietly(pid);
+      disk.remove();
+    }
+  });
+
+  it("an app that releases the run itself, or fails in onOpen, leaves no adopted child behind", async () => {
+    for (const how of ["released", "failed"] as const) {
+      const disk = new LocalDisk(`door-app-${how}`);
+      let pid = 0;
+      try {
+        const { hook } = scripted({
+          submit: async (_input, ctx) => {
+            const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+            child.unref();
+            pid = child.pid!;
+            ctx.adopt(pid);
+            return { accepted: true };
+          },
+        });
+        const s = await served(disk, hook);
+        assert.equal((await submit(s.server, `${how}1`)).status, 200);
+        assert.ok(alive(pid), "the harness child runs");
+        const onOpen = how === "released" ? (run: DurableRun) => void run.release() : async () => Promise.reject(new Error("the app broke"));
+        const exit = await serveUntilDone(s.run, onOpen, "resume", () => {}, new EventEmitter(), { server: s.server });
+        assert.equal(exit, how === "released" ? 0 : 1);
+        assert.ok(await waitGone(pid, 2_000), `no harness child outlives an app that ${how}`);
+        if (how === "failed") await s.run.release();
+        await s.server.close();
+      } finally {
+        killQuietly(pid);
+        disk.remove();
+      }
+    }
+  });
+});
+
 describe("the door hook: adopted children", () => {
   it("a stop signals only the process it adopted: a live pid whose start is another's, or was never known, is left alone", async () => {
     const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
@@ -530,6 +685,26 @@ describe("the door hook: adopted children", () => {
       await killGroup(pid, start);
       assert.ok(await waitGone(pid, 2_000), "the adopted process itself is killed");
     } finally {
+      killQuietly(pid);
+    }
+  });
+
+  it("workers left in a group whose leader exited are killed with it: the gone leader's id names only its own group", async () => {
+    const leader = spawn("sh", ["-c", "sleep 600 & echo $!; wait"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    leader.unref();
+    const pid = leader.pid!;
+    let worker = 0;
+    try {
+      const start = startOf(pid);
+      leader.stdout!.setEncoding("utf8").on("data", (c: string) => (worker ||= Number(c.trim())));
+      await until("the worker", () => worker > 0);
+      process.kill(pid, "SIGKILL");
+      await until("the leader gone", () => startOf(pid) === undefined, 2_000);
+      assert.ok(alive(worker), "the worker outlived its leader");
+      await killGroup(pid, start);
+      assert.ok(await waitGone(worker, 2_000), "the leader's group is killed though the leader is gone");
+    } finally {
+      killQuietly(worker);
       killQuietly(pid);
     }
   });
