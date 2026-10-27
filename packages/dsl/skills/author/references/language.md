@@ -20,7 +20,7 @@ A workflow is {"v":2,"name","schemas","input"?,"output","root"}.
 This is the complete set. Each kind accepts exactly these fields; any other field is an error.
 - `chain`: `steps`
 - `code`: `label`, `code`, `as`
-- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `budget_usd`, `context`
+- `agent`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`, `budget_usd`, `max_turns`, `context`
 - `decide`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
 - `extract`: `label`, `state`, `instructions`, `sopSection`, `out`, `as`, `requires`, `tools`, `effort`, `thinking`, `verify`, `tier`
 - `report`: `label`, `state`, `instructions`, `sopSection`, `requires`, `tools`, `effort`, `thinking`
@@ -52,7 +52,7 @@ Their fields:
 - `requires` lists state paths that must hold evidence before the node runs, each produced upstream: missing values, null, blank strings, empty arrays and empty objects stop the run; `false` and `0` pass.
 - `tools` names tools the host offers. `[]` means no tools; omitting `tools` offers every tool the host allows. Never name a tool the host did not offer.
 - `effort` is minimal|low|medium|high; `thinking` is low|medium|high (never off); `tier` is fast|default|strong. They are requests to the host: resource ceilings are the host's. A node that names no `thinking` thinks at medium, unless its host sets another level.
-- An `agent` node may carry `budget_usd`, the most it asks to spend in dollars (above 0), which the host caps by what it has left, and `context`, fresh|fork: `fresh` (the default) sees only its instructions and state; `fork` asks the host to start it from the caller's transcript, which a host refuses where it has none.
+- An `agent` node may carry `budget_usd`, the most it asks to spend in dollars (above 0), which the host caps by what it has left; `max_turns`, a positive integer, the most turns it asks its host for per attempt, which the host applies within its own cap and refuses above it (the engine enforces nothing, and naming it changes the workflow's digest); and `context`, fresh|fork: `fresh` (the default) sees only its instructions and state; `fork` asks the host to start it from the caller's transcript, which a host refuses where it has none.
 - `sopSection` names one heading of the host's SOP, or a list of them, as the exact text after "## ". The node receives those sections verbatim.
 - `verify` reviews a submission before it is accepted: {"out": a question schema with at least one boolean question, "state"?, "maxDrives"?: an integer >= 1 (default 2, no maximum), "override"?: {"below": a number in (0, 1), default 0.3}}. A boolean question named after a submission field doubts that field when its yes-probability is below `override.below`; any other boolean question is a requirement met at 0.5. A rejected submission returns to the same session with the reasons.
 - When the workflow has a report, no decide or extract `out` schema carries `report_markdown`.
