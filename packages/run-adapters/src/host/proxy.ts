@@ -41,7 +41,8 @@ export interface ProviderPolicy {
   authHeaders(credential: string): Record<string, string>;
   /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. */
   apply(body: unknown, route: ProxyRoute): Record<string, unknown>;
-  /** The usage a completed response reports, from the tail of its text, if it reports one. */
+  /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
+   *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
@@ -85,6 +86,8 @@ export interface ModelProxy {
 
 const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
 const MAX_BODY = 32 * 1024 * 1024;
+/** How much of a response's start and end the proxy keeps to read its usage from. */
+const USAGE_WINDOW = 64 * 1024;
 
 export class ProxyRefusal extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "ProxyRefusal"; }
@@ -224,7 +227,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     const controller = new AbortController();
     inflight.add(controller);
     res.on("close", () => controller.abort());
-    let seen = "";
+    let head = "";
+    let tail = "";
+    let length = 0;
     try {
       const upstream = await forward(`${origin}${route.path}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
@@ -232,13 +237,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (upstream.body) {
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
           res.write(chunk);
-          // Only the tail matters for the usage, which comes at the end.
-          seen = (seen + decoder.decode(chunk, { stream: true })).slice(-64 * 1024);
+          // The usage is at the start, the end, or both: keep those, not the whole answer.
+          const text = decoder.decode(chunk, { stream: true });
+          length += text.length;
+          if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
+          tail = (tail + text).slice(-USAGE_WINDOW);
         }
       }
       res.end();
       // A provider's error answer was not a paid response: it costs nothing.
-      const usage = upstream.ok ? policy.usageOf(seen) : { input: 0, output: 0, cacheRead: 0 };
+      const usage = upstream.ok ? policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`) : { input: 0, output: 0, cacheRead: 0 };
       if (usage) {
         const usd = upstream.ok ? (options.price?.(model, usage) ?? null) : 0;
         await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) });

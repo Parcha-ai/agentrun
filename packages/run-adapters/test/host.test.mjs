@@ -151,6 +151,18 @@ test('usage comes back once a response completes; a cut stream reports nothing; 
   assert.equal(none.forwarded.length, 0);
 });
 
+test("a long answer's usage is read from both ends: input reported as it starts, output as it ends", async (t) => {
+  const split = { ...policy, usageOf(text) {
+    const input = [...text.matchAll(/"start":\{"in":(\d+)\}/g)].at(-1);
+    const output = [...text.matchAll(/"end":\{"out":(\d+)\}/g)].at(-1);
+    return input && output ? { input: Number(input[1]), output: Number(output[1]), cacheRead: 0 } : undefined;
+  } };
+  const middle = `data: {"delta":"${'x'.repeat(200 * 1024)}"}\n\n`;
+  const long = await proxy(t, { policy: split, fetch: async () => new Response(`data: {"start":{"in":1200}}\n\n${middle}data: {"end":{"out":340}}\n\n`, { status: 200 }) });
+  assert.equal((await send(long.p.url)).status, 200);
+  assert.deepEqual(long.hooks.after, [{ input: 1200, output: 340, cacheRead: 0, usd: 0.001 }]);
+});
+
 test('waitForSubmissions returns the pending input once it is submitted, and [] once stopped', async () => {
   const store = memorySessionStore();
   const drive = await openDrive({ writer: await store.open('s'), signal: new AbortController().signal });
