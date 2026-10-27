@@ -95,8 +95,9 @@ docker logs agentrun | grep Open
 On another port, publish it there and pass the address you open, so the printed link names it:
 `-p 127.0.0.1:<port>:7340 -e AGENTRUN_PUBLIC_URL=<that address>`.
 
-`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs. Everything it keeps is
-under `/data`: the agent store, the runs and the token. From a checkout, with compose:
+`packages/serve/docker/Dockerfile` builds that image: the server and the open packages it runs, on Node 22 and Debian 13
+(trixie), with git 2.47 for `pi-git-remote`. Everything it keeps is under `/data`: the agent store, the runs and the
+token. From a checkout, with compose:
 
 ```sh
 export AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 OPENROUTER_API_KEY=...
