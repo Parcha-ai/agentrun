@@ -14,6 +14,7 @@ import { recordProblems } from './reference-record.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
+import { attributionProblems, carriesUpstream } from './upstream-attribution.mjs';
 
 const exec = promisify(execFile);
 // `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
@@ -62,6 +63,8 @@ const forbid = [
 // copy, so a reader of the tarball can check what was copied; no other package may carry it.
 const allowedExtraFiles = {
   'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
+  // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
+  'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
 };
 const allowedEndpoints = {
   'pi-browser': [
@@ -103,8 +106,9 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'run-adapters', 'harness'];
   const tarballs = [];
+  const attributed = [];
   for (const directory of packageDirectories) {
     const cwd = join(root, 'packages', directory);
     const manifest = await json(join(cwd, 'package.json'));
@@ -147,8 +151,17 @@ try {
     receipt.packages.push({ name: manifest.name, version: manifest.version, filename: packed.filename, sha256: fileHash, files: names, size: packed.size, unpackedSize: packed.unpackedSize, license: manifest.license });
     tarballs.push(tarball);
     for (const [file, literal] of allowedEndpoints[directory] ?? []) assert.ok(usedEndpoints.has(`${file} ${literal}`), `Allowed endpoint literal no longer in ${manifest.name}: ${file} ${literal}`);
+    // A package that carries vercel-labs/durable-harness code, as packed: NOTICE, LICENSE and UPSTREAM.json ship, NOTICE says
+    // upstream's copyright line verbatim, no pristine upstream copy ships, and nothing depends on or imports @workflow/*,
+    // @vercel/sandbox or @vercel/agent-runs or shows a Vercel name, mark or image beyond the attribution.
+    if (await carriesUpstream(cwd)) {
+      assert.deepEqual(await attributionProblems(join(extracted, 'package')), [], `${manifest.name}: the durable-harness attribution and boundary rules (scripts/upstream-attribution.mjs)`);
+      attributed.push(manifest.name);
+    }
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
+  assert.ok(attributed.includes('@parcha/agentrun-adapters'), 'the harness seam is checked for its attribution');
+  receipt.checks.push(`Attribution and boundary rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
   await mkdir(consumer);
@@ -283,6 +296,8 @@ import * as agentHome from '@parcha/pi-durable-agent';
 import * as gitRemote from '@parcha/pi-git-remote';
 import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
 import * as agentLearn from '@parcha/pi-agent-learn';
+import * as adapters from '@parcha/agentrun-adapters';
+import * as adaptersTesting from '@parcha/agentrun-adapters/testing';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -342,7 +357,8 @@ assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWor
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); for (const file of ['index.html','locked.html','serve.css','serve.js']) assert.ok((await readFile(join(servePkg,'dist','page',file),'utf8')).length>0,'the install has dist/page/'+file); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',fast:null,default:null,strong:null}); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,harness:true,network:'prohibited'}));
+{ const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,adapters:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
