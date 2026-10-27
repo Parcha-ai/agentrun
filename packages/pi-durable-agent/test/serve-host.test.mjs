@@ -70,7 +70,7 @@ function recordingHost() {
       revision: (agent, revision) => (revision.current ? null : kit.el("span", { class: "host-revision" }, `${agent.id}:${kit.short(revision.id)}`)),
       cards: (agent, revisions, filter) => kit.el("section", { class: "card host-card" }, `${agent.id}: ${revisions.length} revisions, filter ${filter ?? "none"}`),
       empty: () => kit.el("p", { class: "host-empty" }, "Nothing here: make one"),
-      run: (data) => kit.el("p", { class: "host-run" }, `${data.run.id} ${data.run.state}`),
+      run: (run) => kit.el("p", { class: "host-run" }, `${run.id} ${run.state}`),
     };
   };
   return { seen, host };

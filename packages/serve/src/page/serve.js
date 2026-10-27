@@ -357,8 +357,7 @@
     /** On a completed run whose revision names the learn tool, two steps: a preview of what the run learned (each lesson
      *  whole, as text), then a commit of exactly that as the agent's next revision. The commit names the preview's base,
      *  so a revision made current since is a 412, and the preview is shown again only when asked for. */
-    function runActions(data) {
-      var run = data.run;
+    function runActions(run) {
       if (run.state !== "completed") return null;
       var box = el("div", { class: "learn" });
       kit.get("api/agents/" + enc(run.agent)).then(
