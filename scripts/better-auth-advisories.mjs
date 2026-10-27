@@ -10,6 +10,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const PACKAGE = 'better-auth';
 const MANIFEST = 'packages/serve/package.json';
 
+/** Advisories that cover the pin but not this server, each with why and until when: past its date it counts again. */
+export const ACKNOWLEDGED = [
+  { ghsa: 'GHSA-fmh4-wcc4-5jm3', why: 'the organization plugin, which AgentRun Server does not use', until: '2026-12-31' },
+];
+
 /** The exact version `packages/serve/package.json` pins: a range there is an error, since the check would mean nothing. */
 export function pinnedVersion(manifest) {
   const version = manifest?.dependencies?.[PACKAGE];
@@ -58,15 +63,16 @@ export function covers(range, version) {
   );
 }
 
-/** The advisories, from either feed, with a better-auth range that covers `version`: GHSA id, range and fixed version,
- *  once each, in GHSA order. */
-export function findings(version, advisories) {
+/** The advisories, from either feed, with a better-auth range that covers `version` and not acknowledged on `today`:
+ *  GHSA id, range and fixed version, once each, in GHSA order. */
+export function findings(version, advisories, acknowledged = ACKNOWLEDGED, today = new Date()) {
+  const known = new Set(acknowledged.filter((entry) => today <= new Date(`${entry.until}T23:59:59Z`)).map((entry) => entry.ghsa));
   const found = new Map();
   for (const advisory of advisories) {
     for (const vulnerability of advisory?.vulnerabilities ?? []) {
       if (vulnerability?.package?.ecosystem !== 'npm' || vulnerability?.package?.name !== PACKAGE) continue;
       const range = vulnerability.vulnerable_version_range;
-      if (typeof range !== 'string' || !covers(range, version)) continue;
+      if (typeof range !== 'string' || !covers(range, version) || known.has(advisory.ghsa_id)) continue;
       const patched = vulnerability.first_patched_version ?? vulnerability.patched_versions;
       const fixed = (typeof patched === 'object' ? patched?.identifier : patched) || null;
       if (!found.has(advisory.ghsa_id)) found.set(advisory.ghsa_id, { ghsa: advisory.ghsa_id, range, fixed });
