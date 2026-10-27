@@ -484,7 +484,8 @@ function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Se
 const asFenced = (error: unknown, what: string): FencedError =>
   error instanceof FencedError ? error : new FencedError(`${what} failed, so the claim cannot be trusted`, { cause: error });
 
-function exitFenced(error: FencedError): void {
+/** The default `onFenced`: a line on stderr, exit 75. */
+export function exitFenced(error: FencedError): void {
   process.stderr.write(`pi-durable-disk: fenced (${error.code}): ${error.message}\n`);
   process.exit(EXIT_FENCED);
 }

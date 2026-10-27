@@ -36,7 +36,7 @@ import {
   type HostDriver,
   type Json,
 } from "./supervise.ts";
-import { openDurableRun, type DurableRun } from "./run.ts";
+import { exitFenced, openDurableRun, type DurableRun } from "./run.ts";
 import { AppError, loadApp, type AppOptions } from "./app.ts";
 
 class UsageError extends PdaError {
@@ -305,6 +305,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
         ? { env: (c: Claim) => archilEnv(c, { runAs: { uid: runAs.uid, gid: runAs.gid }, shellEnv: { HOME: runAs.home, USER: runAs.name, LOGNAME: runAs.name } }) }
         : {}),
       holder,
+      // The door's harness children die before the exit 75: another instance may take the run, and a child left alive
+      // would act on without the lease.
+      onFenced: (error) => (server ? server.stopDoor().catch(() => undefined).then(() => exitFenced(error)) : exitFenced(error)),
       ownCgroup: cgroup.owns,
       lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),
       onStep: (step, t) => void (steps[step] = Math.round(t)),
@@ -421,6 +424,8 @@ export function serveUntilDone(
         wake: async (_target, at) => {
           await (life.wake ?? recordWake)(durable, at);
           releasing = true;
+          // A parked instance exits: the door's harness children go first.
+          await life.server?.stopDoor();
         },
         keepAwake: () => (life.server?.active ?? 0) > 0,
         ...(life.server ? { quiesce: () => life.server!.pause() } : {}),
