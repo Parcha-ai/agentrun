@@ -397,11 +397,14 @@ test("a code node is syntax-checked, never run, and refused either way", () => {
   assert.deepEqual(rules(check(withFiles({ [DRAFT]: richWorkflow({ code: ran }) }))), ["executable_node"]);
 });
 
-test("a workflow draft that does not parse, validate or match its folder is refused", () => {
+test("a workflow draft that does not parse or validate is refused", () => {
   assert.deepEqual(rules(check(withFiles({ [DRAFT]: "{ not json" }))), ["workflow"]);
   assert.deepEqual(rules(check(withFiles({ [DRAFT]: "[]" }))), ["workflow"]);
   assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ node: "shell" }) }))), ["workflow"]);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ name: "other" }) }))), ["workflow"]);
+});
+
+test("a draft's document may carry another name than its folder: the folder is the name it is saved under", () => {
+  assert.deepEqual(check(withFiles({ [DRAFT]: workflow({ name: "registry-lookup" }) })), []);
 });
 
 test("a workflow folder holds both its files, and a README that is not empty", () => {
