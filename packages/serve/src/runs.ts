@@ -237,6 +237,8 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** Set once `close` is done: the store is closed, so nothing settles after it. */
+  private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
   private starting = 0;
   constructor(private readonly options: RunsOptions) {}
@@ -602,6 +604,7 @@ export class Runs {
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
    *  carry back. One at a time per run, and none once the run has its outcome. */
   private settle(run: Run, code: number | null, exited: boolean): Promise<void> {
+    if (this.closed) return Promise.resolve();
     run.settles++;
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
@@ -861,6 +864,7 @@ export class Runs {
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
     for (const run of this.runs.values()) run.feed?.abort();
+    this.closed = true;
   }
 
   // ---- views ------------------------------------------------------------------------------------------------------------
