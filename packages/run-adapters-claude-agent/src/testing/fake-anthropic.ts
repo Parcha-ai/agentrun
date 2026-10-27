@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-anthropic.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from this package; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
+// Changed by Parcha, 2026-10-27: imports from this package; a reply may open with a thinking or a redacted_thinking block, as a model that thinks answers; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
 /**
  * A scripted Anthropic Messages API for the real Claude Code CLI (docs/workspaces.md
  * §11.4, "the restart-on-a-new-sandbox tests"): what `query()` and the pinned
@@ -61,10 +61,13 @@ export interface FakeRequest {
   results: Record<string, string>;
 }
 
+/** A thinking model's blocks before its answer: its thinking (signed), and a redacted one. */
+type Thought = { thinking?: string; redacted?: string };
+
 /** What the model says for one request. */
 export type FakeReply =
-  | { text: string }
-  | { tool: { name: string; input: unknown; id?: string }; text?: string }
+  | ({ text: string } & Thought)
+  | ({ tool: { name: string; input: unknown; id?: string }; text?: string } & Thought)
   | { error: { status: number; type: string; message: string } }
   /** Hold the response open (after `message_start`) until `release` resolves, then say `then`. */
   | { hold: Promise<void>; then: FakeReply };
@@ -255,6 +258,8 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
     }
     if ('error' in reply) return fail(reply.error.status, reply.error.type, reply.error.message);
     const blocks: Block[] = [];
+    if ('thinking' in reply && reply.thinking) blocks.push({ type: 'thinking', thinking: reply.thinking, signature: `sig_fake_${requests.length}` });
+    if ('redacted' in reply && reply.redacted) blocks.push({ type: 'redacted_thinking', data: reply.redacted });
     if ('text' in reply && reply.text) blocks.push({ type: 'text', text: reply.text });
     if ('tool' in reply) blocks.push({ type: 'tool_use', id: reply.tool.id ?? `toolu_fake_${String(++toolSeq).padStart(4, '0')}_${Date.now().toString(36)}`, name: reply.tool.name, input: reply.tool.input });
     const stopReason = 'tool' in reply ? 'tool_use' : 'end_turn';
@@ -271,7 +276,13 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
     ev('message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: parsed.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 1 } } });
     if (held) await held;
     blocks.forEach((b, index) => {
-      if (b.type === 'text') {
+      if (b.type === 'thinking') {
+        ev('content_block_start', { type: 'content_block_start', index, content_block: { type: 'thinking', thinking: '', signature: '' } });
+        ev('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: b.thinking } });
+        ev('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'signature_delta', signature: b.signature } });
+      } else if (b.type === 'redacted_thinking') {
+        ev('content_block_start', { type: 'content_block_start', index, content_block: { type: 'redacted_thinking', data: b.data } });
+      } else if (b.type === 'text') {
         ev('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
         ev('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: b.text } });
       } else {

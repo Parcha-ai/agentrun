@@ -12,8 +12,9 @@
 // A body may carry only the Messages API's own keys (no MCP server, container or service tier). Its model is the session's
 // (or its small model, for the CLI's background calls); `max_tokens` is clamped, and a thinking budget kept below it.
 // Nothing the provider would run or fetch on its own passes: a provider-hosted tool (web search or fetch, code execution,
-// computer use, the server's bash or editor, a tool search), a block one of those produced, an MCP block, or an image or
-// document by URL or by Files API id. A tool of the session's own that is not one of its names (`mcp__hands__<name>`)
+// computer use, the server's bash or editor, a tool search) is refused, and a content block may only be of a type the
+// pinned CLI sends (text, thinking, tool calls and results), so no server tool's block, MCP block, image or document
+// passes. A tool of the session's own that is not one of its names (`mcp__hands__<name>`)
 // is dropped, so the model is offered exactly the host's tools. Usage is read from the stream's `message_start` (input
 // and cache tokens) and its last `message_delta` (output).
 import { ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
@@ -47,8 +48,12 @@ export const CLAUDE_BETAS: ReadonlySet<string> = new Set([
 const MESSAGES_KEYS = new Set(["model", "messages", "system", "max_tokens", "metadata", "stop_sequences", "stream", "temperature", "top_k", "top_p", "tools", "tool_choice", "thinking", "context_management", "output_config"]);
 const COUNT_TOKENS_KEYS = new Set(["model", "messages", "system", "tools", "tool_choice", "thinking", "context_management", "output_config"]);
 const OUTPUT_CONFIG_KEYS = new Set(["effort", "format", "task_budget"]);
-/** Blocks the provider runs on its own, or that a tool it ran produced. */
-const PROVIDER_BLOCKS = /^(?:server_tool_use|web_search_tool_result|web_fetch_tool_result|mcp_tool_use|mcp_tool_result|container_upload|.*code_execution.*|.*_tool_result_error)$/;
+/** The content blocks the pinned CLI (2.1.286) sends in a session, recorded behind this proxy (the real-CLI test, with
+ *  a model that thinks): any other type is refused, so a block the provider runs or resolves on its own (a server
+ *  tool's call or result, an MCP block, a container upload, an image or document it would fetch) never passes, under
+ *  whatever name the API gives it. A session's tools answer in text and its prompt is text, so it sends no image or
+ *  document. */
+export const CLAUDE_BLOCKS: ReadonlySet<string> = new Set(["text", "thinking", "redacted_thinking", "tool_use", "tool_result"]);
 
 export interface AnthropicPolicyOptions {
   /** The session's model, and the one the CLI's small background calls use (default: the session's). */
@@ -80,18 +85,13 @@ function onlyKeys(body: Record<string, unknown>, keys: ReadonlySet<string>, what
   for (const key of Object.keys(body)) if (!keys.has(key)) refuse(403, `${what}: a key outside the API's own is not allowed`);
 }
 
-/** A content list (a message's, the system prompt's, a tool result's, a document's): nothing the provider runs or fetches. */
+/** A content list (a message's, the system prompt's, a tool result's): only the block types this session sends. */
 function blocks(content: unknown, where: string): void {
   if (content === undefined || typeof content === "string") return;
   if (!Array.isArray(content)) refuse(400, `${where} must be a string or a list of blocks`);
   for (const block of content as unknown[]) {
     if (!isPlain(block) || typeof block.type !== "string") return refuse(400, `a block in ${where} must be an object with a type`);
-    if (PROVIDER_BLOCKS.test(block.type)) refuse(403, `${where} holds a block the provider runs on its own`);
-    if (block.type === "image" || block.type === "document") {
-      const source = block.source;
-      if (isPlain(source) && (source.type === "url" || source.type === "file")) refuse(403, `${where} holds an image or document the provider would fetch (by URL or Files API id)`);
-      if (block.type === "document" && isPlain(source) && source.type === "content") blocks(source.content, "a document's content");
-    }
+    if (!CLAUDE_BLOCKS.has(block.type)) refuse(403, `${where} holds a block of a type this session does not send`);
     if (block.type === "tool_result") blocks(block.content, "a tool result's content");
   }
 }

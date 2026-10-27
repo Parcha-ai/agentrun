@@ -15,7 +15,22 @@ import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
 import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
 import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
-import { CLAUDE_BETAS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
+import { CLAUDE_BETAS, CLAUDE_BLOCKS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
+
+/** Every content block type in a request's messages and system prompt, and inside its tool results. */
+function blockTypes(body) {
+  const out = [];
+  const walk = (content) => {
+    if (!Array.isArray(content)) return;
+    for (const b of content) {
+      out.push(b?.type);
+      if (b?.type === 'tool_result') walk(b.content);
+    }
+  };
+  walk(body?.system);
+  for (const m of body?.messages ?? []) walk(m.content);
+  return out;
+}
 
 const required = process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY === '1';
 let problem;
@@ -75,7 +90,8 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
     ['Skill', { skill: 'x' }],
     ['mcp__other__exec', { command: `touch ${canary('mcp')}` }],
   ];
-  const plan = [...attacks.map(([name, input]) => ({ tool: { name, input } })), { tool: { name: 'mcp__hands__lookup', input: { q: 'x' } } }, { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } }];
+  // The model thinks before each call, as a thinking model answers, so the CLI sends its thinking back.
+  const plan = [...attacks.map(([name, input]) => ({ tool: { name, input } })), { tool: { name: 'mcp__hands__lookup', input: { q: 'x' } } }, { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } }].map((r, i) => ({ ...r, thinking: `step ${i}`, ...(i % 2 ? { redacted: 'cmVkYWN0ZWQ=' } : {}) }));
   let main = 0;
   const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL ? plan[main++] ?? { text: 'done' } : { text: 'ok' }) });
   t.after(() => provider.close());
@@ -145,6 +161,10 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
   t.diagnostic(`thinking on the wire: ${JSON.stringify([...new Set(mainCalls.map((r) => JSON.stringify({ thinking: r.body.thinking, effort: r.body.output_config?.effort })))])}; small-model calls (exempt): ${small.length}`);
   t.diagnostic(`routes: ${[...routes].sort().join(' | ')}`);
   t.diagnostic(`betas: ${[...betas].sort().join(', ')}`);
+  // The content blocks the CLI sent: every one a type the policy allows (the proxy refused nothing, above).
+  const types = new Set(forwarded.flatMap((r) => blockTypes(r.body)));
+  for (const type of types) assert.ok(CLAUDE_BLOCKS.has(type), `the CLI sent a ${type} block`);
+  t.diagnostic(`blocks: ${[...types].sort().join(', ')}`);
   t.diagnostic(`requests: ${forwarded.length}, main-model: ${main}, sdk ${CLAUDE_AGENT_SDK_VERSION}`);
   assert.ok(forwarded.length >= plan.length, 'every model request came through the proxy, with the provider key');
 });
@@ -154,7 +174,7 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
 async function oneNode(t, model, extra = {}) {
   const dir = mkdtempSync(join(ROOT, 'wire-'));
   let asked = 0;
-  const provider = await fakeAnthropic({ reply: (r) => (r.model === model && asked++ === 0 ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
+  const provider = await fakeAnthropic({ reply: (r) => (r.model === model && asked++ === 0 ? { thinking: 'plan', redacted: 'cmVkYWN0ZWQ=', tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
   t.after(() => provider.close());
   const logged = [];
   const adapter = claudeAgentAdapter({
@@ -172,7 +192,7 @@ async function oneNode(t, model, extra = {}) {
   assert.ok(main.length >= 1, `${model}: no main-model request`);
   assert.deepEqual(logged.filter((l) => /refused|thinking\.disabled/.test(l.message)), [], `${model}: the proxy refused nothing and saw no request without thinking`);
   const betas = forwarded.flatMap((r) => (r.headers['anthropic-beta'] ?? '').split(',').map((b) => b.trim()).filter(Boolean));
-  return { main, betas, efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
+  return { main, betas, blocks: forwarded.flatMap((r) => blockTypes(r.body)), efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
 }
 
 // The models a host runs now. The CLI's betas and its thinking depend on the model: a model it sends a beta for that the
@@ -180,10 +200,12 @@ async function oneNode(t, model, extra = {}) {
 // wire; claude-haiku-5-5's own default is high, so the adapter's default is what puts medium there.
 const CURRENT_MODELS = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
 
-test("on each current model, a node that names no level thinks at medium on the wire, a node's own level reaches it, and every beta the CLI sends is allowlisted", { skip, timeout: 240_000 }, async (t) => {
+test("on each current model, a node that names no level thinks at medium on the wire, a node's own level reaches it, and the betas and content blocks the CLI sends are the allowlists", { skip, timeout: 240_000 }, async (t) => {
   const seen = new Set();
+  const sent = new Set();
   for (const model of CURRENT_MODELS) {
-    const { main, betas, efforts } = await oneNode(t, model);
+    const { main, betas, blocks, efforts } = await oneNode(t, model);
+    for (const type of blocks) sent.add(type);
     for (const b of betas) { assert.ok(CLAUDE_BETAS.has(b), `${model}: the CLI sent the beta ${b}`); seen.add(b); }
     for (const r of main) assert.equal(r.body.thinking?.type, 'adaptive', `${model}: ${JSON.stringify(r.body.thinking)}`);
     assert.deepEqual(efforts, ['medium'], model);
@@ -191,6 +213,8 @@ test("on each current model, a node that names no level thinks at medium on the 
   }
   const high = await oneNode(t, 'claude-sonnet-5-5', { thinking: 'high' });
   assert.deepEqual(high.efforts, ['high'], "the node's level");
-  // The allowlist is what these models were recorded sending, no more: a value only guessed at is not in it.
+  // The allowlists are what these models were recorded sending, no more: a value only guessed at is not in them.
   assert.deepEqual([...seen].sort(), [...CLAUDE_BETAS].sort());
+  assert.deepEqual([...sent].sort(), [...CLAUDE_BLOCKS].sort(), 'the content blocks the CLI sent');
+  t.diagnostic(`blocks: ${[...sent].sort().join(', ')}`);
 });

@@ -57,14 +57,49 @@ test('nothing the provider would run or fetch on its own passes: hosted tools, M
   for (const key of ['container', 'service_tier', 'betas']) refused(() => apply(body({ [key]: 'x' })), 403, /a key outside the API's own/);
   const block = (b) => body({ messages: [{ role: 'user', content: [b] }] });
   for (const b of [{ type: 'server_tool_use', name: 'web_search', id: 's', input: {} }, { type: 'web_search_tool_result', tool_use_id: 's', content: [] }, { type: 'web_fetch_tool_result', tool_use_id: 's', content: {} }, { type: 'mcp_tool_use', id: 'm' }, { type: 'mcp_tool_result', tool_use_id: 'm' }, { type: 'container_upload', file_id: 'f' }, { type: 'bash_code_execution_tool_result', tool_use_id: 'b' }]) {
-    refused(() => apply(block(b)), 403, /runs on its own/);
+    refused(() => apply(block(b)), 403, /a block of a type this session does not send/);
   }
-  refused(() => apply(block({ type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } })), 403, /would fetch/);
-  refused(() => apply(block({ type: 'document', source: { type: 'file', file_id: 'file_1' } })), 403, /would fetch/);
-  refused(() => apply(body({ messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'image', source: { type: 'url', url: 'https://x' } }] }] }] })), 403, /would fetch/);
-  refused(() => apply(body({ system: [{ type: 'mcp_tool_result', tool_use_id: 'm' }] })), 403, /runs on its own/);
-  // Inline data is the client's own.
-  assert.ok(apply(block({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } })));
+  // A session sends no image or document (its tools answer in text): by URL, by Files API id or inline, none passes.
+  const NOT_SENT = /a block of a type this session does not send/;
+  refused(() => apply(block({ type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } })), 403, NOT_SENT);
+  refused(() => apply(block({ type: 'document', source: { type: 'file', file_id: 'file_1' } })), 403, NOT_SENT);
+  refused(() => apply(block({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } })), 403, NOT_SENT);
+  refused(() => apply(body({ messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: [{ type: 'image', source: { type: 'url', url: 'https://x' } }] }] }] })), 403, NOT_SENT);
+  refused(() => apply(body({ system: [{ type: 'mcp_tool_result', tool_use_id: 'm' }] })), 403, NOT_SENT);
+  // What the CLI sends passes: text, thinking, a tool call and its result, in a message, the system prompt and a result.
+  assert.ok(apply(body({ system: [{ type: 'text', text: 's' }], messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: [{ type: 'thinking', thinking: 't', signature: 'x' }, { type: 'redacted_thinking', data: 'x' }, { type: 'tool_use', id: 't1', name: 'mcp__hands__lookup', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'found' }] }] }] })));
+});
+
+// A block type the API adds later (a new server tool's result, say) is not one the session sends, whatever its name: in a
+// message, in the system prompt and inside a tool result it refuses the request, names no type, and nothing is forwarded.
+test('a content block of a type the session does not send is refused in a message, the system prompt and a tool result: 403, nothing forwarded', async () => {
+  const logged = [];
+  let forwarded = 0;
+  const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, log: (message, detail) => logged.push({ message, ...detail }), fetch: async () => { forwarded += 1; return new Response('{}'); } }, 'session-key');
+  const post = async (payload) => {
+    const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(payload) });
+    return { status: res.status, text: await res.text() };
+  };
+  const places = {
+    message: (b) => body({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }, b] }] }),
+    system: (b) => body({ system: [{ type: 'text', text: 's' }, b] }),
+    'tool result': (b) => body({ messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'mcp__hands__lookup', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'ok' }, b] }] }] }),
+  };
+  const answers = [];
+  try {
+    for (const type of ['tool_search_tool_result', 'future_server_tool_result']) {
+      for (const [where, at] of Object.entries(places)) {
+        const a = await post(at({ type, tool_use_id: 's', content: [] }));
+        assert.equal(a.status, 403, `${type} in ${where}`);
+        assert.match(a.text, /a block of a type this session does not send/, `${type} in ${where}`);
+        answers.push(a);
+      }
+    }
+  } finally {
+    await proxy.close();
+  }
+  assert.equal(forwarded, 0, 'nothing was forwarded');
+  for (const where of [JSON.stringify(answers), JSON.stringify(logged)]) assert.ok(!/tool_search_tool_result|future_server/.test(where), 'the refusal names no type');
 });
 
 test('a token count carries only its own keys, the same tools and model rules, and is not clamped', () => {
