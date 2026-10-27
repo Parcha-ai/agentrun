@@ -226,6 +226,31 @@ test("a memo out of shape is refused", () => {
   for (const [name, text] of Object.entries(cases)) assert.deepEqual(rules(check(withFiles({ [MEMO]: text }))), ["memo"], name);
 });
 
+// ---------------------------------------------------------------- the run's uses file, untrusted, host-owned files
+
+test("a run's own uses/<run id>.json passes when it parses, and needs no line in the memo", () => {
+  assert.deepEqual(check(withFiles({ [`uses/${RUN}.json`]: '{"uses": []}\n' })), []);
+});
+
+test("a uses file that does not parse, names another run, or is over 32768 bytes is refused", () => {
+  assert.deepEqual(rules(check(withFiles({ [`uses/${RUN}.json`]: "{ not json" }))), ["uses"]);
+  const other = "uses/2026-10-20-0100-ffff.json";
+  assert.deepEqual(rules(check(withFiles({ [other]: "{}\n", ...listing(other) }))), ["uses"]);
+  assert.deepEqual(rules(check(withFiles({ [`uses/${RUN}.json`]: JSON.stringify({ pad: "x".repeat(32768) }) }))), ["too_large"]);
+});
+
+test("the memo may say, in its host-written front matter, whether the run read untrusted content", () => {
+  for (const value of ["true", "false"]) assert.deepEqual(check(withFiles({ [MEMO]: memo().replace("outcome: completed", `outcome: completed\nuntrusted: ${value}`) })), [], value);
+  assert.deepEqual(rules(check(withFiles({ [MEMO]: memo().replace("outcome: completed", "outcome: completed\nuntrusted: maybe") }))), ["memo"]);
+});
+
+test("a run branch that touches a host-owned file (a workflow record, latest, trial.json) is refused", () => {
+  for (const path of [`workflows/find-policies/${"a".repeat(64)}.json`, "workflows/find-policies/latest", ".agents/skills/find-policies/trial.json"]) {
+    const problems = check(withFiles({ [path]: "{}\n", ...listing(path) }));
+    assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["host_owned", path]], path);
+  }
+});
+
 test("a changed file the memo does not propose is refused", () => {
   const problems = check(withFiles({ [MEMO]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", "workflows/find-policies/ (new draft)"] }) }));
   assert.deepEqual(rules(problems), ["memo_unlisted"]);
