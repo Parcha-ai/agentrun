@@ -2,6 +2,7 @@
 // routes (the owner is never disabled or demoted, nobody sets their own role), no self-promotion through any endpoint
 // the library serves, and the activity log taken from the credential alone.
 import assert from "node:assert/strict";
+import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -178,4 +179,52 @@ test("the activity log is kept across restarts in the accounts database", async 
   const api = client(two.baseUrl, two.token);
   assert.deepEqual((await api("GET", "/activity")).body.activity.map((a) => [a.action, a.agent_id, a.by.kind]), [["agent.create", "kept", "token"]]);
   assert.equal((await api("GET", "/agents/kept/revisions")).body.revisions[0].by.kind, "token");
+});
+
+/** An open timeline stream as `cookie`'s person: how long after `since()` it ended, or null while it is open. */
+function stream(port, runId, cookie) {
+  let endedAt = null;
+  const opened = new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path: `/v2/runs/${runId}/timeline`, headers: { host: `127.0.0.1:${port}`, accept: "text/event-stream", cookie } }, (res) => {
+      res.on("data", () => undefined).on("end", () => (endedAt = Date.now())).on("close", () => (endedAt ??= Date.now()));
+      resolve(res.statusCode);
+    });
+    req.once("error", reject).end();
+  });
+  return { opened, endedAt: () => endedAt };
+}
+
+async function endsWithin(s, ms) {
+  const from = Date.now();
+  while (s.endedAt() === null && Date.now() - from < ms) await new Promise((resolve) => setTimeout(resolve, 100));
+  return s.endedAt() !== null;
+}
+
+test("an open timeline stream ends with its session: when its person is disabled or changes role, signs out, or signs their other sessions out", { timeout: 60_000 }, async (t) => {
+  const server = await withMember(t);
+  const owner = asPerson(server, server.cookie);
+  assert.equal((await owner("POST", "/agents", { definition: { id: "slow", name: "slow", instructions: "Answer.", tools: [] } })).status, 201);
+  const { run_id } = (await owner("POST", "/agents/slow/runs", { input: { content: "Take your time." } })).json;
+  // Disabled: the stream ends at once.
+  const watched = stream(server.port, run_id, server.boCookie);
+  assert.equal(await watched.opened, 200);
+  assert.equal((await owner("PATCH", `/people/${server.bo}`, { disabled: true })).status, 200);
+  assert.ok(await endsWithin(watched, 6_000), "a disabled person's stream ends");
+  assert.equal((await owner("PATCH", `/people/${server.bo}`, { disabled: false })).status, 200);
+  // A role change: the stream ends, and a new one opens under the new role.
+  const promoted = stream(server.port, run_id, await server.signInAs(BO.email));
+  assert.equal(await promoted.opened, 200);
+  assert.equal((await owner("PATCH", `/people/${server.bo}`, { role: "admin" })).status, 200);
+  assert.ok(await endsWithin(promoted, 6_000), "a role change ends the person's streams");
+  // Sign-out: that session's stream ends; another session's stays open until it is signed out from elsewhere.
+  const [one, two] = [await server.signInAs(BO.email), await server.signInAs(BO.email)];
+  const [first, second] = [stream(server.port, run_id, one), stream(server.port, run_id, two)];
+  assert.deepEqual([await first.opened, await second.opened], [200, 200]);
+  assert.equal((await asPerson(server, one)("POST", "/auth/sign-out", {})).status, 200);
+  assert.ok(await endsWithin(first, 6_000), "a signed-out session's stream ends");
+  assert.equal(second.endedAt(), null, "the person's other session keeps its stream");
+  const third = await server.signInAs(BO.email);
+  assert.equal((await asPerson(server, third)("POST", "/auth/revoke-other-sessions", {})).status, 200);
+  assert.ok(await endsWithin(second, 6_000), "signing the other sessions out ends their streams");
+  await owner("POST", `/runs/${run_id}/cancel`, {});
 });
