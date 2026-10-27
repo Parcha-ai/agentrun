@@ -67,6 +67,11 @@ const allowedExtraFiles = {
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
 };
 const allowedEndpoints = {
+  'run-adapters': [
+    // The session's model proxy listens on the loopback interface, on the free port it chose; its type documents that.
+    ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
+    ['dist/host/proxy.d.ts', 'http://127.0.0.1:<port>'],
+  ],
   'pi-browser': [
     // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
     // The request observer owns the URL (it exempts that export from its holds) and the driver's types carry it.
