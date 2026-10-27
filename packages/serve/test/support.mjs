@@ -28,7 +28,23 @@ export async function serve(t, options = {}) {
 }
 
 export function client(baseUrl, token) {
-  return async function api(method, path, body, headers = {}) {
+  /** A request on a connection of its own, which nothing reuses: a pooled socket the server closes is not its failure. */
+  const fresh = (method, path) =>
+    new Promise((resolve, reject) => {
+      const req = request(`${baseUrl}${path}`, { method, agent: false, headers: token ? { authorization: `Bearer ${token}` } : {} }, (res) => {
+        let text = "";
+        res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).on("end", () => {
+          let json;
+          try {
+            json = JSON.parse(text);
+          } catch {}
+          resolve({ status: res.statusCode, headers: new Headers(Object.entries(res.headers).map(([name, value]) => [name, String(value)])), body: json ?? text });
+        });
+      });
+      req.once("error", reject).end();
+    });
+  return Object.assign(api, { fresh });
+  async function api(method, path, body, headers = {}) {
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
@@ -154,7 +170,8 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
   const pages = [];
   const end = Date.now() + deadlineMs;
   for (;;) {
-    const { status, body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
+    // Each long poll on a connection of its own: a loaded machine's pooled socket closing under it is not the run's state.
+    const { status, body: page } = await (api.fresh ?? api)("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
     assert.equal(status, 200, JSON.stringify(page));
     pages.push(page);
     if (page.reset) view.clear();

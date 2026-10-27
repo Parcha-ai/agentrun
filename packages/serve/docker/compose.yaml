@@ -11,6 +11,13 @@ services:
       - "127.0.0.1:${AGENTRUN_PORT:-7340}:7340"
     volumes:
       - agentrun-data:/data
+    # Healthy while the store reads and the data volume has 64 MiB free (GET /v2/health, no credential).
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     environment:
       # The server's token. Left empty, the server makes one at first start and keeps it in the volume.
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:-}

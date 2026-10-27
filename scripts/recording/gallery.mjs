@@ -27,7 +27,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 /** The release the asset is on: a tag no release workflow reads (they read `v*`). */
 export const RELEASE = 'gallery';
@@ -257,7 +257,7 @@ export function packGallery(dir, lock) {
 export const exampleFolders = (root = fileURLToPath(new URL('../../examples/', import.meta.url))) =>
   new Set(readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name));
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   const [command, ...rest] = process.argv.slice(2);
   const examples = exampleFolders();
   const fail = (lines) => { for (const line of lines) console.error(line); process.exit(1); };
