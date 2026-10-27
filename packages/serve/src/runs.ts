@@ -665,7 +665,7 @@ export class Runs {
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
     const persist = async () => {
-      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+      await this.saveMeta(run);
       for (let attempt = 0; ; attempt++) {
         try {
           this.store.carryBack(run.id, ending);
