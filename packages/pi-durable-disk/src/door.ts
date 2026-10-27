@@ -159,6 +159,8 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
         return undefined;
       }, context);
       if (seen) return seen;
+      // Nothing reaches the hook once the lease is gone: the record stays ADMITTED, as a crash here leaves it.
+      if (run.fenced || run.releasing) throw new Error("the run lost its lease after the admission");
       pending++;
       const stop = new AbortController();
       const taken = Promise.resolve()
