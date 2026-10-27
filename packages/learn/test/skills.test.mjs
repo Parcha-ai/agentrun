@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { LOCKED } from "../dist/index.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const PRINCIPLE = "A workflow draft uses DSL nodes and the host's tools only, never a harness's built-in tool, and never a shell or executor call.";
+const PRINCIPLE = "A workflow draft uses DSL model, judge and tool-call nodes with the host's tools only: never a harness's built-in tool, and never a code, shell or executor node.";
 const LOCKED_NAMES = ["AGENTS.md", "agent.json", ".agents/skills/reflect/", ".agents/skills/review/", ".agentrun/", ".githooks/", ".husky/", ".github/", "package.json", "SPEC.md"];
 
 /** The skill's text, or "" when the file is missing (the test that reads it then fails on its assertion). */
