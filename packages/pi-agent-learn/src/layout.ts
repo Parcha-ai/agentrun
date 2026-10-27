@@ -16,10 +16,16 @@ export const LAYOUT = Object.freeze({
   learnings: "learnings",
   /** Learned tier: skills, `.agents/skills/<name>/SKILL.md`. */
   skills: ".agents/skills",
-  /** Learned tier: the DSL's saved workflows, in its own project layout. */
-  workflows: ".pi/agentrun/workflows",
-  /** A run's candidates, `inbox/<run id>.md`, on its own branch only. */
-  inbox: "inbox",
+  /** Learned tier: workflows, `workflows/<name>/`: a run's draft (`workflow.json`, `README.md`) and, on main only, the
+   *  DSL's saved records (`<sha256>.json`, `latest`). */
+  workflows: "workflows",
+  /** The DSL's workflow store in a working directory, and where an older agent repository kept its records: read, never
+   *  written, in the repository. */
+  store: ".pi/agentrun/workflows",
+  /** Each run's memo, `memos/<run id>.md`: proposed on the run's branch, merged with it. */
+  memos: "memos",
+  /** The index of active learnings, one line each. */
+  index: "learnings/INDEX.md",
   /** A run's workflow uses, `uses/<run id>.json`, on its own branch only. */
   uses: "uses",
   /** Under a run's working directory: the learnings it was seeded with, for reading. Never committed. */
@@ -37,13 +43,17 @@ export const CAPS = Object.freeze({
   perRun: 8,
   /** `used` marks one run may note. */
   usedPerRun: 32,
-  inbox: 16_384,
+  /** One memo. */
+  memo: 16_384,
+  /** `learnings/INDEX.md`. */
+  index: 4096,
   /** One learning file. */
   learning: 4096,
   /** The `<learned>` section the model sees. */
   section: 4096,
   file: 32_768,
-  files: 32,
+  /** Files one run's branch changes: the step 1 checker's cap. */
+  files: 64,
 });
 
 /** A run id: also a valid branch name under `runs/` (no `..`, no trailing `.` or `.lock`). */
@@ -87,8 +97,8 @@ export function assertNotRulesLocked(paths: Iterable<string>): void {
 /** Which tier a repository path belongs to. */
 export function tierOf(path: string): Tier {
   if (isRulesLocked(path)) return "rules";
-  if ([LAYOUT.learnings, LAYOUT.skills, LAYOUT.workflows].some((dir) => path.startsWith(`${dir}/`))) return "learned";
-  if ([LAYOUT.inbox, LAYOUT.uses].some((dir) => path.startsWith(`${dir}/`))) return "run";
+  if ([LAYOUT.learnings, LAYOUT.skills, LAYOUT.workflows, LAYOUT.memos].some((dir) => path.startsWith(`${dir}/`))) return "learned";
+  if (path.startsWith(`${LAYOUT.uses}/`)) return "run";
   return "other";
 }
 
@@ -98,13 +108,8 @@ function runId(id: string): string {
 }
 
 export const runBranch = (id: string): string => `runs/${runId(id)}`;
-export const inboxPath = (id: string): string => `${LAYOUT.inbox}/${runId(id)}.md`;
+export const memoPath = (id: string): string => `${LAYOUT.memos}/${runId(id)}.md`;
 export const usesPath = (id: string): string => `${LAYOUT.uses}/${runId(id)}.json`;
-/** Where a run proposes a workflow it saved: the DSL's records for `name`, copied byte for byte. */
-export function inboxWorkflowDir(id: string, name: string): string {
-  if (typeof name !== "string" || !WORKFLOW_NAME.test(name)) throw new LearnError("invalid", "a workflow name is 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit");
-  return `${LAYOUT.inbox}/${runId(id)}/workflows/${name}/`;
-}
 export function learningPath(id: string): string {
   if (typeof id !== "string" || !LEARNING_ID.test(id)) throw new LearnError("invalid", "a learning id is L- and 12 lowercase hex digits");
   return `${LAYOUT.learnings}/${id}.md`;

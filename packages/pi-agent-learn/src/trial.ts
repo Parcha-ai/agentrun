@@ -180,7 +180,10 @@ export function checkTrial(value: unknown): asserts value is Trial {
 
 export const trialPath = (name: string): string => `${LAYOUT.skills}/${skillName(name)}/trial.json`;
 export const skillPath = (name: string): string => `${LAYOUT.skills}/${skillName(name)}/SKILL.md`;
-export const workflowDir = (name: string): string => `${LAYOUT.workflows}/${skillName(name)}`;
+/** A workflow's folder in the DSL's store, in a working directory: where the store reads and writes its records. */
+export const workflowDir = (name: string): string => `${LAYOUT.store}/${skillName(name)}`;
+/** A workflow's folder in the agent repository. An older repository kept its records at `workflowDir`, which is still read. */
+export const repoWorkflowDir = (name: string): string => `${LAYOUT.workflows}/${skillName(name)}`;
 
 export function skillName(name: string): string {
   if (typeof name !== "string" || name.length > MAX_NAME || !WORKFLOW_SKILL_NAME.test(name)) {

@@ -23,7 +23,7 @@ assert.equal(lock.lockfileVersion, 3, 'Source inventory requires package-lock v3
 // Resolve the lockfile graph using package-local dependencies before hoisted dependencies.
 // Include optional packages and peers even when the current OS does not install their binaries.
 const entries = lock.packages;
-const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'harness'];
+const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'learn', 'pi-agent-learn', 'harness'];
 const inventory = new Map();
 const unresolved = [];
 function resolveDependency(from, name) {

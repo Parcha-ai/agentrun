@@ -33,7 +33,7 @@ AgentRun is a workflow language for agents a host already runs. A workflow is a 
 | `docs/` | `guide.md` (primitives, limits), `authoring.md`, `host-integration.md`, `releasing.md` |
 | `scripts/` | Node floor, schema and contract generation, source export, package and release verification |
 
-The thirteen packages share one version. `dsl`, `jev` and `pi` are published in that order, then `pi-durable-disk`, `pi-browser`, `pi-vision` and `pi-transport`, which depend on none of them, `pi-durable-agent`, which depends on `dsl` and `pi`, and `pi-git-remote`, which depends on none of them, then `pi-agent-learn`, which depends on `dsl`, `pi` and `pi-git-remote`. `harness`, `serve` and `learn` are held (`"private": true` in their manifests) while publishing them is on hold: each is built, tested, verified and kept at the workspace version like the others, and is in no publish path. Removing that one flag lifts a hold.
+The thirteen packages share one version. `dsl`, `jev` and `pi` are published in that order, then `pi-durable-disk`, `pi-browser`, `pi-vision` and `pi-transport`, which depend on none of them, `pi-durable-agent`, which depends on `dsl` and `pi`, and `pi-git-remote`, which depends on none of them, then `pi-agent-learn`, which depends on `dsl`, `pi`, `pi-git-remote` and `learn`, and so cannot be released while `learn` is held. `harness`, `serve` and `learn` are held (`"private": true` in their manifests) while publishing them is on hold: each is built, tested, verified and kept at the workspace version like the others, and is in no publish path. Removing that one flag lifts a hold.
 
 ## Setup and checks
 

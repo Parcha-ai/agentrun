@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { checkBranch } from "@parcha/agentrun-learn";
@@ -85,7 +86,12 @@ test("curate merges a run's branch with a merge commit carrying the verdict, and
   const id = learningId("run-1", LESSON);
   assert.deepEqual(report.runs[0].accepted.map((a) => a.id), [id]);
   const [merge] = await w.curator.log({ ref: "main", max: 1 });
-  assert.deepEqual(merge.parents, [w.main, tip], "two parents: the main the run read, then the run");
+  assert.equal(merge.parents.length, 2, "a merge commit");
+  assert.equal(merge.parents[0], w.main);
+  const [landed] = await w.curator.log({ ref: merge.parents[1], max: 1 });
+  assert.deepEqual([landed.parents, landed.trailers["Landed-Run"]], [[w.main], ["run-1"]], "the second parent is the run as it lands, on the commit it started from");
+  assert.notEqual(merge.parents[1], tip, "the run's own branch is never merged: nothing curation refused is reachable from main");
+  assert.ok(!(await w.curator.log({ ref: "main" })).some((c) => c.sha === tip));
   assert.match(merge.subject, /^curate: run run-1: 1 accepted/);
   assert.deepEqual(merge.trailers["Curated-Run"], ["run-1"]);
   assert.equal(parseLearning(await w.curator.read(`learnings/${id}.md`, "main")).text, LESSON);
@@ -101,7 +107,7 @@ test("curate merges a run's branch with a merge commit carrying the verdict, and
 test("a checker refusal stops the merge: nothing the run proposed reaches main", async () => {
   const w = await world();
   const tip = await proposed(w);
-  const planted = await w.runs.commitTo("runs/run-1", { files: { ".agents/skills/registry-lookup/trial.json": "{}\n" }, message: "plant", trailers: { "Run-Id": "run-1" }, parent: tip });
+  const planted = await w.runs.commitTo("runs/run-1", { files: { ".agents/skills/registry-lookup/trial.json": "{}\n" }, message: "plant", trailers: { "Run-Id": ["plant", "run-1"] }, parent: tip });
   await w.runs.push(planted.sha, "runs/run-1");
   const report = await curate({ repo: w.curator, judge, screen: SCREEN, tools: TOOLS });
   const [run] = report.runs;
@@ -172,8 +178,9 @@ test("an old repository's workflows, at .pi/agentrun/workflows/, are still read 
   const hints = await workflowsToTry({ repo: w.curator, sha }, { sku: "a-1", amount: 5 });
   assert.deepEqual(hints.map((h) => h.name), ["registry-lookup"]);
   const into = path.join(await scratch(), "run");
+  await mkdir(into);
   const seeded = await seedWorkflows({ repo: w.curator, sha, into, workflows: hints });
-  assert.deepEqual(seeded.loaded, [{ name: "registry-lookup", sha256: digest }]);
+  assert.deepEqual(seeded.loaded, [{ name: "registry-lookup", sha256: digest }], JSON.stringify(seeded.skipped));
 });
 
 test("renderLearning is still the note format: a Pi note is valid under the step 1 checker", () => {

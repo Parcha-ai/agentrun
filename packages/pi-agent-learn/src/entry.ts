@@ -24,7 +24,7 @@ export type Learning = {
     readonly sha: string;
     /** True when a proposing run had read content the host does not trust. */
     readonly untrusted: boolean;
-    /** `branch-base` when the first run's inbox did not name its seed: `sha` is then the main commit its branch starts
+    /** `branch-base` when the first run was not seeded: `sha` is then the main commit its branch starts
      *  from. Absent when `sha` is the seed. */
     readonly shaFrom?: "branch-base";
   };

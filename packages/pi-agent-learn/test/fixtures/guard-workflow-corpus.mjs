@@ -1,10 +1,11 @@
-// Corpus cases for the DSL's saved workflow records a run proposes under inbox/<run id>/workflows/<name>/.
+// Corpus cases for a workflow's folder, workflows/<name>/: the draft a run proposes (workflow.json, README.md) and the DSL's
+// saved records the curator writes (<sha256>.json, latest).
 // Same shape as guard-corpus.mjs: { id, kind, input: { path, text, secrets? }, expect, reason }. Secret-shaped strings are
 // assembled at import time, so no file holds one.
 import { RUN_ID } from "./guard-corpus.mjs";
 
 const DIGEST = "0123456789abcdef".repeat(4);
-const BASE = `inbox/${RUN_ID}/workflows`;
+const BASE = "workflows";
 const RECORD = JSON.stringify({ name: "kyb-us-registry", steps: [{ call: "registry.search", note: "search both forms of the legal name" }] });
 const GITHUB_TOKEN = ["gh", "p_"].join("") + "A1b2C3d4E5".repeat(4);
 const PLANTED = ["Orchid", "\"quoted\\", "slash", "!x7"].join("");
@@ -13,6 +14,8 @@ export const cases = [];
 const add = (id, kind, expect, reason, path, text = RECORD, secrets) =>
   cases.push({ id, kind, expect, reason, input: secrets ? { path, text, secrets } : { path, text } });
 
+add("allow.workflow.draft", "allow", "allow", "a run's draft document", `${BASE}/kyb-us-registry/workflow.json`);
+add("allow.workflow.readme", "allow", "allow", "a run's draft README", `${BASE}/kyb-us-registry/README.md`, "# kyb-us-registry\n\nFor a US company.\n");
 add("allow.workflow.record", "allow", "allow", "a record named by its digest", `${BASE}/kyb-us-registry/${DIGEST}.json`);
 add("allow.workflow.latest", "allow", "allow", "the latest pointer", `${BASE}/kyb-us-registry/latest`, DIGEST);
 add("allow.workflow.name-with-dash-and-underscore", "allow", "allow", "a name with a dash and an underscore", `${BASE}/my-flow_v2/${DIGEST}.json`);
@@ -46,7 +49,8 @@ refuse("other-run", "another run's workflow folder", `inbox/other-run/workflows/
 refuse("workflows-capitalised", "Workflows in place of workflows", `inbox/${RUN_ID}/Workflows/kyb/${DIGEST}.json`);
 refuse("other-folder", "a folder other than workflows under the run's inbox folder", `inbox/${RUN_ID}/notes/kyb/${DIGEST}.json`);
 refuse("under-uses", "the same shape under uses/", `uses/${RUN_ID}/workflows/kyb/${DIGEST}.json`);
-refuse("md-beside-folder", "a file inside the inbox folder that is not a workflow record", `inbox/${RUN_ID}/notes.md`);
+refuse("md-beside-folder", "a file in a workflow folder that is neither a draft nor a record", `${BASE}/kyb/notes.md`);
+refuse("old-store-path", "the DSL's store path, where an older repository kept records: read, never written", `.pi/agentrun/workflows/kyb/${DIGEST}.json`);
 
 add("secret.workflow.github-token", "secret", "refuse", "a GitHub token inside a record", `${BASE}/kyb/${DIGEST}.json`, JSON.stringify({ header: `Bearer ${GITHUB_TOKEN}` }));
 add("secret.workflow.planted-past-json-escapes", "secret", "refuse", "a planted value with a quote and a backslash, which a JSON string escapes", `${BASE}/kyb/${DIGEST}.json`,

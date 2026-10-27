@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import * as learn from "../dist/index.js";
-import { agentRepo, scratch } from "./support.mjs";
+import { agentRepo, scratch, SCREEN_PASS, HOST_TOOLS } from "./support.mjs";
 import { workDirWith, workflowDoc } from "./workflow-support.mjs";
 
 const { collectWorkflows, curate, proposeLearning, readTrial, renderSkill, workflowsToTry } = learn;
@@ -42,7 +42,7 @@ async function authored({ name, doc, note, read, judge: j }) {
   const candidate = { callId: "call-1", type: "workflow", id: name, text: note, evidence: [] };
   const target = { snapshot: async () => ({ order: ["call-1"], byCall: { "call-1": candidate } }) };
   const proposal = await proposeLearning({ repo, runId: "run-1", target, workflows: collected.records, untrusted: true, ...(read ? { read } : {}) });
-  const report = await curate({ repo: curator, judge: j.run, now: new Date("2026-10-20T00:00:00Z") });
+  const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge: j.run, now: new Date("2026-10-20T00:00:00Z") });
   return { curator, proposal, report, run: report.runs[0] };
 }
 
@@ -135,7 +135,7 @@ test("withholding works on what the run's directory holds too: the clean workflo
   assert.equal(result.status, "proposed");
   assert.deepEqual(result.withheld, [{ name: "copied", reason: "40 or more characters of its text are in content the run read" }]);
   const files = (await repo.list("", result.sha)).map((e) => e.path);
-  assert.ok(files.some((f) => f.startsWith("inbox/run-1/workflows/clean/")));
+  assert.ok(files.some((f) => f.startsWith("workflows/clean/")));
   assert.equal(files.some((f) => f.includes("/copied/")), false);
   // A run whose only workflow is withheld has nothing to propose, and says which.
   const { dir: only } = await workDirWith({ copied });
@@ -154,7 +154,7 @@ test("the document question holds what it is unsure of, and is asked of a truste
   const { dir } = await workDirWith({ trusted: workflowDoc({ name: "trusted" }) });
   const j = judge({ documents: { trusted: { workflowCase: 0.9 } } });
   await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: [], byCall: {} }) }, workDir: dir, seedSha: await repo.resolve("main") });
-  const [run] = (await curate({ repo: curator, judge: j.run })).runs;
+  const [run] = (await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge: j.run })).runs;
   assert.deepEqual(run.refused.map((r) => r.workflow), ["trusted"]);
 }, { timeout: 60_000 });
 

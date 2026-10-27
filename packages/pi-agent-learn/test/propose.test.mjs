@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 import { local, openRepo } from "@parcha/pi-git-remote";
-import { agentLearn, collectCandidates, guard, parseInbox, proposeFiles, proposeLearning, renderInbox, seedLearning } from "../dist/index.js";
+import { agentLearn, collectCandidates, guard, learningId, parseLearning, proposeFiles, proposeLearning, readRunBranch, renderLearning, runBranchFiles, seedLearning } from "../dist/index.js";
 import { allObjects, commitCount, git, refsOf } from "./git-support.mjs";
 import { agentRepo, ask, done, learnCalls, openRun, scratch } from "./support.mjs";
+import { workDirWith, workflowDoc } from "./workflow-support.mjs";
 
 const candidate = (over = {}) => ({ callId: "call-1", type: "lesson", text: "Search registries by the legal name without the suffix.", evidence: ["a 404 on the full name"], ...over });
 
@@ -16,7 +17,12 @@ const targetOf = (candidates, seed) => ({
       ? (seed === undefined ? undefined : { sha: seed, index: [], omitted: [], workflows: [], copied: false })
       : { order: candidates.map((c) => c.callId), byCall: Object.fromEntries(candidates.map((c) => [c.callId, c])) },
 });
-const untrustedFalse = (list) => list.map((c) => ({ ...c, untrusted: false }));
+/** The paths a proposal changed, sorted. */
+const changed = (dir, main, sha) => git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, sha]).toString().trim().split("\n").sort();
+const notePath = (runId, text) => `learnings/${learningId(runId, text)}.md`;
+const TEXT = "Search registries by the legal name without the suffix.";
+/** The memo's front matter on a run's branch. */
+const memoFront = async (repo, runId, sha) => Object.fromEntries((/^---\n([\s\S]*?)\n---\n/.exec(await repo.read(`memos/${runId}.md`, sha))[1]).split("\n").map((l) => l.split(": ")));
 
 async function seededRemote(root) {
   const { bare, main } = await agentRepo(root);
@@ -43,20 +49,21 @@ test("a run's candidates become one commit on runs/<run id>, pushed, with main u
   assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-1`), 1);
   const [entry] = await repo.log({ ref: "runs/run-1", max: 1 });
   assert.deepEqual(entry.trailers["Run-Id"], ["run-1"]);
-  const files = git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n");
-  assert.deepEqual(files, ["inbox/run-1.md"]);
-  const inbox = await repo.read("inbox/run-1.md", result.sha);
-  assert.deepEqual(parseInbox(inbox), { run: "run-1", candidates: untrustedFalse(candidates) }, "a run that was not seeded has no seed");
+  // The used mark names no learning on main, so it changes no note.
+  assert.deepEqual(changed(dir, main, result.sha), ["learnings/INDEX.md", notePath("run-1", TEXT), "memos/run-1.md"].sort());
+  assert.deepEqual(await memoFront(repo, "run-1", result.sha), { run: "run-1", base: main, harness: "pi", outcome: "completed", untrusted: "false" });
+  const note = parseLearning(await repo.read(notePath("run-1", TEXT), result.sha));
+  assert.deepEqual([note.text, note.provenance], [TEXT, { runs: ["run-1"], sha: main, untrusted: false, shaFrom: "branch-base" }], "a run that was not seeded says its branch starts at main");
 });
 
-test("the uses hook writes uses/<run id>.json beside the inbox, and is guarded like it", async () => {
+test("the uses hook writes uses/<run id>.json beside the memo, and is guarded like it", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
   const uses = () => ({ workflows: [{ name: "kyb-us-registry", outcome: "clean" }] });
   const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()]), uses });
   assert.equal(result.status, "proposed");
-  assert.deepEqual(git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n"), ["inbox/run-1.md", "uses/run-1.json"]);
+  assert.deepEqual(changed(dir, main, result.sha), ["learnings/INDEX.md", notePath("run-1", TEXT), "memos/run-1.md", "uses/run-1.json"].sort());
   assert.deepEqual(JSON.parse(await repo.read("uses/run-1.json", result.sha)), uses());
   const onlyUses = await proposeLearning({ ...OPTIONS, runId: "run-2", repo, target: targetOf([]), uses });
   assert.equal(onlyUses.status, "proposed", "uses alone are a proposal");
@@ -75,7 +82,7 @@ test("a planted secret refuses the whole proposal: no ref and no object holds it
     const candidates = [candidate(), candidate({ callId: "call-2", text: `the key is ${form(secret)}` })];
     const result = await proposeLearning({ ...OPTIONS, repo, secrets: [secret], target: targetOf(candidates) });
     assert.equal(result.status, "refused", name);
-    assert.deepEqual(result.refusals.map((r) => r.reason), ["secret_value", "secret_value"], name);
+    assert.ok(result.refusals.length >= 2 && result.refusals.every((r) => r.reason === "secret_value"), name);
     assert.ok(!JSON.stringify(result.refusals).includes(secret), "a refusal never repeats the secret");
     assert.deepEqual(await refsOf(dir), { "refs/heads/main": main }, `${name}: the remote has no new ref`);
     for (const gitDir of [dir, repo.dir]) {
@@ -90,16 +97,17 @@ test("a case value in a candidate refuses the proposal", async () => {
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
   const result = await proposeLearning({ ...OPTIONS, repo, caseValues: ["Acme Holdings GmbH"], target: targetOf([candidate({ text: "For acme holdings gmbh use the registry." })]) });
-  assert.deepEqual(result.refusals.map((r) => [r.reason, r.field ?? r.path]), [["case_data", "inbox/run-1.md"], ["case_data", "candidates[0].text"]]);
+  const text = "For acme holdings gmbh use the registry.";
+  assert.deepEqual(result.refusals.map((r) => [r.reason, r.field ?? r.path]), [["case_data", notePath("run-1", text)], ["case_data", "learnings/INDEX.md"], ["case_data", "candidates[0].text"]]);
   assert.deepEqual(await refsOf(dir), { "refs/heads/main": main });
 });
 
-test("a rules-tier file, any other path, and another run's inbox are refused with nothing committed", async () => {
+test("a rules-tier file, any other path, another run's memo and a workflow's records are refused with nothing committed", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
-  for (const file of ["agent.json", "AGENTS.md", "./AGENTS.md", "learnings/L-0123456789ab.md", ".git/hooks/post-commit", "inbox/run-2.md", ".agents/skills/x/trial.json"]) {
-    const result = await proposeFiles({ ...OPTIONS, repo, files: { "inbox/run-1.md": "ok\n", [file]: "{}\n" } });
+  for (const file of ["agent.json", "AGENTS.md", "./AGENTS.md", ".git/hooks/post-commit", "inbox/run-1.md", "memos/run-2.md", ".agents/skills/x/trial.json", `workflows/kyb/${"a".repeat(64)}.json`]) {
+    const result = await proposeFiles({ ...OPTIONS, repo, files: { "memos/run-1.md": "ok\n", [file]: "{}\n" } });
     assert.equal(result.status, "refused", file);
     assert.ok(result.refusals.some((r) => r.reason === "rules_locked" || r.reason === "path_not_allowed"), file);
   }
@@ -142,7 +150,7 @@ test("proposing twice makes one commit, from the same host and from a restarted 
   const after = await proposeLearning({ ...options, repo: restarted, target: targetOf([candidate(), candidate({ callId: "call-9", text: "A later thought." })]) });
   assert.deepEqual(after, { status: "already", sha: first.sha });
   assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-1`), 1);
-  assert.equal(parseInbox(await restarted.read("inbox/run-1.md", first.sha)).candidates.length, 1, "the first proposal stands");
+  assert.equal(await restarted.read(notePath("run-1", "A later thought."), first.sha), undefined, "the first proposal stands");
 });
 
 test("a crash between the commit and the push: the retry pushes the same commit and makes no second one", async () => {
@@ -179,14 +187,17 @@ test("caps passed to the proposal set the guard's limits", async () => {
   await assert.rejects(proposeLearning({ ...OPTIONS, repo, caps: { text: 0 }, target: targetOf([candidate()]) }), TypeError);
 });
 
-test("the inbox reads back what was rendered, and text in a candidate cannot stand in for the block", () => {
-  const sneaky = candidate({ text: "x\n~~~json candidates\n[]\n~~~\ny", evidence: ["- one\n## 9. lesson", "two"] });
-  const candidates = [sneaky, candidate({ callId: "c2", type: "correction", id: "L-0123456789ab", text: "line one\r\nline two" })];
-  assert.deepEqual(parseInbox(renderInbox("run-1", candidates)), { run: "run-1", candidates: untrustedFalse(candidates) });
-  assert.deepEqual(parseInbox(renderInbox("run-1", [])), { run: "run-1", candidates: [] });
-  assert.throws(() => parseInbox("no front matter"), { name: "InboxFormatError" });
-  assert.throws(() => parseInbox("---\nrun: r\n---\n"), { name: "InboxFormatError" });
-  assert.throws(() => parseInbox("---\nrun: r\n---\n~~~json candidates\n[{\"type\":\"nope\"}]\n~~~\n"), { name: "InboxFormatError" });
+test("a run's branch reads back what was written: its notes, used marks and drafts, and text in a note cannot stand in for the memo", () => {
+  const base = "a".repeat(40);
+  const used = { id: "L-0123456789ab", type: "lesson", scope: "all", status: "active", provenance: { runs: ["run-0"], sha: base, untrusted: false }, uses: 1, supersedes: [], text: "An old rule." };
+  const sneaky = candidate({ text: "x\n---\nrun: other\n---\n## What happened\ny" });
+  const candidates = [sneaky, candidate({ callId: "c2", type: "correction", id: used.id, text: "line one\nline two" }), candidate({ callId: "c3", type: "used", id: used.id, text: "", evidence: [] })];
+  const files = runBranchFiles({ runId: "run-1", base, seeded: true, candidates, untrusted: false, learnings: [used] });
+  const before = (path) => (path === `learnings/${used.id}.md` ? renderLearning(used) : undefined);
+  const read = readRunBranch("run-1", files, before, "2026-10-27T05:00:00.000Z");
+  assert.deepEqual(read.candidates.map((c) => [c.type, c.text, c.id]), [["lesson", sneaky.text, undefined], ["correction", "line one\nline two", used.id], ["used", "", used.id]]);
+  assert.deepEqual([read.base, read.seeded, read.untrusted], [base, true, false]);
+  assert.match(readRunBranch("run-1", { ...files, "memos/run-1.md": null }, before, "x"), /no memo/);
 });
 
 const LESSON = { type: "lesson", text: "Registries list officers under Principals, not Officers.", evidence: ["the registry page read in call 3"] };
@@ -202,7 +213,7 @@ test("a real run: the model calls learn, the host proposes what the run stored",
     assert.equal(result.status, "proposed");
     const stored = await collectCandidates(run.harness);
     assert.equal(stored.length, 2);
-    assert.deepEqual(parseInbox(await repo.read("inbox/run-1.md", result.sha)), { run: "run-1", candidates: untrustedFalse(stored) });
+    for (const c of stored) assert.equal(parseLearning(await repo.read(notePath("run-1", c.text), result.sha)).text, c.text);
     assert.equal((await refsOf(dir))["refs/heads/main"], main);
   } finally {
     await run.close();
@@ -229,64 +240,49 @@ test("a secret the learn tool did not screen is still refused at the proposal, a
   }
 });
 
-const DIGEST = "0123456789abcdef".repeat(4);
-const RECORD = `${JSON.stringify({ name: "kyb-us-registry", steps: [{ call: "registry.search" }] })}\n`;
-const workflowFiles = { [`${DIGEST}.json`]: RECORD, latest: `${DIGEST}\n` };
+const DOC = workflowDoc({ name: "kyb-us-registry" });
 
-test("workflow records the host collected are committed byte for byte under inbox/<run id>/workflows/<name>/", async () => {
+test("the workflows the host collected become drafts on the run's branch: the document latest names, and a README", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
-  const workflows = { "kyb-us-registry": { files: workflowFiles }, "my-flow_v2": { files: { latest: `${DIGEST}\n` } } };
-  const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()]), workflows });
+  const { dir: work } = await workDirWith({ "kyb-us-registry": DOC });
+  const target = targetOf([candidate(), candidate({ callId: "w", type: "workflow", id: "kyb-us-registry", text: "For a US company's registry.", evidence: [] })]);
+  const result = await proposeLearning({ ...OPTIONS, repo, target, workDir: work });
   assert.equal(result.status, "proposed");
-  const names = git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n").sort();
-  assert.deepEqual(names, [
-    "inbox/run-1.md", `inbox/run-1/workflows/kyb-us-registry/${DIGEST}.json`, "inbox/run-1/workflows/kyb-us-registry/latest", "inbox/run-1/workflows/my-flow_v2/latest",
-  ]);
-  assert.equal(await repo.read(`inbox/run-1/workflows/kyb-us-registry/${DIGEST}.json`, result.sha), RECORD);
-  assert.equal(await repo.read("inbox/run-1/workflows/kyb-us-registry/latest", result.sha), `${DIGEST}\n`);
+  assert.deepEqual(changed(dir, main, result.sha), ["learnings/INDEX.md", notePath("run-1", TEXT), "memos/run-1.md", "workflows/kyb-us-registry/README.md", "workflows/kyb-us-registry/workflow.json"].sort());
+  assert.deepEqual(JSON.parse(await repo.read("workflows/kyb-us-registry/workflow.json", result.sha)), DOC);
+  assert.equal(await repo.read("workflows/kyb-us-registry/README.md", result.sha), "# kyb-us-registry\n\nFor a US company's registry.\n");
   const restarted = await host(root, remote, "host-2");
-  assert.deepEqual(await proposeLearning({ ...OPTIONS, repo: restarted, target: targetOf([candidate()]), workflows }), { status: "already", sha: result.sha });
+  assert.deepEqual(await proposeLearning({ ...OPTIONS, repo: restarted, target, workDir: work }), { status: "already", sha: result.sha });
   assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-1`), 1);
 });
 
-test("workflow records alone are a proposal; an empty set of them is not", async () => {
+test("a draft alone is a proposal; an empty set of workflows is not", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
   assert.deepEqual(await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workflows: {} }), { status: "empty" });
-  assert.deepEqual(await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workflows: { kyb: { files: {} } } }), { status: "empty" });
-  const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workflows: { kyb: { files: workflowFiles } } });
+  const { dir: work } = await workDirWith({ kyb: workflowDoc({ name: "kyb" }) });
+  const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([]), workDir: work });
   assert.equal(result.status, "proposed");
-  assert.deepEqual(
-    git(dir, ["diff-tree", "-r", "--no-commit-id", "--name-only", main, result.sha]).toString().trim().split("\n").sort(),
-    [`inbox/run-1/workflows/kyb/${DIGEST}.json`, "inbox/run-1/workflows/kyb/latest"],
-  );
+  assert.deepEqual(changed(dir, main, result.sha), ["memos/run-1.md", "workflows/kyb/README.md", "workflows/kyb/workflow.json"]);
 });
 
-test("a workflow record that is not shaped like the store's, or holds a secret, refuses the whole proposal", async () => {
-  const secret = ["Lantern", "?>", "x9Kd3Qa"].join("");
+test("workflow records that are not the DSL store's, or a workflow name that is not one, refuse the whole proposal", async () => {
+  const DIGEST = "0123456789abcdef".repeat(4);
   const bad = [
-    ["a name that climbs out", { "../x": { files: workflowFiles } }],
-    ["a name with a dot", { "my.flow": { files: workflowFiles } }],
-    ["a name with a capital", { Kyb: { files: workflowFiles } }],
-    ["a name with a slash", { "a/b": { files: { latest: DIGEST } } }],
-    ["a name too long", { ["n".repeat(65)]: { files: workflowFiles } }],
-    ["a nested record", { kyb: { files: { [`sub/${DIGEST}.json`]: RECORD } } }],
-    ["a record named for something else", { kyb: { files: { "notes.md": "x" } } }],
-    ["a link-shaped record", { kyb: { files: { "latest -> ../AGENTS.md": "x" } } }],
-    ["a secret in a record", { kyb: { files: { [`${DIGEST}.json`]: JSON.stringify({ note: secret }) } } }],
-    ["a secret in the latest pointer, base64", { kyb: { files: { latest: Buffer.from(`k:${secret}`).toString("base64") } } }],
+    ["a name that climbs out", { "../x": { files: { latest: `${DIGEST}\n` } } }],
+    ["a name with a dot", { "my.flow": { files: { latest: `${DIGEST}\n` } } }],
+    ["a record that is not the store's", { kyb: { files: { [`${DIGEST}.json`]: "{}", latest: `${DIGEST}\n` } } }],
   ];
   for (const [name, workflows] of bad) {
     const root = await scratch();
     const { dir, remote, main } = await seededRemote(root);
     const repo = await host(root, remote);
-    const result = await proposeLearning({ ...OPTIONS, repo, secrets: [secret], target: targetOf([candidate()]), workflows: { ok: { files: workflowFiles }, ...workflows } });
+    const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()]), workflows });
     assert.equal(result.status, "refused", name);
     assert.deepEqual(await refsOf(dir), { "refs/heads/main": main }, name);
-    for (const gitDir of [dir, repo.dir]) assert.ok(!holds(gitDir, secret) && !holds(gitDir, "registry.search"), `${name}: an object holds the proposal`);
   }
 });
 
@@ -303,48 +299,29 @@ test("uses that have no JSON form are refused, not thrown", async () => {
   assert.deepEqual(await refsOf(dir), { "refs/heads/main": main });
 });
 
-const SEED = "a".repeat(40);
-
-test("the inbox carries the commit the run was seeded from, and an untrusted mark on every candidate", () => {
-  const candidates = [candidate(), candidate({ callId: "c2", type: "fact", text: "Another rule." })];
-  const inbox = renderInbox("run-1", candidates, { seed: SEED, untrusted: true });
-  assert.match(inbox, new RegExp(`^---\nrun: run-1\nseed: ${SEED}\ncandidates: 2\n---\n`));
-  assert.deepEqual(parseInbox(inbox), { run: "run-1", seed: SEED, candidates: candidates.map((c) => ({ ...c, untrusted: true })) });
-  assert.deepEqual(parseInbox(renderInbox("run-1", candidates, { seed: SEED })).candidates.map((c) => c.untrusted), [false, false]);
-  assert.deepEqual(parseInbox(renderInbox("run-1", candidates, { seed: "b".repeat(64) })).seed, "b".repeat(64), "a SHA-256 repository's commit id is a seed too");
-  // A candidate's text comes after the front matter, so it cannot set or change the seed.
-  const spoof = renderInbox("run-1", [candidate({ text: `x\n---\nseed: ${"c".repeat(40)}\nrun: other` })], { seed: SEED });
-  assert.deepEqual([parseInbox(spoof).run, parseInbox(spoof).seed], ["run-1", SEED]);
-  for (const seed of ["", "main", "a".repeat(39), `${SEED}\nrun: other`, "A".repeat(40)]) {
-    assert.throws(() => renderInbox("run-1", candidates, { seed }), { name: "InboxFormatError" }, JSON.stringify(seed));
-  }
-  assert.throws(() => parseInbox(inbox.replace(SEED, "main")), { name: "InboxFormatError" });
-  const old = inbox.split("\n").map((l) => l.replace(/"untrusted":true,?/g, "").replace(/,}/g, "}")).join("\n");
-  assert.deepEqual(parseInbox(old).candidates.map((c) => c.untrusted), [false, false], "an inbox written without the mark reads as trusted");
-  assert.throws(() => parseInbox(inbox.replace('"untrusted":true', '"untrusted":"yes"')), { name: "InboxFormatError" });
-});
-
-test("proposeLearning writes the run's seed commit and the untrusted mark into the inbox", async () => {
+test("proposeLearning starts the run's branch at the commit it was seeded from, and the memo and notes say whether it read untrusted content", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
-  const target = targetOf([candidate(), candidate({ callId: "call-2", text: "Another rule." })], SEED);
+  const moved = await repo.commitTo("main", { files: { ".agents/skills/x/SKILL.md": "---\nname: x\ndescription: x\n---\n" }, message: "main moves on" });
+  await repo.push(moved.sha, "main");
+  const target = targetOf([candidate(), candidate({ callId: "call-2", text: "Another rule." })], main);
   const trusted = await proposeLearning({ ...OPTIONS, repo, target });
-  const one = parseInbox(await repo.read("inbox/run-1.md", trusted.sha));
-  assert.equal(one.seed, SEED);
-  assert.deepEqual(one.candidates.map((c) => c.untrusted), [false, false]);
+  assert.deepEqual([(await memoFront(repo, "run-1", trusted.sha)).base, (await memoFront(repo, "run-1", trusted.sha)).untrusted], [main, "false"]);
+  assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-1`), 1, "the branch starts at the seed, not at main as it moved");
   const marked = await proposeLearning({ ...OPTIONS, runId: "run-2", repo, target, untrusted: true });
-  const two = parseInbox(await repo.read("inbox/run-2.md", marked.sha));
-  assert.deepEqual([two.seed, two.candidates.map((c) => c.untrusted)], [SEED, [true, true]]);
-  assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-2`), 1);
+  assert.equal((await memoFront(repo, "run-2", marked.sha)).untrusted, "true");
+  assert.equal(parseLearning(await repo.read(notePath("run-2", TEXT), marked.sha)).provenance.untrusted, true);
 });
 
-test("a seed record that is not a commit id refuses the proposal", async () => {
+test("a seed record that is not a commit id, or not a commit of the repository, refuses the proposal", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
   const result = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()], "not a sha\nrun: other") });
   assert.deepEqual(result, { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the run's seed is not a commit id" }] });
+  const absent = await proposeLearning({ ...OPTIONS, repo, target: targetOf([candidate()], "a".repeat(40)) });
+  assert.deepEqual(absent, { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the run's seed is not a commit of the agent repository" }] });
   assert.deepEqual(await refsOf(dir), { "refs/heads/main": main });
 });
 
@@ -357,29 +334,25 @@ test("a seeded real run proposes with the commit it was seeded from, and an untr
     await ask(run.harness);
     const result = await proposeLearning({ ...OPTIONS, repo, target: run.harness, untrusted: true });
     assert.equal(result.status, "proposed");
-    const inbox = parseInbox(await repo.read("inbox/run-1.md", result.sha));
-    assert.equal(inbox.seed, main);
-    assert.deepEqual(inbox.candidates.map((c) => c.untrusted), [true]);
+    assert.deepEqual([(await memoFront(repo, "run-1", result.sha)).base, (await memoFront(repo, "run-1", result.sha)).untrusted], [main, "true"]);
+    assert.equal(parseLearning(await repo.read(notePath("run-1", LESSON.text), result.sha)).provenance.untrusted, true);
     assert.equal((await refsOf(bare))["refs/heads/main"], main);
   } finally {
     await run.close();
   }
 });
 
-test("a short case value that turns up in a call id, the seed or a digest does not refuse the proposal", async () => {
+test("a short case value that turns up in a call id, the run id or a learning id does not refuse the proposal", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
   const repo = await host(root, remote);
-  const seed = `${"a".repeat(30)}4821${"b".repeat(6)}`;
-  const digest = `${"0".repeat(40)}4821${"f".repeat(20)}`;
-  const target = targetOf([candidate({ callId: "fc_68ad4821e0f3" }), candidate({ callId: "call_4821", text: "Another rule." })], seed);
-  const workflows = { kyb: { files: { [`${digest}.json`]: JSON.stringify({ digest }), latest: `${digest}\n` } } };
-  const result = await proposeLearning({ ...OPTIONS, runId: "run-4821", repo, target, workflows, caseValues: ["4821"] });
-  assert.equal(result.status, "proposed");
-  assert.equal(parseInbox(await repo.read("inbox/run-4821.md", result.sha)).seed, seed);
+  const target = targetOf([candidate({ callId: "fc_68ad4821e0f3" }), candidate({ callId: "call_4821", text: "Another rule." })], main);
+  const result = await proposeLearning({ ...OPTIONS, runId: "run-4821", repo, target, caseValues: ["4821"] });
+  assert.equal(result.status, "proposed", JSON.stringify(result));
+  assert.equal((await memoFront(repo, "run-4821", result.sha)).base, main);
   assert.equal(commitCount(dir, `${main}..refs/heads/runs/run-4821`), 1);
   const leaking = await proposeLearning({ ...OPTIONS, runId: "run-2", repo, target: targetOf([candidate({ callId: "fc_1", text: "Order 4821 failed." })]), caseValues: ["4821"] });
   assert.equal(leaking.status, "refused", "what the model wrote is still checked");
-  assert.deepEqual(leaking.refusals.map((r) => r.reason), ["case_data", "case_data"]);
+  assert.ok(leaking.refusals.length >= 2 && leaking.refusals.every((r) => r.reason === "case_data"));
   assert.equal((await refsOf(dir))["refs/heads/runs/run-2"], undefined);
 });

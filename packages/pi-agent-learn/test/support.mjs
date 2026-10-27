@@ -32,6 +32,10 @@ export const AGENT_FILES = {
 
 export const SHA = "0".repeat(40);
 
+/** An injection screen that finds nothing planted, and the host's tool list the test workflows bind. */
+export const SCREEN_PASS = async () => 0.05;
+export const HOST_TOOLS = Object.freeze(["prices.quote"]);
+
 /** A learning as curation would write it. */
 export function learning(id, text, extra = {}) {
   return { id, type: "lesson", scope: "all", status: "active", provenance: { runs: ["run-1"], sha: SHA, untrusted: false }, uses: 0, supersedes: [], text, ...extra };

@@ -1,6 +1,6 @@
 import { pathRefusal as gitPathRefusal } from "@parcha/pi-git-remote";
-import { CAPS, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
-import { parseInbox, renderInbox } from "./inbox.js";
+import { parseLearning, renderLearning } from "./entry.js";
+import { CAPS, isRulesLocked, LAYOUT, LEARNING_ID, learningPath, memoPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { type Guard, type GuardInput, LEARN_TYPES, type Refusal, type RefusalReason } from "./types.js";
 
 export type Caps = { -readonly [K in keyof typeof CAPS]: number };
@@ -133,25 +133,30 @@ type Hit = { readonly reason: RefusalReason; readonly detail: string };
  *  short case value turns up in one of them by chance, so only the name is checked for case data. */
 function authoredName(file: string): string {
   const parts = file.split("/");
-  if (parts[0] === "inbox" && parts[2] === "workflows") return parts[3] ?? "";
   if (file.startsWith(`${LAYOUT.skills}/`)) return parts[2] ?? "";
-  if (file.startsWith(`${LAYOUT.workflows}/`)) return parts[3] ?? "";
+  if (file.startsWith(`${LAYOUT.workflows}/`)) return parts[1] ?? "";
   return "";
 }
 
-/** What the model wrote in an inbox file, when the file is exactly what `renderInbox` makes of its own candidates: their
- *  texts, evidence and ids. The run, the seed, the call ids and the headings around them are generated. Any other
- *  shape of file, or a mismatch, is undefined, and is checked whole. */
-function inboxAuthored(content: string, runId: string): string[] | undefined {
-  try {
-    const inbox = parseInbox(content);
-    const marked = inbox.candidates.length > 0 && inbox.candidates.every((c) => c.untrusted);
-    const options = { ...(inbox.seed === undefined ? {} : { seed: inbox.seed }), untrusted: marked };
-    if (inbox.run !== runId || renderInbox(runId, inbox.candidates, options) !== content) return undefined;
-    return inbox.candidates.flatMap((c) => [c.text, ...c.evidence, ...(c.id === undefined ? [] : [c.id])]);
-  } catch {
-    return undefined;
+const NOTE_PATH = /^learnings\/L-[0-9a-f]{12}\.md$/;
+const GENERATED = /learnings\/L-[0-9a-f]{12}\.md|L-[0-9a-f]{12}|workflows\/[a-z0-9][a-z0-9_-]{0,63}\/|uses\/[^\s]+\.json|memos\/[^\s]+\.md/g;
+
+/** What the model wrote in a file of the shared layout whose other parts are generated: a note's rule, when the file is
+ *  exactly Pi's rendering of it; the memo's and the index's text without the paths and ids they name. Undefined for any
+ *  other file, which is checked whole. */
+function layoutAuthored(file: string, content: string, runId: string | undefined): string[] | undefined {
+  if (NOTE_PATH.test(file)) {
+    try {
+      const note = parseLearning(content);
+      // The ids a note supersedes are the agent's, as a candidate's id was: checked like its rule.
+      return renderLearning(note) === content ? [note.text, ...note.supersedes, ...(note.scope === "all" ? [] : [note.scope])] : undefined;
+    } catch {
+      return undefined;
+    }
   }
+  if (file === LAYOUT.index) return [content.replace(GENERATED, " ")];
+  if (runId !== undefined && RUN_ID.test(runId) && file === memoPath(runId)) return [content.replace(/^---\n[\s\S]*?\n---\n/, "").replace(GENERATED, " ")];
+  return undefined;
 }
 
 /** The byte cap of a path the role may write, or why it may not write it. */
@@ -163,12 +168,13 @@ function allowance(role: "run" | "curate", file: string, runId: string | undefin
   if (unsafe) return refuse(unsafe.includes(".git") ? "git control paths are not writable" : `the path is not a plain repository path: ${unsafe}`);
   if (role === "run") {
     if (runId === undefined || !RUN_ID.test(runId)) return refuse("a run writes only paths named for its own valid run id");
-    if (file === inboxPath(runId)) return { cap: caps.inbox };
+    if (file === memoPath(runId)) return { cap: caps.memo };
     if (file === usesPath(runId)) return { cap: caps.file };
-    const [, , , name = "", record = ""] = file.split("/");
-    // The DSL's saved records, copied as they are: <sha256>.json and latest, one folder per workflow.
-    if (WORKFLOW_NAME.test(name) && DIGEST_RECORD.test(record) && file === `${inboxWorkflowDir(runId, name)}${record}`) return { cap: caps.file };
-    return refuse("a run writes only its own inbox, uses and workflow records");
+    if (file === LAYOUT.index) return { cap: caps.index };
+    if (NOTE_PATH.test(file)) return { cap: caps.learning };
+    const [top, name = "", draft = "", ...rest] = file.split("/");
+    if (top === LAYOUT.workflows && WORKFLOW_NAME.test(name) && (draft === "workflow.json" || draft === "README.md") && !rest.length) return { cap: caps.file };
+    return refuse("a run writes only its memo, notes, the index, workflow drafts and its uses file");
   }
   const within = (dir: string) => (file.startsWith(`${dir}/`) ? file.slice(dir.length + 1).split("/") : undefined);
   // The curator names each entry by its generated id; the index is derived at seed time and never stored.
@@ -178,8 +184,11 @@ function allowance(role: "run" | "curate", file: string, runId: string | undefin
   const skill = within(LAYOUT.skills);
   if (skill?.length === 2 && SKILL_NAME.test(skill[0]!) && (skill[1] === "SKILL.md" || skill[1] === "trial.json")) return { cap: caps.file };
   const record = within(LAYOUT.workflows);
-  if (record?.length === 2 && WORKFLOW_NAME.test(record[0]!) && DIGEST_RECORD.test(record[1]!)) return { cap: caps.file };
-  return refuse("the path is outside what a curator writes: learnings/<id>.md, SKILL.md and trial.json in a skill folder, and the workflow store");
+  if (record?.length === 2 && WORKFLOW_NAME.test(record[0]!) && (DIGEST_RECORD.test(record[1]!) || record[1] === "workflow.json" || record[1] === "README.md")) return { cap: caps.file };
+  if (file === LAYOUT.index) return { cap: caps.index };
+  const memo = within(LAYOUT.memos);
+  if (memo?.length === 1 && memo[0]!.endsWith(".md") && RUN_ID.test(memo[0]!.slice(0, -3))) return { cap: caps.memo };
+  return refuse("the path is outside what a curator writes: learnings/<id>.md and the index, a run's memo, SKILL.md and trial.json in a skill folder, and a workflow's folder");
 }
 
 // ---------------------------------------------------------------- the guard
@@ -210,7 +219,7 @@ function jsonStrings(text: string): string[] {
   return out;
 }
 
-/** The guard with its caps set: `createGuard({ inbox: 8192 })`. `guard` is the one with the default caps. */
+/** The guard with its caps set: `createGuard({ memo: 8192 })`. `guard` is the one with the default caps. */
 export function createGuard(overrides?: Partial<Caps>): Guard {
   const caps = checkedCaps(overrides);
   return (input: GuardInput): readonly Refusal[] => {
@@ -232,7 +241,7 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
     }
     if (out.length) return out;
 
-    const ceiling = Math.max(caps.inbox, caps.file, caps.learning);
+    const ceiling = Math.max(caps.memo, caps.file, caps.learning);
     const hasSecret = secretMatcher(secrets);
     const hasCaseValue = caseMatcher(caseValues);
     const CASE_DATA: Hit = { reason: "case_data", detail: "repeats a value from this run's input: a learning states the rule, never the case" };
@@ -271,8 +280,8 @@ export function createGuard(overrides?: Partial<Caps>): Guard {
           continue;
         }
         const seen = new Set<string>();
-        // An inbox that is exactly the rendering of its candidates is checked for case data in what the model wrote.
-        const authored = input.role === "run" && typeof input.runId === "string" && RUN_ID.test(input.runId) && file === inboxPath(input.runId) ? inboxAuthored(content, input.runId) : undefined;
+        // A file of the layout whose other parts are generated is checked for case data in what the model wrote.
+        const authored = layoutAuthored(file, content, typeof input.runId === "string" ? input.runId : undefined);
         const texts = [content, ...(file.endsWith(".json") ? jsonStrings(content) : [])];
         for (const text of texts) {
           for (const hit of scan(text, authored === undefined)) {

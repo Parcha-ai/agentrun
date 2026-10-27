@@ -54,7 +54,7 @@ It takes about ten seconds and prints the story (the shas differ on every run; s
    agentrun(save triage-crash) -> saved triage-crash as 2bfc0cd79680
    learn(workflow triage-crash) -> [noted 2]
    answer: bug, needs-repro: the body is a crash trace, and L-43c99595a04d says this project labels those needs-repro too.
-   proposed on runs/run-2 at 699c21c: its notes and the workflow's DSL records
+   proposed on runs/run-2 at 699c21c: its notes and triage-crash's draft
 
 5. Curate counts the use and admits the workflow as a trial skill
    run-2: L-43c99595a04d used (uses 1); workflow triage-crash admitted as a trial
@@ -209,7 +209,7 @@ List every extension the agent's conversation needs in the root agent's extensio
   the model can still restate it.
 - The model gets `learn` and the `agentrun` tool. It never commits or pushes, and the repository's `.git` is never in its
   workspace. The workflow tool's `projectDir` is the run's workspace, where `finishRun` collects what it saved.
-- `finishRun` proposes the run's notes, the DSL records of the workflows it saved, and the trials it used, and refuses
+- `finishRun` proposes the run's memo and notes, a draft of each workflow it saved, and the trials it used, and refuses
   the whole proposal on any guard hit: a host secret in any encoding, a credential shape, invisible characters, a value
   from the run's input, a path outside the run's own files, or `AGENTS.md` and `agent.json`, which no learning ever writes.
 - `curateNow` guards again, asks the judge whether each note is general, whether it narrows a rule, and how it relates to
