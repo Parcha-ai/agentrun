@@ -14,8 +14,10 @@ harness adapter the way they run on Pi, durable in AgentRun's own store. It is h
   cannot make), and `open` restores a session from its records.
 - `./testing` has `memorySessionStore` and `fauxAdapter`, a scripted harness with no model and no network.
 
-The runner's own bounds (a turn limit, an unknown tool, a refused fork, the host's refusal) fail a node with
-`final: true`, so a recovery driver gives it no second attempt. It imports no host: serve and any DSL host use it alike.
+The runner's own bounds (a turn limit, no progress, an unknown tool, a refused fork, the host's refusal) fail a node
+with `final: true`, so a recovery driver gives it no second attempt. Turns sent to a node are bounded by its turn limit,
+or by `maxSends` (default 100) when the limit is null, and three turns in a row that make no paid request and deliver
+nothing end it `no_progress`: a harness that never reaches its model is stopped, not sent turns forever. It imports no host: serve and any DSL host use it alike.
 
 Code this package copies from another project is listed in `vendor/durable-harness/UPSTREAM.json` and credited in
 `NOTICE`.
