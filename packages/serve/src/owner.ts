@@ -55,7 +55,7 @@ export class Owner {
   private settingUp = false;
 
   /** `openSetup`: no setup code; the first visit sets the password (no public address). `say` prints a setup code. */
-  constructor(private readonly dir: string, readonly openSetup: boolean, private readonly say: (line: string) => void = () => {}) {
+  constructor(private readonly dir: string, readonly openSetup: boolean, private readonly say: (line: string) => void = () => {}, private readonly addresses = SIGN_IN_PEERS) {
     this.file = join(dir, OWNER_FILE);
     const secretFile = join(dir, SESSION_SECRET_FILE);
     let secret: Buffer | undefined;
@@ -141,9 +141,9 @@ export class Owner {
   allow(peer: string): "ok" | "limited" | "full" {
     const now = Date.now();
     const live = (at: number) => now - at < SIGN_IN_WINDOW_MS;
-    if (!this.tries.has(peer) && this.tries.size >= SIGN_IN_PEERS) {
+    if (!this.tries.has(peer) && this.tries.size >= this.addresses) {
       for (const [known, at] of this.tries) if (!at.some(live)) this.tries.delete(known);
-      if (this.tries.size >= SIGN_IN_PEERS) return "full";
+      if (this.tries.size >= this.addresses) return "full";
     }
     const recent = (this.tries.get(peer) ?? []).filter(live);
     if (recent.length >= SIGN_INS_PER_PEER) return (this.tries.set(peer, recent), "limited");
