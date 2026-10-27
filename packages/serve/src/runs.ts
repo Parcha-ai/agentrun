@@ -124,6 +124,8 @@ export type Run = {
   relaunches: number;
   settled: boolean;
   settling?: Promise<void>;
+  /** Settles of this run not yet done: while any is, nothing starts its process again. */
+  settles: number;
   updatedAt: string;
 };
 
@@ -293,7 +295,7 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, updatedAt: meta.created_at,
+      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
     };
   }
 
@@ -508,6 +510,11 @@ export class Runs {
       const door = this.doorOf(record);
       if (door) return door;
       if (!this.live(run)) {
+        // A process that just went is being settled: its run may be over, so nothing starts it again before that.
+        if (run.settles > 0) {
+          await run.settling;
+          continue;
+        }
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
@@ -588,9 +595,11 @@ export class Runs {
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
    *  carry back. One at a time per run, and none once the run has its outcome. */
   private settle(run: Run, code: number | null, exited: boolean): Promise<void> {
+    run.settles++;
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
-      .catch((error: Error) => warn(run.id, `not settled: ${error.message}; the next start tries again`));
+      .catch((error: Error) => warn(run.id, `not settled: ${error.message}; the next start tries again`))
+      .finally(() => void run.settles--);
     return run.settling;
   }
 
