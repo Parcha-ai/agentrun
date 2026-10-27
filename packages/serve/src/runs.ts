@@ -512,7 +512,11 @@ export class Runs {
       if (!this.live(run)) {
         // A process that just went is being settled: its run may be over, so nothing starts it again before that.
         if (run.settles > 0) {
-          await run.settling;
+          // Within the time left: a settle waiting on a busy store must not hold this caller past its deadline.
+          let timer: NodeJS.Timeout | undefined;
+          await Promise.race([run.settling, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
+          clearTimeout(timer);
+          if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
           continue;
         }
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
