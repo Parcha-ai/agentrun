@@ -117,7 +117,8 @@ function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; p
     appName: "AgentRun Server",
     database: db,
     secret,
-    baseURL: site?.baseUrl ?? "http://127.0.0.1",
+    // Without a site this instance only migrates and makes the owner from the environment: it builds no link.
+    baseURL: site?.baseUrl ?? "http://serve",
     basePath: BASE_PATH,
     trustedOrigins: site ? [new URL(site.baseUrl).origin] : [],
     emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: MIN_PASSWORD, maxPasswordLength: MAX_PASSWORD },
