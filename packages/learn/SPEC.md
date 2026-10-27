@@ -180,8 +180,7 @@ Anything an agent learns on any harness must run on the workflow DSL. So:
   list. A refusal carries the validator's own issue: its code, the node's path and the message.
 - A draft holds no `code` node and no `call` node with `via: "shell"` or `via: "executor"`, at any depth: it merges
   without a person, so it carries no way to run code. Code nodes run in the host process unless the host isolates them,
-  and no host on the open platform does today; a host that later supplies an isolated runCode can be named and allowed
-  then, as a deliberate change.
+  and no host on the open platform does today; allowing an isolating host later is a deliberate change.
 - The host's tool list is the one list of names a workflow can bind on any harness. Under AgentRun the server passes
   its tool table's names. A harness's built-in tool names (Codex's `exec_command`, Pi's `bash`, Claude Code's `Bash`)
   are not in it unless the host puts them there: a harness adapter maps its calls back to the host's names.
