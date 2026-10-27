@@ -312,6 +312,7 @@ test("serve: a request to a released run starts it and gets the answer; a repeat
   // start is a lease-expired takeover, and the answer comes from the last one.
   const starts = first.ensured.filter((e): e is Extract<EnsureResult, { action: "started" }> => e.action === "started");
   assert.ok(starts.length >= 1, `the request started the run: ${JSON.stringify(r.coldStart)}`);
+  assert.equal(starts[0].reason, "none", `the run was never started, so its first start is a cold one: ${JSON.stringify(r.coldStart)}`);
   assert.deepEqual(starts.slice(1).map((e) => e.reason), starts.slice(1).map(() => "lease-expired"), `a start after the first is a takeover: ${JSON.stringify(r.coldStart)}`);
   assert.equal(body.generation, starts.length, `one generation per start: ${JSON.stringify(r.coldStart)}`);
   const handleA = starts.at(-1)!.handle;
