@@ -236,6 +236,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/pi-agent-learn`](packages/pi-agent-learn/README.md) | An agent that learns in its own git repository: notes curated into commits on `main`, a `<learned>` section read at a fixed commit, saved workflows promoted and demoted on receipts; start at [`examples/agent-learn`](examples/agent-learn/README.md) (`npm run demo:learn`, no key) |
 | [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one pack. An agent's sign-ins are saved in its home, so its next run starts signed in |
 | [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked |
+| [`@parcha/agentrun-adapters`](packages/run-adapters/README.md) | Held, not on npm yet. The seam for agent harnesses other than Pi (Codex, OpenCode, the Claude Agent SDK, an ACP agent): `createHarnessRunner` runs a DSL node on any of them, durable in AgentRun's own store |
 
 Every published package is at one version under npm's `beta` dist-tag; `npm view @parcha/agentrun-dsl dist-tags` prints it. The status column of [Use one piece](#use-one-piece) says which packages are published. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#contracts-and-limits).
 
@@ -244,3 +245,7 @@ Ordinary functions may be enough for a fixed sequence. AgentRun stores the steps
 For development setup and checks, see [Contributing](CONTRIBUTING.md). [Open an issue](https://github.com/Parcha-ai/agentrun/issues) for bugs or proposals.
 
 Code and documentation use [Apache-2.0](LICENSE). Copyright 2026 Parcha Labs, Inc. Dependencies retain their own licenses. Built by [Grep.ai](https://grep.ai).
+
+## Acknowledgements
+
+AgentRun's durable harnesses for Codex, the Claude Agent SDK and OpenCode build on ideas and code from [vercel-labs/durable-harness](https://github.com/vercel-labs/durable-harness) (Apache-2.0). The code we copy is listed in `packages/run-adapters/vendor/durable-harness/UPSTREAM.json` and credited in that package's `NOTICE`.
