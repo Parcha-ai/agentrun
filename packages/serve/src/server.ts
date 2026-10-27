@@ -10,9 +10,9 @@ import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
-import { NODE_TOOLS, toolRefusal, toolsView, workflowTools } from "./tools.js";
+import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS, workflowNodes } from "./model.js";
+import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -316,9 +316,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound } });
+    const missing = Object.fromEntries(blockers.flatMap((b) => (b.missing ? [[b.missing.tool, b.missing.vars]] : [])));
+    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing } });
     const tier = blockers.find((b) => b.tier)?.tier;
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}) } });
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}) } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */

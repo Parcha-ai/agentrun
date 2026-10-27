@@ -100,7 +100,7 @@ test("an agentic run's fetch_page in its own process: every hostile target refus
   assert.deepEqual(dialled, ["http://redirect.example/", "http://renamed.example/", "http://public.example/"], "only public addresses were dialled");
 });
 
-test("a workflow's call node runs fetch_page: the Page is its output, a refusal is ok false and the workflow goes on; a call to a tool outside the table is 409", async (t) => {
+test("a workflow's call node runs fetch_page: the Page is its output, a refusal is ok false and the workflow goes on; a call to a tool outside the table is refused at save (422)", async (t) => {
   const { api } = await serve(t, { fauxWeb: FAUX_WEB });
   const flow = {
     v: 2, name: "read-site",
@@ -135,13 +135,12 @@ test("a workflow's call node runs fetch_page: the Page is its output, a refusal 
   assert.equal(fedRun.status, 202, JSON.stringify(fedRun.body));
   await follow(api, fedRun.body.run_id, ["completed"]);
   assert.deepEqual((await api("GET", `/runs/${fedRun.body.run_id}`)).body.result.output, { answer: 42 });
-  // A call to a tool outside the table, or to one no call node may run, is refused before anything starts.
+  // A call to a tool outside the table, or to one no call node may run, is refused when the workflow is saved.
   for (const tool of ["http_get", "read"]) {
     const other = structuredClone(flow);
     other.root.steps[0].tool = tool;
-    assert.equal((await api("POST", "/agents", { definition: { id: `call-${tool}`, name: tool, workflow: other, tools: [tool] } })).status, 201);
-    const refused = await api("POST", `/agents/call-${tool}/runs`, { input: { website: "http://public.example/" } });
-    assert.deepEqual([refused.status, refused.body.error.details.unbound], [409, [tool]], tool);
-    assert.match(refused.body.error.message, /call nodes run the tools fetch_page/);
+    const refused = await api("POST", "/agents", { definition: { id: `call-${tool}`, name: tool, workflow: other, tools: [tool] } });
+    assert.deepEqual([refused.status, refused.body.error.fields.map((f) => f.field)], [422, ["definition.workflow"]], tool);
+    assert.match(refused.body.error.fields[0].message, new RegExp(`call nodes run the tools fetch_page here; this workflow also calls ${tool}\\.`));
   }
 });

@@ -41,7 +41,7 @@ test("a workflow needing a tool call, a judge or code is not saved here (422), a
   const refused = await api("POST", "/agents", { definition: { id: "caller", name: "caller", workflow: call, tools: ["stock.check"] } });
   assert.equal(refused.status, 422);
   assert.equal(refused.body.error.code, "input_invalid");
-  assert.ok(refused.body.error.fields.some((f) => f.field === "definition.workflow" && /runEffect/.test(f.message)), JSON.stringify(refused.body.error.fields));
+  assert.ok(refused.body.error.fields.some((f) => f.field === "definition.workflow" && /also calls stock\.check/.test(f.message)), JSON.stringify(refused.body.error.fields));
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
   const wrong = await api("POST", "/agents/flow/runs", { input: { content: "no question" } });
   assert.equal(wrong.status, 422);
@@ -153,8 +153,7 @@ test("data shaped like a node is no node: a model node's state holding an exampl
   // The same nodes for real are still refused.
   const real = answerFlow();
   real.root.steps.push(flow.root.steps[0].state.example);
-  const made = await api("POST", "/agents", flowAgent("real-call", real, { tools: ["http_get"] }));
-  assert.equal(made.status, 201, JSON.stringify(made.body));
-  const refused = await api("POST", "/agents/real-call/runs", { input: { question: "x" } });
-  assert.deepEqual([refused.status, refused.body.error.details.unbound], [409, ["http_get"]]);
+  const refused = await api("POST", "/agents", flowAgent("real-call", real, { tools: ["http_get"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(refused.body.error.fields[0].message, /also calls http_get/);
 });
