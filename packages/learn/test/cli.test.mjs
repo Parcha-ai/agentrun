@@ -211,3 +211,19 @@ test("over the change cap, no body is read: the count comes first", async (t) =>
   assert.ok(calls.some((line) => /diff-tree/.test(line)), "control: the shim saw git");
   assert.equal(calls.filter((line) => /(^| )cat-file /.test(line)).length, 0, "no cat-file over the cap");
 });
+
+test("a ref that names no commit is reported without the refused value it holds, with --head or --base, text or JSON", async (t) => {
+  const value = "Wk3sEcReT58zRq";
+  const { dir, tools } = await repo(t);
+  for (const [flag, ref] of [["--head", `runs/${value}`], ["--base", `main-${value}`]]) {
+    for (const json of [false, true]) {
+      const args = ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])];
+      if (flag === "--head") args.push("--head", ref);
+      else args.splice(args.indexOf("main"), 1, ref);
+      const out = cli(dir, args, { STORE_PASS: value });
+      assert.equal(out.status, 2, out.stdout + out.stderr);
+      assert.match(out.stderr, /\[redacted\]/, `control: the ref is reported, redacted (${flag})`);
+      assert.equal((out.stdout + out.stderr).includes(value), false, `${flag} ${json ? "JSON" : "text"}: the value is printed`);
+    }
+  }
+});
