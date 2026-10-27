@@ -4,7 +4,7 @@
 // faux module's (no key, no network); with `AGENT_MODEL_BASE_URL` every model id goes to that one OpenAI Responses
 // gateway; otherwise pi-ai's providers serve it, with their keys from the environment.
 import { pathToFileURL } from "node:url";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelCost, ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
@@ -58,25 +58,30 @@ export type ModelRef = { provider: string; modelId: string };
 
 /**
  * The model a revision runs on here, or why it cannot: `ref` is an agentic revision's "provider/model-id", absent for
- * the host's model of `tier`. Through the gateway the model id is the part after the provider.
+ * the host's model of `tier`. Through the gateway the ref goes whole, as a gateway such as OpenRouter names its models
+ * `vendor/model` (with `AGENT_MODEL_GATEWAY_IDS=bare`, only the part after the provider), and `namedProvider` is that
+ * provider, whose catalog entry prices the model. `host` says a setting of this host (a key, a default model) could
+ * make it reachable; a model the revision names that pi-ai does not know is not.
  */
-export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default"): Promise<{ model: ModelRef } | { why: string }> {
+export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefined, tier: Tier = "default"): Promise<{ model: ModelRef; namedProvider?: string } | { why: string; host: boolean }> {
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
   const named = ref ?? tierModel(env, tier);
   const none = tier === "default" ? "The revision names no model, and this host has no default" : `A workflow node of the ${tier} tier has no model here (${TIER_ENV[tier]}), and this host has no default`;
   if (env.AGENT_MODEL_BASE_URL) {
-    if (!named) return { why: `${none}: set AGENT_MODEL, or name a model in the definition.` };
-    return { model: { provider: MODEL_PROVIDER, modelId: ref ? ref.slice(ref.indexOf("/") + 1) : named } };
+    if (!named) return { why: `${none}: set AGENT_MODEL, or name a model in the definition.`, host: true };
+    const slash = ref?.indexOf("/") ?? -1;
+    const sent = ref && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? ref.slice(slash + 1) : named;
+    return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(ref && slash > 0 ? { namedProvider: ref.slice(0, slash) } : {}) };
   }
-  if (!named) return { why: `${none}: set AGENT_MODEL to a provider/model-id, start agentrun-serve with --faux MODULE, or name a model in the definition.` };
+  if (!named) return { why: `${none}: set AGENT_MODEL to a provider/model-id, start agentrun-serve with --faux MODULE, or name a model in the definition.`, host: true };
   const slash = named.indexOf("/");
-  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.` };
+  if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   const models = builtinModels();
   const model = models.getModel(provider, modelId);
-  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.` };
-  if (!(await models.getAuth(model))) return { why: `pi-ai finds no key for ${provider} in this environment (${models.getProvider(provider)?.auth.apiKey?.name ?? "its API key"}): set it where agentrun-serve starts.` };
+  if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined };
+  if (!(await models.getAuth(model))) return { why: `pi-ai finds no key for ${provider} in this environment (${models.getProvider(provider)?.auth.apiKey?.name ?? "its API key"}): set it where agentrun-serve starts.`, host: true };
   return { model: { provider, modelId } };
 }
 
@@ -105,10 +110,12 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const { createModels, createProvider } = await import("@earendil-works/pi-ai/models");
   const faux = env[FAUX_ENV];
   const byTier = new Map<Tier, ModelRef>();
+  const namedBy = new Map<Tier, string>();
   for (const tier of new Set(tiers)) {
     const chosen = await chooseModel(env, tier === "default" ? ref : undefined, tier);
     if ("why" in chosen) throw new Error(chosen.why);
     byTier.set(tier, chosen.model);
+    if (chosen.namedProvider) namedBy.set(tier, chosen.namedProvider);
   }
   const model = byTier.get("default");
   if (!faux && !env.AGENT_MODEL_BASE_URL) {
@@ -119,15 +126,16 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const models = createModels();
   if (!ids.length) return { models, model, byTier };
   if (faux) {
-    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | "unknown" };
+    const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
-    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(mod.cost ? { cost: mod.cost } : {}) })) as [{ id: string }, ...{ id: string }[]] });
+    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}) })) as [{ id: string }, ...{ id: string }[]] });
     const step = (async (context: unknown, options?: { signal?: AbortSignal }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
     // `cost` (USD per million tokens) prices the faux model's usage, which the faux core leaves at $0, so a run's
-    // estimate and its cap can be tested.
+    // estimate and its cap can be tested; "unknown" leaves its usage with no cost, as a provider that does not price it.
     const priced: typeof core.stream = (model, context, options) => {
       const inner = core.stream(model, context, options);
       if (!mod.cost) return inner;
@@ -137,7 +145,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
         for await (const event of inner) {
           const message = event.type === "done" ? event.message : event.type === "error" ? event.error : undefined;
           if (message) {
-            message.usage.cost = ai.calculateCost(model, message.usage);
+            if (price) message.usage.cost = ai.calculateCost(model, message.usage);
+            else delete (message.usage as { cost?: unknown }).cost;
             last = message;
           }
           outer.push(event);
@@ -156,16 +165,26 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   }
   const baseUrl = env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "");
   const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
-  // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price; unset, it is $0. A
-  // tier's own price (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a
-  // model two tiers share takes the default's.
-  const prices = new Map<string, string>();
+  // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price. A tier's own price
+  // (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a model two tiers
+  // share takes the default's. With none set, pi-ai's catalog prices it (listedPrice); an id it does not list is $0.
+  const prices = new Map<string, { given: string | undefined; named: string | undefined }>();
   for (const tier of ["default", "fast", "strong"] as const) {
     const id = byTier.get(tier)?.modelId;
-    if (id !== undefined && !prices.has(id)) prices.set(id, (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || "0");
+    if (id !== undefined && !prices.has(id)) prices.set(id, { given: (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || undefined, named: namedBy.get(tier) });
   }
-  const priceOf = (id: string) => {
-    const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = prices.get(id)!.split(",").map(Number);
+  const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
+  const priceOf = (id: string): ModelCost => {
+    const { given, named } = prices.get(id)!;
+    if (given === undefined) {
+      // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
+      if (named !== undefined) return listedPrice(catalog.get(id.startsWith(`${named}/`) ? id.slice(named.length + 1) : id) ?? [], named);
+      // A host model set whole (`vendor/model`) the catalog does not list as it is: priced as its model, the vendor named.
+      const slash = id.indexOf("/");
+      if (catalog.has(id) || slash < 1) return listedPrice(catalog.get(id) ?? [], undefined);
+      return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
+    }
+    const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
     return { input, output, cacheRead, cacheWrite };
   };
   models.setProvider(createProvider({
@@ -179,4 +198,28 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     api: openAIResponsesApi(),
   }));
   return { models, model, byTier };
+}
+
+type Listed = { provider: string; cost: ModelCost };
+
+/** pi-ai's catalog list prices by model id: every provider's entry for it, in the catalog's order. */
+async function catalogPrices(): Promise<Map<string, Listed[]>> {
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const out = new Map<string, Listed[]>();
+  for (const model of builtinModels().getModels()) {
+    const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, tiers } = (model as { cost?: Partial<ModelCost> }).cost ?? {};
+    const listed = out.get(model.id) ?? out.set(model.id, []).get(model.id)!;
+    listed.push({ provider: model.provider, cost: { input, output, cacheRead, cacheWrite, ...(tiers ? { tiers } : {}) } });
+  }
+  return out;
+}
+
+/** A gateway model's catalog price: the paid entry of the provider its ref names, when the catalog lists one. Else, as
+ *  the gateway does not say whose model answers (a named provider is a hint), the highest any provider lists, so the
+ *  estimate and a cap on it err high: one entry's whole price, the one with the most input plus output (the first of
+ *  equals), so a $0 entry never wins over a paid one, a named provider's included. An id no entry prices is $0. */
+function listedPrice(entries: readonly Listed[], named: string | undefined): ModelCost {
+  const own = named === undefined ? undefined : entries.find((entry) => entry.provider === named);
+  if (own && own.cost.input + own.cost.output > 0) return own.cost;
+  return entries.reduce<ModelCost>((top, { cost }) => (cost.input + cost.output > top.input + top.output ? cost : top), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 }

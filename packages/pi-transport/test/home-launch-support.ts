@@ -11,7 +11,7 @@ import {
 	launch,
 	launchStatus,
 	stopLaunch,
-} from "../src/home/launch.ts";
+} from "../src/launch/launch.ts";
 
 const context = BACKGROUND_CONTEXT;
 /** A case makes its own box, and a GPU box can take minutes to be given: the limit bounds a hang, not a slow create. */
@@ -84,6 +84,68 @@ async function waitPhase(box: Box, name: string, phase: LaunchPhase, timeoutMs =
 }
 
 const program = (script: string): LaunchSpec => ({ argv: ["sh", "-c", script] });
+
+/** The launcher's spool in this box: `$TMPDIR/.pi-transport-launch`, or under /tmp. */
+export const spoolOf = async (box: Box): Promise<string> =>
+	`${(await sh(box, 't=$TMPDIR; [ -n "$t" ] || t=/tmp; echo "$t"')).text.trim()}/.pi-transport-launch`;
+
+/** A call the launcher refused as `unsafe`, for the reason `why` names; `label` names the case in a failure. */
+export function expectUnsafe(result: Result<unknown, LaunchError>, why: RegExp, label?: string): void {
+	expect(result.ok ? "ok" : result.error.code, label).toBe("unsafe");
+	if (!result.ok) expect(result.error.message).toMatch(why);
+}
+
+const WRITABLE = /can be written by its group or by other users/;
+const LINK = /is a symbolic link/;
+/** The C library's own unsecure variables: glibc's UNSECURE_ENVVARS (2.36 and 2.39, less TMPDIR) and musl's MUSL_LOCPATH. */
+export const UNSECURE = [
+	"GCONV_PATH",
+	"GETCONF_DIR",
+	"GLIBC_TUNABLES",
+	"HOSTALIASES",
+	"LD_AUDIT",
+	"LD_BIND_NOT",
+	"LD_BIND_NOW",
+	"LD_DEBUG",
+	"LD_DEBUG_OUTPUT",
+	"LD_DYNAMIC_WEAK",
+	"LD_HWCAP_MASK",
+	"LD_LIBRARY_PATH",
+	"LD_ORIGIN_PATH",
+	"LD_PRELOAD",
+	"LD_PROFILE",
+	"LD_SHOW_AUXV",
+	"LD_VERBOSE",
+	"LD_WARN",
+	"LOCALDOMAIN",
+	"LOCPATH",
+	"MALLOC_ARENA_MAX",
+	"MALLOC_ARENA_TEST",
+	"MALLOC_MMAP_MAX_",
+	"MALLOC_MMAP_THRESHOLD_",
+	"MALLOC_PERTURB_",
+	"MALLOC_TOP_PAD_",
+	"MALLOC_TRACE",
+	"MALLOC_TRIM_THRESHOLD_",
+	"MUSL_LOCPATH",
+	"NIS_PATH",
+	"NLSPATH",
+	"RESOLV_HOST_CONF",
+	"RES_OPTIONS",
+	"TZDIR",
+];
+
+/** The refusal of a directory above the spool. */
+export const ABOVE = /, above the spool, can be written by its group or by other users and has no sticky bit/;
+
+/** A path's type, mode and owner, read with `stat` (not the `ls` the launcher reads them with). */
+const statOf = async (box: Box, path: string): Promise<string> =>
+	(
+		await sh(
+			box,
+			`if [ -L "${path}" ]; then echo link; elif [ -d "${path}" ]; then echo "dir $(stat -c '%a %u' "${path}")"; else echo other; fi`,
+		)
+	).text.trim();
 
 /** The launcher's rules, one case each, on whatever box `withBox` makes. */
 export function registerLaunchSuite(label: string, withBox: WithBox): void {
@@ -450,5 +512,226 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 		const code = await launch(box, "ok", { argv: ["true"], terminalExits: [0] }, context);
 		expect(code.ok ? "ok" : code.error.code).toBe("invalid");
 		expect(unwrap(await launchStatus(box, "ok", context))).toBeUndefined();
+	});
+
+	// The spool and every launch directory are the launcher's uid's alone: a directory (never a symbolic link) of that uid, with
+	// no group- or other-write bit. Each call checks before it uses one, and the launcher before each process it starts from one.
+
+	each(
+		"the spool and each launch directory it makes are its uid's alone: a directory, mode 700, never a link",
+		async (box) => {
+			const spool = await spoolOf(box);
+			const uid = (await sh(box, "id -u")).text.trim();
+			const first = unwrap(await launch(box, "pinned", { argv: ["sh", "-c", "exit 0"], restart: false }, context));
+			expect(await statOf(box, spool)).toBe(`dir 700 ${uid}`);
+			expect(await statOf(box, first.directory)).toBe(`dir 700 ${uid}`);
+			await waitPhase(box, "pinned", "exited");
+			// An ended launch is replaced: its directory is made again, the same way.
+			const again = unwrap(await launch(box, "pinned", program(recording("exec sleep 300")), context));
+			expect(again.directory).toBe(first.directory);
+			expect(await statOf(box, again.directory)).toBe(`dir 700 ${uid}`);
+		},
+	);
+
+	each(
+		"a spool directory that already exists with a group- or other-write bit is refused, and nothing is made in it",
+		async (box) => {
+			const spool = await spoolOf(box);
+			for (const mode of ["777", "770", "707"]) {
+				await sh(box, `rm -rf "${spool}" && mkdir -m 700 "${spool}" && chmod ${mode} "${spool}"`);
+				expectUnsafe(
+					await launch(box, "spooled", program(recording("exec sleep 300")), context),
+					WRITABLE,
+					`mode ${mode}`,
+				);
+				expect((await sh(box, `ls -A "${spool}"`)).text, `mode ${mode}`).toBe("");
+			}
+			expect(await pids(box)).toHaveLength(0);
+			// The same directory at 700 is the launcher's own.
+			await sh(box, `chmod 700 "${spool}"`);
+			expect(unwrap(await launch(box, "spooled", program(recording("exec sleep 300")), context)).phase).toBe(
+				"running",
+			);
+			expect(await pids(box)).toHaveLength(1);
+		},
+	);
+
+	each(
+		"a spool path that is a symbolic link to a directory is refused, and nothing is made through it",
+		async (box) => {
+			const spool = await spoolOf(box);
+			await sh(box, `mkdir -m 700 "${spool}.target" && ln -s "${spool}.target" "${spool}"`);
+			expectUnsafe(await launch(box, "linked", program(recording("exec sleep 300")), context), LINK);
+			expectUnsafe(await launchStatus(box, "linked", context), LINK);
+			expect((await sh(box, `ls -A "${spool}.target"`)).text).toBe("");
+			expect(await pids(box)).toHaveLength(0);
+			// A directory in its place is the launcher's own.
+			await sh(box, `rm "${spool}"`);
+			expect(unwrap(await launch(box, "linked", program(recording("exec sleep 300")), context)).phase).toBe(
+				"running",
+			);
+		},
+	);
+
+	each(
+		"a directory above the spool another user could write is refused, unless it has the sticky bit",
+		async (box) => {
+			const spool = await spoolOf(box);
+			// TMPDIR, or /tmp: root's in a container, the box's own in a local box.
+			const parent = spool.slice(0, spool.lastIndexOf("/"));
+			const was = (await sh(box, `stat -c %a "${parent}"`)).text.trim();
+			const spec = program(recording("exec sleep 300"));
+			try {
+				await sh(box, `chmod 770 "${parent}"`);
+				const refused = await launch(box, "above", spec, context);
+				expectUnsafe(refused, ABOVE);
+				expect(refused.ok ? "" : refused.error.message.startsWith(`${parent}, `)).toBe(true);
+				expect(await pids(box)).toHaveLength(0);
+				// Sticky, as /tmp is: only an entry's owner may rename it away.
+				await sh(box, `chmod 1777 "${parent}"`);
+				expect(unwrap(await launch(box, "above", spec, context)).phase).toBe("running");
+				// Its owner's alone.
+				await sh(box, `chmod 700 "${parent}"`);
+				expect(unwrap(await launch(box, "above-700", spec, context)).phase).toBe("running");
+			} finally {
+				await sh(box, `chmod ${was} "${parent}"`);
+			}
+		},
+	);
+
+	each(
+		"a directory above the spool that other users, not its group, could write is refused (707, no sticky bit)",
+		async (box) => {
+			const spool = await spoolOf(box);
+			// TMPDIR, or /tmp: the launcher's uid's own, root's in a container. Only the other-write bit stands between it and 700.
+			const parent = spool.slice(0, spool.lastIndexOf("/"));
+			const was = (await sh(box, `stat -c %a "${parent}"`)).text.trim();
+			const spec = program(recording("exec sleep 300"));
+			try {
+				await sh(box, `chmod 707 "${parent}"`);
+				const refused = await launch(box, "above-other", spec, context);
+				expectUnsafe(refused, ABOVE);
+				expect(refused.ok ? "" : refused.error.message.startsWith(`${parent}, `)).toBe(true);
+				expect(await pids(box)).toHaveLength(0);
+				await sh(box, `chmod 700 "${parent}"`);
+				expect(unwrap(await launch(box, "above-other", spec, context)).phase).toBe("running");
+			} finally {
+				await sh(box, `chmod ${was} "${parent}"`);
+			}
+		},
+	);
+
+	each(
+		"a reclaim of a name removes that name's stop records older than any waiting stop's bound, and keeps the rest",
+		async (box) => {
+			const spool = await spoolOf(box);
+			unwrap(await launch(box, "kept", { argv: ["sh", "-c", "exit 0"], restart: false }, context));
+			await waitPhase(box, "kept", "exited");
+			// Twenty minutes old, with touch -t and date -d @ as both images' tools take them; and one written just now.
+			const old = '$(date -d "@$(( $(date +%s) - 1200 ))" +%Y%m%d%H%M.%S)';
+			const planted = await sh(
+				box,
+				`cd "${spool}" && : > .stopped.kept.old && touch -t ${old} .stopped.kept.old && : > .stopped.kept.fresh && : > .stopped.other.old && touch -t ${old} .stopped.other.old && ls -A`,
+			);
+			expect(
+				planted.text
+					.split("\n")
+					.filter((name) => name.startsWith(".stopped."))
+					.sort(),
+			).toEqual([".stopped.kept.fresh", ".stopped.kept.old", ".stopped.other.old"]);
+			expect(unwrap(await launch(box, "kept", program("exec sleep 300"), context)).phase).toBe("running");
+			const left = (await sh(box, `ls -A "${spool}"`)).text
+				.split("\n")
+				.filter((name) => name.startsWith(".stopped."));
+			expect(left.sort()).toEqual([".stopped.kept.fresh", ".stopped.other.old"]);
+		},
+	);
+
+	each(
+		"a launch directory replaced between two calls is refused at the second, and nothing runs from it",
+		async (box) => {
+			const started = unwrap(await launch(box, "moved", program(recording("exec sleep 300")), context));
+			const dir = started.directory;
+			const ran = `${(await sh(box, "pwd")).text.trim()}/decoy.ran`;
+			// A decoy whose launcher records every run, where the launch directory was.
+			const decoy = `mkdir -m 700 "${dir}.decoy" && printf '%s\\n' 'echo "$1" >> "${ran}"' > "${dir}.decoy/launcher.sh"`;
+			expect(
+				(await sh(box, `mv "${dir}" "${dir}.held" && ${decoy} && ln -s "${dir}.decoy" "${dir}"`)).exitCode,
+			).toBe(0);
+			expectUnsafe(await launchStatus(box, "moved", context), LINK);
+			expectUnsafe(await stopLaunch(box, "moved", undefined, context), LINK);
+			expectUnsafe(await launch(box, "moved", program("exec sleep 300"), context), LINK);
+			// The launch's own directory again, now any user can write it.
+			await sh(box, `rm "${dir}" && mv "${dir}.held" "${dir}" && chmod 777 "${dir}"`);
+			expectUnsafe(await launchStatus(box, "moved", context), WRITABLE);
+			expectUnsafe(await stopLaunch(box, "moved", undefined, context), WRITABLE);
+			expectUnsafe(await launch(box, "moved", program("exec sleep 300"), context), WRITABLE);
+			expect((await sh(box, `cat "${ran}" 2>/dev/null`)).text).toBe("");
+			// As it was, the launch is found and stopped.
+			await sh(box, `chmod 700 "${dir}"`);
+			expect(unwrap(await stopLaunch(box, "moved", { graceMs: 1_000 }, context)).phase).toBe("stopped");
+			const [pid] = await pids(box);
+			expect(await isAlive(box, pid ?? 0)).toBe(false);
+		},
+	);
+
+	each("a launcher whose directory another user can write by the program's exit restarts nothing", async (box) => {
+		const started = unwrap(
+			await launch(
+				box,
+				"flaky",
+				program(recording("while [ ! -e go ]; do sleep 0.1; done; rm -f go; exit 3")),
+				context,
+			),
+		);
+		const dir = started.directory;
+		const launcher = Number((await sh(box, `cat "${dir}/launcher.pid"`)).text.trim());
+		const watch = Number((await sh(box, `cat "${dir}/watch.pid"`)).text.trim());
+		await sh(box, `chmod 777 "${dir}" && : > go`);
+		const starts = async () => (await sh(box, `cat "${dir}/starts"`)).text.trim();
+		// Both launcher processes leave, or a restart is begun: whichever comes first.
+		await until("the launcher to leave or restart", async () =>
+			(await starts()) !== "1" || (!(await isAlive(box, launcher)) && !(await isAlive(box, watch)))
+				? true
+				: undefined,
+		);
+		expect(await starts()).toBe("1");
+		expect((await sh(box, `[ -e "${dir}/restarts" ] && echo restarted`)).text).toBe("");
+		expect(await pids(box)).toHaveLength(1);
+		await sh(box, `chmod 700 "${dir}"`);
+		const state = unwrap(await launchStatus(box, "flaky", context));
+		expect(state?.phase).toBe("lost");
+		expect(state?.starts).toBe(1);
+	});
+
+	each("a stop runs no hook from a directory another user can write by the end of the drain", async (box) => {
+		const ran = `${(await sh(box, "pwd")).text.trim()}/hook.ran`;
+		const started = unwrap(
+			await launch(
+				box,
+				"hooked",
+				{
+					argv: ["sh", "-c", "trap '' TERM; echo $$ >> prog.pids; while :; do sleep 1; done"],
+					beforeStop: { argv: ["sh", "-c", `echo hook >> "${ran}"`], timeoutMs: 1_000 },
+				},
+				context,
+			),
+		);
+		const dir = started.directory;
+		await until("the trap", async () => ((await pids(box)).length === 1 ? true : undefined));
+		// The program ignores TERM, so the drain lasts its whole grace: the directory changes within it.
+		const stopping = stopLaunch(box, "hooked", { graceMs: 5_000 }, context);
+		await until("the stop's claim", async () =>
+			(await sh(box, `[ -e "${dir}/stop.claimed" ]`)).exitCode === 0 ? true : undefined,
+		);
+		await sh(box, `chmod 777 "${dir}"`);
+		expectUnsafe(await stopping, WRITABLE);
+		expect((await sh(box, `cat "${ran}" 2>/dev/null`)).text).toBe("");
+		// As it was, a later stop takes over past the first one's deadline and ends the program, with no hook.
+		await sh(box, `chmod 700 "${dir}"`);
+		expect(unwrap(await stopLaunch(box, "hooked", { graceMs: 5_000 }, context)).phase).toBe("stopped");
+		const [pid] = await pids(box);
+		expect(await isAlive(box, pid ?? 0)).toBe(false);
+		expect((await sh(box, `cat "${ran}" 2>/dev/null`)).text).toBe("");
 	});
 }

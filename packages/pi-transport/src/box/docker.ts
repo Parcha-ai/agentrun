@@ -16,6 +16,7 @@ import {
 } from "./box.ts";
 import { adaptChild } from "./child.ts";
 import { downloadByExec, finish, uploadByExec } from "./files.ts";
+import { parseNetwork, refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_IMAGE = "debian:bookworm-slim";
 const DEFAULT_WORKSPACE = "/workspace";
@@ -158,7 +159,7 @@ function createError(stderr: string): BoxError {
  *
  * A spec that names a `snapshot`, a `region` or an `isolation` other than `container` is refused with `unsupported`.
  * Docker cannot choose a GPU model: any `gpu` gives the container every GPU of the host, and `facts().gpu` repeats
- * the name the spec gave. The container's first process is a `sleep` of the lifetime in place of the image's own
+ * the name the spec gave (not measured: nothing reads the host's cards in the box). The container's first process is a `sleep` of the lifetime in place of the image's own
  * entrypoint, so Docker ends the box when the lifetime has passed.
  */
 export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
@@ -178,6 +179,9 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 			if (spec.isolation !== undefined && spec.isolation !== "container") {
 				return err(new BoxError("unsupported", `a docker box is a container, the spec asks for ${spec.isolation}`));
 			}
+			const refused = refuseNetworkFields(spec, "docker", true);
+			if (refused !== undefined) return err(refused);
+			const network = parseNetwork(spec.network) as { kind: "open" | "none" };
 			const facts: BoxFacts = {
 				provider: "docker",
 				isolation: "container",
@@ -188,11 +192,17 @@ export function dockerBoxes(options: DockerBoxesOptions = {}): BoxProvider {
 				maxLifetimeMs: spec.maxLifetimeMs,
 				snapshot: null,
 				bulk: "stream",
+				secretsVia: "fd",
+				network: network.kind === "none" ? "none" : "open",
+				// No port is published: the box is made without one.
+				ports: [],
+				startedAt: new Date().toISOString(),
 			};
 			const args = ["run", "--detach", "--init", "--rm", "--workdir", facts.workspace];
 			args.push("--label", `${BOX_LABEL}=1`, "--label", `${FACTS_LABEL}=${JSON.stringify(facts)}`);
 			for (const [key, value] of Object.entries(spec.labels ?? {})) args.push("--label", `${key}=${value}`);
 			for (const [key, value] of Object.entries(spec.env ?? {})) args.push("--env", `${key}=${value}`);
+			if (network.kind === "none") args.push("--network", "none");
 			if (spec.cpus !== undefined) args.push("--cpus", String(spec.cpus));
 			if (spec.memoryMb !== undefined) args.push("--memory", `${spec.memoryMb}m`);
 			if (spec.gpu !== undefined) args.push("--gpus", "all");

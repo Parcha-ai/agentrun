@@ -165,14 +165,18 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
     try { await call("POST", "/profiles", { body: { name }, signal }); } catch (error) { if ((error as KernelError).status !== 409) throw error; }
   };
 
+  /** The saved profile each live session of this provider runs on, by tag: what a session vault may keep. */
+  const profilesUsed = new Map<string, string>();
   return {
     name: "kernel",
     caps: CAPS,
+    vault: { kind: "context", provider: "kernel", contextIdsInClear: false, contextOf: (ref) => profilesUsed.get(ref.tag) ?? null },
 
     async create(spec, signal) {
       // The upload is shared by every create on the account: a cancelled caller stops waiting, the upload goes on for
       // the rest.
       signal?.throwIfAborted();
+      if (spec.profile) profilesUsed.set(spec.tag, spec.profile.name);
       if (spec.profile?.save) await claimWriter(`${account}|profile:${spec.profile.name}`, spec.profile.name, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal);
       let body: Record<string, unknown>;
       try {
@@ -250,6 +254,7 @@ export function kernelProvider(options: KernelOptions = {}): KernelProvider {
     },
 
     async release(ref, signal) {
+      profilesUsed.delete(ref.tag);
       await releaseAndConfirm({
         request: async () => ((await call("DELETE", `/browsers/${encodeURIComponent(ref.id)}`, { signal })).status === 404 ? "gone" : undefined),
         status: () => status(ref, signal),

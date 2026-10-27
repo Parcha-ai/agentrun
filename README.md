@@ -1,8 +1,51 @@
 # AgentRun
 
-Open-source packages for your pi agent. Install the ones you need.
+**AgentRun is an open platform to manage your agents.**
 
-This repository holds the AgentRun harness: the workflow DSL and the pi extensions around it.
+Create an agent, change it, and run it. Every change is a revision you can go back to, and every run names the
+revision it ran, so you can open any run of any agent and see what it did. Host it yourself with AgentRun Server, on
+your machine or your own server, or with us when hosted AgentRun opens.
+
+1. **The platform.** Your agents, each one's revisions, and every run, behind one API (`/v2`) and one page. You run
+   it yourself today; hosted by us is coming. Bring your own agent: Codex, the Claude Agent SDK and any agent in a
+   container, each run in its own sandbox. Coming.
+2. **[AgentRun Server](packages/serve/README.md).** The part you host: one container, `ghcr.io/parcha-ai/agentrun-server`,
+   that serves the `/v2` API and the page and keeps everything in one data directory. Apache-2.0.
+3. **[Building blocks](#building-blocks).** The open packages underneath, each usable on its own in your pi agent:
+   `@parcha/agentrun-dsl` and `@parcha/agentrun-jev` (typed workflows and the decisions in them),
+   `@parcha/agentrun-pi` (workflows inside pi), `@parcha/pi-durable-agent` (the agent store),
+   `@parcha/pi-durable-disk` and `@parcha/pi-transport` (where an agent and its tools run),
+   `@parcha/pi-browser` and `@parcha/pi-vision` (what an agent can see and do). On npm, Apache-2.0.
+
+## Host it
+
+1. **Free**: run the public image, `ghcr.io/parcha-ai/agentrun-server`, with `docker run` on your own machine or server, with your own model key. An OpenRouter key with a credit limit caps what your agents can spend.
+
+   ```sh
+   docker run -d --name agentrun -p 127.0.0.1:7340:7340 -v agentrun:/data \
+     -e AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5 -e OPENROUTER_API_KEY \
+     ghcr.io/parcha-ai/agentrun-server:beta
+   docker logs agentrun | grep Open
+   ```
+
+   With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
+   limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
+   run. For a provider's own key, pass `-e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY` instead; any
+   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
+
+2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. Each run takes its own memory, so its 512 MB holds a few runs at a time. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
+
+   [Deploy to Render](https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun) from [`render.yaml`](render.yaml),
+   then set `AGENT_MODEL=openrouter/anthropic/claude-sonnet-5.5` and `OPENROUTER_API_KEY` in the service's Environment (or
+   another provider's model and key, or a gateway's `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`). Render generates the token,
+   `AGENTRUN_TOKEN`: open `https://<your service>.onrender.com/?token=<it>`.
+
+Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
+a run may reach, and the container.
+
+## Building blocks
+
+The open packages underneath the platform, each usable on its own in your pi agent. Install the ones you need.
 
 **pi-vision** lets a pi agent answer questions about documents, images and video, and show the page, second or region each answer rests on. Try it free, with no key (the models are scripted), in a checkout built as under [Run the support example](#run-the-support-example): `npm run demo:vision -- examples/document-check`. It needs ffmpeg, ffprobe, pdftoppm and pdftotext (`brew install ffmpeg poppler`, or `sudo apt-get install ffmpeg poppler-utils`). See [pi-vision](packages/pi-vision/README.md).
 
@@ -71,7 +114,7 @@ on; [Archil](https://archil.com) is a network disk you mount on any Linux host.
 | Package | What it does | What it needs | First command with no key | Status |
 | --- | --- | --- | --- | --- |
 | [`@parcha/agentrun-dsl`](packages/dsl/README.md) | Define, validate, inspect and run workflows | Node 22.19+ | `npx @parcha/agentrun-dsl@beta demo` | published (`@beta`) |
-| [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; `TYPESAFE_API_KEY` for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
+| [`@parcha/agentrun-jev`](packages/jev/README.md) | Jev typed decisions as a workflow's `runJudge` | the DSL; a TypeSafe key or an OpenRouter key for live calls | its README's [offline test](packages/jev/README.md#offline-tests) | published (`@beta`) |
 | [`@parcha/agentrun-pi`](packages/pi/README.md) | The `/agentrun` Pi extension and a Pi-backed node runner | Pi 1.0.4 to below 1.4 (CI tests 1.0.4, 1.1.0, 1.2.0 and 1.3.0); a model for live runs; pi-durable for its `./durable` entry | `/agentrun demo` in Pi (scripted, no model calls) | published (`@beta`) |
 | [`@parcha/pi-durable-disk`](packages/pi-durable-disk/README.md) | Run a pi-durable agent on a network disk: one owner per run, a fence, a supervisor | pi-durable and chord; an Archil account, a disk and an API key | none yet | published (`@beta`) |
 | [`@parcha/pi-browser`](packages/pi-browser/README.md) | Your agent gets its own browser, and you can take over and hand it back. Pages it reads are filed as evidence, and failures have typed codes | Pi; a provider (a local Chrome needs no key; Browserbase and Kernel need their keys); pi-durable and chord for its `./durable` entry | its README's [no-key command](packages/pi-browser/README.md#try-it-without-a-key-or-a-chrome) | published (`@beta`) |
@@ -131,7 +174,7 @@ Install the core and Jev adapter in your application with `npm install @parcha/a
 2. **Define and test the workflow.** Write its schemas, steps, thresholds, and review path. Start with fixtures, then evaluate real decisions on labeled cases from your task.
 3. **Give your agent a workflow tool.** Register a function that calls `runWorkflow` as one of your agent's tools. Handle the workflow's output, escalation, and errors.
 
-The [support integration guide](docs/support-quickstart.md) has a config template and live command. Live Jev calls need `TYPESAFE_API_KEY` from the [TypeSafe dashboard](https://console.typesafe.ai/keys), separate from your coding-agent login. Workflows without Jev decisions do not need that key. See [host integration](docs/host-integration.md) for permissions, cancellation, and recovery.
+The [support integration guide](docs/support-quickstart.md) has a config template and live command. Live Jev calls need a TypeSafe key or an OpenRouter key: `TYPESAFE_API_KEY` from the [TypeSafe dashboard](https://console.typesafe.ai/keys), or `OPENROUTER_API_KEY`, which the Pi extension uses for Jev through OpenRouter when `TYPESAFE_API_KEY` is not set. Either is separate from your coding-agent login. Workflows without Jev decisions need neither. See [host integration](docs/host-integration.md) for permissions, cancellation, and recovery.
 
 ## Use it in Pi
 
@@ -142,7 +185,7 @@ pi install npm:@parcha/agentrun-pi@beta -l
 pi --offline
 ```
 
-`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed.
+`-l` installs in this project; `--offline` skips startup downloads. Pi asks whether you trust the project before loading its extension. No AgentRun checkout is needed. If the install stops with "Project is not trusted", add `--approve`. Pi starts with `read`, `bash`, `edit` and `write` active, so start it with `pi --tools read,grep,find,ls,agentrun` to give workflows the read-only tools. [Pi setup](packages/pi/README.md#install) lists the details.
 
 - `/agentrun demo` loads the scripted research example; `/agentrun run` repeats it without model calls.
 - `/agentrun demo live` uses your configured Pi model and Jev.

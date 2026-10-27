@@ -114,8 +114,10 @@ test('with the host\'s code executor, the code draft dry-runs and runs as one ba
   await ask('Run it.');
   const [, dried, ran, again] = answers();
   assert.equal(JSON.parse(dried).dryRun.status, 'passed');
+  assert.equal(JSON.parse(dried).note, 'no workflow ran', 'a dry run says it ran no workflow');
   assert.deepEqual(effects, ['prices.quote'], 'the run made the call once; the dry run made none');
-  const { run, outcome, progress } = JSON.parse(ran);
+  const { run, outcome, progress, receipt } = JSON.parse(ran);
+  assert.equal(receipt, run.key, 'the run result names the run it ends');
   assert.equal(outcome.status, 'complete');
   assert.deepEqual(outcome.output, { total: 42 });
   assert.match(progress.join('\n'), /2 succeeded · 0 active · 0 failed/);

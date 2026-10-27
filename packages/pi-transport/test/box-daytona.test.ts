@@ -332,6 +332,15 @@ describe("daytona boxes", () => {
 			expect(created.ok ? "ok" : created.error.code).toBe("unsupported");
 			expect(created.ok ? "" : created.error.message).toContain("snapshot");
 		}
+		for (const fields of [
+			{ network: { allow: ["example.com"] } },
+			{ network: "none" as const },
+			{ ports: [80] },
+			{ capabilities: ["fuse" as const] },
+		]) {
+			const refused = await provider().create(spec(fields), context);
+			expect(refused.ok ? "ok" : refused.error.code).toBe("unsupported");
+		}
 		const image = await provider().create(spec({ image: "debian" }), context);
 		expect(image.ok ? "ok" : image.error.code).toBe("unsupported");
 		const none = await provider().create({ maxLifetimeMs: 0 }, context);

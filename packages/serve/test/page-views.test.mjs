@@ -87,7 +87,7 @@ test("every run: newest first across the agents, with its agent, revision, kind,
   assert.deepEqual(all(page.document.getElementById("crumbs")).filter((el) => el.tagName === "A").map((el) => el.textContent), ["Agents", "All runs"]);
   const filters = all(page.app).filter((el) => el.tagName === "A" && classOf(el).startsWith("filter"));
   assert.deepEqual(filters.map((el) => [el.textContent, el.getAttribute("href"), classOf(el)]).slice(0, 4), [["All agents", "#/runs", "filter on"], [`Calc ${HOSTILE}`, "#/runs?agent=calc", "filter"], ["Brief", "#/runs?agent=brief", "filter"], ["Any state", "#/runs", "filter on"]]);
-  assert.deepEqual(filters.slice(4).map((el) => el.textContent), ["queued", "working", "input required", "completed", "failed", "cancelled"]);
+  assert.deepEqual(filters.slice(4).map((el) => el.textContent), ["queued", "working", "input required", "completed", "failed", "cancelled", "Show archived"]);
 });
 
 test("every run, filtered by agent and state in the hash, so a reload keeps them; a next page comes with Show more", async () => {
@@ -138,6 +138,24 @@ test("a new agent: name, description, a prompt, a model and the tools capabiliti
   const sent = api.calls.at(-1);
   assert.equal(sent.headers["content-type"], "application/json");
   assert.equal(page.window.location.hash, "#/agents/researcher");
+});
+
+test("a saved agent the host cannot run yet: the form says what it lacks, each warning as text, and links the agent instead of leaving", async () => {
+  const warning = { field: "definition.model", reason: "not_set_up_here", message: `pi-ai finds no key for openai ${HOSTILE}` };
+  const { page } = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": [201, { ...agentView("keyless", REV_A, { name: "Keyless", instructions: "Answer.", model: "openai/gpt-5", tools: [] }), warnings: [warning] }] });
+  await page.settle();
+  find(page, "INPUT", "name").value = "Keyless";
+  find(page, "TEXTAREA", "instructions").value = "Answer.";
+  buttonNamed(page, "Create agent").click();
+  await page.settle();
+  assert.equal(page.window.location.hash, "#/new", "the form stays, so the warning is read");
+  const notice = all(page.app).find((el) => classOf(el) === "notice");
+  assert.ok(notice, "a notice");
+  assert.match(notice.textContent, /Saved\. It does not run on this host until it has what these name:/);
+  assert.ok(notice.textContent.includes(`definition.model: pi-ai finds no key for openai ${HOSTILE}`));
+  const link = all(notice).find((el) => el.tagName === "A");
+  assert.equal(link.getAttribute("href"), "#/agents/keyless");
+  assertInert(notice);
 });
 
 test("a new workflow agent: the workflow's JSON in place of a prompt and a model; JSON that does not parse, and the server's refusal with its fields, are said", async () => {
@@ -376,4 +394,55 @@ test("a tool this server's environment cannot bind is shown unbound in the form,
   assert.equal(classOf(box.parentNode), "unbound");
   assert.equal(box.parentNode.getAttribute("title"), "This server's environment does not set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
   assert.equal(classOf(all(page.app).find((el) => el.getAttribute("type") === "checkbox" && el.value === "read").parentNode), "", "a tool it binds is plain");
+});
+
+const ARCHIVED_AT = "2026-10-24T08:00:00.000Z";
+
+test("an agent's page: Archive posts to .../archive and the page is read again; an archived agent offers Unarchive", async () => {
+  const answers = { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [], "POST v2/agents/calc/archive": { agent_id: "calc", archived_at: ARCHIVED_AT } };
+  const { page, api } = open("#/agents/calc", answers);
+  await page.settle();
+  const before = api.calls.length;
+  buttonNamed(page, "Archive").click();
+  await page.settle();
+  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/archive", {}]]);
+  assert.equal(api.calls[api.calls.length - 3].headers["content-type"], "application/json", "a JSON body, as the page's writes need");
+  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc"], "the page is read again");
+  const archived = open("#/agents/calc", { "api/agents/calc": { ...AGENT_PAGE, agent: { ...AGENT_PAGE.agent, archivedAt: ARCHIVED_AT } }, "api/runs?agent=calc": [], "POST v2/agents/calc/unarchive": { agent_id: "calc", archived_at: null } });
+  await archived.page.settle();
+  assert.equal(buttonNamed(archived.page, "Archive"), undefined);
+  buttonNamed(archived.page, "Unarchive").click();
+  await archived.page.settle();
+  assert.deepEqual(archived.api.writes(), [["POST", "v2/agents/calc/unarchive", {}]]);
+});
+
+test("a run's page, stored or live: Archive posts to /v2/runs/{id}/archive; an archived run offers Unarchive", async () => {
+  const stored = { run: { id: "old", agent: "calc", revision: REV_A, kind: "agentic", state: "completed", startedAt: LIVE.created_at, endedAt: LIVE.created_at }, agent: "Calc", rows: [] };
+  const done = open("#/runs/old", { "v2/runs/old": [404, { error: { code: "not_found", message: "no run old" } }], "api/runs/old": stored, "POST v2/runs/old/archive": { run_id: "old", archived_at: ARCHIVED_AT } });
+  await done.page.settle();
+  buttonNamed(done.page, "Archive").click();
+  await done.page.settle();
+  assert.deepEqual(done.api.writes(), [["POST", "v2/runs/old/archive", {}]]);
+  const archived = open("#/runs/old", { "v2/runs/old": [404, { error: { code: "not_found", message: "no run old" } }], "api/runs/old": { ...stored, run: { ...stored.run, archivedAt: ARCHIVED_AT } } });
+  await archived.page.settle();
+  assert.ok(buttonNamed(archived.page, "Unarchive"));
+  const live = open("#/runs/run-9", { "v2/runs/run-9": LIVE, "v2/runs/run-9/timeline": page({ reset: true }), "api/store": { agents: AGENTS }, "POST v2/runs/run-9/archive": { ...LIVE, archived_at: ARCHIVED_AT } });
+  await live.page.settle();
+  buttonNamed(live.page, "Archive").click();
+  await live.page.settle();
+  assert.deepEqual(live.api.writes(), [["POST", "v2/runs/run-9/archive", {}]]);
+  assert.ok(buttonNamed(live.page, "Unarchive"), "the live head now offers Unarchive");
+});
+
+test("every run hides archived ones; Show archived lists only those, and the hash keeps it", async () => {
+  const { page, api } = open("#/runs", { "v2/runs?limit=100": { runs: RUNS, next_cursor: null }, "v2/runs?limit=100&agent=calc&archived=true": { runs: [RUNS[1]], next_cursor: null }, "api/store": { agents: AGENTS } });
+  await page.settle();
+  const toggle = () => all(page.app).find((el) => el.tagName === "A" && classOf(el).startsWith("filter archived"));
+  assert.deepEqual([toggle().textContent, toggle().getAttribute("href")], ["Show archived", "#/runs?archived=1"]);
+  await page.go("#/runs?agent=calc&archived=1");
+  await page.settle();
+  assert.equal(api.calls.find((c) => c.path.includes("archived")).path, "v2/runs?limit=100&agent=calc&archived=true");
+  assert.deepEqual([toggle().textContent, toggle().getAttribute("href"), classOf(toggle())], ["Show archived", "#/runs?agent=calc", "filter archived on"]);
+  const agentLink = all(page.app).find((el) => el.tagName === "A" && el.textContent === "Brief");
+  assert.equal(agentLink.getAttribute("href"), "#/runs?agent=brief&archived=1", "the other filters keep it");
 });

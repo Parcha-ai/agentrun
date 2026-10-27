@@ -116,9 +116,42 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
 
 - `isolation: "vm"` starts a VM with its own kernel. `"gvisor"` or no value starts Modal's default sandbox. Any other
   value is refused with `unsupported`.
-- `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`.
+- `gpu: "T4"` works on the default sandbox only; a GPU with `isolation: "vm"` is refused with `invalid`. `facts().gpu` is the model
+  served, read in the box with `nvidia-smi` (a bare `H100` may be served an H200; `H100!` pins the type): one name for identical
+  cards, every model, in the order first seen and joined by ` + `, for a mixed box (`NVIDIA A100 + NVIDIA H100 80GB HBM3`). The request stays what the caller passed. A box that asked for a GPU and
+  reports none fails the create and is ended. On attach the read runs again and the box is handed back whatever it says (see "Attach never fails a live sandbox"): a model named is the fact, none named reads `gpu: null` and the caller ends the box through the handle, and when every try errs the handle keeps the model measured at create (from the tag), or the attach is an error for a box whose tag has none.
 - A `snapshot` and any `isolation` but `gvisor` or `vm` are refused with `unsupported`; a label key that is `pi-transport` or starts
   with `pi-transport.` is refused with `invalid`; every box carries `pi-transport=1` as its own tag. No other field of the spec is ignored.
+- `network: "none"` blocks all traffic from the box. `network: { allow: ["api.example.com", "*.example.com", "10.0.0.0/8"] }`
+  allows only those domains and IPv4 CIDRs. A malformed entry, an empty list, or `ports` on a box with `network: "none"` is
+  refused with `invalid`. The default is open.
+- `ports: [8080, { port: 5432, kind: "tcp" }]` exposes ports: a bare number is TLS (`https`), `tcp` is a raw socket.
+  `facts().ports` names each port and its kind, and `await box.endpoint(8080, context)` returns the address (an `https` URL, or a
+  `tcp` host and port), never Modal's id for the sandbox.
+- `capabilities: ["fuse"]` starts a VM (`isolation: "vm"` is implied) and checks, as root in the box, that `/dev/fuse` is a character
+  device that root can open (a VM's is `crw-------`, root-only, and that is enough: a FUSE mount there is root's, and nothing widens
+  the device for other users). `facts().fuse` is `true` only after that check; a box that fails it is ended and the create fails,
+  naming what is missing. It does not prove a given FUSE program mounts, only that the device is there for root. `fuse` with
+  `isolation: "gvisor"` is refused with `unsupported`, and with a `gpu` with `invalid`.
+- `facts().secretsVia` is `"fd"`: a launch's stdin and secrets (the launch frame) ride the stdin of the one exec that starts the
+  launcher. A Modal exec's stdin is a stream with an explicit end (`close()` sends the EOF, also with no byte written), written in
+  512 KiB chunks. `secretsVia: "fd"` means: no client-controlled place (argv, the `env` and `secrets` parameters, tags, facts,
+  errors, echoed output) and no place in the box but the program's pipes holds the secret. The provider is trusted with the box,
+  and whether it keeps an exec's stdin is undocumented, so no claim is made about that. A `close()` that fails on a program still
+  running is returned by `wait()` (the program would otherwise wait for an EOF that never comes); on a program that already exited it
+  is ignored. The input is closed once: a `close()` after the first (a launch closes it after the frame, and `finish` closes it again) returns
+  the first and is no failure.
+- **Attach never fails a live sandbox and never ends it.** A box found again by `attach` is always handed back, and the caller ends it
+  through the handle if its facts do not fit. The facts are read in the box again (a failed read is tried three times, with a pause).
+  A read that answers gives the facts as measured, so a box with no usable FUSE reads `fuse: false`. If every try errs, the handle
+  keeps the hardware the create measured (the disk, whether FUSE works), which is kept in a tag set through Modal's API: nothing
+  inside the box can write it. A security fact (the Yama setting, the network, the ports) is never taken from a tag on a read error: it is
+  left out, unknown. A box made before the tag existed has nothing measured to fall back on: if every try errs, the attach is an error (the box keeps running; try
+  again), never a guess given as measured. The workspace setup `attach` repeats can fail too, and then the attach is an error as well (never an ok handle
+  on a box that may have no workspace); nothing is ended or created. `attach` returns `undefined` for a box that does not exist or has ended.
+- `facts()` also reports what the box has, read in it: `diskGb` (the workspace's filesystem, whole GiB; left out when unreadable or over 1 PiB, which is what gVisor's filesystem claims), `ptraceScope`
+  (`kernel.yama.ptrace_scope`; a box without the file reads 0; `null` when it could not be read) and `startedAt` (an ISO 8601 UTC
+  time; for Modal, the moment it was asked to start).
 - `maxLifetimeMs` is Modal's own timeout, rounded up to whole seconds and capped at 24 hours. Modal ends the box when
   it passes, whatever happens to the host.
 - The live suite spends money and runs only when asked. It needs `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` in the
@@ -127,6 +160,15 @@ await provider.create({ maxLifetimeMs: 10 * 60_000, isolation: "vm" }, BACKGROUN
   provider's own variable picks the ones that run). It names its Modal app and labels from `PI_TRANSPORT_LIVE_PREFIX`
   and `PI_TRANSPORT_LIVE_LABELS`, and `PI_TRANSPORT_LIVE_MODAL_KINDS` (`sandbox,vm,gpu`; default `sandbox,vm`) picks
   the kinds.
+
+The new facts are optional, and an absent one never grants anything: `readFacts(facts)` reads them the way that fails closed. `fuse`
+absent is `false`; `network` absent is unknown (a caller that needs `none` or an allowlist must refuse the box); `ports` absent is
+unknown, not none (a caller that must be sure no port is exposed must refuse; `noPortExposed` is true only for a list that is
+empty); `ptraceScope` absent is unknown (do not assume 1 or more); `diskGb` and `startedAt` absent are unknown (a receipt falls back to
+the time the create call answered). Only Modal reports all of them and can restrict a network to an allowlist, expose ports or give
+`fuse`. Docker takes `network: "none"` (`--network none`), reports `ports: []` and refuses the rest; local reports `network: "open"`
+and `startedAt`, Daytona `diskGb` and `startedAt`, the Archil exec box `startedAt`, and the three refuse everything but `open` as
+`unsupported`.
 
 `localBoxes` gives a program a fixed `PATH` (`/usr/local/bin:/usr/bin:/bin`, or the `path` option), a private `HOME`
 and `TMPDIR`, and the spec's `env`. A detached watchdog ends a box when its lifetime has passed. On Linux, `destroy`
@@ -833,22 +875,29 @@ second: not the provider's invoice, which bills by its own rounding, minimums an
 given up on included, and `cost_usd` is `calls` times `usd_per_call` rounded to 9 decimals; `seconds` stays its lifetime,
 for display only. A call refused before it is made is not counted. A box another process or host made is its maker's to receipt.
 
-## Home: a program kept alive in a box
+## Launch: a program kept alive in a box
 
 A box has no init system, and a host's `exec` ends when the host goes away. `launch` keeps one program running in a box
 whatever happens to the host. It uploads a small `sh` supervisor and starts it in its own session, so the program
-outlives the call, the `exec` and the host process.
+outlives the call, the `exec` and the host process. The launcher is `@parcha/pi-transport/launch`; `./home` exports the
+same names.
 
 ```ts
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { launch, launchStatus, stopLaunch } from "@parcha/pi-transport/home";
+import { launch, launchState, launchStop } from "@parcha/pi-transport/launch";
 
 // `box` is a box made as in "A box" above.
 
-const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { MODE: "home" } }, BACKGROUND_CONTEXT);
-const state = await launchStatus(box, "runner", BACKGROUND_CONTEXT); // read from a file in the box
-await stopLaunch(box, "runner", { graceMs: 5_000 }, BACKGROUND_CONTEXT);
+const started = await launch(box, "runner", { argv: ["node", "runner.js"], env: { APP_MODE: "home" } }, BACKGROUND_CONTEXT);
+if (!started.ok) throw started.error; // a LaunchError: invalid, unsupported, refused, unsafe, box, timeout or failed
+const handle = started.value.launch; // { v: 1, name: "runner" }: JSON, no secret
+const state = await launchState(box, handle, BACKGROUND_CONTEXT); // read from a file in the box
+await launchStop(box, handle, { graceMs: 5_000 }, BACKGROUND_CONTEXT);
 ```
+
+`launchStatus(box, name, ctx)` and `stopLaunch(box, name, options, ctx)` do the same by name. `launchSpecError(name, spec)` is
+the spec's own check, pure (no box, no I/O): the same `invalid` error `launch` would give, or undefined, for a host that asks
+before it makes a box to launch in.
 
 - `launch` twice with the same name starts nothing and returns the first one's state. A launch that has ended
   (`exited`, `gave_up`, `stopped`) starts again.
@@ -856,28 +905,159 @@ await stopLaunch(box, "runner", { graceMs: 5_000 }, BACKGROUND_CONTEXT);
   than `restartLimit.burst` restarts in `restartLimit.intervalMs` (default 5 in 60 s) ends in `gave_up` with the last
   exit code. Numbers must be finite and within bounds.
 - The state is read from the launcher's own state file, never guessed from whether a process lives. It is `restarting`
-  or `exited` while the launcher handles an exit, never `running`.
+  or `exited` while the launcher handles an exit, never `running`. It carries the launch's handle (`launch`), the
+  `incarnation` now or last running (from 1), and `restarts` (the incarnation less one).
 - `stopLaunch` ends the program and everything in its process group: TERM, then KILL after `graceMs`, then it reports
   `stopped`. `graceMs` is a number from 0 to 600000 and the call to the box is given that long on top of its usual time.
   The saved process id is signalled only while it still names the process the launch started; the id of a process that
   ended and was given to another job is left alone.
+- `beforeStop` (`argv`, `timeoutMs` from 100 to 120000, default 30000) runs ONCE per launch, after the drain and
+  before the final kill, as the launcher's own user, in a session of its own. One past its bound is killed (137). Its
+  exit goes to `out.log`, and it never fails the stop.
+- A stop is ONE stop's. The first one claims it, and the phase is `stopping` until it has killed what was left and
+  written `stopped`; nothing else writes the state meanwhile.
+  - A second stop at the same time never kills: it waits for the first one's end and returns its state. One whose own
+    bound (its `graceMs`, the hook at its longest, and 3 s) ends first returns `stopping`.
+  - A stop whose first one died (past its deadline: that stop's grace, its hook's bound and 3 s) is taken over by the next stop.
+  - A `launch` of the name while it is stopped waits for the stop's end, then starts anew, never beside the hook. Past
+    the stop's deadline it is `failed` ("stop it again").
+  - What a stop returns, the second stop's included, is the state of the incarnation it stopped, as the launcher
+    recorded it before it released the name: never that launch of the name, and never text the program or its hook
+    printed. The record rests in the spool as `.stopped.<name>.<generation>` until a later reclaim of the name finds
+    it older than any stop that could wait for it.
+  - A stop is for the launch the call found: one whose script reaches the box only after that launch has ended and
+    another of the name took the directory returns the launch it was for, from that record (or is `invalid`, as for a
+    launch that does not exist, when there is none), and leaves the new one alone. This holds only when the host and the
+    launch's `launcher.sh` are both of this version: a stop from a host that passes no generation, or for a launch an
+    older `launcher.sh` runs, behaves as before, so a late stop can still act on a later launch of the name.
 - Callers that meet are safe: several `launch` calls for one name start one program, a claim whose caller died before
   filling it is taken over after a minute, and a launch that ended is replaced by one caller only.
 - The program's output goes to `out.log` in the launcher's directory, bounded to its tail (`logMaxBytes`), also after
   the program has exited. The launcher holds no pipe to the host.
-- `env` is plain settings kept in a file of the box. Never put a secret in it.
+- The launcher keeps its files in a spool, `.pi-transport-launch` in the box's `TMPDIR` (or `/tmp`), one directory per
+  launch. The spool and each launch directory must be the launcher's uid's alone: a directory, never a symbolic link
+  (read without following it), owned by that uid, with no group- or other-write bit. Every directory above the spool,
+  up to `/`, must be root's or that uid's, never a symbolic link, with no group- or other-write bit unless it has the
+  sticky bit (as `/tmp` does): else another user could rename the spool away and put another in its place. `TMPDIR` is
+  read as the directory it names (`pwd -P`). Every call checks all of them before it uses them, a spool that already
+  existed like a new one, and the launcher checks them again before it starts a process from them (a restart, its
+  watchdog, the tools user's check) and before a stop's hook. A failed check is `unsafe`, naming the directory and why,
+  and nothing runs from it. A local box makes its own directories (its `home`, `tmp` and `pids`) mode 700.
+- The program's environment is PATH, HOME, LANG (`C.UTF-8`), `PI_TRANSPORT_INCARNATION` (its incarnation) and `env`.
+  Nothing of the box runtime's own environment reaches it unless `inheritEnv` names it (default `false`): the
+  incarnation unsets every other exported name, and a name the shell cannot unset refuses the incarnation (exit 126).
+- `env` is plain settings kept in a file of the box. Never put a secret in it: a key-shaped name (a `_`-separated
+  segment KEY, TOKEN, SECRET, PASSWORD, PASSWD, CREDENTIAL or CREDENTIALS) is refused by name, as are PATH, HOME, LANG
+  and the names the launcher sets. So are the shell's, the loader's (`LD_*`) and every variable the C library itself strips
+  in secure mode (glibc's `UNSECURE_ENVVARS`: `GCONV_PATH`, `GLIBC_TUNABLES`, `LOCPATH`, `NLSPATH` and the rest, and musl's
+  `MUSL_LOCPATH`; `TMPDIR` excepted), in `env` and `inheritEnv`: `env` is exported before a root launcher drops to `user`, so they would act on
+  that switch. The launcher clears them at every exec that starts its shell, and reads only `/proc`.
+- A box may launch natively (`Box.launcher`, a test's fake box): the three calls then use it, read on every call. A
+  provider leaves it undefined.
+- `stdin` (bytes, at most 64 KiB; disk's mount token) is written to EVERY incarnation's stdin and then closed. `secrets`
+  (names to values, at most 64 KiB as JSON) reach every incarnation on one inherited fd, whose NUMBER is in
+  `PI_TRANSPORT_SECRETS_FD` (3): one JSON object, then EOF. Both travel on ONE path, the launch frame below, and rest
+  nowhere: never in a file of the box, an environment, an argv, the state or `out.log`. Only a box whose facts say
+  `secretsVia: "fd"` (a real stdin path; `local` and `docker`) takes them; any other refuses `unsupported` before
+  anything runs.
+- The launch frame: the exec that starts the launcher gets, on its stdin, the line `PI-TRANSPORT-LAUNCH/1`, then the
+  secrets as JSON and the stdin, each base64 (standard alphabet, padded, unwrapped) on a line of its own (empty when
+  absent), then EOF. The launcher keeps the two parts in unexported shell variables and decodes them, for each
+  incarnation, straight into pipes; it refuses where `printf` is not a shell builtin or `base64` is missing. A malformed
+  frame is `invalid`, and nothing starts.
+- The in-box watchdog never brings back the supervisor of a launch that has `stdin` or `secrets`: only that supervisor
+  held them. The launch then reads `lost`, and only a `launch` that passes them again starts it again.
+- `user` (a name or a numeric uid) is who the program runs as, resolved in the box (`/etc/passwd`, then `getent`). A
+  root launcher finds how it drops to it by doing it once at the start: a `setpriv` that takes `--reuid` (util-linux;
+  BusyBox's does not), else `runuser`, else the launch is `unsupported` (Alpine's base image). A launch with `stdin` or
+  `secrets` runs its program as root only with a `toolsUser` (below); a launcher that is not root runs the program only
+  as itself (another user is `unsupported`). An unknown user is `invalid`. The state reports it (`user: { name, uid }`).
+- A launch with `stdin` or `secrets` whose program does not run as root needs the box's ptrace scope
+  (`kernel.yama.ptrace_scope`) at 1 or more, or a process of the same user could read them from the program's memory. It
+  is measured in the box before the frame is read: a missing file counts as 0, a 0 on a box with its own kernel (`vm`)
+  is raised to 1 and read back, and any other 0 is `refused`.
+- `toolsUser` (a name or a numeric uid) goes with a program run as root (no `user` on a root launcher, `"root"` or uid
+  0). It is the user that program runs everything it does not trust as: the user disk's `--run-as` names. A launch with
+  `stdin` or `secrets` runs its program as root only with one, and then needs no ptrace scope: a process of the tools
+  user cannot attach to a root one without `CAP_SYS_PTRACE`. The launcher checks it in the box, before it reads the frame,
+  in at most 60 s (the start's call to the box, a revive's too, is given that and its usual 30 s on top):
+  - it exists, is not root and has not the root group (else `invalid`);
+  - where the box has `sudo`, `sudo -l -U`, run with no environment but PATH, answers exactly its sentence for a user who
+    may run nothing (else `refused`, with sudo's first line);
+  - on every mount without `nosuid`, it can run no setuid or setgid root file and no file with capabilities. The mounts
+    are chosen by filesystem type from the mount table, never by mount point: the kernel's own pseudo filesystems (`proc`,
+    `sysfs`, `cgroup`, `cgroup2`, `devpts`, `mqueue`, `securityfs`, `debugfs`, `tracefs`, `bpf`, `pstore`, `configfs`,
+    `fusectl`, `binfmt_misc`, `efivarfs`) are skipped, and every other type, an unknown one, `tmpfs` and `devtmpfs`
+    included, is walked. Each file is found as root and tested as the tools user, so a directory it can pass through but
+    not list hides nothing. Else the launch is `refused`, naming up to five; a box without `getcap` is `unsupported`. A
+    walk ignores an entry that ends mid-walk only where `find` takes `-ignore_readdir_race` (the control runs it); on a
+    `find` without it (busybox's) that stays `unsupported`, and every other `find` error is `unsupported` on every `find`.
+  - the check fails closed: `find` and `getcap` must each report a probe it plants (empty, root's, in the launch's own
+    root-only directory, removed before anything runs as the tools user), the tools user's test must pass on its own
+    shell, and a walk that fails on a mount, or finds no mount to walk, is `unsupported`, as is a getcap line that
+    names no file (a line is read to its file whatever its form: several capability groups, `path = caps`, a path
+    with spaces). The image needs `getcap` and
+    `setcap` (Debian's `libcap2-bin`).
+  The program gets `PI_TRANSPORT_TOOLS_USER` and `PI_TRANSPORT_TOOLS_UID`; the state reports `toolsUser: { name, uid }`.
+- What `toolsUser` means is the HOST'S guarantee: the program runs everything it does not trust as that user, with no
+  capabilities, no supplementary groups and none of its own descriptors (fd 3 and its stdin included), as disk's own
+  spawn does. The launcher cannot see the program's children, and it does not measure, so the host and its image keep:
+  - no root-run code the tools user can write (the program's files, a PATH directory, a cron or service unit);
+  - no root service the tools user can reach on a socket;
+  - no later change by root: a sudo rule, a setuid file, a capability, or a mount without `nosuid`.
+  The residual: root in the box can still trace and read the program, so the image is trusted. A program run as root
+  shares root with every root process in the box (the launcher, any other root launch, a root daemon), so its secrets
+  are only as safe as the least trusted of them.
 - If both launcher processes die, the state reads `lost`: the program may still run, unsupervised. The next `launch`
   of the name adopts it and starts a supervisor again.
 - On Daytona a stopped and started sandbox keeps its disk and loses its processes. The launcher then reads `lost`, the
   program is gone, and nothing restarts by itself: the host calls `launch` again, and the old state and output are
   still there.
 
-The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date` and `sleep`. It is tested on Debian (dash) and
-Alpine (BusyBox).
+The box needs `sh`, `setsid`, `sed`, `cut`, `awk`, `wc`, `tail`, `date`, `sleep`, `id` and `ls`, and for a launch with
+`stdin` or `secrets` a builtin `printf` and `base64`. It is tested on Debian (dash) and Alpine (BusyBox).
 
 `probeAcknowledgedWrites(box)` in `@parcha/pi-transport/testing` checks that a write a program was told was durable
 survives that program's death: a writer appends ten records, each followed by an `fsync`, then it is killed and a second
 process counts them. A runtime is fit to hold a session's disk only when every acknowledged record is kept.
+
+## Testing a host against a fake provider
+
+`fakeBoxes(options)` (`@parcha/pi-transport/testing`) is a `BoxProvider` that does what a test scripts and writes down every call it
+was asked, so a test of a host (anything built on a `Box`) asserts what the host asked and how it behaves when a provider misbehaves,
+with no machine, key or network. It follows the `Box` contract (typed errors as values, stable ids, labels, facts), so a test written
+against it holds on a real provider. It runs no real program: a program in a fake box is a function a test registers with
+`provider.program(match, run)`, and a box's files are in memory (`box.files`).
+
+```ts
+import { fakeBoxes, fakeClock, modalLike } from "@parcha/pi-transport/testing";
+
+const provider = fakeBoxes(modalLike({ clock: fakeClock() }));
+provider.program("inst", async ({ stdin }) => { await stdin.readAll(); return 0; });
+provider.script.on({ op: "create" }, { fail: "unknown", leakBox: true }); // fails, but the box exists and `list` finds it
+```
+
+- `provider.calls` is every call in the order the provider saw it (`seq`, `op`, `box`, exact `argv`, env names never values, the stdin
+  bytes written, file paths and sizes, the spec, the typed result, and the label of the script rule that decided it). A failed
+  `create` is in it. `provider.leaks(marker)` says where a value appears in anything recorded (argv, stdin, an upload's bytes or
+  path, env, a label, the spec): the check that a secret travelled only on the channel it was meant for.
+- `provider.script.on(match, outcome, { times, label })` decides a call: a typed `fail`, a `delayMs`, a `hang` that ends on abort or
+  timeout, a lost end of an empty stdin (`lose: "stdin-eof"`, the `docker exec -i` fault), a dropped or truncated output stream, a
+  scripted `exit`, a box that goes `gone` in the middle of an exec, a `refuse`. A match names the op, a box, the nth call, a command
+  or any predicate over the call. `fakeClock()` moves time only when a test says (`advance`): delays, `timeoutMs` and a box's
+  `maxLifetimeMs` all run on it.
+- Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` (`@parcha/pi-transport/launch`)
+  run over it with no exec of a launcher program. A launch has a scriptable state (`phase`, `incarnation`, `restarts`, `lastExit`),
+  restarts under the spec's policy (`restart`, `restartDelayMs`, `restartLimit`, `terminalExits`), the stdin replayed to every
+  incarnation, `secrets` on the program's secrets channel, and a stop that drains, runs the `beforeStop` program, then kills. The
+  stdin and secrets are recorded on the `launch` call only, so `leaks(token)` finds them there and nowhere else; each start is an
+  `incarnation` call, never an `exec`. Errors are the launcher's `LaunchError`. A rule can fail a restart
+  (`{ op: "incarnation", when: (c) => c.incarnation === 2 }`), make the state unreadable (`{ op: "launchState" }` with a `fail`), or
+  end the program with a chosen code (`{ op: "launch" }` with an `exit`); `fake.launches[i].exit(code)` does it later.
+- `modalLike()` (a VM with FUSE and a ptrace scope a launcher can raise) and `daytonaLike()` (a container with no FUSE and a scope that
+  cannot be raised) are presets; `fuse`, `startedAt` and `ptraceScope` are extra facts until the box contract carries them.
+
+The fake does not run a shell, a real process or a mount: those are the real providers' and their live suites'.
 
 ## Writing a provider
 
