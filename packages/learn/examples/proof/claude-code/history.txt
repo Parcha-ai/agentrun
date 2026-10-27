@@ -1,0 +1,6 @@
+* 7123fe0 reflect: 2026-10-27-0340-cc02
+*   23bd25a review: 2026-10-27-0320-cc01: merged
+|\  
+| * 6868c8f reflect: 2026-10-27-0320-cc01
+|/  
+* 387030d the agent's rules and the loop's skills
