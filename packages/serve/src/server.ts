@@ -102,9 +102,9 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 
-/** What the page needs of accounts: the origin a cookie's write must come from, and who is signed in. */
+/** What the page needs of accounts: the origins a cookie's write may come from, and who is signed in. */
 const pageAccounts = (accounts: Accounts) => ({
-  origin: accounts.origin,
+  isOrigin: (origin: string | undefined) => accounts.isOrigin(origin),
   hasOwner: () => accounts.hasOwner(),
   signedIn: async (req: IncomingMessage, res: ServerResponse) => (await accounts.person(req, res)) !== null,
 });
@@ -812,7 +812,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   // Fixed before the first request can arrive: nothing awaits between the listen and here.
-  const setupUrl = accounts?.attach(options.publicUrl ?? url, address.port);
+  const setupUrl = accounts?.attach(options.publicUrl ?? url, address.port, options.publicUrl === undefined);
   return {
     url,
     baseUrl: `${url}/v2`,

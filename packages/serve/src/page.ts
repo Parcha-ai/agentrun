@@ -33,7 +33,7 @@ const SIGN_IN = own("sign-in.html", HTML);
 
 /** With accounts: the origin a cookie's write must come from, whether there is an owner yet, and whether the request's
  *  session cookie signs someone in. */
-export type PageAccounts = { origin: string; hasOwner(): boolean; signedIn(req: IncomingMessage, res: ServerResponse): Promise<boolean> };
+export type PageAccounts = { isOrigin(origin: string | undefined): boolean; hasOwner(): boolean; signedIn(req: IncomingMessage, res: ServerResponse): Promise<boolean> };
 
 const read = new Map<string, Promise<Buffer>>();
 const bytesOf = (path: string) => {
@@ -106,9 +106,9 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
   const held = cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
-    // With accounts the page's origin is the one the server was started with, never one the request names.
-    const origin = server.accounts?.origin ?? ownOrigin(req);
-    if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === origin && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
+    // With accounts the page's origins are the ones the server was started with, never one the request names.
+    const fromPage = server.accounts ? server.accounts.isOrigin(req.headers.origin?.toLowerCase()) : req.headers.origin?.toLowerCase() === ownOrigin(req);
+    if (held && req.headers.authorization === undefined && (safe || (fromPage && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
     return false;
   }
   const accountPage = server.accounts && (raw === "/setup" || raw === "/sign-in" || Boolean(ACCOUNT_FILES[raw]));

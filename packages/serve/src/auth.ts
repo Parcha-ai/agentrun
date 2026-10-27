@@ -109,7 +109,7 @@ async function jsonBody(req: IncomingMessage): Promise<Record<string, unknown>> 
 /** The session cookie's name: `__Host-` on https, so no other host or path can set it; else one per port. */
 const sessionCookie = (baseUrl: string, port: number) => (baseUrl.startsWith("https://") ? "__Host-agentrun-session" : `agentrun-${port}-session`);
 
-function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number }) {
+function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number; origins: string[] }) {
   const https = site?.baseUrl.startsWith("https://") ?? false;
   const name = sessionCookie(site?.baseUrl ?? "", site?.port ?? 0);
   return {
@@ -119,7 +119,7 @@ function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; p
     // Without a site this instance only migrates and makes the owner from the environment: it builds no link.
     baseURL: site?.baseUrl ?? "http://serve",
     basePath: BASE_PATH,
-    trustedOrigins: site ? [new URL(site.baseUrl).origin] : [],
+    trustedOrigins: site?.origins ?? [],
     emailAndPassword: { enabled: true, disableSignUp: true, minPasswordLength: MIN_PASSWORD, maxPasswordLength: MAX_PASSWORD },
     // 7 days idle: a session used a day or more after its last refresh runs 7 days from then.
     session: { expiresIn: 7 * DAY_S, updateAge: DAY_S },
@@ -137,7 +137,7 @@ function optionsOf(db: DatabaseSync, secret: string, site?: { baseUrl: string; p
     logger: { level: "error" as const, log: (_level: string, message: string) => void process.stderr.write(`agentrun-serve: accounts: ${message}\n`) },
   };
 }
-const build = (db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number }) => betterAuth(optionsOf(db, secret, site));
+const build = (db: DatabaseSync, secret: string, site?: { baseUrl: string; port: number; origins: string[] }) => betterAuth(optionsOf(db, secret, site));
 type Auth = ReturnType<typeof build>;
 
 /** The accounts database, migrated, with its secret; the owner from the environment made. Opened before the server
@@ -183,18 +183,21 @@ export async function openAccounts(options: AccountsOptions): Promise<Accounts> 
 
 export class Accounts {
   private auth: Auth | undefined;
-  private site: { baseUrl: string; origin: string; cookie: string } | undefined;
+  private site: { baseUrl: string; origin: string; origins: string[]; cookie: string } | undefined;
   private setupCode: { code: string; until: number; tries: number } | null = null;
   private settingUp = false;
 
   /** `secret` is the library's: never a run's. */
   constructor(private readonly db: DatabaseSync, readonly secret: string, private readonly token: string) {}
 
-  /** Fixes the address every link and the cookie are built from, and makes a fresh setup code when there is no owner:
-   *  its link, or null. */
-  attach(baseUrl: string, port: number): string | null {
-    this.auth = build(this.db, this.secret, { baseUrl, port });
-    this.site = { baseUrl, origin: new URL(baseUrl).origin, cookie: sessionCookie(baseUrl, port) };
+  /** Fixes the address every link and the cookie are built from, and the origins a write may come from: `baseUrl`'s,
+   *  and on the loopback default also http://localhost on the same port. Makes a fresh setup code when there is no
+   *  owner: its link, or null. */
+  attach(baseUrl: string, port: number, loopbackDefault = false): string | null {
+    const origin = new URL(baseUrl).origin;
+    const origins = loopbackDefault ? [...new Set([origin, `http://localhost:${port}`])] : [origin];
+    this.auth = build(this.db, this.secret, { baseUrl, port, origins });
+    this.site = { baseUrl, origin, origins, cookie: sessionCookie(baseUrl, port) };
     if (this.hasOwner()) return null;
     this.setupCode = { code: randomBytes(16).toString("base64url"), until: Date.now() + SETUP_TTL_MS, tries: 0 };
     return `${baseUrl}/setup#code=${this.setupCode.code}`;
@@ -202,6 +205,11 @@ export class Accounts {
 
   get origin(): string {
     return this.ready().origin;
+  }
+
+  /** Whether a request's Origin is one a write may come from: fixed at start, never taken from the request. */
+  isOrigin(origin: string | undefined): boolean {
+    return origin !== undefined && this.ready().origins.includes(origin);
   }
 
   close(): void {
@@ -261,7 +269,7 @@ export class Accounts {
   /** The write gate for a request a cookie authenticates: this server's Origin, then a JSON body. */
   checkWrite(req: IncomingMessage): void {
     if (req.method === "GET" || req.method === "HEAD") return;
-    if (req.headers.origin !== this.ready().origin) throw new ApiError("forbidden", `a write signed in by a cookie must come from ${this.ready().origin}`);
+    if (!this.isOrigin(req.headers.origin)) throw new ApiError("forbidden", `a write signed in by a cookie must come from ${this.ready().origins.join(" or ")}`);
     if (!isJson(req)) throw new ApiError("unsupported_media_type", "the body must be application/json");
   }
 
@@ -312,11 +320,11 @@ export class Accounts {
 
   /** POST /v2/setup: the owner, made with the code from the server's log (or the token as a Bearer), and signed in. */
   async setup(req: IncomingMessage, res: ServerResponse): Promise<{ status: number; body: unknown }> {
-    const { auth, origin } = this.ready();
+    const { auth, origins } = this.ready();
     const bearer = req.headers.authorization;
     if (bearer !== undefined && !same(bearer, `Bearer ${this.token}`)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
     const byToken = bearer !== undefined;
-    if (!byToken && req.headers.origin !== origin) throw new ApiError("forbidden", `setup must come from ${origin}`);
+    if (!byToken && !this.isOrigin(req.headers.origin)) throw new ApiError("forbidden", `setup must come from ${origins.join(" or ")}`);
     if (this.hasOwner() || this.settingUp) throw new ApiError("forbidden", "this server has an owner: sign in");
     if (!isJson(req)) throw new ApiError("unsupported_media_type", "the body must be application/json");
     const body = await jsonBody(req);

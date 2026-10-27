@@ -12,7 +12,7 @@ const MANIFEST = 'packages/serve/package.json';
 
 /** Advisories that cover the pin but not this server, each with why and until when: past its date it counts again. */
 export const ACKNOWLEDGED = [
-  { ghsa: 'GHSA-fmh4-wcc4-5jm3', why: 'the organization plugin, which AgentRun Server does not use', until: '2026-12-31' },
+  { ghsa: 'GHSA-fmh4-wcc4-5jm3', why: 'the organization plugin, which AgentRun Server never loads (packages/serve/test/plugins.test.mjs)', until: '2026-12-31' },
 ];
 
 /** The exact version `packages/serve/package.json` pins: a range there is an error, since the check would mean nothing. */
