@@ -23,7 +23,7 @@ test("one table names every route's least role; a route it does not name is deni
   const names = [...ROUTES, ...ACCOUNT_ROUTES].map((route) => route.name);
   for (const name of names) assert.ok(Object.hasOwn(ROUTE_ROLES, name), `${name} has a role`);
   for (const route of ROUTES) assert.ok(["member", "none"].includes(ROUTE_ROLES[route.name]), `${route.name}: every route there was is a member's`);
-  assert.deepEqual(Object.entries(ROUTE_ROLES).filter(([, role]) => role === "admin").map(([name]) => name).sort(), ["listPeople", "updatePerson"]);
+  assert.deepEqual(Object.entries(ROUTE_ROLES).filter(([, role]) => role === "admin").map(([name]) => name).sort(), ["createPerson", "listPeople", "updatePerson"]);
   const admin = { kind: "person", id: "a", role: "admin" };
   const member = { kind: "person", id: "m", role: "member" };
   for (const who of [admin, member, { kind: "token", role: "admin" }]) {
@@ -243,14 +243,14 @@ test("an open stream whose session ends any other way ends within the 5 s re-che
   await owner("POST", `/runs/${run_id}/cancel`, {});
 });
 
-test("nobody runs their own code in a run's process: a workflow with a code node is refused at save, for a member and for an admin", async (t) => {
+test("code runs in the run's process on this machine, so only an admin saves it: a workflow with a code node is refused for a member and saved for an admin", async (t) => {
   const server = await withMember(t);
   const flow = answerFlow();
-  flow.root.steps.unshift({ node: "code", label: "peek", code: "(s) => ({ seen: JSON.stringify(process.env) + require('node:fs').readdirSync('..').join() })" });
-  for (const cookie of [server.boCookie, server.cookie]) {
-    const saved = await asPerson(server, cookie)("POST", "/agents", { definition: { id: "peek", name: "peek", workflow: flow } });
-    assert.deepEqual([saved.status, saved.json?.error?.code], [422, "input_invalid"], JSON.stringify(saved.json));
-    assert.ok(saved.json.error.fields.some((f) => f.field === "definition.workflow" && /needs code/.test(f.message)), JSON.stringify(saved.json.error.fields));
-  }
-  assert.equal((await asPerson(server, server.cookie)("GET", "/agents/peek")).status, 404, "nothing was saved");
+  flow.root.steps.unshift({ node: "code", label: "peek", code: "(s) => ({ seen: 1 })" });
+  const member = await asPerson(server, server.boCookie)("POST", "/agents", { definition: { id: "peek", name: "peek", workflow: flow } });
+  assert.deepEqual([member.status, member.json?.error?.code], [422, "input_invalid"], JSON.stringify(member.json));
+  assert.ok(member.json.error.fields.some((f) => f.field === "definition.workflow" && /only an admin saves/.test(f.message)), JSON.stringify(member.json.error.fields));
+  assert.equal((await asPerson(server, server.cookie)("GET", "/agents/peek")).status, 404, "the member's save wrote nothing");
+  const admin = await asPerson(server, server.cookie)("POST", "/agents", { definition: { id: "peek", name: "peek", workflow: flow } });
+  assert.equal(admin.status, 201, admin.text);
 });

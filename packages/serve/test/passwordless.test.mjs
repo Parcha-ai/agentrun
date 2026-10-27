@@ -59,7 +59,7 @@ test("no password hash is stored for anyone: the owner from setup, the owner fro
   }
 });
 
-test("the setup and sign-in pages and their scripts ask for no password; the sign-in page has no form and no script yet", async (t) => {
+test("the setup and sign-in pages and their scripts ask for no password; the sign-in page asks for an email only", async (t) => {
   const server = await serve(t, { accounts: true });
   const texts = {};
   for (const path of ["/setup", "/setup.js"]) {
@@ -72,8 +72,10 @@ test("the setup and sign-in pages and their scripts ask for no password; the sig
   const signIn = await call(server.port, { path: "/sign-in" });
   assert.equal(signIn.status, 200);
   texts["/sign-in"] = signIn.text;
-  assert.doesNotMatch(signIn.text, /<form|<input|<script/i, "nothing to fill in until sign-in links");
-  assert.equal((await call(server.port, { path: "/sign-in.js" })).status, 404);
+  assert.deepEqual(signIn.text.match(/<input[^>]*>/gi).map((tag) => /type="(\w+)"/.exec(tag)?.[1]), ["email"], "one input, the email");
+  const script = await call(server.port, { path: "/sign-in.js" });
+  assert.equal(script.status, 200);
+  texts["/sign-in.js"] = script.text;
   for (const [path, text] of Object.entries(texts)) {
     assert.ok(text.length > 100, `${path} was read`);
     assert.doesNotMatch(text, /password/i, path);

@@ -49,6 +49,16 @@ async function bin(t, args, env, done = /\?token=.*\n/) {
   return { out, err, code };
 }
 
+test("accounts are on by default: the bin prints a setup link with no AGENTRUN_ACCOUNTS, none with AGENTRUN_ACCOUNTS=0, and on a non-loopback address without AGENTRUN_PUBLIC_URL it runs on its token and says why", { timeout: 60_000 }, async (t) => {
+  const on = await bin(t, ["--data", join(await scratch(t), "agents"), "--port", "0"], { AGENTRUN_ACCOUNTS: "" }, /Set up this server: .*\n/);
+  assert.match(on.out, /Set up this server: http:\/\/127\.0\.0\.1:\d+\/setup#code=/, on.err);
+  const off = await bin(t, ["--data", join(await scratch(t), "agents"), "--port", "0"], { AGENTRUN_ACCOUNTS: "0" });
+  assert.doesNotMatch(off.out, /Set up this server/);
+  const open = await bin(t, ["--data", join(await scratch(t), "agents"), "--listen", "0.0.0.0", "--port", "0"], { AGENTRUN_ACCOUNTS: "", AGENTRUN_TOKEN: "not-a-secret-not-a-secret-not-a-secret" });
+  assert.doesNotMatch(open.out, /Set up this server/);
+  assert.match(open.err, /accounts are off: on 0\.0\.0\.0, which is not loopback, set AGENTRUN_PUBLIC_URL/);
+});
+
 test("with accounts on: auth.sqlite (WAL) and .auth-secret are 0600, each start prints a fresh 128-bit setup code, the secret is kept, and the contract's answers keep their keys", async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await started(t, data);

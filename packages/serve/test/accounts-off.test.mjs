@@ -12,7 +12,7 @@ test("with accounts off: the data directory holds only what it held, the account
   const bearer = { authorization: `Bearer ${token}` };
   for (const [method, path] of [
     ["GET", "/v2/me"], ["GET", "/v2/people"], ["PATCH", "/v2/people/someone"], ["GET", "/v2/activity"], ["GET", `/v2/runs/${run_id}/activity`],
-    ["POST", "/v2/setup"], ["GET", "/v2/auth/get-session"], ["POST", "/v2/auth/sign-in/email"], ["POST", "/v2/auth/sign-up/email"],
+    ["POST", "/v2/setup"], ["GET", "/v2/auth/get-session"], ["POST", "/v2/auth/sign-in/email"], ["POST", "/v2/auth/sign-up/email"], ["POST", "/v2/auth/request-link"], ["GET", "/v2/auth/verify"], ["POST", "/v2/people"],
   ]) {
     const res = await call(port, { method, path, headers: { ...bearer, "content-type": "application/json" }, body: method === "GET" ? undefined : {} });
     assert.deepEqual([res.status, res.json?.error?.code], [404, "not_found"], `${method} ${path}`);
