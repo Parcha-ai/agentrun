@@ -103,7 +103,7 @@ export function parseNote(text: string): Note | string[] {
   return out.length ? out : { id, runs: [...runs] };
 }
 
-const MEMO_KEYS = ["run", "base", "harness", "outcome", "cost_usd"];
+const MEMO_KEYS = ["run", "base", "harness", "outcome", "cost_usd", "untrusted"];
 export const MEMO_SECTIONS = Object.freeze(["What happened", "What I learned", "What could be better", "Proposed changes"]);
 
 export type Memo = { run: string; base: string; proposed: string[] };
@@ -124,6 +124,7 @@ export function parseMemo(text: string): Memo | string[] {
   if (fields.get("outcome") && !["completed", "failed", "stopped"].includes(fields.get("outcome")!)) out.push("outcome is not completed, failed or stopped");
   if (fields.has("harness") && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(fields.get("harness")!)) out.push("harness is not a short lowercase name");
   if (fields.has("cost_usd") && !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(fields.get("cost_usd")!)) out.push("cost_usd is not a number of dollars, 0 or more");
+  if (fields.has("untrusted") && !["true", "false"].includes(fields.get("untrusted")!)) out.push("untrusted is not true or false");
   const sections: { title: string; lines: string[] }[] = [];
   const lead: string[] = [];
   for (const line of head.body.split("\n")) {
