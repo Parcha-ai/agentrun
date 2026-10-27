@@ -26,14 +26,13 @@ const MAX_PASSWORD = 128;
 const MAX_BODY = 1 << 16;
 
 /** The library's endpoints a client may call, each with its one method. Every other path under /v2/auth is a 404, and
- *  no sign-up is among them: the owner is made by serve. */
+ *  no sign-up is among them: the owner is made by serve. None that takes or lists a session's token: it lives in the
+ *  HttpOnly cookie only. */
 const ENDPOINTS: Record<string, string> = {
   "/sign-in/email": "POST",
   "/sign-out": "POST",
   "/get-session": "GET",
   "/change-password": "POST",
-  "/list-sessions": "GET",
-  "/revoke-session": "POST",
   "/revoke-other-sessions": "POST",
   "/update-user": "POST",
 };
@@ -294,7 +293,16 @@ export class Accounts {
     answer.headers.forEach((value, name) => void (name !== "set-cookie" && (headers[name] = value)));
     const cookies = answer.headers.getSetCookie();
     if (cookies.length) headers["set-cookie"] = cookies;
-    const bytes = Buffer.from(await answer.arrayBuffer());
+    let bytes = Buffer.from(await answer.arrayBuffer());
+    // The library answers a session's token in its JSON too; a page's script must never read it.
+    if (String(answer.headers.get("content-type")).startsWith("application/json") && bytes.length) {
+      const value = JSON.parse(bytes.toString("utf8")) as unknown;
+      if (value !== null && typeof value === "object") {
+        delete (value as { token?: unknown }).token;
+        delete ((value as { session?: { token?: unknown } }).session ?? {}).token;
+      }
+      bytes = Buffer.from(JSON.stringify(value));
+    }
     delete headers["content-length"];
     res.writeHead(answer.status, { ...headers, "content-length": String(bytes.length) });
     res.end(req.method === "HEAD" ? undefined : bytes);
@@ -309,7 +317,7 @@ export class Accounts {
     if (bearer !== undefined && !same(bearer, `Bearer ${this.token}`)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
     const byToken = bearer !== undefined;
     if (!byToken && req.headers.origin !== origin) throw new ApiError("forbidden", `setup must come from ${origin}`);
-    if (this.hasOwner() || this.settingUp) throw new ApiError("already_set_up", "this server has an owner: sign in");
+    if (this.hasOwner() || this.settingUp) throw new ApiError("forbidden", "this server has an owner: sign in");
     if (!isJson(req)) throw new ApiError("unsupported_media_type", "the body must be application/json");
     const body = await jsonBody(req);
     if (!byToken) this.spendCode(body.code);
@@ -321,7 +329,7 @@ export class Accounts {
     if (issues.length) throw invalid(issues);
     this.settingUp = true;
     try {
-      if (this.hasOwner()) throw new ApiError("already_set_up", "this server has an owner: sign in");
+      if (this.hasOwner()) throw new ApiError("forbidden", "this server has an owner: sign in");
       const { id } = await this.make({ email: email as string, name: (name as string).trim(), password: password as string, role: "admin" }, auth, true);
       this.setupCode = null;
       const signedIn = await auth.api.signInEmail({ body: { email: email as string, password: password as string }, headers: headersOf(req), returnHeaders: true });

@@ -13,7 +13,6 @@ export const ERROR_STATUS = {
   not_found: 404,
   method_not_allowed: 405,
   agent_exists: 409,
-  already_set_up: 409,
   agent_not_runnable: 409,
   home_busy: 409,
   idempotency_mismatch: 409,
