@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
 import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
+import { LEARN_TOOL, learnExtension } from "./learn.js";
 import { FAUX_ENV } from "./model.js";
 
 export const ASK_TOOL = "ask_person";
@@ -167,6 +168,16 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => fetchPage(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
   },
   browser: browserTool,
+  [LEARN_TOOL]: {
+    summary: "Note a general lesson for later runs; Learn on the finished run makes it a skill of the agent's next revision.",
+    needs: [],
+    nodes: false,
+    bind: async (host) => {
+      const learn = await learnExtension(host.where.root, host.env);
+      host.install(learn);
+      return { tools: learn.tools ?? [], extensions: [learn] };
+    },
+  },
 });
 
 /** Every name a revision may name, those a workflow's model node may, and those a workflow's call node may run. */

@@ -353,6 +353,68 @@
       return el("section", { class: "card compare" }, kit.kicker("Compare revisions"), el("h2", null, "Runs and cost by revision"), body);
     }
 
+    // ---- a stored run: learn from it ------------------------------------------------------------------------------------
+    /** On a completed run whose revision names the learn tool, two steps: a preview of what the run learned (each lesson
+     *  whole, as text), then a commit of exactly that as the agent's next revision. The commit names the preview's base,
+     *  so a revision made current since is a 412, and the preview is shown again only when asked for. */
+    function runActions(run) {
+      if (run.state !== "completed") return null;
+      var box = el("div", { class: "learn" });
+      kit.get("api/agents/" + enc(run.agent)).then(
+        function (found) {
+          var revision = ((found && found.revisions) || []).filter(function (r) { return r.id === run.revision; })[0];
+          if (((revision && revision.body && revision.body.tools) || []).indexOf("learn") < 0) return;
+          var path = "agents/" + enc(run.agent) + "/learn";
+          var preview = el("div");
+          var out = el("div");
+          var empty = function (node) { while (node.firstChild) node.removeChild(node.firstChild); };
+          var learn = button("Learn from this run", "quiet", function () {
+            learn.disabled = true;
+            empty(preview);
+            say(out, null);
+            v2("POST", path, { run_id: run.id, dry_run: true }).then(
+              function (shown) {
+                learn.disabled = false;
+                var lessons = (shown && shown.learned) || [];
+                var commit = button("Commit as a new revision", "", function () {
+                  commit.disabled = learn.disabled = true;
+                  say(out, null);
+                  v2("POST", path, { run_id: run.id, base: shown.base }).then(
+                    function (made) {
+                      empty(preview);
+                      var files = (made && made.learned) || [];
+                      out.appendChild(el("p", { class: "learned" }, "Committed revision " + kit.short(made.revision) + " with " + kit.plural(files.length, "learned file") + ". ", el("a", { href: kit.agentHref(run.agent) + "?revision=" + enc(made.revision) }, "Open it")));
+                    },
+                    function (error) {
+                      learn.disabled = false;
+                      if (error.status === 412) {
+                        empty(preview);
+                        return say(out, new Error("The agent changed since the preview; preview again."));
+                      }
+                      commit.disabled = false;
+                      say(out, error);
+                    }
+                  );
+                });
+                preview.appendChild(el("p", { class: "lessons" }, "It would add " + kit.plural(lessons.length, "lesson") + ":"));
+                lessons.forEach(function (lesson) { preview.appendChild(el("div", { class: "lesson" }, el("p", { class: "lesson-path" }, lesson.path), el("pre", null, lesson.text))); });
+                preview.appendChild(el("div", { class: "actions" }, commit));
+              },
+              function (error) {
+                learn.disabled = false;
+                say(out, error);
+              }
+            );
+          });
+          box.appendChild(el("div", { class: "actions" }, learn));
+          box.appendChild(preview);
+          box.appendChild(out);
+        },
+        function () {}
+      );
+      return box;
+    }
+
     /** The picker of a store with no agent: what to do next. */
     function emptyStore() {
       return el(
@@ -618,10 +680,10 @@
     }
 
     /** A stored run's head: Archive or Unarchive. */
-    function runActions(run) {
+    function archiveActions(run) {
       return el("div", { class: "actions" }, archiveButton("runs/" + enc(run.id), run.archivedAt, function () { kit.route(); }));
     }
 
-    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, empty: emptyStore, run: runActions };
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, run: function (run) { return [archiveActions(run), runActions(run)]; }, empty: emptyStore };
   };
 })();

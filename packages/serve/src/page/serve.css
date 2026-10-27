@@ -57,6 +57,10 @@ a.cmp.on{background:var(--accent-soft)}
 .cmp .rev .rev-id{font-weight:600}
 .cmp .rev .rev-note{font-family:var(--sans);color:var(--muted);overflow-wrap:anywhere}
 .cmp .empty{grid-column:2/-1;color:var(--faint)}
+.learn>.actions{margin-top:12px}
+.learn .lessons{margin:14px 0 8px;color:var(--muted)}
+.learn .lesson-path{margin:10px 0 4px;font:12px var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.learned{margin:10px 0 0;font:13px var(--mono)}
 .empty-store{margin-top:18px}
 .empty-store>p:first-child{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;font-size:16px}
 .empty-store pre{margin-top:6px;user-select:all}

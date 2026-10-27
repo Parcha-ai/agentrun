@@ -18,6 +18,7 @@ export const ERROR_STATUS = {
   idempotency_mismatch: 409,
   idempotency_in_progress: 409,
   not_continuable: 409,
+  not_learnable: 409,
   quote_invalid: 409,
   precondition_failed: 412,
   payload_too_large: 413,

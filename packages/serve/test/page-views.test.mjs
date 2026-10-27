@@ -324,7 +324,7 @@ test("a live run follows /v2's timeline with a long poll, an answer box while it
   assert.ok(!shown.app.textContent.includes("Waiting for you"), "a dropped row is gone");
   api.push(page({ status: "completed", state: "idle", rows: [row(5, "final_answer", { text: "Using eu." })], next_after: 40, final: true }));
   await shown.settle();
-  assert.equal(api.calls.at(-1).path, "api/runs/run-9", "a final run is the store's own page");
+  assert.deepEqual(api.calls.slice(-2).map((c) => c.path), ["api/runs/run-9", "api/agents/calc"], "a final run is the store's own page, which reads whether its revision learns");
   assert.ok(all(shown.app).find((el) => classOf(el) === "card run-head").textContent.includes("Asked, then answered."));
 });
 
@@ -383,7 +383,7 @@ test("leaving a live run aborts its long poll; a run this server never ran, or a
 
   const final = open("#/runs/run-9", { "v2/runs/run-9": { ...LIVE, status: "completed" }, "v2/runs/run-9/timeline": page({ final: true, status: "completed" }), "api/store": { agents: AGENTS }, "api/runs/run-9": { ...stored, run: { ...stored.run, id: "run-9" } } });
   await final.page.settle();
-  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9"]);
+  assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9", "api/agents/calc"]);
 });
 
 /** Revisions and runs shaped like the MCC classifier's A, B and C: two prompts and a workflow, eight runs each. */
@@ -488,6 +488,94 @@ test("an agent whose current revision names a tool this server cannot bind says 
   const runnable = open("#/agents/calc", { "api/agents/calc": { ...page, revisions: [revision(REV_B, true, "Files only")] }, "api/runs?agent=calc": [], "v2/capabilities": capabilities });
   await runnable.page.settle();
   assert.equal(all(runnable.page.app).find((el) => classOf(el) === "cant-run")?.textContent ?? "", "", "a revision this server can run says nothing");
+});
+
+test("learn from this run, in two steps: a preview shows each lesson as text and its base; the commit carries that base; 201 says what it committed, 412 clears the preview and asks for another", async () => {
+  const learnRev = { ...revision(REV_B, true, "Learns"), body: { instructions: "Answer.", tools: ["read", "learn"], skills: {} } };
+  const agentPage = { agent: AGENT_PAGE.agent, revisions: [learnRev, revision(REV_A, false, "First")] };
+  const stored = (id, state, rev = REV_B) => ({ run: { id, agent: "calc", revision: rev, kind: "agentic", state, startedAt: "2026-10-23T06:00:00.000Z", endedAt: "2026-10-23T06:01:00.000Z", costUsd: 0.01 }, agent: "Calc", note: "Learns", rows: [] });
+  const lesson = { path: "learned-0123456789ab/SKILL.md", text: `---\nname: bills\n---\n# Read the bills page first ${HOSTILE}\n**Not markdown** here.` };
+  const preview = { learned: [lesson], base: REV_B };
+  let release;
+  let commitAnswer = [201, { revision: "e".repeat(64), note: "learned from run run-1", learned: [lesson.path] }];
+  const answers = {
+    "api/agents/calc": agentPage,
+    "api/store": { agents: AGENTS },
+    "v2/runs/run-1": [404, { error: { code: "not_found", message: "no run run-1" } }],
+    "api/runs/run-1": stored("run-1", "completed"),
+    "POST v2/agents/calc/learn": (body) => (body.dry_run ? new Promise((resolve) => (release = resolve)) : commitAnswer),
+  };
+  const { page: shown, api } = open("#/runs/run-1", answers);
+  await shown.settle();
+  const learn = buttonNamed(shown, "Learn from this run");
+  assert.ok(all(all(shown.app).find((el) => classOf(el) === "card run-head")).includes(learn), "on the run's head");
+  assert.equal(buttonNamed(shown, "Commit as a new revision"), undefined, "nothing to commit before a preview");
+
+  learn.click();
+  await shown.settle();
+  assert.equal(learn.disabled, true, "disabled while the preview is in flight");
+  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/learn", { run_id: "run-1", dry_run: true }]]);
+  assert.equal(api.calls.at(-1).headers["content-type"], "application/json");
+  release([200, preview]);
+  await shown.settle();
+  assert.equal(learn.disabled, false);
+  const box = all(shown.app).find((el) => classOf(el) === "learn");
+  assertInert(box, all(box).filter((el) => el.tagName === "BUTTON"));
+  assert.deepEqual(all(box).filter((el) => classOf(el) === "lesson-path").map((el) => el.textContent), [lesson.path]);
+  assert.deepEqual(all(box).filter((el) => el.tagName === "PRE").map((el) => el.textContent), [lesson.text], "each lesson whole, as text: no markdown, no markup");
+  assert.equal(all(box).filter((el) => ["B", "H3", "IMG"].includes(el.tagName)).length, 0);
+
+  const commit = buttonNamed(shown, "Commit as a new revision");
+  commit.click();
+  await shown.settle();
+  assert.deepEqual(api.writes().at(-1), ["POST", "v2/agents/calc/learn", { run_id: "run-1", base: REV_B }], "the commit names the preview's base");
+  const said = all(shown.app).find((el) => classOf(el) === "learned");
+  assert.equal(said.textContent, "Committed revision eeeeeeeeeeee with 1 learned file. Open it");
+  assert.deepEqual(all(said).filter((el) => el.tagName === "A").map((el) => el.getAttribute("href")), [`#/agents/calc?revision=${"e".repeat(64)}`]);
+  assert.equal(all(box).filter((el) => el.tagName === "PRE").length, 0, "the preview gives way to what was committed");
+
+  // A 412: the agent's current revision moved since the preview.
+  commitAnswer = [412, { error: { code: "precondition_failed", message: "the agent's current revision is not the preview's base" } }];
+  const moved = open("#/runs/run-1", answers);
+  await moved.page.settle();
+  buttonNamed(moved.page, "Learn from this run").click();
+  await moved.page.settle();
+  release([200, preview]);
+  await moved.page.settle();
+  buttonNamed(moved.page, "Commit as a new revision").click();
+  await moved.page.settle();
+  assert.deepEqual(problemText(moved.page), ["The agent changed since the preview; preview again."]);
+  assert.equal(buttonNamed(moved.page, "Commit as a new revision"), undefined, "the stale preview is gone");
+  assert.equal(all(moved.page.app).filter((el) => el.tagName === "PRE").length, 0);
+  assert.equal(buttonNamed(moved.page, "Learn from this run").disabled, false, "and Learn is there to preview again");
+
+  // 409 on the preview, 422 on the commit: their messages, and the button back.
+  const refusedPreview = open("#/runs/run-1", { ...answers, "POST v2/agents/calc/learn": [409, { error: { code: "not_learnable", message: `this run learned nothing ${HOSTILE}` } }] });
+  await refusedPreview.page.settle();
+  buttonNamed(refusedPreview.page, "Learn from this run").click();
+  await refusedPreview.page.settle();
+  assert.deepEqual(problemText(refusedPreview.page), [`409 this run learned nothing ${HOSTILE}`]);
+  assert.equal(buttonNamed(refusedPreview.page, "Learn from this run").disabled, false);
+  commitAnswer = [422, { error: { code: "input_invalid", message: "a lesson breaks the guard's rule: no secrets" } }];
+  const refusedCommit = open("#/runs/run-1", answers);
+  await refusedCommit.page.settle();
+  buttonNamed(refusedCommit.page, "Learn from this run").click();
+  await refusedCommit.page.settle();
+  release([200, preview]);
+  await refusedCommit.page.settle();
+  buttonNamed(refusedCommit.page, "Commit as a new revision").click();
+  await refusedCommit.page.settle();
+  assert.deepEqual(problemText(refusedCommit.page), ["422 a lesson breaks the guard's rule: no secrets"]);
+  assert.equal(buttonNamed(refusedCommit.page, "Commit as a new revision").disabled, false, "the commit is back for another try");
+
+  for (const [why, extra] of [
+    ["a failed run", { "api/runs/run-1": stored("run-1", "failed") }],
+    ["a revision without the learn tool", { "api/runs/run-1": stored("run-1", "completed", REV_A) }],
+  ]) {
+    const none = open("#/runs/run-1", { ...answers, ...extra });
+    await none.page.settle();
+    assert.equal(buttonNamed(none.page, "Learn from this run"), undefined, why);
+  }
 });
 
 const ARCHIVED_AT = "2026-10-24T08:00:00.000Z";

@@ -13,10 +13,10 @@ import { hasVersionSection, loadFragments, unreleasedSection } from './changes.m
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev and pi, which use it), the
-// packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk and pi-durable-agent, and the reference host
+// packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-browser, pi-durable-disk, pi-durable-agent and pi-agent-learn, and the reference host
 // (@parcha/agentrun-harness), which uses dsl, pi, pi-browser, pi-durable-disk and pi-vision, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', serve: '@parcha/agentrun-serve', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', harness: '@parcha/agentrun-harness' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', 'pi-agent-learn': '@parcha/pi-agent-learn', serve: '@parcha/agentrun-serve', harness: '@parcha/agentrun-harness' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.

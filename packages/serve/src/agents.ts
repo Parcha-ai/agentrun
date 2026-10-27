@@ -111,13 +111,7 @@ export class Agents {
         .map((key) => ({ field: `definition.${key}`, reason: "not_allowed", message: `The agent store keeps an agent's ${key} from its creation; an edit does not change it.`, fix: `Remove definition.${key}.` })),
     ];
     if (kept.length) throw invalid(kept);
-    let files = skills;
-    if (files === undefined) {
-      const held = Object.entries(entry.revision?.body.skills ?? {});
-      const texts = this.texts(held.map(([, sha]) => sha));
-      files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
-    }
-    const revision = this.revisionOf(definition, files, note);
+    const revision = this.revisionOf(definition, skills ?? (entry.revision ? this.skillFiles(entry.revision) : {}), note);
     await this.checked(revision);
     await check?.(revision);
     // The checks awaited: another request may have moved the current revision meanwhile, so read it again.
@@ -129,6 +123,13 @@ export class Agents {
     this.checkVersion(definition, now.revisions + 1);
     await this.store.commitRevision(agent.id, revision, { setCurrent: true, ...(ifCurrent !== undefined ? { ifCurrent } : {}) }).catch((error) => storeError(error));
     return this.get(agent.id)!;
+  }
+
+  /** A revision's skill files: each path's text. */
+  skillFiles(revision: Revision): Record<string, string> {
+    const held = Object.entries(revision.body.skills);
+    const texts = this.texts(held.map(([, sha]) => sha));
+    return Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
   }
 
   /** Makes `revision`, one of the agent's own, its current one. */
