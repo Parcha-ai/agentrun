@@ -1,8 +1,11 @@
 // The provenance of code copied from vercel-labs/durable-harness, checked offline: for each package that carries
 // vendor/durable-harness/UPSTREAM.json, every recorded file has its pristine upstream copy under
 // vendor/durable-harness/upstream/<upstream path> (never shipped) whose git blob and sha256 are the recorded ones, and our
-// copy at the recorded path opens with the header naming that upstream path. `--diff` also prints, per file, how many
-// lines our copy changes against the pristine one (the reviewable change). Exits non-zero with the problems.
+// copy at the recorded path opens with the header naming that upstream path. A record of kind "interfaces matched" is a
+// file written for AgentRun that keeps a few upstream declarations identical (it names them), so the copied files compile
+// against them: its pristine file and header are checked the same way, and each named declaration must appear in both.
+// `--diff` also prints, per copied file, how many lines our copy changes against the pristine one (the reviewable
+// change). Exits non-zero with the problems.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
@@ -31,15 +34,27 @@ export async function provenanceProblems(dir) {
     if (!head[0]?.startsWith('// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0')) problems.push(`${path}: line 1 is not Vercel's copyright header`);
     if (!head[1]?.startsWith(`// From github.com/vercel-labs/durable-harness, ${record.upstream} at ${UPSTREAM.commit.slice(0, 10)}`)) problems.push(`${path}: line 2 does not name ${record.upstream} at ${UPSTREAM.commit.slice(0, 10)}`);
     if (!head[2]?.startsWith('// Changed by Parcha, ')) problems.push(`${path}: line 3 is not the "Changed by Parcha" line`);
+    if (record.kind === MATCHED) {
+      if (!Array.isArray(record.declarations) || !record.declarations.length) problems.push(`${path}: an "${MATCHED}" record names no declarations`);
+      for (const name of record.declarations ?? []) {
+        const declared = new RegExp(`^export (?:interface|class|type) ${name}\\b`, 'm');
+        if (!declared.test(ours) || !declared.test(pristine.toString('utf8'))) problems.push(`${path}: ${name} is not declared in both our file and upstream's`);
+      }
+    } else if (record.kind !== undefined) problems.push(`${path}: unknown kind ${JSON.stringify(record.kind)}`);
   }
   return problems;
 }
 
-/** How many lines each copy changes against its pristine upstream file, header excluded. */
+/** The kind of record for a file written for AgentRun that keeps a few named upstream declarations identical. */
+export const MATCHED = 'interfaces matched';
+
+/** How many lines each copy changes against its pristine upstream file, header excluded. A file whose record is
+ *  "interfaces matched" is not a copy, so it is left out. */
 export async function changedLines(dir) {
   const upstream = JSON.parse(await readFile(join(dir, UPSTREAM_FILE), 'utf8'));
   const out = {};
   for (const [path, record] of Object.entries(upstream.files ?? {})) {
+    if (record.kind === MATCHED) continue;
     const ours = (await readFile(join(dir, path), 'utf8')).split('\n').slice(3).join('\n');
     let diff = '';
     try { execFileSync('diff', ['-U0', join(dir, PRISTINE_DIR, record.upstream), '-'], { input: ours, encoding: 'utf8' }); } catch (error) { diff = String(error.stdout ?? ''); }
@@ -57,7 +72,11 @@ if (import.meta.main) {
     const has = await readFile(join(dir, UPSTREAM_FILE)).then(() => true, () => false);
     if (!has) continue;
     for (const problem of await provenanceProblems(dir)) problems.push(`packages/${entry.name}: ${problem}`);
-    if (process.argv.includes('--diff')) for (const [path, lines] of Object.entries(await changedLines(dir))) console.log(`packages/${entry.name}/${path}: ${lines} changed lines against upstream`);
+    if (process.argv.includes('--diff')) {
+      for (const [path, lines] of Object.entries(await changedLines(dir))) console.log(`packages/${entry.name}/${path}: ${lines} changed lines against upstream`);
+      const { files } = JSON.parse(await readFile(join(dir, UPSTREAM_FILE), 'utf8'));
+      for (const [path, record] of Object.entries(files ?? {})) if (record.kind === MATCHED) console.log(`packages/${entry.name}/${path}: ${MATCHED} with ${record.upstream}: ${record.declarations.join(', ')}`);
+    }
   }
   for (const problem of problems) console.error(problem);
   if (problems.length) process.exit(1);

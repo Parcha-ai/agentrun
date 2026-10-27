@@ -39,6 +39,24 @@
       "upstream": "packages/harness-process/src/tail.ts",
       "blob": "0c9f118023f7e7122621c84c4766b478fe8a73ca",
       "sha256": "8814035a33a55916306f2e91f9fb582389556da858a94085449f0a66aba4846d"
+    },
+    "src/kernel/types.ts": {
+      "upstream": "packages/harness-world/src/types.ts",
+      "blob": "d12a050e7395a6a4d5319acf88ba3d728b783443",
+      "sha256": "775a12d0c7737dad58ac8b5e8a9695c559762a8196b7cd78b48fa284803a9a3f",
+      "kind": "interfaces matched",
+      "declarations": [
+        "EffectRecord"
+      ]
+    },
+    "src/kernel/errors.ts": {
+      "upstream": "packages/harness-world/src/errors.ts",
+      "blob": "f778e8b800281227c9b005865a02e1026cc1fefd",
+      "sha256": "672cd4afb4caa648737f74b0ea71c0fc4bba53fb518de7c3e6303648de2c8d2f",
+      "kind": "interfaces matched",
+      "declarations": [
+        "EffectFailure"
+      ]
     }
   }
 }

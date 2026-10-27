@@ -1,6 +1,11 @@
+// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
+// From github.com/vercel-labs/durable-harness, packages/harness-world/src/types.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
+// Changed by Parcha, 2026-10-27: only EffectRecord's field list is kept from that file, identical because the copied process files read it; everything else here is written for AgentRun.
+//
 // The kernel the copied harness code runs on: the slice of a durable driver's interface it calls, implemented over
 // AgentRun's own SessionStore (drive.ts). Field names follow the code that calls them, so a copied file runs unchanged
-// apart from its imports. Written for AgentRun; no code here is copied.
+// apart from its imports. The kernel is written fresh, except two declarations matched to upstream so the copied files
+// compile against them: EffectRecord here and EffectFailure in errors.ts.
 import type { JsonValue, SessionStore } from "../types.js";
 
 export type ReplayPolicy = "safe" | "never";

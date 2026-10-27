@@ -14,12 +14,14 @@ const packageDir = join(root, 'packages', 'run-adapters');
 const scratch = await mkdtemp(join(tmpdir(), 'agentrun-provenance-'));
 after(() => rm(scratch, { recursive: true, force: true }));
 
-test('every copied file in this tree matches its recorded upstream blob and carries its header', async () => {
+test('every copied or matched file in this tree matches its recorded upstream blob and carries its header', async () => {
   assert.deepEqual(await provenanceProblems(packageDir), []);
   const upstream = JSON.parse(await readFile(join(packageDir, UPSTREAM_FILE), 'utf8'));
   assert.ok(Object.keys(upstream.files).length >= 7);
   const lines = await changedLines(packageDir);
   // A copy's change against upstream stays small enough to review by eye (the largest is inbox.ts, which drops a function).
+  // A matched-interface file is not a copy, so it has no such count.
+  assert.deepEqual(Object.entries(upstream.files).filter(([, r]) => r.kind === 'interfaces matched').map(([p]) => p).sort(), ['src/kernel/errors.ts', 'src/kernel/types.ts']);
   assert.ok(Object.values(lines).every((n) => n < 60), `each copy changes few lines against upstream: ${JSON.stringify(lines)}`);
 });
 
@@ -49,6 +51,14 @@ test('each planted break goes red', async () => {
       const file = join(dir, UPSTREAM_FILE);
       const upstream = JSON.parse(await readFile(file, 'utf8'));
       upstream.files[tail].sha256 = '0'.repeat(64);
+      await writeFile(file, JSON.stringify(upstream));
+    },
+    'a matched-interface file without its header': async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).split('\n').slice(3).join('\n')),
+    'a matched declaration renamed in our file': async (dir) => writeFile(join(dir, 'src/kernel/types.ts'), (await readFile(join(dir, 'src/kernel/types.ts'), 'utf8')).replace('export interface EffectRecord ', 'export interface EffectRow ')),
+    'a matched-interface record naming no declarations': async (dir) => {
+      const file = join(dir, UPSTREAM_FILE);
+      const upstream = JSON.parse(await readFile(file, 'utf8'));
+      upstream.files['src/kernel/errors.ts'].declarations = [];
       await writeFile(file, JSON.stringify(upstream));
     },
   };

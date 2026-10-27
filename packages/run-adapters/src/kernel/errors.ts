@@ -1,4 +1,8 @@
-// The errors the copied harness code throws and catches, by the names it uses. Written for AgentRun.
+// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
+// From github.com/vercel-labs/durable-harness, packages/harness-world/src/errors.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
+// Changed by Parcha, 2026-10-27: only the EffectFailure class is kept from that file, identical because the copied process files throw it; everything else here is written for AgentRun.
+//
+// The errors the copied harness code throws and catches, by the names it uses.
 import type { EffectError } from "./types.js";
 
 /** An effect failed; `error` is what its records say. A memoized failure is thrown again as this. */
