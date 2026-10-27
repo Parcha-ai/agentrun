@@ -14,7 +14,7 @@ export {
   type WorkflowCandidate, type WorkflowUse,
 } from "./types.js";
 export { type Caps, createGuard, guard } from "./guard.js";
-export { type BranchCandidate, type Draft, indexEntry, readRunBranch, recordsOf, renderIndex, type RunBranch, runBranchFiles, type RunBranchInput, withoutReflection } from "./branch.js";
+export { type BranchCandidate, type Draft, indexEntry, readRunBranch, recordsOf, renderIndex, type RunBranch, runBranchFiles, type RunBranchInput, hostRenderedMemo } from "./branch.js";
 export { parseReflection, REFLECT_PROMPT, type Reflection, REFLECTION_CHARS, reflectionProblem } from "./reflect.js";
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type Withheld, type WorkflowRecords } from "./propose.js";
 export {

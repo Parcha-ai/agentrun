@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
-import { type BranchCandidate, readRunBranch, renderIndex, withoutReflection } from "./branch.js";
+import { type BranchCandidate, hostRenderedMemo, readRunBranch, renderIndex } from "./branch.js";
 import { assertNotRulesLocked, CAPS, COMMIT_SHA, isRulesLocked, LAYOUT, learningPath, memoPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { repoWorkflowDir } from "./trial.js";
 import { byUse, indexLine, renderSection } from "./section.js";
@@ -835,10 +835,10 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     files[`${dir}/workflow.json`] = `${JSON.stringify(revision.workflow, null, 2)}\n`;
     if (typeof readme !== "string" && (await repo.read(`${dir}/README.md`, main)) === undefined) files[`${dir}/README.md`] = `# ${name}\n\nThe ${name} workflow. When to use it: \`${LAYOUT.skills}/${name}/SKILL.md\`.\n`;
   }
-  // The memo lands with the agent's reflection when the screen passed it, else with the host's line in its place.
+  // The memo lands as the run wrote it when the screen passed it, else as the host renders it: none of the run's text.
   const memo = runFiles[memoPath(runId)];
   const screenedMemo = screened.get(memoPath(runId));
-  const landed = typeof memo !== "string" ? undefined : screenedMemo === undefined ? memo : withoutReflection(memo, screenedMemo);
+  const landed = typeof memo !== "string" ? undefined : screenedMemo === undefined ? memo : hostRenderedMemo(memo, screenedMemo);
   if (landed !== undefined) files[memoPath(runId)] = landed;
   const index = renderIndex([...entries.values()].filter((l) => l.status === "active"));
   if (index !== undefined) files[LAYOUT.index] = index;
