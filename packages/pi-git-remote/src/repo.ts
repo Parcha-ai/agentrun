@@ -62,6 +62,9 @@ export type CommitOptions = {
   readonly parent?: string;
   /** Make the commit even when `files` change nothing, for a commit whose message and trailers are the record. */
   readonly allowEmpty?: boolean;
+  /** A second parent: the commit is a merge of it into the branch, and its tree is still the base's with `files` applied,
+   *  never the merged commit's tree. The commit must be here. */
+  readonly mergeParent?: string;
 };
 
 export type Committed = { readonly sha: string; readonly created: boolean };
@@ -543,7 +546,9 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     const tree = await buildTree(base ? baseTree : undefined, options.files);
     await checkIntroduced(baseTree, tree);
     if (base && tree === baseTree && options.allowEmpty !== true) return { sha: base, created: false };
-    const sha = await commitTree(tree, base ? [base] : [], message);
+    const merged = options.mergeParent === undefined ? undefined : await commitOf(options.mergeParent);
+    if (merged !== undefined && !base) throw refused("a merge needs a base commit on the branch");
+    const sha = await commitTree(tree, base ? [base, ...(merged === undefined ? [] : [merged])] : [], message);
     await moveBranch(branch, sha, localBefore);
     return { sha, created: true };
   }
