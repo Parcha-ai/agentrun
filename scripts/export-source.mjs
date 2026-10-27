@@ -54,12 +54,14 @@ for (const consumer of roots) {
     const dependencies = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})]);
     for (const dependency of dependencies) {
       const target = resolveDependency(location, dependency);
-      const optionalPeer = location.includes('node_modules/') && pkg.peerDependenciesMeta?.[dependency]?.optional === true && !Object.hasOwn(pkg.dependencies ?? {}, dependency) && !Object.hasOwn(pkg.optionalDependencies ?? {}, dependency);
       if (!target) {
-        const optional = Object.hasOwn(pkg.optionalDependencies ?? {}, dependency) || optionalPeer;
+        const optional = Object.hasOwn(pkg.optionalDependencies ?? {}, dependency) || pkg.peerDependenciesMeta?.[dependency]?.optional === true;
         unresolved.push({ from: location, dependency, optional, consumer });
         assert.ok(optional, `Required runtime dependency absent from lockfile: ${location} -> ${dependency}`);
-      } else if (!optionalPeer) visit(target);
+        continue;
+      }
+      const thirdPartyOptionalPeer = location.includes('node_modules/') && pkg.peerDependenciesMeta?.[dependency]?.optional === true && !Object.hasOwn(pkg.dependencies ?? {}, dependency) && !Object.hasOwn(pkg.optionalDependencies ?? {}, dependency);
+      if (!thirdPartyOptionalPeer) visit(target);
     }
   };
   visit(`packages/${consumer}`);
