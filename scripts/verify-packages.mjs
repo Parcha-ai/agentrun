@@ -63,6 +63,8 @@ const forbid = [
 // copy, so a reader of the tarball can check what was copied; no other package may carry it.
 const allowedExtraFiles = {
   'pi-browser': ['package/src/vendor/stagehand-facade/UPSTREAM.json'],
+  // The learning repository's contract ships with its checker.
+  learn: ['package/SPEC.md'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
 };
@@ -110,7 +112,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'run-adapters', 'harness'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'run-adapters', 'harness'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -300,6 +302,7 @@ import * as agentHome from '@parcha/pi-durable-agent';
 import * as gitRemote from '@parcha/pi-git-remote';
 import * as gitRemoteAgent from '@parcha/pi-git-remote/coding-agent';
 import * as agentLearn from '@parcha/pi-agent-learn';
+import * as learnCheck from '@parcha/agentrun-learn';
 import * as adapters from '@parcha/agentrun-adapters';
 import * as adaptersTesting from '@parcha/agentrun-adapters/testing';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
@@ -361,13 +364,15 @@ assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWor
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); for (const file of ['index.html','locked.html','serve.css','serve.js']) assert.ok((await readFile(join(servePkg,'dist','page',file),'utf8')).length>0,'the install has dist/page/'+file); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',fast:null,default:null,strong:null}); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
+{ const draft={v:2,name:'w',schemas:{S:{type:'object'}},output:{schemaId:'S'},root:{node:'agent',label:'a',instructions:'Do it.',out:'S',as:'a',tools:['bash']}}; const changes=[{path:'workflows/w/workflow.json',status:'added',bytes:Buffer.from(JSON.stringify(draft))},{path:'AGENTS.md',status:'modified',bytes:Buffer.from('x')}]; assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes}).problems.map(p=>p.rule),['no_tool_list','locked','memo_missing']); assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes,tools:['fetch_page']}).problems.map(p=>p.rule),['workflow','locked','memo_missing']); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
-console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,adapters:true,harness:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,learnCheck:true,adapters:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
   receipt.runtimeSmoke = smoke;
   assert.match((await offlineNode(['node_modules/@parcha/agentrun-serve/dist/cli.js', '--help'])).stdout, /^usage: agentrun-serve /, 'the installed agentrun-serve bin prints its usage');
+  assert.match((await offlineNode(['node_modules/@parcha/agentrun-learn/dist/cli.js', '--help'])).stdout, /^usage: agentrun-learn check /, 'the installed agentrun-learn bin prints its usage');
   // The reference example runs in the consumer as a stranger would run it: its pages are served by the browser's fake backend on
   // loopback, so its preload admits loopback only.
   await cp(join(root, 'scripts/deny-remote.mjs'), join(consumer, 'deny-remote.mjs'));
