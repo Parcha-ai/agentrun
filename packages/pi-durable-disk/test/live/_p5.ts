@@ -2,7 +2,7 @@
 // for hosts A, B and C, the run, token and unit bookkeeping, the CLI supervisor helpers, and the before and after hooks
 // that set up /mnt/pda/p5 and remove everything a test made (recorded in P5-STATE.json), also on failure. Each file that
 // imports it runs in its own process, with its own hooks; they share the ledger.
-import { after, before, beforeEach } from "node:test";
+import { after, afterEach, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -223,6 +223,47 @@ export async function stopInstance(h: HostHandle, how = "driver stop"): Promise<
   const i = handles.indexOf(h);
   if (i >= 0) handles.splice(i, 1);
 }
+
+/** This run's own names: its units (pda-p5-<role>-p5-<stamp>-<test>-...) and mountpoints (<root>/runs/p5-<stamp>-<test>). */
+const ours = (name: string) => name.includes(`p5-${STAMP}-`);
+
+/**
+ * After each test, whatever it left up on this host: daemons it froze, supervise loops, units and mounts of this run.
+ * A test that passed has already cleaned up (its last assertion is an empty mount table), so this matters after a red:
+ * without it, every later test fails its own empty-mount-table check on the red one's leftovers. Only this run's
+ * processes, units and mounts, by name; run directories and token users stay for `after`, which records their removal.
+ */
+afterEach(async () => {
+  if (!LIVE) return;
+  const left: Record<string, unknown> = { test: currentTest, thawed: [...stopped], loops: loops.size, units: [], mounts: [] };
+  for (const pid of stopped) sh("sudo", ["-n", "kill", "-CONT", String(pid)]);
+  stopped.clear();
+  for (const l of [...loops]) {
+    l.kill("SIGTERM");
+    loops.delete(l);
+  }
+  if ((left.thawed as number[]).length || (left.loops as number)) await sleep(500);
+  for (const h of [...handles]) {
+    const r = await stopInstance(h, "stopped after its test").then(() => "stopped", (e: unknown) => `stop failed: ${(e as Error).message}`);
+    (left.units as unknown[]).push({ unit: h.unit, r });
+  }
+  for (const line of sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p5-*"]).stdout.trim().split("\n").filter(Boolean)) {
+    const unit = line.split(/\s+/)[0];
+    if (!ours(unit)) continue;
+    sh("sudo", ["-n", "systemctl", "stop", unit]);
+    sh("sudo", ["-n", "systemctl", "reset-failed", unit]);
+    (left.units as unknown[]).push({ unit, r: "stray, stopped" });
+    ledger.unitGone(unit, "stray, stopped after its test");
+  }
+  for (const mp of archilMounts().filter(ours)) {
+    const via = await unmountClaim(mp).catch((e: unknown) => `failed: ${(e as Error).message}`);
+    (left.mounts as unknown[]).push({ mp, via });
+    ledger.unmounted(mp, `${String(via)} (after its test)`);
+  }
+  if ((left.thawed as number[]).length || (left.loops as number) || (left.units as unknown[]).length || (left.mounts as unknown[]).length) {
+    ((results.afterEach ??= []) as unknown[]).push(left);
+  }
+});
 
 before(async () => {
   if (!LIVE) return;
