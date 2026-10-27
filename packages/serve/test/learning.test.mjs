@@ -4,14 +4,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { outcomeOf, proposeRun, untrustedOf } from "../dist/learning.js";
-import { agent, client, FAUX, flowAgent, follow, scratch, serve, storeRun } from "./support.mjs";
+import { agent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -215,6 +215,29 @@ test("proposing a run again makes no second commit: the branch's Run-Id answers 
   assert.deepEqual(again, { status: "already", sha });
   assert.equal(tip(bare, branch), sha);
   assert.equal(git(bare, "log", "--format=%H", `main..${branch}`), sha, "one commit for the run");
+});
+
+test("on a host without git 2.40 a new agent does not learn, one that asks to saves with a warning, and its run is refused", async (t) => {
+  const bin = join(await scratch(t), "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "git"), "#!/bin/sh\necho 'git version 2.39.5'\n");
+  await chmod(join(bin, "git"), 0o755);
+  withEnv(t, { PATH: `${bin}:${process.env.PATH}` });
+  const { api, data } = await serve(t);
+  const plain = await api("POST", "/agents", agent("plain"));
+  assert.equal(plain.status, 201);
+  assert.equal(plain.body.definition.learning, "off", "a new agent learns only where it can");
+  assert.deepEqual(plain.body.warnings, []);
+  const asked = await api("POST", "/agents", agent("asked", { learning: "auto" }));
+  assert.equal(asked.status, 201);
+  assert.deepEqual(asked.body.warnings.map((w) => [w.field, w.reason]), [["definition.learning", "not_set_up_here"]]);
+  assert.match(asked.body.warnings[0].message, /git 2\.40/);
+  const run = await api("POST", "/agents/asked/runs", { input: { content: "Hello." } });
+  assert.equal(run.status, 409);
+  assert.equal(run.body.error.code, "agent_not_runnable");
+  assert.equal(existsSync(join(data, "agents", "asked")), false);
+  const ran = await api("POST", "/agents/plain/runs", { input: { content: "Hello." } });
+  assert.equal(ran.status, 202, "an agent that does not learn runs as before");
 });
 
 test("a run's outcome on its memo, and what makes a run untrusted", () => {
