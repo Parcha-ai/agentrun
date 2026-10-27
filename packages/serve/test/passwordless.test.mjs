@@ -21,7 +21,7 @@ test("every password endpoint and every magic-link endpoint under /v2/auth answe
   for (const headers of [{ ...json, origin }, { ...json, origin, authorization: `Bearer ${server.token}` }]) {
     for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
       // DELETE goes without a body: node sends one with no length, which no server can frame.
-      const body = method === "GET" || method === "DELETE" ? undefined : { email: "ana@example.com", password: "correct horse battery", newPassword: "another long password", currentPassword: "correct horse battery", token: "t" };
+      const body = method === "GET" || method === "DELETE" ? undefined : { email: "ana@example.com", password: "not-a-secret", newPassword: "not-a-secret", currentPassword: "not-a-secret", token: "t" };
       const expected = shapeOf(await call(server.port, { method, path: unknown, headers, body }), unknown);
       assert.equal(expected.status, 404);
       for (const path of [...PASSWORD_PATHS, ...MAGIC_LINK_PATHS].map((p) => `/v2/auth${p}`)) {
@@ -35,7 +35,7 @@ test("every password endpoint and every magic-link endpoint under /v2/auth answe
 test("setup takes no password: a password field is a 422 not_allowed, and {name, email} makes the owner and signs them in at once", async (t) => {
   const server = await serve(t, { accounts: true });
   const bearer = { ...json, authorization: `Bearer ${server.token}` };
-  const refused = await call(server.port, { method: "POST", path: "/v2/setup", headers: bearer, body: { name: "Ana", email: "ana@example.com", password: "correct horse battery" } });
+  const refused = await call(server.port, { method: "POST", path: "/v2/setup", headers: bearer, body: { name: "Ana", email: "ana@example.com", password: "not-a-secret" } });
   assert.equal(refused.status, 422, refused.text);
   assert.deepEqual([refused.status, refused.json.error.code, refused.json.error.fields.map((f) => [f.field, f.reason])], [422, "input_invalid", [["password", "not_allowed"]]]);
   const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: bearer, body: { name: "Ana", email: "ana@example.com" } });

@@ -81,7 +81,7 @@ test("setup takes the printed code from this server's origin only, keeps it thro
     const refused = await setup(one.port, { code, ...OWNER }, headers);
     assert.deepEqual([refused.status, refused.json.error.code], [403, "forbidden"], why);
   }
-  const form = await setup(one.port, { code, ...OWNER, password: "too short", extra: 1 }, { origin });
+  const form = await setup(one.port, { code, ...OWNER, password: "not-a-secret", extra: 1 }, { origin });
   assert.deepEqual([form.status, form.json.error.code, form.json.error.fields.map((f) => f.field).sort()], [422, "input_invalid", ["extra", "password"]]);
   assert.equal((await setup(one.port, { code, ...OWNER }, { origin, "content-type": "text/plain" })).status, 415);
   for (let i = 0; i < 5; i++) {

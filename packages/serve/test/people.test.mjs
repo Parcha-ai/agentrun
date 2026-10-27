@@ -209,23 +209,23 @@ test("an open timeline stream ends with its session: when its person is disabled
   const watched = stream(server.port, run_id, server.boCookie);
   assert.equal(await watched.opened, 200);
   assert.equal((await owner("PATCH", `/people/${server.bo}`, { disabled: true })).status, 200);
-  assert.ok(await endsWithin(watched, 6_000), "a disabled person's stream ends");
+  assert.ok(await endsWithin(watched, 1_000), "a disabled person's stream ends at once, not at the 5 s re-check");
   assert.equal((await owner("PATCH", `/people/${server.bo}`, { disabled: false })).status, 200);
   // A role change: the stream ends, and a new one opens under the new role.
   const promoted = stream(server.port, run_id, await server.signInAs(BO.email));
   assert.equal(await promoted.opened, 200);
   assert.equal((await owner("PATCH", `/people/${server.bo}`, { role: "admin" })).status, 200);
-  assert.ok(await endsWithin(promoted, 6_000), "a role change ends the person's streams");
+  assert.ok(await endsWithin(promoted, 1_000), "a role change ends the person's streams at once, not at the 5 s re-check");
   // Sign-out: that session's stream ends; another session's stays open until it is signed out from elsewhere.
   const [one, two] = [await server.signInAs(BO.email), await server.signInAs(BO.email)];
   const [first, second] = [stream(server.port, run_id, one), stream(server.port, run_id, two)];
   assert.deepEqual([await first.opened, await second.opened], [200, 200]);
   assert.equal((await asPerson(server, one)("POST", "/auth/sign-out", {})).status, 200);
-  assert.ok(await endsWithin(first, 6_000), "a signed-out session's stream ends");
+  assert.ok(await endsWithin(first, 1_000), "a signed-out session's stream ends at once, not at the 5 s re-check");
   assert.equal(second.endedAt(), null, "the person's other session keeps its stream");
   const third = await server.signInAs(BO.email);
   assert.equal((await asPerson(server, third)("POST", "/auth/revoke-other-sessions", {})).status, 200);
-  assert.ok(await endsWithin(second, 6_000), "signing the other sessions out ends their streams");
+  assert.ok(await endsWithin(second, 1_000), "signing the other sessions out ends their streams at once, not at the 5 s re-check");
   await owner("POST", `/runs/${run_id}/cancel`, {});
 });
 
