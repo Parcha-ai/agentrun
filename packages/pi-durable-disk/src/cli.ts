@@ -307,7 +307,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       holder,
       // The door's harness children die before the exit 75: another instance may take the run, and a child left alive
       // would act on without the lease.
-      onFenced: (error) => (server ? server.stopDoor().catch(() => undefined).then(() => exitFenced(error)) : exitFenced(error)),
+      // The lease is gone: the harness children die now, without waiting on the hook's abort.
+      onFenced: (error) => (server ? server.stopDoor({ now: true }).catch(() => undefined).then(() => exitFenced(error)) : exitFenced(error)),
       ownCgroup: cgroup.owns,
       lease: Object.fromEntries(Object.entries(lease).filter(([, v]) => v !== undefined)),
       onStep: (step, t) => void (steps[step] = Math.round(t)),

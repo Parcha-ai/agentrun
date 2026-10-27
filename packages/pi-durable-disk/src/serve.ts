@@ -60,7 +60,7 @@ export interface RunServer {
   /** Refuse new submissions with 503 PARKING; the returned function admits them again. */
   pause(): () => void;
   /** Before the instance exits (a drain, a fence, a park): abort the door hook's work (bounded) and kill the harness children it adopted. Nothing without a hook. */
-  stopDoor(): Promise<void>;
+  stopDoor(options?: { now?: boolean }): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -351,8 +351,8 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
         if (!undone) (undone = true), pauses--;
       };
     },
-    stopDoor() {
-      return door?.stop() ?? Promise.resolve();
+    stopDoor(options) {
+      return door?.stop(options) ?? Promise.resolve();
     },
     close() {
       closed = true;

@@ -117,8 +117,9 @@ export interface Door {
   readonly turnOpen: boolean;
   /** Receive the door's run events; returns the unsubscribe. */
   watch(listener: (event: DoorRunEvent) => void): () => void;
-  /** When the instance ends (a drain, a fence, a park): abort the hook (bounded), pair an open run_start, kill every adopted child's process group. */
-  stop(): Promise<void>;
+  /** When the instance ends (a drain, a fence, a park): abort the hook (bounded), pair an open run_start, kill every adopted child's process group.
+   *  `now` (a fence: the lease is gone): the children are killed at once, and the hook's abort is not awaited. */
+  stop(options?: { now?: boolean }): Promise<void>;
 }
 
 export { TIMEOUT as DOOR_TIMEOUT };
@@ -209,8 +210,8 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
-    async stop() {
-      if (pending > 0 || hook.busy()) await abortHook().catch(() => undefined);
+    async stop({ now = false } = {}) {
+      if (!now && (pending > 0 || hook.busy())) await abortHook().catch(() => undefined);
       closeTurn();
       await Promise.all([...adopted].map(([pid, start]) => killGroup(pid, start)));
     },
