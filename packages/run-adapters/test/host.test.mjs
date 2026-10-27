@@ -116,12 +116,16 @@ test("only the policy's routes, by their exact text: an absolute URL, a foreign 
   assert.equal(forwarded[0].url, 'https://provider.invalid/v1/test?beta=true');
 });
 
-test("a local route is answered by the proxy, with the session key, and nothing is forwarded or asked", async (t) => {
+test("a local route is answered by the proxy with its status alone, with or without the key, and nothing is forwarded or asked", async (t) => {
   const { p, forwarded, hooks } = await proxy(t);
-  assert.equal((await send(p.url, { method: 'HEAD', path: '/v1/hello', key: null })).status, 401);
-  const hello = await send(p.url, { method: 'HEAD', path: '/v1/hello' });
-  assert.equal(hello.status, 200);
+  // A client's connectivity check carries no key (the Claude Agent CLI's does not): it learns only that the proxy is up.
+  for (const key of [null, 'wrong', KEY]) {
+    const hello = await send(p.url, { method: 'HEAD', path: '/v1/hello', key, body: '' });
+    assert.deepEqual([hello.status, hello.text, hello.headers['content-length']], [200, '', '0'], `key ${key}`);
+  }
   assert.deepEqual([forwarded.length, hooks.before.length, hooks.after.length], [0, 0, 0]);
+  // Every other route still needs it, a free one too.
+  assert.equal((await send(p.url, { path: '/v1/count', key: null })).status, 401);
 });
 
 test('a free route is forwarded without asking the runner, and reports no usage', async (t) => {

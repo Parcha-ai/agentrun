@@ -4,7 +4,8 @@
 // forward, where a response reports its usage). The core:
 //  - admits a request only with the session's key (compared in constant time), on a route the policy lists, by exact
 //    path text, with no query or one the route lists exactly: an absolute URL, `..`, `//` or `%` escapes never match. A
-//    route may be answered here (a client's connectivity check) or be free (a token count, which the runner never pays);
+//    route may be answered here with a status alone, with no key (a client's connectivity check), or be free (a token
+//    count, which the runner never pays);
 //  - parses the body strictly (one JSON value, no duplicate key at any depth, so a check on one `model` cannot pass while
 //    the provider reads another), then has the policy shape it (or refuse it);
 //  - asks the runner before every paid request (`beforeRequest`, where a turn cap or the host's budget refuses it) and
@@ -206,17 +207,19 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     // A request refused before its body is read is drained, so its client gets the answer instead of a reset.
     res.once("finish", () => { if (!req.complete) req.resume(); });
-    if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
     let route: ProxyRoute;
     let query: string;
     try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", req.url ?? "")); } catch (error) {
       const e = error as ProxyRefusal;
       return refuse(res, e.status ?? 403, e.message, req);
     }
+    // A local route forwards nothing and answers only a status, so it needs no key: a client's connectivity check
+    // (the Claude Agent CLI's `HEAD /api/hello`) is sent without one.
     if (route.local !== undefined) {
       res.writeHead(route.local, { "content-length": "0" });
       return res.end();
     }
+    if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
