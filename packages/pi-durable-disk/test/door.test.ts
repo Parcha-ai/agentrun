@@ -261,9 +261,11 @@ describe("the door hook: outcomes", () => {
   it("an accept just after the bound (an abort that lost the race to delivery) ends ACCEPTED, with no second submit", async () => {
     const disk = new LocalDisk("door-race");
     try {
+      const delivered = deferred<void>();
       const { hook, calls } = scripted({
         submit: async () => {
           await sleep(130);
+          await delivered.promise;
           return { accepted: true };
         },
         abort: async () => "idle",
@@ -271,6 +273,9 @@ describe("the door hook: outcomes", () => {
       const s = await served(disk, hook, { submitMs: 100, abortMs: 100 });
       const r = await submit(s.server, "race");
       assert.deepEqual([r.status, r.body.status], [504, "UNKNOWN"]);
+      const retried = await submit(s.server, "race");
+      assert.deepEqual([retried.status, retried.body.status], [504, "UNKNOWN"], "a retry while UNKNOWN answers it");
+      delivered.resolve();
       await until("the late accept", async () => (await submit(s.server, "race")).body.status === "ACCEPTED");
       assert.deepEqual((await submit(s.server, "race")).status, 200);
       assert.equal(calls.submit.length, 1);
