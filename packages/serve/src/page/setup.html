@@ -15,13 +15,13 @@
 <main>
 <section class="card account">
 <p class="kicker">AgentRun Server</p>
-<h1>Set up this server</h1>
-<p class="lede">Make its owner, who is signed in here at once. The setup code is in the line agentrun-serve printed that starts with <code>Set up this server</code>; that link fills it in.</p>
+<h1>Create your account</h1>
+<p class="lede">Make your account: the owner of this server, signed in here at once. A server reached at a public address asks for a setup code too: it is in the line agentrun-serve printed that starts with <code>Set up this server</code>, and that link fills it in.</p>
 <form id="setup" novalidate>
-<label class="field"><span class="word">Setup code</span><input type="text" name="code" autocomplete="off" spellcheck="false" required></label>
+<label class="field" id="code-field"><span class="word">Setup code</span><input type="text" name="code" autocomplete="off" spellcheck="false"></label>
 <label class="field"><span class="word">Your name</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
 <label class="field"><span class="word">Email</span><input type="email" name="email" autocomplete="email" required></label>
-<div class="actions"><button class="btn" type="submit">Make the owner</button></div>
+<div class="actions"><button class="btn" type="submit">Create my account</button></div>
 <p class="said" id="said" role="status"></p>
 </form>
 </section>

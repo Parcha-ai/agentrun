@@ -29,9 +29,10 @@ published port, or a proxy's URL), and the link printed uses it. stdout gets one
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 Accounts are on unless AGENTRUN_ACCOUNTS=0: people sign in with an email link, and the token still works for scripts and
-the CLI. The first start prints a setup link for the owner; an admin adds people. A sign-in link is mailed through
-AGENTRUN_SMTP_URL (smtp:// or smtps://, with its login) from AGENTRUN_MAIL_FROM, else printed to stderr. On an address
-that is not loopback, accounts need AGENTRUN_PUBLIC_URL; without it the server runs on its token alone and says so.`;
+the CLI. Without AGENTRUN_PUBLIC_URL the first person to open the page makes the owner's account; with it, setup takes the
+code this log prints. An admin adds people; without a mail server the page gives the admin each new person's link to pass
+on. A sign-in link is mailed through AGENTRUN_SMTP_URL (smtp:// or smtps://, with its login) from AGENTRUN_MAIL_FROM,
+else printed to stderr.`;
 
 let values;
 try {
@@ -73,15 +74,10 @@ const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".
 const given = process.env.AGENTRUN_TOKEN || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
-// Accounts are on unless AGENTRUN_ACCOUNTS=0; off, none of these settings is read. On an address that is not loopback
-// they need AGENTRUN_PUBLIC_URL: without it, and unless AGENTRUN_ACCOUNTS=1 asked for them by name, the server starts on
-// its token alone and says why. The token works for scripts and the CLI either way.
-const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
-let accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
-if (accounts && process.env.AGENTRUN_ACCOUNTS !== "1" && !publicUrl && !isLoopback(values.listen ?? "127.0.0.1")) {
-  console.error(`agentrun-serve: accounts are off: on ${values.listen}, which is not loopback, set AGENTRUN_PUBLIC_URL to the address people open to turn them on`);
-  accounts = false;
-}
+// Accounts are on unless AGENTRUN_ACCOUNTS=0; off, none of these settings is read. Without AGENTRUN_PUBLIC_URL the first
+// person to open the page makes the owner's account, with no code (as `docker run` gives it); with it, setup takes the
+// code from this log. The token works for scripts and the CLI either way.
+const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
 const smtp = accounts ? process.env.AGENTRUN_SMTP_URL || undefined : undefined;
 if (smtp && !process.env.AGENTRUN_MAIL_FROM) {
   console.error(`AGENTRUN_SMTP_URL needs AGENTRUN_MAIL_FROM, the address sign-in links come from\n\n${USAGE}`);
@@ -96,7 +92,7 @@ try {
     data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
-    ...(accounts ? { accounts, ...(publicUrl ? { publicUrl } : {}), ...(authSecret ? { authSecret } : {}), ...(owner ? { owner } : {}), ...(mail ? { mail } : {}) } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, ...(publicUrl ? { publicUrl } : {}), ...(authSecret ? { authSecret } : {}), ...(owner ? { owner } : {}), ...(mail ? { mail } : {}) } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);
@@ -105,7 +101,7 @@ try {
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
-if (serve.setupUrl) console.log(`Set up this server: ${serve.setupUrl}`);
+if (serve.setupUrl) console.log(serve.setupUrl.includes("#code=") ? `Set up this server: ${serve.setupUrl}` : `Create the owner's account: ${serve.setupUrl} (the first to open it becomes the owner)`);
 const stop = () => void serve.close().then(() => process.exit(0));
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);

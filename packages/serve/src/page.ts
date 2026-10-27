@@ -19,6 +19,7 @@ const FILES: Record<string, { path: string; type: string }> = {
   "/graph.js": STORE_PAGE_FILES["/graph.js"]!,
   "/serve.css": own("serve.css", "text/css; charset=utf-8"),
   "/serve.js": own("serve.js", "text/javascript; charset=utf-8"),
+  "/people.js": own("people.js", "text/javascript; charset=utf-8"),
 };
 const PAGE = own("index.html", HTML);
 const LOCKED = own("locked.html", HTML);

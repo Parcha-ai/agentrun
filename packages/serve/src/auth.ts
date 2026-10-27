@@ -210,6 +210,8 @@ export class Accounts {
   private auth: Auth | undefined;
   private site: { baseUrl: string; origin: string; origins: string[]; cookie: string } | undefined;
   private setupCode: { code: string; until: number; tries: number } | null = null;
+  /** No owner yet and no public address: the first to set up becomes the owner, with no code. */
+  private openSetup = false;
   /** Open streams a session signed in, each with who opened it and how to end it. */
   private readonly streams = new Set<{ id: string; role: Role; req: IncomingMessage; end: () => void }>();
   private recheckTimer: NodeJS.Timeout | undefined;
@@ -226,7 +228,7 @@ export class Accounts {
   /** Fixes the address every link and the cookie are built from, and the origins a write may come from: `baseUrl`'s,
    *  and on the loopback default also localhost on the same port. Makes a fresh setup code when there is no
    *  owner: its link, or null. */
-  attach(baseUrl: string, port: number, loopbackDefault = false): string | null {
+  attach(baseUrl: string, port: number, loopbackDefault = false, openSetup = false): string | null {
     const origin = new URL(baseUrl).origin;
     const origins = loopbackDefault ? [...new Set([origin, `${new URL(baseUrl).protocol}//localhost:${port}`])] : [origin];
     this.auth = build(this.db, this.secret, { baseUrl, port, origins }, (nonce, token) => {
@@ -234,6 +236,8 @@ export class Accounts {
     });
     this.site = { baseUrl, origin, origins, cookie: sessionCookie(baseUrl, port) };
     if (this.hasOwner()) return null;
+    this.openSetup = openSetup;
+    if (openSetup) return `${baseUrl}/setup`;
     this.setupCode = { code: randomBytes(16).toString("base64url"), until: Date.now() + SETUP_TTL_MS, tries: 0 };
     return `${baseUrl}/setup#code=${this.setupCode.code}`;
   }
@@ -438,20 +442,11 @@ export class Accounts {
   /** The link for `email` when its person exists and is not disabled, within the per-email limit: mailed, or printed to
    *  the server's log. */
   private async sendLink(email: string, headers: Headers): Promise<void> {
-    const { auth, baseUrl } = this.ready();
+    const { baseUrl } = this.ready();
     const person = this.db.prepare(`SELECT email, banned FROM "user" WHERE lower(email) = ?`).get(email) as { email: string; banned: number | null } | undefined;
     if (!person || person.banned || !this.take(`email:${email}`, LINKS_PER_EMAIL)) return;
-    const nonce = randomBytes(16).toString("base64url");
-    let token: string | undefined;
-    this.pending.set(nonce, (given) => void (token = given));
-    try {
-      await auth.api.signInMagicLink({ body: { email: person.email, metadata: { nonce } }, headers });
-    } finally {
-      this.pending.delete(nonce);
-    }
-    if (token === undefined) return;
-    // The token rides in the fragment: a scanner that fetches every link in a mail spends nothing and signs nobody in.
-    const link = `${baseUrl}/sign-in#token=${encodeURIComponent(token)}&email=${encodeURIComponent(person.email)}`;
+    const link = await this.linkFor(person.email, headers);
+    if (link === undefined) return;
     if (!this.mail) return void process.stderr.write(`agentrun-serve: sign-in link for ${person.email} (once, within 15 minutes): ${link}\n`);
     await this.mail({ to: person.email, subject: "Sign in to AgentRun Server", text: `Open this link to sign in to AgentRun Server at ${baseUrl}. It works once, within 15 minutes.\n\n${link}\n\nIf you did not ask for it, ignore this email.\n` })
       .catch((error: Error) => void process.stderr.write(`agentrun-serve: accounts: the sign-in link for ${person.email} was not sent: ${error.message}\n`));
@@ -474,6 +469,21 @@ export class Accounts {
     const answer = Buffer.from(JSON.stringify({ signed_in: true }));
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", "set-cookie": cookies, "content-length": String(answer.length) });
     res.end(answer);
+  }
+
+  /** A fresh one-time sign-in link for the person with `email`. The token rides in the fragment: a scanner that fetches
+   *  every link in a mail spends nothing and signs nobody in. */
+  private async linkFor(email: string, headers: Headers): Promise<string | undefined> {
+    const { auth, baseUrl } = this.ready();
+    const nonce = randomBytes(16).toString("base64url");
+    let token: string | undefined;
+    this.pending.set(nonce, (given) => void (token = given));
+    try {
+      await auth.api.signInMagicLink({ body: { email, metadata: { nonce } }, headers });
+    } finally {
+      this.pending.delete(nonce);
+    }
+    return token === undefined ? undefined : `${baseUrl}/sign-in#token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
   }
 
   // ---- setup --------------------------------------------------------------------------------------------------------
@@ -507,7 +517,7 @@ export class Accounts {
     if (issues.length) throw invalid(issues);
     // A refused form keeps the code; a matching code is spent here, before the owner is made.
     const code = this.setupCode;
-    if (!byToken) this.spendCode(body.code);
+    if (!byToken && !this.openSetup) this.spendCode(body.code);
     const made = await this.make({ email: email as string, name: (name as string).trim(), role: "admin" }, auth, true);
     let cookies: string[];
     try {
@@ -553,7 +563,7 @@ export class Accounts {
   }
 
   /** POST /v2/people {email, name?, role?}: an admin adds a person, who then signs in with a link. */
-  async createPerson(body: Record<string, unknown>) {
+  async createPerson(body: Record<string, unknown>, req?: IncomingMessage) {
     const issues: InputIssue[] = Object.keys(body).filter((key) => !["email", "name", "role"].includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : undefined;
     if (email === undefined || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) issues.push({ field: "email", reason: body.email === undefined ? "missing" : "wrong_type", message: "email is an email address" });
@@ -563,7 +573,14 @@ export class Accounts {
     // The contract's error codes are a closed list: a taken email is the field's refusal.
     if (this.db.prepare(`SELECT 1 FROM "user" WHERE lower(email) = ?`).get(email!) !== undefined) throw invalid([{ field: "email", reason: "not_an_option", message: `a person with the email ${email} is here already` }]);
     const made = await this.addPerson({ email: email!, name: typeof body.name === "string" ? body.name.trim() : email!.split("@")[0]!, role: (body.role as Role | undefined) ?? "member" });
-    return this.view(this.row(made.id)!);
+    const headers = signInHeaders(req);
+    // With a mail server the new person's first link is mailed, never answered; without one the admin passes it on.
+    if (this.mail) {
+      void this.sendLink(email!, headers).catch((error: Error) => void process.stderr.write(`agentrun-serve: accounts: no sign-in link was made for a new person: ${error.message}\n`));
+      return this.view(this.row(made.id)!);
+    }
+    const link = await this.linkFor(email!, headers);
+    return { ...this.view(this.row(made.id)!), ...(link ? { sign_in_link: link } : {}) };
   }
 
   people() {

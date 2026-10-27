@@ -82,6 +82,16 @@ run and `auth_failed` lines stay. A run whose process failed at its start says w
 ## In a container
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
+No mail server needed:
+
+1. `docker run` it (below).
+2. Open the page and create your account: the first person to open it becomes the owner.
+3. Add teammates on the page and copy each one's sign-in link to them.
+
+On a fresh server with no `AGENTRUN_PUBLIC_URL`, whoever reaches the page first becomes the owner, so create your account
+right after `docker run`, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code from
+the log still guards it.
+
 With no checkout:
 
 ```sh
@@ -276,17 +286,24 @@ only when the request's `Origin` is the page's own origin and its body is `appli
 
 ## People and sign-in
 
-Accounts are on unless `AGENTRUN_ACCOUNTS=0`. The first start prints `Set up this server: <url>/setup#code=<code>`: open
-it to make the owner, who is signed in at once. An admin adds people (`POST /v2/people {email, name?, role?}`, or the
-People routes), and each signs in on the sign-in page with a link sent to their email: through `AGENTRUN_SMTP_URL`
-(`smtps://<user>:<password>@<host>:465`) from `AGENTRUN_MAIL_FROM`, or, without SMTP, printed to the server's log for the
-operator to pass on: until it is used, or for 15 minutes, that log line signs its person in, so keep the log as private as
-the token. A link works once, within 15 minutes: it opens the sign-in page, and only its Continue button spends it, so a
-mail scanner that fetches the link signs nobody in. People have a role (member or admin) and no password. The
-server's token keeps working for scripts and the CLI.
+Accounts are on unless `AGENTRUN_ACCOUNTS=0`. With no `AGENTRUN_PUBLIC_URL`, the first person to open the page creates
+the owner's account and is signed in at once (the start prints `Create the owner's account: <url>/setup`). With it, the
+start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code. An admin adds people on the page
+(or `POST /v2/people {email, name?, role?}`); each signs in with a one-time link, good for 15 minutes:
 
-On an address that is not loopback (a container), accounts need `AGENTRUN_PUBLIC_URL`, the address people open: every
-link and the session cookie are built from it. Without it the server runs on its token alone and says so.
+- without a mail server, the page gives the admin the new person's link to copy and pass on, and a person who asks for a
+  link again on the sign-in page gets it printed to the server's log for the operator: until it is used, or for 15
+  minutes, that log line signs its person in, so keep the log as private as the token;
+- with `AGENTRUN_SMTP_URL` (`smtps://<user>:<password>@<host>:465`) and `AGENTRUN_MAIL_FROM`, links are mailed, and never
+  answered or logged.
+
+A link opens the sign-in page, and only its Continue button spends it, so a mail scanner that fetches the link signs
+nobody in. A session lasts 7 days idle and 30 at most. People have a role (member or admin) and no password. The server's
+token keeps working for scripts and the CLI.
+
+Writes from a browser must come from the page's own origin: the public URL, or `http://localhost:<port>` and
+`http://127.0.0.1:<port>` without one. Serve the image on another address or port, and set `AGENTRUN_PUBLIC_URL` to the
+address people open.
 
 ## A run's life
 

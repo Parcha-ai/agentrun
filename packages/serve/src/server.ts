@@ -78,6 +78,9 @@ export type ServeOptions = {
   owner?: { email: string };
   /** With accounts: how a sign-in link is sent (SMTP, AGENTRUN_SMTP_URL); without it, the link is printed to the log. */
   mail?: Mailer;
+  /** With accounts and no owner yet: the first person to set up becomes the owner with no setup code (the CLI with no
+   *  AGENTRUN_PUBLIC_URL). Off, setup takes the code from the log or the token. */
+  openSetup?: boolean;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
 };
@@ -286,7 +289,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   let accounts: Accounts | undefined;
   if (options.accounts) {
     if (options.publicUrl !== undefined && !/^https?:\/\/[^/?#]+$/.test(options.publicUrl)) throw new Error("with accounts, AGENTRUN_PUBLIC_URL is an origin: http(s)://host[:port], no path");
-    if (!isLoopback(host) && options.publicUrl === undefined) throw new Error(`with accounts on ${host}, which is not loopback, set AGENTRUN_PUBLIC_URL: every link and the session cookie are built from it, never from Host`);
     accounts = await openAccounts({ data, token, ...(options.authSecret !== undefined ? { secret: options.authSecret } : {}), ...(options.owner ? { owner: options.owner } : {}), ...(options.mail ? { mail: options.mail } : {}) });
   }
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
@@ -776,7 +778,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         case "listPeople":
           return send(res, 200, accounts.people());
         case "createPerson": {
-          const made = await accounts.createPerson(await bodyOf(req));
+          const made = await accounts.createPerson(await bodyOf(req), req);
           did("person.add", {});
           return send(res, 201, made, { location: `/v2/people/${made.id}` });
         }
@@ -851,7 +853,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   // Fixed before the first request can arrive: nothing awaits between the listen and here.
-  const setupUrl = accounts?.attach(options.publicUrl ?? url, address.port, options.publicUrl === undefined);
+  const setupUrl = accounts?.attach(options.publicUrl ?? url, address.port, options.publicUrl === undefined, options.openSetup === true);
   return {
     url,
     baseUrl: `${url}/v2`,
