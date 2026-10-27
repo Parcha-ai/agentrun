@@ -12,9 +12,14 @@ harness adapter the way they run on Pi, durable in AgentRun's own store. It is h
   process died inside resumes from its records with nothing paid twice. Without a step each call is a fresh session.
 - `AgentAdapter` is the interface a harness implements: `check` refuses a session before anything is spent (a fork it
   cannot make), and `open` restores a session from its records.
+- `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
+  session: every writer opened earlier for that key is fenced from then on, and its appends are refused
+  (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a
+  process whose lease lapsed while it was still alive cannot act in a session a newer process holds; it ends `fenced`.
 - `./testing` has `memorySessionStore` and `fauxAdapter`, a scripted harness with no model and no network.
-- `./kernel` is the durable kernel an adapter runs on (`openDrive` over a session store): an effect's intent, then at
-  most one outcome; after a crash a `safe` effect runs again and a `never` one is reported interrupted, never run again.
+- `./kernel` is the durable kernel an adapter runs on (`openDrive` over the session's writer): an effect's intent, then
+  at most one outcome; after a crash a `safe` effect runs again and a `never` one is reported interrupted, never run
+  again. A drive whose writer was fenced gets a `Restart` at its next write, so it never runs a new effect.
   `./process` is the shared layer for harnesses that run as a child process: the native journal, the transcript, the
   recovery note, the tool bridge, the built-ins' hook-pair calls and the inbox.
 

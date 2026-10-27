@@ -28,11 +28,24 @@ export interface SessionRecord {
   data: JsonValue;
 }
 
-/** Where a session's records live: the run's store, written through whoever owns it. `append` resolves once the
- *  records are durable, in order. A key is one session for its whole life, across processes. */
+/** Where a session's records live: the run's store, written through whoever owns it. A key is one session for its
+ *  whole life, across processes. Records are written only through a writer, and one writer holds a session at a time:
+ *  `open` takes the session, and from the moment it resolves every writer opened earlier for that key is fenced, whether
+ *  or not the new one has written anything. A process whose lease lapsed while it was still alive therefore cannot write
+ *  into a session a newer process holds. */
 export interface SessionStore {
   read(key: string): Promise<SessionRecord[]>;
-  append(key: string, records: readonly SessionRecord[]): Promise<void>;
+  /** Take the session. Resolves once the new holder is durable: every earlier writer of `key` is fenced from then on. */
+  open(key: string): Promise<SessionWriter>;
+}
+
+/** The one holder that may write a session. */
+export interface SessionWriter {
+  readonly key: string;
+  read(): Promise<SessionRecord[]>;
+  /** Resolves once the records are durable, in order. Rejects with `SessionFenced`, writing none of them, once a newer
+   *  `open` of the key has resolved. */
+  append(records: readonly SessionRecord[]): Promise<void>;
 }
 
 /** What one session is. */
@@ -75,7 +88,9 @@ export interface ModelPort {
 
 /** What the host lends a session. */
 export interface SessionIO {
-  store: SessionStore;
+  /** The session's writer, opened by the runner for this attempt. The adapter writes through it and never opens the
+   *  session itself, so a drive it restarts cannot take the session back from a newer process. */
+  writer: SessionWriter;
   models: ModelPort;
   signal: AbortSignal;
   /** The session's private directory, when the host gives one: its HOME and the harness's own files. */
@@ -126,6 +141,6 @@ export interface AgentAdapter {
   capabilities(): AdapterCapabilities;
   /** Problems with a session before anything is spent; an empty list opens it. */
   check(spec: SessionSpec): string[];
-  /** Opens the session, restoring it from `io.store` when its key has records. */
+  /** Opens the session, restoring it from `io.writer` when its key has records. */
   open(spec: SessionSpec, io: SessionIO): Promise<AdapterSession>;
 }

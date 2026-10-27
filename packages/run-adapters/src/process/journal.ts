@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/journal.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; blobs are kept in the session's own records; message prefixes.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; blobs are kept in the session's own records; message prefixes; the fence comment names the session writer's fence.
 import { randomUUID } from 'node:crypto';
 import { BLOB_PIECE_CHARS, blobStreamName, type DriveContext, Fatal, readBlobs, Restart, sha256Hex, writeBlob } from '../kernel/index.js';
 import {
@@ -68,7 +68,8 @@ const encoder = new TextEncoder();
  * `flush()` before a `never` tool still means "in the log before the tool".
  *
  * The journal's writes are in-band writes of the drive: they go through
- * `ctx.effect`, so the epoch fence, first-writer-wins per key and the
+ * `ctx.effect`, so the writer fence (once a newer drive opens the session,
+ * this drive's writes are refused: a `Restart`), first-writer-wins per key and the
  * outcome rules apply. A failed or refused write poisons the journal
  * (`append` becomes a no-op, `flush` rejects) and halts the drive. So does a
  * batch number another writer took first (two drives of one session, the

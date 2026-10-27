@@ -3,11 +3,13 @@
 // reports a `never` one interrupted, never running it again. Each "process" here is a drive opened on the same store.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EffectFailure, INTERRUPTED_TEXT, openDrive, readBlobs } from '@parcha/agentrun-adapters/kernel';
+import { EffectFailure, foldSession, INTERRUPTED_TEXT, openDrive, readBlobs, Restart } from '@parcha/agentrun-adapters/kernel';
+import { SessionFenced } from '@parcha/agentrun-adapters';
 import { NativeJournal, placeSubmissions, readJournal, recoveryNote, toolBridge, toolKey, transcriptOf } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 
-const open = (store, signal = new AbortController().signal) => openDrive({ store, key: 'run-1', signal });
+/** One process's drive: it takes the session (every earlier drive's writer is fenced from now on), then opens on it. */
+const open = async (store, signal = new AbortController().signal) => openDrive({ writer: await store.open('run-1'), signal });
 /** A process that dies inside `fn`: its drive is abandoned with the effect's intent written and no outcome. */
 async function diesInside(drive, key, options) {
   let entered;
@@ -24,7 +26,7 @@ test('an effect runs once: its intent, then its outcome; a later call is answere
   const second = await open(store);
   assert.equal(second.isMemoized('k'), true);
   assert.deepEqual(await second.effect('k', { name: 'lookup', replay: 'never', input: { q: 1 } }, async () => { runs += 1; return { found: false }; }), { found: true });
-  await assert.rejects(first.effect('bad', { name: 'x', replay: 'never', input: {} }, async () => { throw new Error('no'); }), (error) => error instanceof EffectFailure && error.error.message === 'no');
+  await assert.rejects(second.effect('bad', { name: 'x', replay: 'never', input: {} }, async () => { throw new Error('no'); }), (error) => error instanceof EffectFailure && error.error.message === 'no');
   await assert.rejects((await open(store)).effect('bad', { name: 'x', replay: 'never', input: {} }, async () => 'never runs'), EffectFailure);
   assert.equal(runs, 1);
 });
@@ -111,4 +113,49 @@ test('the copied tool bridge runs a never call once, and after a crash the recov
   const note = recoveryNote(next.state());
   assert.ok(note, 'the turn the crash cut off is owed a recovery note');
   assert.match(note.text, /may have taken effect/);
+});
+
+test('the store fences a writer once a newer open of its session resolves, before the newer one writes anything', async () => {
+  const store = memorySessionStore();
+  const a = await store.open('s');
+  await a.append([{ kind: 'x', data: 'a1' }]);
+  const b = await store.open('s');
+  await assert.rejects(a.append([{ kind: 'x', data: 'a2' }]), (error) => error instanceof SessionFenced && error.key === 's');
+  await b.append([{ kind: 'x', data: 'b1' }]);
+  assert.deepEqual((await store.read('s')).map((r) => r.data), ['a1', 'b1'], "the fenced append wrote nothing");
+  // Another session's writers are untouched.
+  const other = await store.open('t');
+  await b.append([{ kind: 'x', data: 'b2' }]);
+  await other.append([{ kind: 'x', data: 't1' }]);
+  assert.deepEqual([(await store.read('s')).length, (await store.read('t')).length], [3, 1]);
+});
+
+// K1: a process whose lease lapsed while it was still alive. Once a newer drive opens the session (and writes nothing),
+// the stale drive must not dispatch a new `never` effect: its intent is refused, and it gets a Restart, not a result.
+test('K1: a stale drive does not dispatch a never effect after a newer drive opened', async () => {
+  const store = memorySessionStore();
+  const a = await open(store);
+  await open(store);
+  let ran = 0;
+  await assert.rejects(a.effect('send-email', { name: 'send', replay: 'never' }, async () => { ran += 1; return 'sent'; }), Restart);
+  assert.equal(ran, 0, 'the stale drive dispatched a never effect after it lost the session');
+});
+
+// K2: two drives that each write the same key's first intent would share a stepId, so one drive's outcome would be
+// applied to the other's intent. The stale one's intent is refused instead: only the drive whose output the log holds
+// returns normally.
+test("K2: an outcome is never applied to another drive's intent", async () => {
+  const store = memorySessionStore();
+  const a = await open(store);
+  const b = await open(store);
+  let releaseA;
+  const aDone = a.effect('journal:0', { name: 'journal', replay: 'safe' }, () => new Promise((r) => { releaseA = () => r('A-batch'); })).catch((e) => e);
+  await new Promise((r) => setTimeout(r, 10));
+  const bOut = await b.effect('journal:0', { name: 'journal', replay: 'safe' }, async () => 'B-batch').catch((e) => e);
+  releaseA?.();
+  const aOut = await aDone;
+  const folded = foldSession('run-1', await store.read('run-1')).effects.get('journal:0');
+  const winners = [aOut, bOut].filter((o) => typeof o === 'string');
+  assert.deepEqual(winners, [folded.output], `A returned ${String(aOut)}, B returned ${String(bOut)}, the log holds ${folded.output}`);
+  assert.ok(aOut instanceof Restart, `the stale drive was told to rebuild: ${aOut}`);
 });

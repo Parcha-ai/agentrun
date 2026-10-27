@@ -2,11 +2,13 @@
 //
 // An effect is an intent (`kernel.start`), then at most one outcome (`kernel.end`), both durable before the code that
 // follows them goes on: a completed or failed key is answered from its records and never run again. One drive holds a
-// session at a time (the run's lease), so when a drive opens, an intent with no outcome was cut off by the process that
-// wrote it: a `safe` one is released to run again (`kernel.retry`), a `never` one is recorded failed and interrupted
+// session at a time, and the store enforces it: a drive writes through the session's writer, which a newer open of the
+// session fences, so a stale drive's next write is refused and it gets a `Restart`, never a result. So when a drive
+// opens, an intent with no outcome was cut off by the process that wrote it: a `safe` one is released to run again (`kernel.retry`), a `never` one is recorded failed and interrupted
 // ("it may or may not have taken effect") and is never run again. Input is a `kernel.submission` record; an effect that
 // names submissions in `placed` takes them out of `pending()` at its intent, and a withdraw written before that wins.
-import type { SessionRecord, SessionStore } from "../types.js";
+import { SessionFenced } from "../errors.js";
+import type { SessionRecord, SessionWriter } from "../types.js";
 import { EffectFailure, EffectInterrupted, Fatal, Restart } from "./errors.js";
 import type { DriveContext, EffectIO, EffectOptions, EffectRecord, HostToolIO, SessionState, Submission } from "./types.js";
 
@@ -72,9 +74,8 @@ export function hostToolIO(io: EffectIO, ctx: DriveContext, overrides: { signal?
 }
 
 export interface OpenDriveOptions {
-  store: SessionStore;
-  /** The session's key in the store. */
-  key: string;
+  /** The session's writer (`SessionStore.open`): the drive writes only through it, and its key is the session's. */
+  writer: SessionWriter;
   signal: AbortSignal;
   config?: unknown;
   attempt?: number;
@@ -90,11 +91,18 @@ export interface Drive extends DriveContext {
 
 /** Open the session's drive: fold its records and resolve whatever a dead process left open. */
 export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
-  const { store, key } = options;
-  let records = await store.read(key);
+  const { writer } = options;
+  const key = writer.key;
+  let records = await writer.read();
   let state = foldSession(key, records);
   const append = async (written: SessionRecord[]) => {
-    await store.append(key, written);
+    try {
+      await writer.append(written);
+    } catch (error) {
+      // A newer drive holds the session: this one must rebuild from the log, and nothing it was writing counts.
+      if (error instanceof SessionFenced) throw new Restart(`agentrun-adapters: ${error.message}`);
+      throw error;
+    }
     records = [...records, ...written];
     state = foldSession(key, records);
   };
@@ -111,7 +119,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
 
   const drive: Drive = {
     runId: key,
-    world: { store },
+    world: { store: writer },
     config: options.config,
     attempt: options.attempt ?? 0,
     ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
@@ -123,7 +131,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
     },
     pending: () => pendingSubmissions(state),
     async refresh() {
-      records = await store.read(key);
+      records = await writer.read();
       state = foldSession(key, records);
     },
     live: (event) => options.live?.(event),

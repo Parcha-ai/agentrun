@@ -6,7 +6,7 @@
 // AgentRun's own SessionStore (drive.ts). Field names follow the code that calls them, so a copied file runs unchanged
 // apart from its imports. The kernel is written fresh, except two declarations matched to upstream so the copied files
 // compile against them: EffectRecord here and EffectFailure in errors.ts.
-import type { JsonValue, SessionStore } from "../types.js";
+import type { JsonValue, SessionWriter } from "../types.js";
 
 export type ReplayPolicy = "safe" | "never";
 export type SubmissionKind = "prompt" | "steer" | "followUp" | "withdraw";
@@ -77,13 +77,15 @@ export interface EffectIO {
   stepId: string;
 }
 
-/** A blob store for records too large to keep inline: pieces of text, content-addressed, kept in the session's store. */
+/** A blob store for records too large to keep inline: pieces of text, content-addressed, kept in the session's own
+ *  records, written through its writer. */
 export interface KernelWorld {
-  readonly store: SessionStore;
+  readonly store: SessionWriter;
 }
 
 /** What a copied harness drive gets: its session's state, effects that run at most once (or again, when `safe`, after a
- *  crash), its pending input, and its signal. One drive holds a session at a time: the run's lease sees to it. */
+ *  crash), its pending input, and its signal. One drive holds a session at a time: its writer is fenced once a newer
+ *  drive opens, and the stale drive's next write is a `Restart`. */
 export interface DriveContext {
   readonly runId: string;
   readonly world: KernelWorld;

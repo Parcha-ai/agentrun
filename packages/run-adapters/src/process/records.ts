@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/records.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only; the fence comment names the session writer.
 import type { EffectRecord, SessionState } from '../kernel/index.js';
 
 /**
@@ -12,7 +12,8 @@ import type { EffectRecord, SessionState } from '../kernel/index.js';
  * the log as **journal batches**: record-only effects named `journal`, keyed
  * `journal:<n>`, each carrying the records appended since the last batch,
  * grouped by stream. The kernel's rules make the batches linear: the first
- * committed step per key wins, a stale driver's step is fenced, and a batch
+ * committed step per key wins, a stale driver's step is fenced (its writer is
+ * refused once a newer drive opens the session), and a batch
  * counts only once its outcome is committed. Every reader, the writer
  * included, sees the same records in the same order.
  *
