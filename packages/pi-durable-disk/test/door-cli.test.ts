@@ -91,6 +91,22 @@ describe("the door hook through the CLI", () => {
     }
   });
 
+  it("a fence with a hook whose abort never settles kills the harness child at once: the lease is gone, so nothing waits on the hook", { timeout: 60_000, skip: process.getuid?.() === 0 && "root writes through a read-only directory" }, async () => {
+    const s = await started("door-cli-fence-stuck", ["--heartbeat-ms", "100", "--lease-expiry-ms", "10000", "--lease-margin-ms", "2000"], { PDA_DOOR_BUSY: "1", PDA_DOOR_ABORT: "stuck" });
+    try {
+      const from = Date.now();
+      chmodSync(s.root, 0o555);
+      assert.equal(await s.it.exited, 75, s.it.stderr());
+      assert.ok(Date.now() - from < 2_000, `the exit waited ${Date.now() - from} ms on the hook's abort`);
+      assert.ok(await waitGone(s.pid, 500), "the harness child is gone with the exit");
+    } finally {
+      chmodSync(s.root, 0o755);
+      s.it.kill();
+      killQuietly(s.pid);
+      s.dir.remove();
+    }
+  });
+
   it("a park (an idle run with --serve) ends the idle hook's harness child before the instance exits", { timeout: 60_000 }, async () => {
     const s = await started("door-cli-park", ["--park-threshold", "1s", "--park-idle", "300ms"]);
     try {
