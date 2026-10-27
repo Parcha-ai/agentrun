@@ -181,10 +181,15 @@ test("the verdict is the same from any folder of the work tree: the root, learni
   };
   const root = at(dir);
   assert.equal(root.status, 0, JSON.stringify(root.report));
-  for (const sub of ["learnings", "workflows/find-policies"]) {
+  for (const sub of ["learnings", "memos", "workflows/find-policies"]) {
     const here = at(join(dir, sub));
     assert.deepEqual([here.status, found(here.report), here.report.ok], [root.status, found(root.report), root.report.ok], `from ${sub}/`);
   }
+  // A locked file edited is refused from a subfolder too.
+  const { dir: edited, tools: list } = await repo(t, { ...cleanFiles(), "AGENTS.md": "# Rules, changed by the run\n" });
+  const fromSub = cli(join(edited, "learnings"), ["check", "--base", "main", "--tools", list, "--json"]);
+  assert.equal(fromSub.status, 1);
+  assert.deepEqual(found(JSON.parse(fromSub.stdout)).filter(([rule]) => rule === "locked"), [["locked", "AGENTS.md"]]);
 });
 
 test("a secret's value is printed nowhere: not in a file's name, not in the branch's name, in text or JSON", async (t) => {
