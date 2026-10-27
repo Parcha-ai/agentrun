@@ -898,12 +898,14 @@ describe("fences during the run", () => {
       };
       const t = setup(dir.root, { options: { persist, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
       const run = await t.open();
+      const root = await run.harness.root(ctx, { agent: t.agent });
       pid = await startCommand(run, t.agent);
       fail = true;
       await until(() => t.fenced.length === 1);
       assert.ok(t.fenced[0] instanceof FencedError);
       assert.equal(exitCodeFor(t.fenced[0]), 75);
       assert.match(t.fenced[0].message, /run\.json/);
+      await assert.rejects(run.harness.commit((tx) => tx.appendEntry(root.id, { kind: "after.fence" }), ctx), (error: unknown) => error === t.fenced[0], "the store takes no commit after the fence");
       assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"], "commands are killed before onFenced");
       assert.ok(await waitGone(pid), "the command died");
       assert.equal(run.fenced, true);
