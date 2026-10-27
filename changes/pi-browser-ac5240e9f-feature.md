@@ -2,4 +2,4 @@
 packages: @parcha/pi-browser
 kind: feature
 ---
-`@parcha/pi-browser`: `web_search` and `web_fetch`: your agent can search the web and fetch a page's content as a tool call. Searches return results with a short redacted snippet when one is available; fetch returns the page text (and falls back to a raw fetch for files the fetch service can't convert, e.g. a PDF your extractor reads). Providers are tried in order with a fallback, so a search or fetch still answers when the first provider is unavailable.
+`@parcha/pi-browser`: `web_search` now returns a short redacted snippet on each hit when the search has one (an excerpt of the page, clipped and redacted with the rest of the answer), and both `web_search` and `web_fetch` try a host's configured sources in order before the provider's own, so a search or fetch still answers when the first source is unavailable.
