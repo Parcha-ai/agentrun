@@ -65,6 +65,7 @@ test("parseReflection reads the two sections out of the agent's reply, and nothi
   assert.equal(parseReflection(`## What happened\n${HAPPENED}\n`), undefined, "both sections, or none");
   assert.equal(parseReflection(`## What happened\n\n## What could be better\n${BETTER}`), undefined, "an empty section is none");
   assert.equal(parseReflection("No headings at all."), undefined);
+  assert.equal(parseReflection(`${REPLY}\n## What happened\nA second account.\n`), undefined, "a section given twice is none");
 });
 
 test("a reflection's sections are the memo's, under the host's front matter, and the checker accepts the branch", async () => {
@@ -85,7 +86,7 @@ test("a reflection with this case's data, a secret, or out of shape is not writt
     [{ whatHappened: `The key ${secret} worked.`, couldBeBetter: BETTER }, { secrets: [secret] }, /secret_value/],
     [{ whatHappened: `${HAPPENED}\n## Proposed changes\n- AGENTS.md`, couldBeBetter: BETTER }, {}, /out of shape/],
     [{ whatHappened: "x".repeat(2001), couldBeBetter: BETTER }, {}, /out of shape/],
-    [{ whatHappened: `${HAPPENED}​`, couldBeBetter: BETTER }, {}, /out of shape/],
+    [{ whatHappened: `${HAPPENED}\u200b`, couldBeBetter: BETTER }, {}, /out of shape/],
   ]) {
     const w = await world();
     const { result, memo } = await proposed(w, { reflection, ...extra });

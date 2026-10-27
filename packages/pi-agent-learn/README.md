@@ -258,8 +258,9 @@ const result = await proposeLearning({ repo, runId, target: harness, secrets: va
 the shared layout, from the commit the run was seeded from (main, for a run that was not seeded):
 
 - the memo, `memos/<run id>.md`: the host's facts in its front matter (`run`, `base` = that commit, `harness: pi`,
-  `outcome`, `untrusted`, and `cost_usd` when the host passes `costUsd`), then four short sections naming what the run
-  proposed, with none of the model's text;
+  `outcome`, `untrusted`, and `cost_usd` when the host passes `costUsd`), then four sections: `## What happened` and
+  `## What could be better` in the agent's words when the host passes its `reflection` (else the host's own lines), and
+  `## What I learned` and `## Proposed changes`, which name what the run proposed;
 - one note per `lesson`, `fact` or `correction`, in the learning format above, its `supersedes` naming the learning a
   candidate's `id` names;
 - one more use on each active learning a `used` mark names (a second mark of the same one, or one naming no active
@@ -284,6 +285,13 @@ with a `Run-Id` trailer, pushed by sha. `@parcha/agentrun-learn`'s checker accep
 characters of whose strings, case and whitespace folded, appear in one is withheld: its records stay out of the proposal,
 the rest is proposed as usual, and a `proposed`, `already` or `empty` result names it in `withheld: [{ name, reason }]`,
 with a reason that names nothing the run read. `copiesRead(workflow, read)` is that check.
+
+`reflection` is the agent's reflection, `{ whatHappened, couldBeBetter }`. After the run's answer, a host sends
+`REFLECT_PROMPT` as one more message in the same conversation: the agent calls `learn` for what it learned and replies
+with the two sections, which `parseReflection(reply)` reads (undefined when either is missing or empty). A section over
+`REFLECTION_CHARS` (2000) characters, holding a heading or a `---` line, or a control or invisible character
+(`reflectionProblem`), or a reflection in which the guard finds a secret or this case's data, is not written: the
+host's lines stand, the notes are proposed as usual, and the result names it in `withheld` as `reflection`.
 
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
 has already rendered. `runBranchFiles` is the branch's writer and `readRunBranch` its reader: curation reads the run's
@@ -318,7 +326,8 @@ with nothing of it reaching the judge, when:
 Both halves of the screen are the host's; this package holds no threshold. A Pi host passes pi-browser's page judge and
 its `INJECTION_THRESHOLD` (`import { INJECTION_THRESHOLD } from "@parcha/pi-browser"`): `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
 contentType: "text/markdown", text })).injection, threshold: INJECTION_THRESHOLD }`. The screen scores every new or
-changed note, skill and draft; a score at or over `threshold` refuses that item, and so does one the screen could not judge: it threw, took longer
+changed note, skill and draft, and the memo, whose refusal refuses no candidate: the memo lands with a line saying why in
+place of the agent's two sections (`withoutReflection`); a score at or over `threshold` refuses that item, and so does one the screen could not judge: it threw, took longer
 than `screenTimeoutMs` (30 s), or answered out of shape. Then curate judges each candidate and writes the result as a
 merge commit on `main`: its second parent is the run as it lands (a commit on the run's base holding exactly what curation
 took, `Landed-Run: <run id>`), so the run's own branch is never merged and nothing curation refused becomes reachable from

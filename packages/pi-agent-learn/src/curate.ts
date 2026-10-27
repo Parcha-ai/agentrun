@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
-import { type BranchCandidate, readRunBranch, renderIndex } from "./branch.js";
+import { type BranchCandidate, readRunBranch, renderIndex, withoutReflection } from "./branch.js";
 import { assertNotRulesLocked, CAPS, COMMIT_SHA, isRulesLocked, LAYOUT, learningPath, memoPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { repoWorkflowDir } from "./trial.js";
 import { byUse, indexLine, renderSection } from "./section.js";
@@ -391,8 +391,8 @@ type PlanInput = {
   readonly main: string;
 };
 
-const SCREENED = /^(?:learnings\/L-[0-9a-f]{12}\.md|\.agents\/skills\/[^/]+\/SKILL\.md|workflows\/[^/]+\/(?:workflow\.json|README\.md))$/;
-const kindOf = (path: string) => (path.startsWith("learnings/") ? "a note" : path.startsWith(".agents/") ? "a skill" : "a workflow draft");
+const SCREENED = /^(?:learnings\/L-[0-9a-f]{12}\.md|\.agents\/skills\/[^/]+\/SKILL\.md|workflows\/[^/]+\/(?:workflow\.json|README\.md)|memos\/[^/]+\.md)$/;
+const kindOf = (path: string) => (path.startsWith("learnings/") ? "a note" : path.startsWith(".agents/") ? "a skill" : path.startsWith("memos/") ? "the memo" : "a workflow draft");
 
 /** Each file the screen refuses, with why; empty when every one passes. */
 async function screenFiles(options: Resolved, { classify, threshold }: InjectionScreen, files: Readonly<Record<string, string | null>>): Promise<Map<string, string>> {
@@ -835,8 +835,11 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     files[`${dir}/workflow.json`] = `${JSON.stringify(revision.workflow, null, 2)}\n`;
     if (typeof readme !== "string" && (await repo.read(`${dir}/README.md`, main)) === undefined) files[`${dir}/README.md`] = `# ${name}\n\nThe ${name} workflow. When to use it: \`${LAYOUT.skills}/${name}/SKILL.md\`.\n`;
   }
+  // The memo lands with the agent's reflection when the screen passed it, else with the host's line in its place.
   const memo = runFiles[memoPath(runId)];
-  if (typeof memo === "string") files[memoPath(runId)] = memo;
+  const screenedMemo = screened.get(memoPath(runId));
+  const landed = typeof memo !== "string" ? undefined : screenedMemo === undefined ? memo : withoutReflection(memo, screenedMemo);
+  if (landed !== undefined) files[memoPath(runId)] = landed;
   const index = renderIndex([...entries.values()].filter((l) => l.status === "active"));
   if (index !== undefined) files[LAYOUT.index] = index;
   for (const id of [...touched].sort()) {

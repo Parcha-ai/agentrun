@@ -5,6 +5,7 @@ import { inspectWorkflow } from "@parcha/agentrun-dsl";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { CAPS, COMMIT_SHA, LAYOUT, LEARNING_ID, learningPath, memoPath, usesPath, WORKFLOW_NAME } from "./layout.js";
+import type { Reflection } from "./reflect.js";
 import { repoWorkflowDir } from "./trial.js";
 import { type Candidate, ENTRY_TYPES } from "./types.js";
 
@@ -26,6 +27,8 @@ export type RunBranchInput = {
   readonly uses?: string;
   readonly outcome?: "completed" | "failed" | "stopped";
   readonly costUsd?: number;
+  /** The memo's two sections in the agent's words, already checked; without it the host's lines stand. */
+  readonly reflection?: Reflection;
 };
 
 const NOTE_TYPES: readonly string[] = ENTRY_TYPES;
@@ -107,13 +110,13 @@ export function runBranchFiles(input: RunBranchInput): Record<string, string> {
     ...(input.costUsd === undefined ? [] : [`cost_usd: ${input.costUsd}`]),
     "---",
     "## What happened",
-    `The run proposed ${count(fresh.length, "note")}, used ${count(used.size, "note")} again and handed over ${count(input.drafts?.length ?? 0, "workflow")}.`,
+    input.reflection?.whatHappened ?? `The run proposed ${count(fresh.length, "note")}, used ${count(used.size, "note")} again and handed over ${count(input.drafts?.length ?? 0, "workflow")}.`,
     "",
     "## What I learned",
     ...(learned.length ? learned : ["- Nothing new."]),
     "",
     "## What could be better",
-    "- The run recorded nothing here.",
+    input.reflection?.couldBeBetter ?? "- The run recorded nothing here.",
     "",
     "## Proposed changes",
     ...Object.keys(files).sort().map((path) => `- ${path}`),
@@ -121,6 +124,15 @@ export function runBranchFiles(input: RunBranchInput): Record<string, string> {
   ].join("\n");
   files[memoPath(runId)] = memo;
   return files;
+}
+
+/** `memo` with the agent's two sections replaced by the host's line saying why they are not landed, or undefined when the
+ *  memo does not have the shape `runBranchFiles` writes. */
+export function withoutReflection(memo: string, reason: string): string | undefined {
+  const happened = /(\n## What happened\n)[\s\S]*?(\n\n## What I learned\n)/;
+  const better = /(\n## What could be better\n)[\s\S]*?(\n\n## Proposed changes\n)/;
+  if (!happened.test(memo) || !better.test(memo)) return undefined;
+  return memo.replace(happened, `$1The run's reflection is not landed: ${reason}.$2`).replace(better, "$1The run's reflection is not landed.$2");
 }
 
 /** A candidate as curate reads it off a run's branch. */
