@@ -21,7 +21,10 @@ const lock = JSON.parse(lockBytes);
 assert.equal(lock.lockfileVersion, 3, 'Source inventory requires package-lock v3');
 
 // Resolve the lockfile graph using package-local dependencies before hoisted dependencies.
-// Include optional packages and peers even when the current OS does not install their binaries.
+// Include optional packages and peers even when the current OS does not install their binaries. A third-party package's
+// optional peer is not followed: the lock records one when the repository installs it for itself (a test runner a library
+// names), and it ships only where a runtime dependency requires it, which that dependency's own edge reaches. A workspace
+// package's optional peers (the host it runs in, an adapter's SDK) are followed.
 const entries = lock.packages;
 const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'];
 const inventory = new Map();
@@ -51,11 +54,12 @@ for (const consumer of roots) {
     const dependencies = new Set([...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.optionalDependencies ?? {}), ...Object.keys(pkg.peerDependencies ?? {})]);
     for (const dependency of dependencies) {
       const target = resolveDependency(location, dependency);
+      const optionalPeer = location.includes('node_modules/') && pkg.peerDependenciesMeta?.[dependency]?.optional === true && !Object.hasOwn(pkg.dependencies ?? {}, dependency) && !Object.hasOwn(pkg.optionalDependencies ?? {}, dependency);
       if (!target) {
-        const optional = Object.hasOwn(pkg.optionalDependencies ?? {}, dependency) || pkg.peerDependenciesMeta?.[dependency]?.optional === true;
+        const optional = Object.hasOwn(pkg.optionalDependencies ?? {}, dependency) || optionalPeer;
         unresolved.push({ from: location, dependency, optional, consumer });
         assert.ok(optional, `Required runtime dependency absent from lockfile: ${location} -> ${dependency}`);
-      } else visit(target);
+      } else if (!optionalPeer) visit(target);
     }
   };
   visit(`packages/${consumer}`);

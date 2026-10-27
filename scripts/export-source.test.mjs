@@ -220,11 +220,14 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
 });
 
 // An auth library names a test runner as an optional peer; the lock records the runner because the repository develops with it,
-// and the runner pulls a bundler whose CSS engine is MPL-2.0. No consumer of the library installs any of them.
+// and the runner pulls a bundler whose CSS engine is MPL-2.0. No consumer of the library installs any of them. A workspace
+// package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
-  '': { devDependencies: { 'test-runner': '1.0.0' } },
+  '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
   ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
+  'packages/pi-vision': { peerDependencies: { 'host-agent': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true } } },
+  'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
   ...(requiredBy ? { [`packages/${requiredBy}`]: { dependencies: { 'test-runner': '1.0.0' } } } : {}),
   'node_modules/auth-lib': { version: '1.0.0', license: 'MIT', peerDependencies: { 'test-runner': '*', 'absent-peer': '*' }, peerDependenciesMeta: { 'test-runner': { optional: true }, 'absent-peer': { optional: true } } },
   'node_modules/test-runner': { version: '1.0.0', license: 'MIT', dev: true, dependencies: { bundler: '1.0.0' } },
@@ -239,6 +242,7 @@ test('the dependency inventory leaves out an optional peer nothing requires at r
   const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
   assert.match(inventory, /\| auth-lib \| 1\.0\.0 \| MIT \| serve \| no \| 1 \|/);
   for (const name of ['test-runner', 'bundler', 'css-engine']) assert.doesNotMatch(inventory, new RegExp(`\\| ${name} \\|`), `${name} is not shipped`);
+  assert.match(inventory, /\| host-agent \| 1\.0\.0 \| MIT \| pi-vision \| no \| 1 \|/, 'a workspace package\'s own optional peer is followed');
   assert.match(inventory, /No missing, restrictive, reciprocal, or unrecognized license identifiers/);
   assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: `absent-peer`/, 'an optional peer the lock does not record is still named');
 });
