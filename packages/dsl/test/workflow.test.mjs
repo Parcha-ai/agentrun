@@ -258,6 +258,16 @@ test("string-null normalization keeps a string the field's own enum or const lis
   const value = { hold: "None", fixed: "N/A", note: "None", nested: { status: "None" } };
   normalizeStringNullsForSchema(value, schema);
   assert.deepEqual(value, { hold: "None", fixed: "N/A", note: null, nested: { status: "None" } });
+  // Nested branches and local references, into definitions or $defs.
+  const deep = { type: "object", definitions: { Opt: { enum: ["N/A", "Open"] } }, $defs: { Lit: { const: "null" } }, properties: {
+    nested: { anyOf: [{ anyOf: [{ const: "None" }] }, { type: "null" }] },
+    referenced: { anyOf: [{ $ref: "#/definitions/Opt" }, { type: "null" }] },
+    defs: { oneOf: [{ $ref: "#/$defs/Lit" }], type: ["string", "null"] },
+    inner: { type: "object", properties: { status: { anyOf: [{ $ref: "#/definitions/Opt" }, { type: "null" }] } } },
+  } };
+  const kept = { nested: "None", referenced: "N/A", defs: "null", inner: { status: "N/A" } };
+  normalizeStringNullsForSchema(kept, deep);
+  assert.deepEqual(kept, { nested: "None", referenced: "N/A", defs: "null", inner: { status: "N/A" } });
   const loose = { hold: "none" };
   normalizeStringNullsForSchema(loose, schema);
   assert.equal(loose.hold, null, "only the exact listed string is a value");

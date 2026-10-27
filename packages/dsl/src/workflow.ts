@@ -545,7 +545,20 @@ export function buildReferenceContext(files: Record<string, string>): { referenc
   return { references, references_parsed: referencesParsed };
 }
 
-export function normalizeStringNullsForSchema(value: unknown, schema: Record<string, unknown> | undefined, depth = 0): unknown {
+/** Whether a field's schema lists the value itself: its `const`, or a member of its `enum`, in any `anyOf` or `oneOf`
+ *  branch at any depth, through a local `$ref` into the root schema's `definitions` or `$defs`. */
+function listsValue(value: unknown, spec: any, root: Record<string, unknown> | undefined, hops = 0): boolean {
+  if (hops > 16 || !spec || typeof spec !== "object") return false;
+  if (typeof spec.$ref === "string") {
+    const match = spec.$ref.match(/^#\/(definitions|\$defs)\/([^/]+)$/);
+    const target = match ? (root as any)?.[match[1]]?.[match[2]] : undefined;
+    return target ? listsValue(value, target, root, hops + 1) : false;
+  }
+  if (spec.const === value || (Array.isArray(spec.enum) && spec.enum.includes(value))) return true;
+  return [spec.anyOf, spec.oneOf].some((branches) => Array.isArray(branches) && branches.some((branch) => listsValue(value, branch, root, hops + 1)));
+}
+
+export function normalizeStringNullsForSchema(value: unknown, schema: Record<string, unknown> | undefined, depth = 0, root: Record<string, unknown> | undefined = schema): unknown {
   if (depth > 6 || !value || typeof value !== "object" || Array.isArray(value)) return value;
   const properties = (schema as { properties?: Record<string, any> })?.properties || {};
   for (const [key, spec] of Object.entries(properties)) {
@@ -555,15 +568,15 @@ export function normalizeStringNullsForSchema(value: unknown, schema: Record<str
     const nullable = types.includes("null") || anyOf.some((variant) => variant?.type === "null");
     const current = (value as Record<string, unknown>)[key];
     // A string the field's own enum or const lists exactly is one of its values, never a spelling of null.
-    const listed = [spec, ...anyOf].some((variant) => variant?.const === current || (Array.isArray(variant?.enum) && variant.enum.includes(current)));
+    const listed = listsValue(current, spec, root);
     if (nullable && !listed && typeof current === "string" && ["null", "none", "n/a"].includes(current.trim().toLowerCase())) {
       (value as Record<string, unknown>)[key] = null;
       continue;
     }
     const objectSpecs = [spec, ...anyOf].filter((candidate) => candidate?.type === "object" || (candidate?.properties && typeof candidate.properties === "object"));
-    for (const objectSpec of objectSpecs) normalizeStringNullsForSchema(current, objectSpec as Record<string, unknown>, depth + 1);
+    for (const objectSpec of objectSpecs) normalizeStringNullsForSchema(current, objectSpec as Record<string, unknown>, depth + 1, root);
     const items = spec.type === "array" || types.includes("array") ? spec.items : anyOf.find((variant) => variant?.type === "array")?.items;
-    if (items && Array.isArray(current)) for (const element of current) normalizeStringNullsForSchema(element, items as Record<string, unknown>, depth + 1);
+    if (items && Array.isArray(current)) for (const element of current) normalizeStringNullsForSchema(element, items as Record<string, unknown>, depth + 1, root);
   }
   return value;
 }

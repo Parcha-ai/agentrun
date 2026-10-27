@@ -132,9 +132,10 @@ export function parseStringifiedContainers(value: unknown, schema: Record<string
         } catch { /* Not JSON: the string stays for the validator to report. */ }
       }
     }
-    // A scalar is coerced only when the field does not accept a string. Integers must be exact; a decimal
-    // becomes the float64 that JSON.parse of the same literal yields, the only value a JSON number can hold.
-    if (typeof current === "string" && !wants.includes("string")) {
+    // A scalar is coerced only when the field does not accept a string, and never when the field lists that string
+    // itself as a value. Integers must be exact; a decimal becomes the float64 that JSON.parse of the same literal
+    // yields, the only value a JSON number can hold.
+    if (typeof current === "string" && !wants.includes("string") && !listsValue(current, spec, { definitions })) {
       const trimmed = current.trim();
       if ((wants.includes("integer") || wants.includes("number")) && /^-?\d+$/.test(trimmed) && Number.isSafeInteger(Number(trimmed))) current = Number(trimmed);
       else if (wants.includes("number") && /^-?(?:0|[1-9]\d*)\.\d+$/.test(trimmed) && Number.isFinite(Number(trimmed))) current = JSON.parse(trimmed) as number;
