@@ -98,6 +98,29 @@ test("a run whose process fails at its start is never started again while its en
   assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
 });
 
+test("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", { timeout: 120_000 }, async (t) => {
+  let busy = false;
+  // One retry, a minute away: the run's end waits longer than a message may.
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname, carryBackRetry: { delaysMs: [60_000], onBusy: () => void (busy = true) } });
+  assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
+  const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
+  store.exec("BEGIN IMMEDIATE");
+  for (let i = 0; !busy; i++) {
+    assert.ok(i < 300, "the run's end met the busy store");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  store.exec("ROLLBACK");
+  store.close();
+  const from = Date.now();
+  const sent = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "still there?" });
+  const took = Date.now() - from;
+  assert.deepEqual([sent.status, sent.body.error?.code], [503, "unavailable"], JSON.stringify(sent.body));
+  assert.ok(took < 50_000, `answered at the 45 s deadline, not at the settle's end: ${took} ms`);
+});
+
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
   const { data } = await serve(t);
   const zero = await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 }).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
