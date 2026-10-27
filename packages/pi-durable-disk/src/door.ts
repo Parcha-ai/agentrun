@@ -3,7 +3,8 @@
 // input, through the run's fenced commit, before the hook sees it; `door.status` entries settle it. A requestId reaches
 // `hook.submit` at most once, across incarnations: a retry answers the record's current status. Each entry is indexed by
 // a done write submission whose requestId is the door's key, so a lookup is pi's `submissionByRequest`, not a scan.
-import type { ConversationId, Tx, UserInput } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import type { ConversationId, Cursor, Tx, UserInput } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import { processTable } from "./process-table.ts";
 import type { DurableRun } from "./run.ts";
@@ -124,6 +125,9 @@ export interface Door {
 
 export { TIMEOUT as DOOR_TIMEOUT };
 
+/** What an ADMITTED record answers when no call in this process carries it: no later outcome can come for it. */
+const ORPHANED: DoorRecord = { status: "UNKNOWN", message: "admitted by an earlier instance, or before the lease was lost: whether the hook took it is unknown" };
+
 export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeouts: DoorTimeouts = {}): Door {
   const submitMs = timeouts.submitMs ?? 30_000;
   const abortMs = timeouts.abortMs ?? 5_000;
@@ -131,6 +135,9 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
   const adopted = new Map<number, number | undefined>();
   let turnOpen = false;
   let pending = 0;
+  // The requestIds this process admitted and is still carrying to an outcome. ADMITTED means one of these: any other
+  // ADMITTED record was admitted by an earlier instance, or before the lease was lost, and its outcome is unknown.
+  const live = new Set<string>();
   const send = (type: DoorRunEvent["type"]) => {
     for (const listener of listeners) listener({ type, inputs: [] });
   };
@@ -157,42 +164,93 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
     ).finally(() => stop.abort());
   };
 
+  /** hook.submit for a record this process just admitted, bounded; its outcome settles the record. */
+  const dispatch = async (root: ConversationId, input: DoorInput): Promise<DoorRecord> => {
+    // Nothing reaches the hook once the lease is gone. The record ends UNKNOWN: at once when the commit can still land,
+    // otherwise as no live call serves it, and in the store at the next open.
+    if (run.fenced || run.releasing) {
+      await settle(root, input.requestId, 1, ORPHANED).catch(() => undefined);
+      throw new Error("the run lost its lease after the admission");
+    }
+    pending++;
+    const stop = new AbortController();
+    const taken = Promise.resolve()
+      .then(() => hook.submit(input, contextOf(stop.signal)))
+      .then(
+        (r): DoorRecord => (r.accepted ? { status: "ACCEPTED" } : { status: "REJECTED_BUSY", message: "the harness is busy" }),
+        (error: unknown): DoorRecord => {
+          closeTurn();
+          return { status: "FAILED", message: messageOf(error) };
+        },
+      )
+      .finally(() => pending--);
+    const first = await within(taken, submitMs);
+    if (first !== TIMEOUT) {
+      await settle(root, input.requestId, 1, first);
+      return first;
+    }
+    stop.abort(new Error(`the hook did not take the input in ${submitMs} ms`));
+    await abortHook().catch(() => undefined);
+    const unknown: DoorRecord = { status: "UNKNOWN", message: `the hook did not take the input in ${submitMs} ms; its outcome is unknown` };
+    const written = settle(root, input.requestId, 1, unknown);
+    // A late outcome is never dropped: it settles the same record, unless the lease is gone (the fenced commit fails).
+    void written.then(() => taken.then((late) => settle(root, input.requestId, 2, late))).catch(() => undefined);
+    await written;
+    return unknown;
+  };
+
+  /** At open: every ADMITTED record no call here carries is written UNKNOWN through the fenced commit, so the store says it too. */
+  const recover = async () => {
+    const root = await run.harness.conversation(ROOT_CONVERSATION_ID, base);
+    if (!root) return;
+    const admitted = new Set<string>();
+    const settled = new Set<string>();
+    for (let cursor: Cursor | undefined; ; ) {
+      const page = await root.entries({ order: "ascending" }, 500, cursor, base);
+      for (const e of page.items) {
+        const id = (e.data as { requestId?: string } | undefined)?.requestId;
+        if (e.kind === "door.input" && id !== undefined) admitted.add(id);
+        if (e.kind === "door.status" && id !== undefined) settled.add(id);
+      }
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    const orphans = [...admitted].filter((id) => !settled.has(id));
+    if (orphans.length === 0) return;
+    await run.harness.commit(async (tx) => {
+      for (const id of orphans) {
+        if (live.has(id) || (await recordOf(tx, root.id, id))?.status !== "ADMITTED") continue;
+        await append(tx, root.id, id, 1, "door.status", { requestId: id, ...ORPHANED });
+      }
+    }, base);
+  };
+  void recover().catch(() => undefined);
+
   return {
     async submit(root, input, context) {
-      const seen = await run.harness.commit(async (tx) => {
-        const record = await recordOf(tx, root, input.requestId);
-        if (record) return record;
-        await append(tx, root, input.requestId, 0, "door.input", { requestId: input.requestId, content: input.content as never, whenBusy: input.whenBusy, status: "ADMITTED" });
-        return undefined;
-      }, context);
-      if (seen) return seen;
-      // Nothing reaches the hook once the lease is gone: the record stays ADMITTED, as a crash here leaves it.
-      if (run.fenced || run.releasing) throw new Error("the run lost its lease after the admission");
-      pending++;
-      const stop = new AbortController();
-      const taken = Promise.resolve()
-        .then(() => hook.submit(input, contextOf(stop.signal)))
-        .then(
-          (r): DoorRecord => (r.accepted ? { status: "ACCEPTED" } : { status: "REJECTED_BUSY", message: "the harness is busy" }),
-          (error: unknown): DoorRecord => {
-            closeTurn();
-            return { status: "FAILED", message: messageOf(error) };
-          },
-        )
-        .finally(() => pending--);
-      const first = await within(taken, submitMs);
-      if (first !== TIMEOUT) {
-        await settle(root, input.requestId, 1, first);
-        return first;
+      const { requestId } = input;
+      let admitting = false;
+      let seen: DoorRecord | undefined;
+      try {
+        seen = await run.harness.commit(async (tx) => {
+          const record = await recordOf(tx, root, requestId);
+          if (record) return record;
+          await append(tx, root, requestId, 0, "door.input", { requestId, content: input.content as never, whenBusy: input.whenBusy, status: "ADMITTED" });
+          // Marked inside the commit: a same-requestId commit queued behind this one already finds it live.
+          live.add(requestId);
+          admitting = true;
+          return undefined;
+        }, context);
+      } catch (error) {
+        if (admitting) live.delete(requestId);
+        throw error;
       }
-      stop.abort(new Error(`the hook did not take the input in ${submitMs} ms`));
-      await abortHook().catch(() => undefined);
-      const unknown: DoorRecord = { status: "UNKNOWN", message: `the hook did not take the input in ${submitMs} ms; its outcome is unknown` };
-      const written = settle(root, input.requestId, 1, unknown);
-      // A late outcome is never dropped: it settles the same record, unless the lease is gone (the fenced commit fails).
-      void written.then(() => taken.then((late) => settle(root, input.requestId, 2, late))).catch(() => undefined);
-      await written;
-      return unknown;
+      if (seen) return seen.status === "ADMITTED" && !live.has(requestId) ? ORPHANED : seen;
+      try {
+        return await dispatch(root, input);
+      } finally {
+        live.delete(requestId);
+      }
     },
     async abort() {
       const result = await abortHook();
