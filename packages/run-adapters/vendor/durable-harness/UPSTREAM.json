@@ -57,6 +57,11 @@
       "declarations": [
         "EffectFailure"
       ]
+    },
+    "src/process/zod.ts": {
+      "upstream": "packages/harness-process/src/zod.ts",
+      "blob": "67c50b6ede18d73a8edd7006a301e22d10580242",
+      "sha256": "3a1cac6ac89608ae63cbd8ef5ceeccd46cf6aff184c62011a4d9966f85b4b92f"
     }
   }
 }
