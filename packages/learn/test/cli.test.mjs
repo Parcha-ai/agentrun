@@ -158,7 +158,7 @@ test("symlinks on the branch are refused as a file mode, never followed", async 
 
 test("checkBranch reports the run, the branch and the fork point", async (t) => {
   const { dir, main } = await repo(t);
-  assert.deepEqual(await checkBranch({ cwd: dir, base: "main", tools: HOST_TOOLS }), { run: RUN, branch: BRANCH, forkPoint: main, problems: [] });
+  assert.deepEqual(await checkBranch({ cwd: dir, base: "main", tools: HOST_TOOLS }), { run: RUN, branch: BRANCH, forkPoint: main, ok: true, problems: [] });
 });
 
 test("agentrun-learn prints its usage on a bad command line and exits 2", async (t) => {
