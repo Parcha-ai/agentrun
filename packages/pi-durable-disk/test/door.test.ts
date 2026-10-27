@@ -605,6 +605,41 @@ describe("the door hook: turns, children and stops", () => {
     }
   });
 
+  it("a drain stops a turn the hook runs after its submit returned: the hook's abort is called before the turn ends", async () => {
+    const disk = new LocalDisk("door-drain-busy");
+    try {
+      const order: string[] = [];
+      const { hook, calls, state } = scripted({
+        submit: async (_input, ctx) => {
+          ctx.emit({ type: "run_start" });
+          state.busy = true;
+          return { accepted: true };
+        },
+        abort: async () => {
+          order.push("abort");
+          state.busy = false;
+          return "aborted";
+        },
+      });
+      const s = await served(disk, hook, { abortMs: 500 });
+      const stream = openEvents(s.server);
+      await stream.ready;
+      await until("the snapshot", () => stream.frames().length >= 1);
+      assert.equal((await submit(s.server, "d1")).status, 200);
+      assert.equal(calls.abort, 0, "the submit returned; the hook still runs its turn");
+      await until("the run_start", () => types(stream).length === 1);
+      await s.server.stopDoor();
+      order.push("stopped");
+      assert.equal(calls.abort, 1, "the drain called the hook's abort");
+      assert.deepEqual(order, ["abort", "stopped"]);
+      stream.close();
+      await s.run.release();
+      await s.server.close();
+    } finally {
+      disk.remove();
+    }
+  });
+
   it("a child adopted after the stop began is killed too, and the stop aborts every submit still running", async () => {
     const disk = new LocalDisk("door-late-child");
     let pid = 0;
