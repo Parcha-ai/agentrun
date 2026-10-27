@@ -572,7 +572,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }
       case "/auth/sign-in": {
         fromPage(req);
-        if (!me.allow(req.socket.remoteAddress ?? "unknown")) throw new ApiError("rate_limited", "too many sign-ins from this address; try again later", { retry_after_ms: 900_000 }, { "retry-after": "900" });
+        const allowed = me.allow(req.socket.remoteAddress ?? "unknown");
+        if (allowed === "full") authFailed("/v2/auth/sign-in", "sign_in_table_full");
+        if (allowed !== "ok") throw new ApiError("rate_limited", "too many sign-ins; try again later", { retry_after_ms: 900_000 }, { "retry-after": "900" });
         const { password } = await passwordIn(req, ["password"], false);
         if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
         if (!(await me.check(password))) {

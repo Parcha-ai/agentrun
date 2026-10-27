@@ -88,6 +88,9 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
     const { status, value } = await storeApi({ dir: server.dir })(url.pathname, url.searchParams);
     return send(req, res, status, "application/json; charset=utf-8", JSON.stringify(value));
   }
+  // With an owner the page is the owner's session alone: the token is for scripts and the CLI, and its link signs no
+  // browser in, so nothing outlives a sign-out.
+  if (owner) return held ? send(req, res, 200, HTML, await bytesOf(PAGE.path)) : redirect(res, owner.hasPassword() ? "/sign-in" : "/setup");
   const given = url.searchParams.get("token");
   // A token holds no whitespace, so a space in the link is a "+" that was not encoded.
   if (given !== null && (same(given, server.token) || same(given.replaceAll(" ", "+"), server.token))) {
@@ -98,7 +101,6 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
     return void res.end();
   }
   if (given !== null) server.authFailed?.(raw, "wrong_link_token");
-  if (owner && !held && given === null) return redirect(res, owner.hasPassword() ? "/sign-in" : "/setup");
   if (!held || given !== null) return send(req, res, 401, HTML, await bytesOf(LOCKED.path));
   return send(req, res, 200, HTML, await bytesOf(PAGE.path));
 }
@@ -109,7 +111,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
  * method only when the request's Origin is the page's own origin and its body is application/json.
  */
 export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
-  const held = cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token))) || (server.owner !== undefined && signedIn(req, server.owner));
+  const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
   if (raw.startsWith("/v2/")) {
     const safe = req.method === "GET" || req.method === "HEAD";
     if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;

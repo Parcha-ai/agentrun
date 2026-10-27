@@ -4,7 +4,7 @@
 // HMAC: setting the password, signing out and `agentrun-serve reset-password` each move the epoch on, so every cookie
 // made before stops working on every browser. Both files are read again on every check, so a reset run beside a live
 // server takes effect at once. Nothing here is ever logged but the setup code a server with a public address prints.
-import { createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -20,6 +20,8 @@ const COST = { N: 2 ** 15, r: 8, p: 1 } as const;
 const KEY_BYTES = 32;
 const SIGN_INS_PER_PEER = 10;
 const SIGN_IN_WINDOW_MS = 15 * 60_000;
+/** The most addresses the sign-in limit keeps at once; a new one past it is refused, never let in by evicting another. */
+export const SIGN_IN_PEERS = 10_000;
 const SETUP_TTL_MS = 30 * 60_000;
 const SETUP_TRIES = 5;
 
@@ -104,7 +106,8 @@ export class Owner {
     const setup = this.setupCode;
     // None good (spent, voided, expired, or the password was reset since): a new one goes to the log.
     if (!setup || Date.now() > setup.until) return (this.setupCode = null), this.setupLink(), "none";
-    if (typeof given === "string" && given.length === setup.code.length && timingSafeEqual(Buffer.from(given), Buffer.from(setup.code))) return (this.setupCode = null), "ok";
+    const digest = (text: string) => createHash("sha256").update(text).digest();
+    if (typeof given === "string" && timingSafeEqual(digest(given), digest(setup.code))) return (this.setupCode = null), "ok";
     if (++setup.tries >= SETUP_TRIES) this.setupCode = null;
     return "wrong";
   }
@@ -133,13 +136,19 @@ export class Owner {
     writePrivate(this.file, `${JSON.stringify({ v: 1, epoch: stored.epoch + 1, password: { ...COST, salt: salt.toString("base64url"), hash: key.toString("base64url") } } satisfies Stored)}\n`);
   }
 
-  /** Whether `peer` may try a password now; counts the try. */
-  allow(peer: string): boolean {
+  /** Whether `peer` may try a password now, counting the try: "limited" past its tries, "full" when the table holds as
+   *  many addresses as it keeps and this is a new one. Expired addresses are swept before a new one is refused. */
+  allow(peer: string): "ok" | "limited" | "full" {
     const now = Date.now();
-    const recent = (this.tries.get(peer) ?? []).filter((at) => now - at < SIGN_IN_WINDOW_MS);
-    if (recent.length >= SIGN_INS_PER_PEER) return (this.tries.set(peer, recent), false);
+    const live = (at: number) => now - at < SIGN_IN_WINDOW_MS;
+    if (!this.tries.has(peer) && this.tries.size >= SIGN_IN_PEERS) {
+      for (const [known, at] of this.tries) if (!at.some(live)) this.tries.delete(known);
+      if (this.tries.size >= SIGN_IN_PEERS) return "full";
+    }
+    const recent = (this.tries.get(peer) ?? []).filter(live);
+    if (recent.length >= SIGN_INS_PER_PEER) return (this.tries.set(peer, recent), "limited");
     this.tries.set(peer, [...recent, now]);
-    return true;
+    return "ok";
   }
 
   /** Whether `password` is the owner's. scrypt runs for a wrong one as for a right one; the compare is constant-time. */
