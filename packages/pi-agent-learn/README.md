@@ -16,8 +16,8 @@ promoted on receipts.
 > **What this first version is**
 >
 > - A pi-durable SDK extension that a host program installs in its `Harness`, not a `pi install` package.
-> - Installing it also installs `@parcha/pi-git-remote`, `@parcha/agentrun-dsl` and `@parcha/agentrun-pi`, and, through
->   `@parcha/agentrun-pi`, `@parcha/agentrun-jev`.
+> - Installing it also installs `@parcha/pi-git-remote`, `@parcha/agentrun-learn`, `@parcha/agentrun-dsl` and
+>   `@parcha/agentrun-pi`, and, through `@parcha/agentrun-pi`, `@parcha/agentrun-jev`.
 > - The notes loop is the core: `learn`, seeding, proposing and curating. Workflow trials, serving and promotion are
 >   experimental.
 > - Curating needs a judge: Jev (`createJevRunner` from `@parcha/agentrun-jev`) with a TypeSafe key in

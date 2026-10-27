@@ -17,8 +17,8 @@ Anything an agent learns on any harness must run on the workflow DSL, so a workf
 refused. A draft merges without a person, so a node that runs code (a `code` node, or a call via shell or executor)
 is refused.
 
-It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
-tarball (`npm pack -w @parcha/agentrun-learn`).
+Install it from npm with `npm install @parcha/agentrun-learn@beta`. For a version that is not on npm yet, pack it from a
+checkout (`npm pack -w @parcha/agentrun-learn`) and install the tarball.
 
 ## The two skills
 

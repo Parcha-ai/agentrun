@@ -1,7 +1,6 @@
 {
   "name": "@parcha/agentrun-learn",
   "version": "0.1.0-beta.27",
-  "private": true,
   "description": "Self-learning on any harness, as files: the layout of an agent's own git repository, the memo and note formats, and a structural checker for a run's branch that runs in a plain checkout, a pre-push hook or CI.",
   "keywords": [
     "agentrun",
