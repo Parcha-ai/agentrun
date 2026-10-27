@@ -139,7 +139,7 @@ test('incomplete or unsuccessful verification cannot approve release', () => fix
   await putJson(path, { ...receipt, runtimeSmoke: { core: true, jev: true, network: 'prohibited' } });
   await assert.rejects(preflight(root), /All installed package smoke checks/);
   await putJson(path, { ...receipt, packages: receipt.packages.slice(0, 2) });
-  await assert.rejects(preflight(root), /exactly 13 verified packages/);
+  await assert.rejects(preflight(root), new RegExp(`exactly ${listedPackages.length} verified packages`));
   await putJson(path, { ...receipt, status: 'failed' });
   await assert.rejects(preflight(root), /verification must pass/);
   await putJson(path, { ...receipt, audit: { vulnerabilities: { high: 1, critical: 0 } } });
