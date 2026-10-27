@@ -11,7 +11,7 @@ import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
+import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, secretsOf, withAgentRepo } from "../dist/learning.js";
 import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 /** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
@@ -293,7 +293,9 @@ test("a run whose end its server never carried back is proposed once by the next
   const bare = bareOf(data, "calc");
   assert.deepEqual(branches(bare).filter((b) => b.startsWith("runs/")), [`runs/${run.run_id}`]);
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
-  assert.deepEqual({ ...(await readRunState(data, "calc", run.run_id)) }, { state: "proposed", branch: `runs/${run.run_id}`, base: state.base, sha: state.sha });
+  const recorded = await readRunState(data, "calc", run.run_id);
+  assert.ok(PROPOSED.includes(recorded.state), recorded.state);
+  assert.deepEqual({ ...recorded, state: "proposed", reason: undefined }, { state: "proposed", branch: `runs/${run.run_id}`, base: state.base, sha: state.sha, reason: undefined });
   assert.doesNotMatch(next.stderr(), /not proposed|after its carry back|catch-up/, "no error line");
 });
 
@@ -318,7 +320,7 @@ test("a proposal and the start-time catch-up of the same run at once make one co
   const reader = openStoreReader(data);
   t.after(() => reader.close());
   const errors = [];
-  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id), catchUp(data, reader, (id, error) => errors.push(`${id}: ${error.message}`))]);
+  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id, () => secretsOf(process.env)), catchUp(data, reader, (id, error) => errors.push(`${id}: ${error.message}`), () => secretsOf(process.env))]);
   assert.deepEqual(errors, []);
   assert.deepEqual(caught, [run.run_id], "the catch-up read no record either, and proposed it too");
   const state = await readRunState(data, "calc", run.run_id);
@@ -360,7 +362,7 @@ test("the server proposes once the run's end is written, so the memo carries the
   assert.equal(Number(front(show(bare, branch, `memos/${run.run_id}.md`)).cost_usd), ended.costUsd, "the cost the carry back wrote");
   const reader = openStoreReader(data);
   t.after(() => reader.close());
-  assert.deepEqual(await proposeFor(data, reader, run.run_id), { status: "already", sha });
+  assert.deepEqual(await proposeFor(data, reader, run.run_id, () => secretsOf(process.env)), { status: "already", sha });
   assert.equal(tip(bare, branch), sha);
   assert.equal(git(bare, "log", "--format=%H", `main..${branch}`), sha, "one commit for the run");
 });

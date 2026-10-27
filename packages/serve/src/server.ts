@@ -16,7 +16,7 @@ import { catchUp, hostCommit, learningBlocker, proposeFor, readyToRun } from "./
 import { type LearningOptions, Review } from "./review.js";
 import { answerPage } from "./page.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, serverSecrets, STATUSES, type Status } from "./runs.js";
+import { type CarryBackRetry, hostSecrets, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
@@ -226,13 +226,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A new agent learns where this host can keep its learning repository.
   const agents = new Agents(data, (await learningBlocker(env)) === undefined ? "auto" : "off");
   // Once a learning run's end is written, what it learned is proposed as its branch.
+  // One list of secrets for every learning write, at propose and at review.
+  const secrets = () => hostSecrets(env, token, doorToken);
   const review = new Review({
-    data, agents, env, secrets: () => serverSecrets(env, token, doorToken), ...options.learning,
+    data, agents, env, secrets, ...options.learning,
     ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}),
   });
   // Then review curates it, in the same queue.
   const proposeThenReview = async (run: Run) => {
-    const proposed = await proposeFor(data, agents.store, run.id);
+    const proposed = await proposeFor(data, agents.store, run.id, secrets);
     if (proposed?.status === "proposed" || proposed?.status === "already") await review.run(run.agentId, run.id);
   };
   const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: proposeThenReview, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
@@ -259,7 +261,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // Ended runs of learning agents that were never proposed: a server that stopped between a carry back and its proposal.
   // A host commit that failed is made again by the agent's next save or run.
   // Then review takes up every run proposed or waiting, and deletes merged branches it had not deleted yet.
-  const caughtUp = catchUp(data, agents.store, (runId, error) => void process.stderr.write(`agentrun-serve: run ${runId}: not proposed: ${error.message}\n`))
+  const caughtUp = catchUp(data, agents.store, (runId, error) => void process.stderr.write(`agentrun-serve: run ${runId}: not proposed: ${error.message}\n`), secrets)
     .then(() => review.startPass())
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: learning catch-up: ${error.message}\n`));
 
@@ -743,6 +745,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       settled: () => caughtUp,
     },
     async close() {
+      // A review waiting on the judge lets go first: its run waits for the next start.
+      review.close();
       await runs.close();
       await caughtUp;
       await new Promise((done) => (server.close(done), server.closeAllConnections()));

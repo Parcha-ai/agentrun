@@ -19,6 +19,9 @@ export type LearningOptions = { screen?: InjectionScreen; judge?: Judge };
 
 export const NO_SCREEN = "no injection screen on this server";
 export const NO_JUDGE = "no judge on this server";
+export const JUDGE_SILENT = "the judge did not answer";
+/** How long one judge call may take before the review lets go of it, and the run waits as `no_judge`. */
+const JUDGE_TIMEOUT_MS = 120_000;
 /** The states review takes up: proposed, or waiting on something that may be here now. */
 const REVIEWABLE = new Set<RunState["state"]>(["proposed", "no_screen", "no_judge", "off"]);
 const PLAN = ".plan.json";
@@ -34,7 +37,14 @@ type ReviewOptions = LearningOptions & {
 
 export class Review {
   private jev: Promise<Judge | undefined> | undefined;
+  /** Aborted at close: a judge call in flight lets go, so shutdown never waits on it. */
+  private readonly stopping = new AbortController();
   constructor(private readonly options: ReviewOptions) {}
+
+  /** Lets go of every judge call in flight; the runs they were for wait as `no_judge` for the next start. */
+  close(): void {
+    this.stopping.abort();
+  }
 
   private curator = (agentId: string): Promise<Repo> => openAgentRepo(this.options.data, agentId, join(this.options.data, "agents", agentId, "curator"));
   private planFile = (agentId: string, runId: string) => join(learningRunsDir(this.options.data, agentId), `${runId}${PLAN}`);
@@ -64,16 +74,36 @@ export class Review {
     const judge = await this.judge();
     if (!judge) return wait("no_judge", NO_JUDGE);
     let spent = 0;
-    const counted: Judge = async (params) => {
-      const answer = await judge(params);
-      const cost = (answer as { cost_usd?: unknown } | undefined)?.cost_usd;
-      if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) spent += cost;
-      return answer;
-    };
+    let silent = false;
+    // Each call is let go of at close or after JUDGE_TIMEOUT_MS, whatever the judge does with its signal.
+    const counted: Judge = (params) =>
+      new Promise((resolve, reject) => {
+        const stop = this.stopping.signal;
+        const quit = () => ((silent = true), reject(new Error(JUDGE_SILENT)));
+        if (stop.aborted) return quit();
+        const timer = setTimeout(quit, JUDGE_TIMEOUT_MS);
+        stop.addEventListener("abort", quit, { once: true });
+        const signal = params.signal ? AbortSignal.any([params.signal, stop]) : stop;
+        Promise.resolve()
+          .then(() => judge({ ...params, signal }))
+          .then((answer) => {
+            const cost = (answer as { cost_usd?: unknown } | undefined)?.cost_usd;
+            if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) spent += cost;
+            resolve(answer);
+          }, reject)
+          .finally(() => (clearTimeout(timer), stop.removeEventListener("abort", quit)));
+      });
     const { curate } = await import("@parcha/pi-agent-learn");
     const repo = await this.curator(agentId);
     const hold = mode === "approve";
-    const report = await curate({ repo, judge: counted, screen: this.options.screen, tools: [...NODE_TOOLS], secrets: this.options.secrets(), only: [runId], hold });
+    let report: Awaited<ReturnType<typeof curate>>;
+    try {
+      report = await curate({ repo, judge: counted, screen: this.options.screen, tools: [...NODE_TOOLS], secrets: this.options.secrets(), only: [runId], hold });
+    } catch (error) {
+      // A judge that failed or never answered: curate wrote nothing, and the run waits for the next review.
+      if ((error as { code?: unknown }).code !== "judge") throw error;
+      return wait("no_judge", silent ? JUDGE_SILENT : "the judge failed");
+    }
     const usd = (state.review_usd ?? 0) + spent;
     const { reason: _reason, ...kept } = state;
     if (hold) {
@@ -90,9 +120,20 @@ export class Review {
         return this.prune(agentId, runId, next, repo);
       }
     }
-    // Curated already (main names it), or nothing beyond main: nothing to merge.
+    // Nothing curated: the branch proposes nothing beyond main, main names the run already, or the branch is gone.
     const skipped = report.skipped.find((s) => s.branch === `runs/${runId}`);
-    return this.write(agentId, runId, { ...kept, state: skipped ? "empty" : "merged", review_usd: usd, ...(skipped ? { reason: skipped.reason } : {}), pruned: false });
+    if (skipped) return this.write(agentId, runId, { ...kept, state: "empty", reason: skipped.reason, review_usd: usd });
+    const merge = await this.mergeOf(repo, runId);
+    if (merge) return this.write(agentId, runId, { ...kept, state: "merged", merge, review_usd: usd, pruned: false });
+    return this.write(agentId, runId, { ...kept, state: "empty", reason: "the run's branch is gone", review_usd: usd });
+  }
+
+  /** The commit on main that curated `runId`, by its Curated-Run trailer, or undefined. */
+  private async mergeOf(repo: Repo, runId: string): Promise<string | undefined> {
+    const main = await repo.resolve("main");
+    if (!main) return undefined;
+    const curated = await repo.log({ ref: main, trailer: { key: "Curated-Run" } });
+    return curated.find((entry) => Object.entries(entry.trailers).some(([key, values]) => key.toLowerCase() === "curated-run" && values.includes(runId)))?.sha;
   }
 
   /** Approves the run's held plan, as `principal`. */
