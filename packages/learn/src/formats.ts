@@ -105,6 +105,8 @@ export function parseNote(text: string): Note | string[] {
 
 const MEMO_KEYS = ["run", "base", "harness", "outcome", "cost_usd"];
 export const MEMO_SECTIONS = Object.freeze(["What happened", "What I learned", "What could be better", "Proposed changes"]);
+/** The section the review may add last: its verdict, and the reason for each item it refused. */
+export const REVIEW_SECTION = "Review";
 
 export type Memo = { run: string; base: string; proposed: string[] };
 
@@ -133,7 +135,8 @@ export function parseMemo(text: string): Memo | string[] {
   }
   if (lead.some((line) => line.trim() !== "")) out.push("text comes before the first section");
   const titles = sections.map((section) => section.title);
-  if (titles.join("\n") !== MEMO_SECTIONS.join("\n")) out.push(`the sections are not ${MEMO_SECTIONS.map((title) => `"## ${title}"`).join(", ")}, each once, in that order`);
+  const reviewed = titles.length === MEMO_SECTIONS.length + 1 && titles.at(-1) === REVIEW_SECTION;
+  if ((reviewed ? titles.slice(0, -1) : titles).join("\n") !== MEMO_SECTIONS.join("\n")) out.push(`the sections are not ${MEMO_SECTIONS.map((title) => `"## ${title}"`).join(", ")}, each once, in that order, then "## ${REVIEW_SECTION}" only when the review wrote one`);
   else if (sections[0]!.lines.every((line) => line.trim() === "")) out.push("What happened is empty");
   if (out.length) return out;
   const proposed = sections[3]!.lines.map((line) => /^\s*[-*]\s+`?([^\s`]+)`?/.exec(line)?.[1]).filter((path): path is string => path !== undefined);

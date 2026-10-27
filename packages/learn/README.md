@@ -19,6 +19,21 @@ refused. A draft merges without a person, so a call node that runs a command (vi
 It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
 tarball (`npm pack -w @parcha/agentrun-learn`).
 
+## The two skills
+
+`skills/reflect/SKILL.md` and `skills/review/SKILL.md` are the loop itself, written for any harness that can edit files
+and run git:
+
+- **reflect**, after every run: write the memo on `runs/<run id>`, add or update notes and the index, add a skill or a
+  workflow draft when the work repeats, run the checker, push the branch.
+- **review**, before a merge: run the checker, require the injection screen, ask the checklist of each new or changed
+  item, drop what fails with its reason in the memo's `## Review` section, and merge the rest with a merge commit.
+
+To use them outside AgentRun, copy both folders into the agent's repository as `.agents/skills/reflect/` and
+`.agents/skills/review/` (both are locked: no run may change them), and run the checker in a pre-push hook or CI, as
+below. Outside AgentRun there is no injection screen, so the review merges only when a person has read the branch's new
+and changed files and says so.
+
 ## Check a run's branch
 
 Node 22.19 or later and git. On the run's branch, in the agent's repository:
