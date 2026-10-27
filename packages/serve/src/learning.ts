@@ -39,6 +39,28 @@ const SECRET_NAME = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD)$/i;
  *  pi-browser's redaction floor too. */
 const MIN_SECRET = 8;
 
+/** pi-git-remote's floor. */
+const MIN_GIT = [2, 40] as const;
+const gitChecks = new Map<string, Promise<string | undefined>>();
+
+/** Why this host cannot keep a learning repository, or undefined when it can: git `MIN_GIT` or later on `env`'s PATH. */
+export function learningBlocker(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const key = env.PATH ?? "";
+  let check = gitChecks.get(key);
+  if (!check) {
+    const floor = MIN_GIT.join(".");
+    check = promisify(execFile)("git", ["--version"], { env }).then(
+      ({ stdout }) => {
+        const [major = 0, minor = 0] = (/(\d+)\.(\d+)/.exec(stdout) ?? []).slice(1).map(Number);
+        return major > MIN_GIT[0] || (major === MIN_GIT[0] && minor >= MIN_GIT[1]) ? undefined : `Learning needs git ${floor} or later, and this host has ${stdout.trim()}.`;
+      },
+      () => `Learning needs git ${floor} or later on PATH, and this host has none.`,
+    );
+    gitChecks.set(key, check);
+  }
+  return check;
+}
+
 /** How a revision's runs learn: only an agentic revision learns, and a revision without the field does not. */
 export const learningOf = (revision: Revision | null | undefined): LearningMode => (revision?.kind === "agentic" ? (revision.body.learning ?? "off") : "off");
 
@@ -79,10 +101,11 @@ async function openAgentRepo(bare: string, clone: string): Promise<Repo> {
 }
 
 /** The host's commit on main of `entry`'s current revision: AGENTS.md (its instructions) and agent.json (its definition).
- *  Nothing for an agent that does not learn, and no commit when main holds both already. Main's other files stay. */
+ *  Nothing for an agent that does not learn or on a host that cannot, and no commit when main holds both already. Main's
+ *  other files stay. */
 export async function hostCommit(data: string, entry: AgentEntry): Promise<{ sha: string; created: boolean } | undefined> {
   const { agent, revision, version } = entry;
-  if (!revision || revision.kind !== "agentic" || learningOf(revision) === "off") return undefined;
+  if (!revision || revision.kind !== "agentic" || learningOf(revision) === "off" || (await learningBlocker(process.env))) return undefined;
   const bare = repoOf(data, agent.id);
   return serial(bare, async () => {
     const repo = await openAgentRepo(bare, join(dirname(bare), HOST_CLONE));

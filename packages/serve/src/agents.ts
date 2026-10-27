@@ -27,7 +27,8 @@ export class Agents {
   readonly store: AgentStore;
   /** Read-only, for the store's skill texts, which its reads do not return. */
   private readonly skills: DatabaseSync;
-  constructor(readonly dir: string) {
+  /** `learning`: what a new agentic agent gets when its definition does not say. */
+  constructor(readonly dir: string, private readonly learning: LearningMode = "auto") {
     this.store = openStore(dir);
     this.skills = new DatabaseSync(join(dir, STORE_FILE), { readOnly: true, timeout: 5_000 });
   }
@@ -81,8 +82,7 @@ export class Agents {
   async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>): Promise<AgentEntry> {
     const given = typeof definition.id === "string" ? definition.id : undefined;
     if (given !== undefined && this.store.readAgent(given)) throw new ApiError("agent_exists", `an agent ${given} exists here`);
-    // A new agent learns unless its definition says otherwise.
-    const revision = this.revisionOf(definition, skills, note, "auto");
+    const revision = this.revisionOf(definition, skills, note, this.learning);
     this.checkVersion(definition, 1);
     await this.checked(revision);
     await check?.(revision);

@@ -4,11 +4,12 @@
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import type { InputIssue } from "./errors.js";
+import { learningBlocker } from "./learning.js";
 import { chooseModel, nodeTiers } from "./model.js";
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; learning?: string }
   | { kind: "workflow"; workflow: unknown };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool`, `adapter`,
@@ -27,6 +28,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     });
     const chosen = await chooseModel(env, revision.model);
     if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
+    const learns = revision.learning !== undefined && revision.learning !== "off" ? await learningBlocker(env) : undefined;
+    if (learns) out.push({ field: "definition.learning", reason: NOT_SET_UP, message: `${learns} Install it, or set definition.learning to off.`, host: true });
     return out;
   }
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");

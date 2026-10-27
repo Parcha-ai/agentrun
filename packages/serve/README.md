@@ -287,6 +287,10 @@ An agentic definition's `learning` is `off`, `auto` or `approve`. A new agentic 
 leaves the field out keeps the current revision's value. A revision saved before the field existed is `off`. A workflow
 definition does not take it.
 
+Learning needs git 2.40 or later on `PATH`. The container image is on Debian bookworm, which has git 2.39. On a host
+without it, a new agent gets `off`. A definition that asks for learning saves with a `not_set_up_here` warning, and its
+runs are refused with `409 agent_not_runnable` until git is there.
+
 - An agent that learns has one bare git repository, `DATA/agents/<id>/learning.git`, beside the store. The revision
   holds what a person wrote, and the repository holds what the agent learned, in `@parcha/agentrun-learn`'s layout:
   notes in `learnings/` with their `INDEX.md`, skills the agent wrote in `.agents/skills/`, workflow drafts, and memos.
