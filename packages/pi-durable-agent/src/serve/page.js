@@ -146,7 +146,13 @@
     return out;
   }
 
-  /** Markdown as a fragment: headings, lists, fences and paragraphs, every piece of text a text node. */
+  /** A pipe table's row as its cells' text: the outer pipes off, split on pipes not escaped, `\|` a pipe in a cell. */
+  function cellsOf(line) {
+    return line.trim().replace(/^\|/, "").replace(/(^|[^\\])\|$/, "$1").split(/(?<!\\)\|/).map(function (cell) { return cell.trim().replace(/\\\|/g, "|"); });
+  }
+  var TABLE_RULE = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+  /** Markdown as a fragment: headings, lists, fences, pipe tables and paragraphs, every piece of text a text node. */
   function md(text) {
     var root = el("div", { class: "md" });
     var open = null;
@@ -167,7 +173,16 @@
           kind = "code";
         }
       } else if (kind === "code") open.appendChild(doc.createTextNode(line + "\n"));
-      else if (/^#{1,6}\s/.test(line)) {
+      else if (line.indexOf("|") >= 0 && i + 1 < lines.length && TABLE_RULE.test(lines[i + 1])) {
+        close();
+        var head = cellsOf(line);
+        var body = el("tbody");
+        for (i += 2; i < lines.length && lines[i].trim() && lines[i].indexOf("|") >= 0; i++) {
+          body.appendChild(el("tr", null, cellsOf(lines[i]).map(function (cell) { return el("td", null, inline(cell)); })));
+        }
+        i--;
+        root.appendChild(el("div", { class: "md-table" }, el("table", null, el("thead", null, el("tr", null, head.map(function (cell) { return el("th", null, inline(cell)); }))), body)));
+      } else if (/^#{1,6}\s/.test(line)) {
         close();
         var level = Math.min(5, 3 + line.match(/^#+/)[0].length - 1);
         root.appendChild(el("h" + level, null, inline(line.replace(/^#+\s*/, ""))));
@@ -203,8 +218,11 @@
           data = null;
         }
         if (!res.ok) {
+          // Said in words: the status stays on the error, out of the sentence a person reads.
           var said = data && (data.message || data.error);
-          throw new Error(res.status + (said ? " " + said : ""));
+          var error = new Error(said ? String(said) : "the server could not answer");
+          error.status = res.status;
+          throw error;
         }
         return data;
       });
@@ -815,7 +833,7 @@
                   el("span", { class: "c state" }, runState(run.state), run.archivedAt ? [" ", pill("archived")] : null),
                   el("span", { class: "c rev" }, el("span", { class: "rev-id" }, short(run.revision)), " ", el("span", { class: "word" }, run.kind)),
                   cost(run.costUsd, "c cost"),
-                  el("span", { class: "c reason" }, run.gone ? el("span", { class: "unknown" }, "its directory is gone") : clip(run.summary || "", 160)),
+                  el("span", { class: "c reason" }, run.gone ? el("span", { class: "unknown" }, "its directory is gone") : run.summary ? md(run.summary) : ""),
                   el("span", { class: "c id" }, run.id)
                 );
               })
@@ -897,7 +915,7 @@
       el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, short(run.revision)), kindPill(run.kind), data.note ? el("span", null, data.note) : null),
       run.summary ? el("div", { class: "lede summary" }, md(run.summary)) : null,
       data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null,
-      host && host.run ? host.run(run) : null
+      host && host.run ? host.run(run, data) : null
     );
   }
 
@@ -1021,7 +1039,7 @@
   // { name: the page's name in the tab's title; route(hash, token): true when it drew that view itself;
   // agent(agent, revisions) and revision(agent, revision): what it adds to the agent card and to a revision's head;
   // cards(agent, revisions, filter): cards between the agent card and its runs; empty(): what the picker shows when the
-  // store holds no agent; run(run): what it adds to a stored run's head }.
+  // store holds no agent; run(run, data): what it adds to a stored run's head, given the run and what the page read }.
   var host = STORE && typeof window.agentStoreHost === "function"
     ? window.agentStoreHost({
         el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },

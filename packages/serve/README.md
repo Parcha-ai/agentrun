@@ -220,6 +220,7 @@ the sessions it still holds are released at Browserbase.
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. The agent's runs, newest first. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
+| `GET /runs/{id}/input` | This server's own route, outside the contract (`features.run_input` in capabilities): `{input}`, the run's input exactly as it was started, both kinds, whole (the timeline cuts a long first message at 2,000 characters). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
 | `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop. A finished run is `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
@@ -277,6 +278,12 @@ data directory, with this server's own views beside it:
   `GET /v2/runs/{id}/timeline` with a long poll; while it waits on `ask_person`, an answer box sends
   `POST /v2/runs/{id}/messages`. The live view leaves out the run's own start and end rows, as the stored view does.
   Once it is final, the page reads it from the store.
+- **An ended run**: its answer and every summary render as Markdown (tables, lists, bold, code, http(s) links; markup
+  stays text). **Copy answer** on a completed run puts its whole answer, as `GET /v2/runs/{id}` has it, on the
+  clipboard as plain text. **Run again** starts a new run of the same revision with the run's input, whole and as it
+  was started (`GET /v2/runs/{id}/input`), and opens it, for an agentic run and a workflow run alike. A refusal is said in words ("This agent can't run here: …"), without its HTTP
+  status, and a refused field as what to do ("Model: write it as provider/model-id, for example …"), else the
+  server's words under the field's label.
 - **Compare revisions**: on an agent's page, one row per revision, newest first: its runs, how many completed, failed
   or escalated, their total cost, the cost per completed run (every run's cost over the completed ones, the cheapest
   marked) and the median time of those that ended. It reads the store's runs of the agent; a row filters the runs to

@@ -73,3 +73,5 @@ a.cmp.on{background:var(--accent-soft)}
   .links{margin-left:0;order:3}
   .links+.theme{margin-left:auto;order:4}
 }
+.run-actions{margin-top:12px;flex-wrap:wrap}
+.done-note{color:var(--green);font-size:12.5px;align-self:center}

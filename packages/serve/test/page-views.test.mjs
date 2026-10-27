@@ -58,9 +58,9 @@ function stub(answers) {
   return { fetch, calls, push, answer: (more) => Object.assign(answers, more), writes: () => calls.filter((c) => c.method !== "GET").map((c) => [c.method, c.path, plain(c.body)]) };
 }
 
-function open(hash, answers) {
+function open(hash, answers, window = {}) {
   const api = stub(answers);
-  const page = mount({}, hash, { serve: "store", fetch: api.fetch, scripts: [["serve.js", SERVE_JS]] });
+  const page = mount({}, hash, { serve: "store", fetch: api.fetch, scripts: [["serve.js", SERVE_JS]], window });
   return { page, api };
 }
 const find = (page, tag, name) => all(page.app).find((el) => el.tagName === tag && el.name === name);
@@ -181,7 +181,7 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
   find(page, "TEXTAREA", "workflow").value = '{"name":"flow"}';
   buttonNamed(page, "Create agent").click();
   await page.settle();
-  assert.deepEqual(problemText(page), [`422 the workflow does not checkdefinition.workflow.steps: steps is required ${HOSTILE}`]);
+  assert.deepEqual(problemText(page), [`Some of it needs a change.Workflow: steps is required ${HOSTILE}`]);
   assert.equal(buttonNamed(page, "Create agent").disabled, false, "the button is back for another try");
   find(page, "TEXTAREA", "workflow").value = '{"name":"flow","steps":[]}';
   buttonNamed(page, "Create agent").click();
@@ -488,6 +488,103 @@ test("an agent whose current revision names a tool this server cannot bind says 
   const runnable = open("#/agents/calc", { "api/agents/calc": { ...page, revisions: [revision(REV_B, true, "Files only")] }, "api/runs?agent=calc": [], "v2/capabilities": capabilities });
   await runnable.page.settle();
   assert.equal(all(runnable.page.app).find((el) => classOf(el) === "cant-run")?.textContent ?? "", "", "a revision this server can run says nothing");
+});
+
+/** A run as the store's page reads it (api/runs/:id), ended, with its rows. */
+const storedRun = (state, rows, fields = {}) => ({ run: { id: "run-7", agent: "calc", revision: REV_B, kind: "agentic", state, startedAt: LIVE.created_at, endedAt: LIVE.created_at, summary: "The answer is **42**.", ...fields }, agent: "Calc", rows });
+const said = (text) => ({ id: "1:1", seq: 1, kind: "user_message", text, summary: `You: ${text}` });
+const answered = { id: "1:2:0", seq: 2, kind: "final_answer", text: "The answer is **42**.", summary: "The answer is 42." };
+
+/** The answers a stored run's page needs: /v2 knows the run as ended (its timeline final), and the store's page reads it. */
+const ended = (stored, view = {}) => ({
+  "v2/runs/run-7": { ...LIVE, run_id: "run-7", status: stored.run.state === "completed" ? "completed" : "failed", ...view },
+  "v2/runs/run-7/timeline": page({ final: true, status: "completed" }),
+  "api/store": { agents: AGENTS },
+  "api/runs/run-7": stored,
+});
+
+test("a completed run's Copy answer puts its whole answer on the clipboard as plain text, and says so", async () => {
+  const copied = [];
+  const clipboard = { writeText: async (text) => void copied.push(text) };
+  const whole = "The answer is **42**.\n\nWhole, past any cut.";
+  const { page } = open("#/runs/run-7", ended(storedRun("completed", [said("What is six times seven?"), answered]), { result: { output: null, final_answer: whole } }), { navigator: { clipboard } });
+  await page.settle();
+  buttonNamed(page, "Copy answer").click();
+  await page.settle();
+  assert.deepEqual(copied, [whole], "the answer whole, as the run's /v2 view has it");
+  assert.ok(all(page.app).some((el) => el.textContent === "Copied."));
+  const failed = open("#/runs/run-7", ended(storedRun("failed", [said("x")])));
+  await failed.page.settle();
+  assert.equal(buttonNamed(failed.page, "Copy answer"), undefined, "only a completed run has an answer to copy");
+});
+
+test("Run again starts a new run of the same revision with the run's whole input, read from /v2/runs/{id}/input, then opens it; a workflow run's too", async () => {
+  const long = `What is six times seven? ${"Say it plainly. ".repeat(200)}`;
+  const answers = { ...ended(storedRun("completed", [said(`${long.slice(0, 1999)}…`), answered])), "v2/runs/run-7/input": { input: { content: long } }, "POST v2/agents/calc/runs": [202, { ...LIVE, run_id: "run-8", status: "queued" }] };
+  const { page, api } = open("#/runs/run-7", answers);
+  await page.settle();
+  buttonNamed(page, "Run again").click();
+  await page.settle();
+  assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/runs", { input: { content: long }, revision: REV_B }]], "the input whole, not the timeline's cut");
+  assert.equal(page.window.location.hash, "#/runs/run-8");
+  const stored = storedRun("completed", []);
+  const flow = open("#/runs/run-7", { ...ended({ ...stored, run: { ...stored.run, kind: "workflow" }, workflow: { graph: { nodes: [], edges: [] }, status: {} } }), "v2/runs/run-7/input": { input: { question: "Six times seven?" } }, "POST v2/agents/calc/runs": [202, { ...LIVE, run_id: "run-9", status: "queued" }] });
+  await flow.page.settle();
+  buttonNamed(flow.page, "Run again").click();
+  await flow.page.settle();
+  assert.deepEqual(flow.api.writes(), [["POST", "v2/agents/calc/runs", { input: { question: "Six times seven?" }, revision: REV_B }]]);
+  const lost = open("#/runs/run-7", { ...answers, "v2/runs/run-7/input": { input: null } });
+  await lost.page.settle();
+  buttonNamed(lost.page, "Run again").click();
+  await lost.page.settle();
+  assert.deepEqual(problemText(lost.page), ["This run's input was not kept, so it cannot run again."]);
+  assert.deepEqual(lost.api.writes(), []);
+});
+
+test("a refusal is said in words, without its HTTP status or a field's internal prefix", async () => {
+  const refused = { error: { code: "agent_not_runnable", message: "pi-ai finds no key for openai in this environment", fields: [] } };
+  const { page } = open("#/agents/calc", { "api/agents/calc": AGENT_PAGE, "api/runs?agent=calc": [], "POST v2/agents/calc/runs": [409, refused] });
+  await page.settle();
+  find(page, "TEXTAREA", "input").value = "hi";
+  buttonNamed(page, "Start run").click();
+  await page.settle();
+  assert.deepEqual(problemText(page), ["This agent can't run here: pi-ai finds no key for openai in this environment"]);
+  const invalid = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": [422, { error: { code: "input_invalid", message: "definition.model is \"provider/model-id\"", fields: [{ field: "definition.model", reason: "bad_format", message: "definition.model is \"provider/model-id\"" }] } }] });
+  await invalid.page.settle();
+  find(invalid.page, "INPUT", "name").value = "A";
+  find(invalid.page, "TEXTAREA", "instructions").value = "Answer.";
+  buttonNamed(invalid.page, "Create agent").click();
+  await invalid.page.settle();
+  const [text] = problemText(invalid.page);
+  assert.ok(text.startsWith("Some of it needs a change."), text);
+  assert.ok(text.includes("Model: write it as provider/model-id"), text);
+  assert.ok(!/\b4\d\d\b/.test(text) && !text.includes("definition."), `no status and no internal prefix: ${text}`);
+});
+
+test("a refused field reads as what to do, in the form's words: the model's form, a tool this server lacks, empty instructions, a name; another reason keeps the server's words under the field's label", async () => {
+  const refuse = (fields) => [422, { error: { code: "input_invalid", message: fields[0].message, fields } }];
+  const cases = [
+    [{ field: "definition.model", reason: "bad_format", message: 'definition.model is "provider/model-id"' }, "Model: write it as provider/model-id, for example anthropic/claude-sonnet-5-5."],
+    [{ field: "definition.tools[1]", reason: "not_an_option", message: "agentrun-serve binds the tools read, write; bash is not one of them." }, "Tools: bash isn't available on this server."],
+    [{ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions." }, "Instructions: write what the agent should do."],
+    [{ field: "definition.name", reason: "missing", message: "definition.name is required" }, "Name: give the agent a name."],
+    [{ field: "definition.model", reason: "not_an_option", message: `pi-ai knows no model nope of nope ${HOSTILE}` }, `Model: pi-ai knows no model nope of nope ${HOSTILE}`],
+  ];
+  for (const [field, said] of cases) {
+    const { page } = open("#/new", { "v2/capabilities": CAPABILITIES, "POST v2/agents": refuse([field]) });
+    await page.settle();
+    find(page, "INPUT", "name").value = "Pick";
+    find(page, "TEXTAREA", "instructions").value = "Answer.";
+    const boxes = all(page.app).filter((el) => el.getAttribute("type") === "checkbox");
+    boxes[0].checked = true;
+    boxes[1].checked = true;
+    boxes[1].value = "bash";
+    buttonNamed(page, "Create agent").click();
+    await page.settle();
+    const items = all(page.app).filter((el) => el.tagName === "LI" && classOf(el.parentNode.parentNode) === "problem").map((el) => el.textContent);
+    assert.deepEqual(items, [said], field.field + " " + field.reason);
+    assertInert(all(page.app).find((el) => classOf(el) === "problem"));
+  }
 });
 
 const ARCHIVED_AT = "2026-10-24T08:00:00.000Z";
