@@ -55,7 +55,9 @@ fsmonitor, the hooks folder, replace refs and lazy fetches. A run's branch holds
 - no `.gitattributes` and no `.gitmodules`, at any depth;
 - no symlink, no gitlink (submodule) and no executable bit: every file is git mode `100644`;
 - no Git LFS pointer;
-- UTF-8 text.
+- UTF-8 text, with no character a reader does not see: format and default-ignorable characters (zero-width, bidi
+  controls, tag characters), private use, line and paragraph separators and control characters other than tab and
+  newline. An emoji's joiners and variation selectors, and the joiners some scripts need between letters, are text.
 
 ## The caps
 
@@ -113,13 +115,13 @@ line; a `#` after a space starts a comment.
 | Key | Required | Value |
 | --- | --- | --- |
 | `run` | yes | the run id; the branch is `runs/<run>` |
-| `base` | yes | the full id of the commit of `main` the run started from |
+| `base` | yes | the id of the commit of `main` the run started from, in full or its first 12 digits or more |
 | `outcome` | yes | `completed`, `failed` or `stopped` |
 | `harness` | no | a short lowercase name, for information only |
 | `cost_usd` | no | a number of dollars, 0 or more |
 
-The checker refuses a memo whose `run` is not the branch's, or whose `base` is not the commit the run started from: the
-commit the host names (`--run-base`), or else the branch's fork point from `main`.
+The checker refuses a memo whose `run` is not the branch's, or whose `base` is not the commit the run started from (the
+full id or a prefix of it): the commit the host names (`--run-base`), or else the branch's fork point from `main`.
 
 Then the four sections, each once, in this order and no other: `## What happened` (not empty), `## What I learned`,
 `## What could be better`, `## Proposed changes`. Under `## Proposed changes`, each line `- <path>` names one changed
@@ -171,36 +173,28 @@ start with `#` are allowed. Each note id appears once and names a note file on t
 
 Anything an agent learns on any harness must run on the workflow DSL. So:
 
-- The DSL's own `validateWorkflow` judges the draft, with `executeCode: false`: a `code` node is syntax-checked and never
-  run. Only the DSL's node types pass. A refusal carries the validator's own issue (its code, path and message).
-- The tools a draft names (a `call` node's `tool`, a model node's `tools`, as the DSL's `inspectWorkflow` lists them)
-  must all be in the host's tool list: the one list of names a workflow can bind on any harness. Under AgentRun the
-  server passes its tool table's names. A harness's built-in tool names (Codex's `exec_command`, Pi's `bash`, Claude
-  Code's `Bash`) are not in it: a harness adapter maps its calls back to the shared names.
+- The DSL's own `validateWorkflow` judges the draft, with `executeCode: false` (a `code` node is syntax-checked and never
+  run) and with the host's tool list as its `tools` option. Only the DSL's node types pass, and every tool a node names
+  (a model or prose-artifact node's `tools`, a `call` node's `tool`, in a child workflow too) must be in the host's
+  list. A refusal carries the validator's own issue: its code, the node's path and the message.
+- The host's tool list is the one list of names a workflow can bind on any harness. Under AgentRun the server passes
+  its tool table's names. A harness's built-in tool names (Codex's `exec_command`, Pi's `bash`, Claude Code's `Bash`)
+  are not in it unless the host puts them there: a harness adapter maps its calls back to the host's names.
 - The checker fails closed. With no host tool list, a draft that names any tool is refused with "no host tool list
   given: pass --tools <file> or run it under the host". A draft that names no tool checks without one.
 
 ## The merge policy
 
-Each changed path has a class, and the class says how it merges. The checker reports both for every path.
+Everything that passes merges automatically: notes, the index, skills and workflow drafts alike. An agent may ask for a
+person's approval at the merge step; that is the merge step's option, not the checker's.
 
-| Class | Paths | Merges |
-| --- | --- | --- |
-| `note` | `learnings/L-<id>.md` | on its own, once the checker and the screen pass |
-| `index` | `learnings/INDEX.md` | on its own, once the checker and the screen pass |
-| `memo` | `memos/<run id>.md` | on its own, once the checker passes |
-| `skill` | `.agents/skills/<name>/SKILL.md` | when a person approves |
-| `workflow` | `workflows/<name>/` | when a person approves |
-
-An agent's policy may let skills and workflow drafts merge on their own too (`--auto-merge skill,workflow`).
-
-Before a merge, in this order:
+Before every merge, in this order:
 
 1. The checker passes on the run's branch.
 2. The injection screen: every new or changed note, skill and workflow draft goes through the same page-injection screen
    a page the agent reads goes through, the host's `classifyPage` judge scored against `INJECTION_THRESHOLD` (0.75, from
-   `@parcha/pi-browser`). A score at or over the threshold is refused. An item the screen could not judge is held for a
-   person.
+   `@parcha/pi-browser`). A score at or over the threshold is refused. An item the screen could not judge (the judge is
+   down, or timed out) is refused for this merge too, never held: a later run may propose it again.
 3. The review skill reads what is left and merges what is general, new and consistent with `main`. It refuses
    duplicates, notes that contradict `main` without superseding the old note, and anything tied to one case.
 
@@ -209,9 +203,8 @@ or rebased.
 
 ## What the checker reports
 
-`{ problems, paths, merge }`. Each problem names a rule and, when there is one, the file; it never prints a value it
-refused. Each path has its class and how it merges. `merge` is `refused` on any problem, else `person` when any path
-waits for one, else `auto`.
+`{ problems }`; none means the branch goes on to the injection screen and the review. Each problem names a rule and,
+when there is one, the file; it never prints a value it refused.
 
 | Rule | Meaning |
 | --- | --- |
@@ -226,6 +219,7 @@ waits for one, else `auto`.
 | `too_many_notes` | more than 8 new notes |
 | `encoding` | not UTF-8 |
 | `lfs_pointer` | a Git LFS pointer |
+| `invisible_unicode` | a character a reader does not see, by code point |
 | `secret_shape` | text shaped like a secret, by kind |
 | `secret_value` | a value the host named as secret |
 | `memo_missing` | the branch carries no memo of its own |
@@ -239,6 +233,5 @@ waits for one, else `auto`.
 | `index` | an index line out of shape, or a note named twice |
 | `index_note` | an index line naming a note that is not on the branch |
 | `skill` | a skill out of shape |
-| `workflow` | a draft the DSL refuses, not named for its folder, or incomplete |
+| `workflow` | a draft the DSL refuses (a tool outside the host's list among them), not named for its folder, or incomplete |
 | `no_tool_list` | a draft names a tool and the host gave no tool list |
-| `unknown_tool` | a draft names a tool outside the host's tool list |

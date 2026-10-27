@@ -55,7 +55,7 @@ test("a changed path outside the layout is refused, by file", () => {
 /** Refused as locked when the run changes it, adds it or deletes it; `main` says which paths main holds. */
 function assertLocked(path, { main = [], ...options } = {}) {
   for (const text of ["changed by the run\n", null]) {
-    const problems = check(withFiles({ [path]: text, ...listing(path) }), { main: [...MAIN, ...main, path], ...options });
+    const problems = check(withFiles({ [path]: text }), { main: [...MAIN, ...main, path], ...options });
     assert.deepEqual(rules(problems), ["locked"], `${path} ${text === null ? "deleted" : "changed"}`);
     assert.equal(problems[0].path, path);
   }

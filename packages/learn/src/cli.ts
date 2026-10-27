@@ -4,11 +4,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import type { MergePolicy, PathClass } from "./check.js";
 import { checkBranch, insideRepo, RefError } from "./git.js";
 import { MIN_SECRET } from "./secrets.js";
 
-const USAGE = `usage: agentrun-learn check --base <ref> [--head <ref>] [--branch runs/<run id>] [--run-base <ref>] [--tools <file.json>] [--auto-merge skill,workflow] [--refuse-values-from-env NAME,...] [--json]
+const USAGE = `usage: agentrun-learn check --base <ref> [--head <ref>] [--branch runs/<run id>] [--run-base <ref>] [--tools <file.json>] [--refuse-values-from-env NAME,...] [--json]
 
   --base       the ref the run's branch merges into, such as main or origin/main
   --head       the run's commit (default HEAD)
@@ -16,9 +15,8 @@ const USAGE = `usage: agentrun-learn check --base <ref> [--head <ref>] [--branch
   --run-base   the commit the host started the run from; the memo's base must be it (default: the branch's fork point)
   --tools      the host's tool list, a JSON array of tool names or {"tools": [...]}; without it a draft that names a
                tool is refused
-  --auto-merge path classes that merge without a person, beyond notes, the index and the memo
   --refuse-values-from-env  environment variables whose values no file may hold; a value is never printed
-  --json       print {ok, merge, run, branch, forkPoint, problems, paths} as JSON`;
+  --json       print {ok, run, branch, forkPoint, problems} as JSON`;
 
 class UsageError extends Error {}
 
@@ -32,12 +30,6 @@ function toolsFrom(file: string): string[] {
   const list = Array.isArray(parsed) ? parsed : (parsed as { tools?: unknown } | null)?.tools;
   if (!Array.isArray(list) || !list.every((name) => typeof name === "string")) throw new UsageError(`--tools ${file} holds a list of tool names, or {"tools": [...]}`);
   return list;
-}
-
-function autoMerge(spec: string | undefined): Partial<MergePolicy> {
-  const classes = (spec ?? "").split(",").map((c) => c.trim()).filter(Boolean);
-  for (const name of classes) if (!["note", "index", "memo", "skill", "workflow"].includes(name)) throw new UsageError(`--auto-merge takes note, index, memo, skill or workflow, not ${name}`);
-  return Object.fromEntries(classes.map((name) => [name as PathClass, "auto"]));
 }
 
 function refuseValues(spec: string | undefined): string[] {
@@ -63,7 +55,7 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: false,
     options: {
       base: { type: "string" }, head: { type: "string" }, branch: { type: "string" }, "run-base": { type: "string" }, tools: { type: "string" },
-      "auto-merge": { type: "string" }, "refuse-values-from-env": { type: "string" }, json: { type: "boolean" },
+      "refuse-values-from-env": { type: "string" }, json: { type: "boolean" },
     },
   });
   if (!values.base) throw new UsageError("--base is required");
@@ -78,17 +70,14 @@ async function main(argv: string[]): Promise<number> {
     ...(values["run-base"] ? { runBase: values["run-base"] } : {}),
     ...(values.tools ? { tools: toolsFrom(values.tools) } : {}),
     ...(toolsInRepo ? { lockedPaths: [toolsInRepo] } : {}),
-    policy: autoMerge(values["auto-merge"]),
     refuseValues: refuseValues(values["refuse-values-from-env"]),
   });
   const ok = report.problems.length === 0;
   if (values.json) console.log(JSON.stringify({ ok, ...report }, null, 2));
   else {
     const name = report.branch ?? "(no branch)";
-    if (ok) console.log(`${name}: ok, ${report.merge === "auto" ? "merges once the injection screen passes" : "a person approves the merge"}`);
-    else console.log(`${name}: ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}`);
+    console.log(ok ? `${name}: ok` : `${name}: ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}`);
     for (const problem of report.problems) console.log(`  ${problem.rule}  ${problem.path ?? "-"}  ${problem.detail}`);
-    if (ok) for (const path of report.paths) console.log(`  ${path.class}  ${path.path}  ${path.merge}`);
   }
   return ok ? 0 : 1;
 }

@@ -1,6 +1,6 @@
-import { inspectWorkflow, validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
+import { validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import { LEARNING_ID, RUN_ID } from "./layout.js";
-import type { ToolCheck } from "./tools.js";
+import { NO_TOOL_LIST } from "./tools.js";
 
 type Head = { fields: Map<string, string>; nested: Map<string, Map<string, string>>; body: string };
 
@@ -120,7 +120,7 @@ export function parseMemo(text: string): Memo | string[] {
   const run = fields.get("run") ?? "";
   const base = fields.get("base") ?? "";
   if (run && !RUN_ID.test(run)) out.push("run is not a run id");
-  if (base && !COMMIT_SHA.test(base)) out.push("base is not a full commit id");
+  if (base && !/^[0-9a-f]{12,64}$/.test(base)) out.push("base is not a commit id, in full or its first 12 digits or more");
   if (fields.get("outcome") && !["completed", "failed", "stopped"].includes(fields.get("outcome")!)) out.push("outcome is not completed, failed or stopped");
   if (fields.has("harness") && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(fields.get("harness")!)) out.push("harness is not a short lowercase name");
   if (fields.has("cost_usd") && !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(fields.get("cost_usd")!)) out.push("cost_usd is not a number of dollars, 0 or more");
@@ -174,21 +174,26 @@ export function skillProblems(text: string, name: string): string[] {
   return out;
 }
 
-export type DraftProblem = { rule: "workflow" | "no_tool_list" | "unknown_tool"; detail: string };
+export type DraftProblem = { rule: "workflow" | "no_tool_list"; detail: string };
+
+const issuesOf = (doc: unknown, tools?: readonly string[]) => {
+  const valid = validateWorkflow(doc as Workflow, { executeCode: false, ...(tools ? { tools } : {}) });
+  return valid.ok ? [] : valid.issues;
+};
 
 /** Why `workflows/<name>/workflow.json` is not a draft every harness can run; empty when it is. The DSL's own
- *  `validateWorkflow` judges it, with `executeCode: false` so no code the draft holds is run (a code node is
- *  syntax-checked), and `inspectWorkflow` names its tools: a call node's `tool` and a model node's `tools`. */
-export function draftProblems(text: string, name: string, tools: ToolCheck): DraftProblem[] {
+ *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked) and
+ *  with the host's `tools`, so a node that names a tool outside them is its error. With no list it fails closed: a draft
+ *  the DSL refuses only once given an empty list names a tool. */
+export function draftProblems(text: string, name: string, tools?: readonly string[]): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
   } catch {
     return [{ rule: "workflow", detail: "it does not parse as JSON" }];
   }
-  const valid = validateWorkflow(doc as Workflow, { executeCode: false });
-  if (!valid.ok) return valid.issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
-  const out: DraftProblem[] = [];
-  if ((doc as { name?: unknown }).name !== name) out.push({ rule: "workflow", detail: `its name is not the folder's name, ${name}` });
-  return [...out, ...tools(inspectWorkflow(doc).requires.tools)];
+  const issues = issuesOf(doc, tools);
+  if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
+  if (!tools && issuesOf(doc, []).length) return [{ rule: "no_tool_list", detail: NO_TOOL_LIST }];
+  return (doc as { name?: unknown }).name === name ? [] : [{ rule: "workflow", detail: `its name is not the folder's name, ${name}` }];
 }

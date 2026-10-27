@@ -8,12 +8,13 @@ note format, in [SPEC.md](SPEC.md).
 
 This package is that contract plus the one piece of code it needs: a checker that validates a run's branch before any
 merge. The checker is structural. It checks the layout and the locked paths (the agent's rules, the loop's own review
-skill, hooks, CI, package scripts, the spec), the formats, the caps, the run's memo and text shaped like a secret, and
-it says how each changed path merges: notes on their own, skills and workflow drafts with a person by default. Whether a
-note is any good is the review's judgment, after an injection screen; [SPEC.md](SPEC.md#the-merge-policy) sets the order.
+skill, hooks, CI, package scripts, the spec), the formats, the caps, the run's memo, hidden characters and text shaped
+like a secret. A branch that passes goes on to an injection screen and the review, and what passes them merges
+automatically; [SPEC.md](SPEC.md#the-merge-policy) sets the order. Whether a note is any good is the review's judgment.
 
 Anything an agent learns on any harness must run on the workflow DSL, so a workflow draft must pass the DSL's own
-`validateWorkflow` and name only tools in the host's tool list. With no list, a draft that names a tool is refused.
+`validateWorkflow`, given the host's tool list as its `tools` option. With no list, a draft that names a tool is
+refused.
 
 It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
 tarball (`npm pack -w @parcha/agentrun-learn`).
@@ -26,8 +27,7 @@ Node 22.19 or later and git. On the run's branch, in the agent's repository:
 agentrun-learn check --base main --tools host-tools.json
 ```
 
-It prints `runs/<run id>: ok` with each changed path's class and how it merges, and exits 0; or it names each problem
-by rule and file and exits 1. A bad command line, or a ref that names no commit, exits 2.
+It prints `runs/<run id>: ok` and exits 0, or it names each problem by rule and file and exits 1. A bad command line, or a ref that names no commit, exits 2.
 
 | Option | What it does |
 | --- | --- |
@@ -36,9 +36,8 @@ by rule and file and exits 1. A bad command line, or a ref that names no commit,
 | `--branch runs/<run id>` | the branch the run pushes; by default the branch `--head` names |
 | `--run-base <ref>` | the commit the host started the run from; the memo's `base` must be it (default: the branch's fork point from `--base`) |
 | `--tools <file.json>` | the host's tool list, a JSON array of names or `{"tools": [...]}`. Without it, a draft that names a tool is refused. A list kept inside the repository is locked against the run |
-| `--auto-merge skill,workflow` | the agent's policy: these classes merge without a person too |
 | `--refuse-values-from-env NAME,...` | refuse any file that holds the value of one of these variables; a value is never printed |
-| `--json` | print `{ok, merge, run, branch, forkPoint, problems, paths}` |
+| `--json` | print `{ok, run, branch, forkPoint, problems}` |
 
 The checker reads git objects with plumbing only. It never checks anything out, so no hook, filter, smudge or merge
 driver of the repository runs.
@@ -70,7 +69,7 @@ agentrun-learn check --base origin/main --head "$GITHUB_SHA" --branch "$GITHUB_H
 import { checkBranch, checkRun } from "@parcha/agentrun-learn";
 
 // A git repository: the changes from where the branch starts on base to head.
-const { problems, paths, merge } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["fetch_page", "browser"] });
+const { problems } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["fetch_page", "browser"] });
 
 // Or changes you already hold: path, status, git mode and the file's bytes at the branch's head.
 const found = checkRun({
@@ -80,5 +79,4 @@ const found = checkRun({
 });
 ```
 
-Each problem is `{ rule, path?, detail }`, and each path `{ path, class, merge }`. `merge` is `refused`, `person` or
-`auto`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.
+Each problem is `{ rule, path?, detail }`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.

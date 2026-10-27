@@ -82,7 +82,7 @@ export async function checkBranch(input: CheckBranchInput): Promise<BranchCheck>
   const branch = given ?? (await branchOf(cwd, headRef));
   const named = { ...(branch !== undefined && runOf(branch) ? { run: runOf(branch)! } : {}), ...(branch !== undefined ? { branch } : {}) };
   const forkPoint = await attempt(cwd, ["merge-base", base, head]);
-  if (!forkPoint) return { ...named, problems: [{ rule: "branch", detail: "the branch shares no history with the base" }], paths: [], merge: "refused" };
+  if (!forkPoint) return { ...named, problems: [{ rule: "branch", detail: "the branch shares no history with the base" }] };
   // Read without SAFE's own override, which would answer /dev/null.
   const hooks = await exec("git", ["config", "--get", "core.hooksPath"], { cwd, env: ENV, encoding: "utf8" }).then((out) => out.stdout.trim(), () => undefined);
   const hooksInRepo = hooks ? await insideRepo(cwd, hooks) : undefined;
