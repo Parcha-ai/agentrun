@@ -200,7 +200,7 @@ const issuesOf = (doc: unknown, tools?: readonly string[]) => {
  *  `validateWorkflow` judges it, with `executeCode: false` so no code it holds is run (a code node is syntax-checked) and
  *  with the host's `tools`, so a node that names a tool outside them is its error. With no list it fails closed: a draft
  *  the DSL refuses only once given an empty list names a tool. */
-export function draftProblems(text: string, name: string, tools?: readonly string[]): DraftProblem[] {
+export function draftProblems(text: string, tools?: readonly string[]): DraftProblem[] {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -211,6 +211,5 @@ export function draftProblems(text: string, name: string, tools?: readonly strin
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   const out = executableNodes(doc);
   if (!tools && issuesOf(doc, []).length) out.push({ rule: "no_tool_list", detail: NO_TOOL_LIST });
-  if ((doc as { name?: unknown }).name !== name) out.push({ rule: "workflow", detail: `its name is not the folder's name, ${name}` });
   return out;
 }

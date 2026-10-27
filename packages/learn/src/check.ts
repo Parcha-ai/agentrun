@@ -128,7 +128,7 @@ export function checkRun(input: CheckInput): RunCheck {
       case "skill":
         return skillProblems(text, place.name!).forEach((reason) => add("skill", reason, path));
       case "workflow":
-        return draftProblems(text, place.name!, input.tools).forEach(({ rule, detail }) => add(rule, detail, path));
+        return draftProblems(text, input.tools).forEach(({ rule, detail }) => add(rule, detail, path));
       case "readme":
         if (text.trim() === "") add("workflow", "the README is empty", path);
         return;

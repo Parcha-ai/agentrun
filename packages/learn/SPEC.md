@@ -175,7 +175,8 @@ start with `#` are allowed. Each note id appears once and names a note file on t
 
 ## Workflow drafts
 
-`workflows/<name>/workflow.json` is one workflow document. Its `name` is the folder's name.
+`workflows/<name>/workflow.json` is one workflow document. The folder's name is the name the workflow is saved and
+loaded under; the document's own `name` may differ.
 `workflows/<name>/README.md` says what it is for and when it applies, and is not empty.
 
 Anything an agent learns on any harness must run on the workflow DSL. So:
@@ -250,6 +251,6 @@ when there is one, the file; it never prints a value it refused.
 | `index` | an index line out of shape, or a note named twice |
 | `index_note` | an index line naming a note that is not on the branch |
 | `skill` | a skill out of shape |
-| `workflow` | a draft the DSL refuses (a tool outside the host's list among them), not named for its folder, or incomplete |
+| `workflow` | a draft the DSL refuses (a tool outside the host's list among them), or incomplete |
 | `no_tool_list` | a draft names a tool and the host gave no tool list |
 | `executable_node` | a draft holds a code node, or a call node via shell or executor |
