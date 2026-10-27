@@ -11,7 +11,7 @@ import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { catchUp, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
+import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
 import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 /** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
@@ -270,7 +270,11 @@ test("a run whose end its server never carried back is proposed once by the next
   const { pid } = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8")).holder;
   t.after(() => alive(pid) && process.kill(pid, "SIGKILL"));
   await writeFile(gate, "");
-  await sleep(2_500);
+  // The faux model says it saw the gate; SIGTERM then drains the turn, so the answer lands before the process lets go.
+  for (let i = 0; !existsSync(`${gate}.seen`); i++) {
+    assert.ok(i < 400, "the run sees its gate");
+    await sleep(50);
+  }
   process.kill(pid, "SIGTERM");
   for (let i = 0; alive(pid); i++) {
     assert.ok(i < 200, "the run's process exits on SIGTERM");
@@ -283,7 +287,7 @@ test("a run whose end its server never carried back is proposed once by the next
   t.after(() => next.child.kill("SIGKILL"));
   const state = await stateOf(data, "calc", run.run_id);
   assert.equal(storeRun(data, run.run_id).state, "completed");
-  await sleep(1_000);
+  // A server stopped by SIGTERM closes: it waits for its start-time catch-up and for what runs after each carry back.
   next.child.kill("SIGTERM");
   await new Promise((resolve) => next.child.once("exit", resolve));
   const bare = bareOf(data, "calc");
@@ -294,7 +298,12 @@ test("a run whose end its server never carried back is proposed once by the next
 });
 
 test("a proposal and the start-time catch-up of the same run at once make one commit and no error", async (t) => {
-  const { api, data } = await serve(t);
+  const data = join(await scratch(t), "agents");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let closing;
+  const close = () => (closing ??= server.close());
+  t.after(close);
+  const api = client(server.baseUrl, server.token);
   await api("POST", "/agents", agent("calc"));
   const bare = bareOf(data, "calc");
   // A run whose proposal failed: it ended, and nothing is recorded for it.
@@ -302,7 +311,8 @@ test("a proposal and the start-time catch-up of the same run at once make one co
   t.after(() => chmod(join(bare, "refs", "heads"), 0o755).catch(() => undefined));
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   await follow(api, run.run_id, ["completed"]);
-  await sleep(1_000);
+  // Closing waits for the failed proposal; the race below needs no server.
+  await close();
   await chmod(join(bare, "refs", "heads"), 0o755);
   assert.equal(await readRunState(data, "calc", run.run_id), undefined);
   const reader = openStoreReader(data);
@@ -375,7 +385,7 @@ test("a push that fails ends the run as it would have; the next start proposes i
   const { last } = await follow(api, run.run_id, ["completed"]);
   assert.equal(last.final, true);
   assert.equal(storeRun(data, run.run_id).state, "completed", "the run ends completed");
-  await sleep(1_000);
+  // Closing waits for what runs after the carry back: the failed proposal is over once it returns.
   await closeFirst();
   assert.equal(await readRunState(data, "calc", run.run_id), undefined, "nothing was proposed");
   assert.equal(branches(bare).includes(`runs/${run.run_id}`), false);
@@ -438,6 +448,24 @@ test("on a host without git 2.40 a new agent does not learn, one that asks to sa
   assert.equal(existsSync(join(data, "agents", "asked")), false);
   const ran = await api("POST", "/agents/plain/runs", { input: { content: "Hello." } });
   assert.equal(ran.status, 202, "an agent that does not learn runs as before");
+});
+
+test("a run is untrusted when any message of any entry in its store calls an external tool", async (t) => {
+  const file = join(await scratch(t), "run.sqlite");
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, record TEXT NOT NULL)");
+  const put = (record) => db.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify(record));
+  const call = (name) => ({ role: "assistant", content: [{ type: "text", text: "Looking." }, { type: "toolCall", id: `c-${name}`, name, arguments: {} }] });
+  put({ kind: "pi.user", model: [{ role: "user", content: "Go." }] });
+  put({ kind: "pi.assistant", model: [call("read"), call("learn")] });
+  db.close();
+  assert.equal(externalUsed(file), false, "the file tools and learn bring nothing in");
+  const planted = new DatabaseSync(file);
+  // An external call in the entry's second message, not its first.
+  planted.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify({ kind: "pi.assistant", model: [call("read"), call("fetch_page")] }));
+  planted.close();
+  assert.equal(externalUsed(file), true, "a call in any message of the entry counts");
 });
 
 test("a run's outcome on its memo, and which tools bring outside content in", () => {
