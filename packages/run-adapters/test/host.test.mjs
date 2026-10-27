@@ -257,9 +257,12 @@ test('every paid request forwarded is booked once: its usage when it says it; an
   assert.equal((await send(failed.p.url)).status, 529);
   assert.deepEqual(failed.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }]);
 
-  const none = await proxy(t, { credential: () => '' });
-  assert.equal((await send(none.p.url)).status, 500);
-  assert.equal(none.forwarded.length, 0);
+  // Admitted and never sent (no credential, or one that could not be read): a 500, and booked once at nothing.
+  for (const credential of [() => '', () => { throw new Error('vault down'); }]) {
+    const none = await proxy(t, { credential });
+    assert.equal((await send(none.p.url)).status, 500);
+    assert.deepEqual([none.forwarded.length, none.hooks.before.length, none.hooks.after], [0, 1, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }]]);
+  }
 });
 
 test("a long answer's usage is read from both ends: input reported as it starts, output as it ends", async (t) => {

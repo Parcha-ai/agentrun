@@ -256,8 +256,25 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
     }
-    const credential = await options.credential();
-    if (!credential) return refuse(res, 500, "the session has no provider credential", req);
+    let credential = "";
+    try {
+      credential = await options.credential();
+    } catch (error) {
+      say(`model proxy (${policy.id}): the provider credential could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    }
+    if (!credential) {
+      // Admitted and never sent: booked at nothing, so a reload (which counts an admitted request with no booking at an
+      // unknown cost) agrees with this process.
+      refuse(res, 500, "the session has no provider credential", req);
+      if (!route.free) {
+        try {
+          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 });
+        } catch (error) {
+          say(`model proxy (${policy.id}): afterRequest threw; the request was not sent and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
+      }
+      return;
+    }
     Object.assign(headers, policy.authHeaders(credential));
     const controller = new AbortController();
     inflight.add(controller);

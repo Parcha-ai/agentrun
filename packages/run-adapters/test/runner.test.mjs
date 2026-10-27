@@ -413,6 +413,21 @@ test("two paid requests in flight at once, both answered: the next beforeRequest
   assert.deepEqual(asked, [0, 0, 0.75]);
 });
 
+test("a request booked at nothing (admitted, never sent) keeps the spend known, in this process and for a later one", async () => {
+  const store = memorySessionStore();
+  const asked = [];
+  const beforeRequest = (r) => { asked.push(r.spentUsd); };
+  // The first process: a request admitted and booked at 0 (it was never sent), then one at 0.5; the node is cut off.
+  const first = createHarnessRunner(plannedAdapter([{ before: true }, { after: 0 }, { before: true }, { after: 0.5 }]), { store, beforeRequest });
+  assert.deepEqual(await first(stepRequest()), { answer: 'ok' });
+  assert.deepEqual(asked, [0, 0]);
+  // What a later process reads: every admitted request has its booking, so its spend is the known sum (0.5), not
+  // unknown (the reload rule counts an admitted request with no booking at an unknown cost).
+  const records = await store.read('step:s1');
+  assert.equal(records.filter((r) => r.kind === RUNNER_RECORDS.request).length, 2);
+  assert.deepEqual(records.filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data.usd), [0, 0.5]);
+});
+
 test("a paid request booked at an unknown cost leaves the node's spend unknown from then on", async () => {
   const asked = [];
   const runNode = createHarnessRunner(plannedAdapter([{ before: true }, { after: null }, { before: true }, { after: 0.5 }, { before: true }]), { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });
