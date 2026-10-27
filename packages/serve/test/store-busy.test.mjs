@@ -34,10 +34,12 @@ async function slowestWhile(port, token, until) {
   return slowest;
 }
 
-/** Another connection holding store.sqlite (`IMMEDIATE`: no other writer; `EXCLUSIVE`: no reader either). */
+/** Another connection holding store.sqlite (`IMMEDIATE`: no other writer; `EXCLUSIVE`: no reader either; `READ`: a
+ *  reader's shared lock, which a writer's commit waits for). */
 function hold(t, data, mode = "IMMEDIATE") {
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  store.exec(`BEGIN ${mode}`);
+  store.exec(`BEGIN ${mode === "READ" ? "" : mode}`);
+  if (mode === "READ") store.prepare("SELECT count(*) FROM agents").get();
   const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
   t.after(release);
   return release;
@@ -94,4 +96,18 @@ test("a read while the agent store is held exclusively waits, then answers once 
   const answer = await read;
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
+});
+
+test("an edit whose commit meets a reader of the agent store waits for it, then answers 200 with the new revision", async (t) => {
+  const { api, data, port, token } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("edited"))).status, 201);
+  const release = hold(t, data, "READ");
+  const edited = timed(port, token, "PUT", "/agents/edited/definition", agent("edited", { instructions: "Answer briefly.", version: 2 }));
+  const slowest = await slowestWhile(port, token, sleep(1_000));
+  release();
+  const answer = await edited;
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  assert.equal(answer.body.definition.instructions, "Answer briefly.");
+  assert.ok(answer.took >= 900, `it waited for the reader: ${answer.took} ms`);
+  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the edit waited`);
 });
