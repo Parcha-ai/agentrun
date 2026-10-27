@@ -8,9 +8,12 @@
 (* within the bound (the outcome settles the record), or the bound passes  *)
 (* (the record says UNKNOWN) and a late answer settles it after. Every     *)
 (* write is a commit through the store's fence, refused once the writer's  *)
-(* lease is lost. A process may crash at any point, or lose its lease and  *)
+(* lease is lost. A process may crash at any point (between the admission *)
+(* and the call, or the call and its outcome, too), or lose its lease and  *)
 (* go on running; the supervisor then starts the next incarnation, which   *)
-(* has only the store.                                                     *)
+(* has only the store. ADMITTED means a call live in the answering         *)
+(* process: any other ADMITTED record answers UNKNOWN, and the next open   *)
+(* writes it UNKNOWN.                                                      *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -22,6 +25,7 @@ CONSTANTS
 
 Incs == 1..MaxInc
 Settled == {"ACCEPTED", "REJECTED_BUSY", "FAILED"}
+Calling == {"own", "waiting"}
 
 VARIABLES
   rec,      \* [Reqs -> status]: the record's status in the store (its last entry); "none" before the admission
@@ -44,6 +48,9 @@ Init ==
   /\ call = [i \in Incs |-> [r \in Reqs |-> "none"]]
   /\ alive = [i \in Incs |-> i = 1] /\ holds = [i \in Incs |-> i = 1]
   /\ cur = 1 /\ losses = 0
+
+\* What a submit of r answers in process i once the record exists: ADMITTED only while a call of i carries it.
+AnswerOf(i, r) == IF rec[r] = "ADMITTED" /\ call[i][r] \notin Calling THEN "UNKNOWN" ELSE rec[r]
 
 (* --- A submit --- *)
 
@@ -71,6 +78,13 @@ Dispatch(i, r) ==
   /\ sent' = [sent EXCEPT ![r] = @ + 1] /\ call' = [call EXCEPT ![i][r] = "waiting"]
   /\ UNCHANGED <<rec, by, arrived, checking, alive, holds, cur, losses>>
 
+\* The lease is lost between the admission and the call: the hook is not called. The UNKNOWN the door then writes is
+\* refused (the lease is gone), so the record stays ADMITTED in the store, served by no call.
+Abandon(i, r) ==
+  /\ alive[i] /\ ~holds[i] /\ call[i][r] = "own"
+  /\ call' = [call EXCEPT ![i][r] = "none"]
+  /\ UNCHANGED <<rec, sent, by, arrived, checking, alive, holds, cur, losses>>
+
 \* The hook answers within the bound: the outcome settles the record, unless the lease is gone (it stays ADMITTED).
 Settle(i, r) ==
   /\ alive[i] /\ call[i][r] = "waiting"
@@ -93,6 +107,12 @@ LateSettle(i, r) ==
   /\ \E o \in Settled : rec' = IF holds[i] THEN [rec EXCEPT ![r] = o] ELSE rec \* fenced
   /\ call' = [call EXCEPT ![i][r] = "none"]
   /\ UNCHANGED <<sent, by, arrived, checking, alive, holds, cur, losses>>
+
+\* The open's write: an ADMITTED record no call of this process carries is written UNKNOWN through the fenced commit.
+Recover(i, r) ==
+  /\ alive[i] /\ holds[i] /\ rec[r] = "ADMITTED" /\ call[i][r] = "none"
+  /\ rec' = [rec EXCEPT ![r] = "UNKNOWN"]
+  /\ UNCHANGED <<sent, by, arrived, checking, call, alive, holds, cur, losses>>
 
 (* --- The process and its lease --- *)
 
@@ -118,7 +138,7 @@ Restart ==
   /\ UNCHANGED <<rec, sent, by, arrived, checking, call, losses>>
 
 Next ==
-  \/ \E i \in Incs, r \in Reqs : Arrive(i, r) \/ Admit(i, r) \/ Dispatch(i, r) \/ Settle(i, r) \/ Unknown(i, r) \/ LateSettle(i, r)
+  \/ \E i \in Incs, r \in Reqs : Arrive(i, r) \/ Admit(i, r) \/ Dispatch(i, r) \/ Abandon(i, r) \/ Settle(i, r) \/ Unknown(i, r) \/ LateSettle(i, r) \/ Recover(i, r)
   \/ \E i \in Incs : Crash(i) \/ LoseLease(i)
   \/ Restart
 
@@ -146,4 +166,7 @@ I4_DispatchOnlyAdmittedUnderLease ==
   [][\A r \in Reqs : sent'[r] > sent[r] => (rec[r] = "ADMITTED" /\ by[r] # 0 /\ holds[by[r]] /\ call[by[r]][r] = "own")]_vars
 \* A late answer is pending only on an UNKNOWN record: LateSettle comes only after Unknown.
 I5_LateSettleOnlyAfterUnknown == \A i \in Incs, r \in Reqs : call[i][r] = "late" => rec[r] = "UNKNOWN"
+\* No record answers ADMITTED in an incarnation that is not calling the hook for it: a retry after a crash or a lost
+\* lease hears UNKNOWN, before the open's write lands and after.
+I6_AdmittedOnlyWhileCalled == \A i \in Incs, r \in Reqs : (alive[i] /\ holds[i] /\ AnswerOf(i, r) = "ADMITTED") => call[i][r] \in Calling
 =============================================================================
