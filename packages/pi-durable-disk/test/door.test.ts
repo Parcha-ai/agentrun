@@ -53,8 +53,9 @@ function scripted(options: { submit?: (input: DoorInput, ctx: DoorContext) => Pr
 
 /** The door's records of the root conversation, oldest first. */
 async function doorEntries(run: DurableRun): Promise<{ kind: string; data: Record<string, unknown> }[]> {
-  const page = await (await run.harness.root(ctx)).entries({ order: "ascending" }, 500, undefined, ctx);
-  return page.items.filter((e) => e.kind.startsWith("door.")).map((e) => ({ kind: e.kind, data: e.data as Record<string, unknown> }));
+  // The floor pi-durable takes no `order` (newest first by default): sorted by id here, so it holds on every pi.
+  const page = await (await run.harness.root(ctx)).entries({}, 500, undefined, ctx);
+  return [...page.items].sort((x, y) => Number(x.id) - Number(y.id)).filter((e) => e.kind.startsWith("door.")).map((e) => ({ kind: e.kind, data: e.data as Record<string, unknown> }));
 }
 
 async function served(disk: LocalDisk, hook: DoorHook, extra: { token?: string; submitMs?: number; abortMs?: number; decorateStore?: (db: SqliteDatabase) => SqliteDatabase } = {}) {
