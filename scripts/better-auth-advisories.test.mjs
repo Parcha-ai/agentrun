@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { check, compare, covers, findings, issueOf, pinnedVersion } from './better-auth-advisories.mjs';
+import { ACKNOWLEDGED, check, compare, covers, findings, issueOf, pinnedVersion } from './better-auth-advisories.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const SECRET_WORDS = 'exploit the session fixation by replaying the cookie';
@@ -130,4 +130,15 @@ test('the workflow: weekly or by hand, never on a pull request; its own token wi
   assert.ok(uses.length >= 1);
   for (const line of uses) assert.match(line, /uses: actions\/[a-z-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, line);
   assert.ok(!lines.some((line) => /^\s+permissions:/.test(line)), 'no job widens the permissions');
+});
+
+test('an acknowledged advisory, with why and until when, is left out until its date passes, and then counts again', () => {
+  const known = [{ ghsa: 'GHSA-aaaa-1111-aaaa', why: 'a plugin this server does not use', until: '2026-12-31' }];
+  assert.deepEqual(findings('1.7.14', DATABASE, known, new Date('2026-11-01T00:00:00Z')), []);
+  assert.deepEqual(findings('1.7.14', DATABASE, known, new Date('2027-01-01T00:00:00Z')).map((f) => f.ghsa), ['GHSA-aaaa-1111-aaaa']);
+  for (const entry of ACKNOWLEDGED) {
+    assert.match(entry.ghsa, /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/);
+    assert.ok(entry.why.length > 10, entry.ghsa);
+    assert.ok(!Number.isNaN(Date.parse(entry.until)), entry.ghsa);
+  }
 });
