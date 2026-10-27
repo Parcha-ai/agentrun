@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { FORBIDDEN, MEDIA_FILE, PAGE_EXTENSIONS, credentialInFile } from '../../packages/harness/src/scan.ts';
 import { artifactBlobNames, blobNameProblem, validateRecording } from './validate.mjs';
 
@@ -130,7 +130,7 @@ export function gateProblems(dist, lock = existsSync(LOCK) ? JSON.parse(readFile
   return problems;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   const dist = process.argv[2];
   if (!dist) { console.error('usage: node scripts/recording/gate.mjs <dist-dir>'); process.exit(2); }
   const problems = gateProblems(dist);

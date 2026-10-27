@@ -46,6 +46,7 @@ export {
 } from "./workflow.js";
 export { compileTransform, compileTransformSyntax, deniedGlobalReferences } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
+export { submitParameters } from "./submit-envelope.js";
 export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
 

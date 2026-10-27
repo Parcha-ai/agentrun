@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -171,4 +171,59 @@ test("agentrun-learn prints its usage on a bad command line and exits 2", async 
   assert.equal(cli(dir, ["check", "--base", "no-such-ref"]).status, 2);
   assert.equal(cli(dir, ["check", "--base", "main", "--run-base", "no-such-ref"]).status, 2);
   assert.equal(cli(dir, ["--help"]).status, 0);
+});
+
+test("the verdict is the same from any folder of the work tree: the root, learnings/ and a workflow's folder", async (t) => {
+  const { dir, tools } = await repo(t);
+  const at = (cwd) => {
+    const out = cli(cwd, ["check", "--base", "main", "--tools", tools, "--json"]);
+    return { status: out.status, report: JSON.parse(out.stdout) };
+  };
+  const root = at(dir);
+  assert.equal(root.status, 0, JSON.stringify(root.report));
+  for (const sub of ["learnings", "workflows/find-policies"]) {
+    const here = at(join(dir, sub));
+    assert.deepEqual([here.status, found(here.report), here.report.ok], [root.status, found(root.report), root.report.ok], `from ${sub}/`);
+  }
+});
+
+test("a secret's value is printed nowhere: not in a file's name, not in the branch's name, in text or JSON", async (t) => {
+  const value = "Zq9sEcReT77xKp";
+  const { dir, tools } = await repo(t, { ...cleanFiles(), [`learnings/${value}.md`]: "a note named for a secret\n" }, { branch: `runs/2026-10-27-0412-${value}` });
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: value });
+    assert.equal(out.status, 1, out.stdout + out.stderr);
+    assert.match(out.stdout, /\[redacted\]/, "control: the problems are reported, redacted");
+    assert.equal((out.stdout + out.stderr).includes(value), false, `${json ? "JSON" : "text"} output holds the value`);
+  }
+});
+
+test("over the change cap, no body is read: the count comes first", async (t) => {
+  const extra = Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`extra/f${String(i).padStart(2, "0")}.txt`, `file ${i}\n`]));
+  const { dir, tools } = await repo(t, { ...cleanFiles(), ...extra });
+  const shim = join(dir, "..", "shim");
+  const log = join(dir, "..", "git.log");
+  await mkdir(shim);
+  await writeFile(join(shim, "git"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+  const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--json"], { PATH: `${shim}:${process.env.PATH}` });
+  assert.deepEqual(found(JSON.parse(out.stdout)).filter(([rule]) => rule === "too_many_files").length, 1, out.stdout);
+  const calls = (await readFile(log, "utf8")).split("\n").filter(Boolean);
+  assert.ok(calls.some((line) => /diff-tree/.test(line)), "control: the shim saw git");
+  assert.equal(calls.filter((line) => /(^| )cat-file /.test(line)).length, 0, "no cat-file over the cap");
+});
+
+test("a ref that names no commit is reported without the refused value it holds, with --head or --base, text or JSON", async (t) => {
+  const value = "Wk3sEcReT58zRq";
+  const { dir, tools } = await repo(t);
+  for (const [flag, ref] of [["--head", `runs/${value}`], ["--base", `main-${value}`]]) {
+    for (const json of [false, true]) {
+      const args = ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])];
+      if (flag === "--head") args.push("--head", ref);
+      else args.splice(args.indexOf("main"), 1, ref);
+      const out = cli(dir, args, { STORE_PASS: value });
+      assert.equal(out.status, 2, out.stdout + out.stderr);
+      assert.match(out.stderr, /\[redacted\]/, `control: the ref is reported, redacted (${flag})`);
+      assert.equal((out.stdout + out.stderr).includes(value), false, `${flag} ${json ? "JSON" : "text"}: the value is printed`);
+    }
+  }
 });

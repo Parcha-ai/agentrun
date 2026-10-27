@@ -15,6 +15,9 @@ import { call, openRig } from "./wire/rig.mjs";
 
 // The durable adapter with a host's session vault on a real local Chrome: a kept sign-in is in the new browser's cookie jar when its driver attaches, and the browser is read
 // for the vault while it still exists, at the release.
+// A branded Chrome writes its url-fetcher directory straight under its TMPDIR, so each launcher's Chrome gets a TMPDIR of its own (short:
+// its singleton socket path aborts past 107 bytes), removed with the test, and the file's own TMPDIR stays clean for the leak check.
+const ownTmp = (t) => scratchSync(t, "vault-tmp-");
 const text = (value) => { const content = [{ type: "text", text: JSON.stringify(value) }]; return { content, output: content }; };
 const ORIGIN = "http://127.0.0.1:45871";
 const KEPT = {
@@ -58,7 +61,7 @@ test("durable adapter, real Chrome: the kept cookie is in the jar when the drive
 
 test("durable adapter, a Chrome the run's launcher started and the host names as an OWN endpoint: it is offered to the vault, a kept cookie is in its jar when the driver attaches, the release is captured, and the drain after it finishes", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
   const userData = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "vault-endpoint-"));
-  const child = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userData}`, "--no-first-run", "--password-store=basic", "--use-mock-keychain", "--remote-allow-origins=*", "about:blank"], { stdio: "ignore", detached: true });
+  const child = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userData}`, "--no-first-run", "--password-store=basic", "--use-mock-keychain", "--remote-allow-origins=*", "about:blank"], { stdio: "ignore", detached: true, env: { ...process.env, TMPDIR: ownTmp(t) } });
   t.after(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, { timeout: 30_000 });
   t.after(() => fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }), { timeout: 30_000 });
   let port;
@@ -94,7 +97,7 @@ test("durable adapter, a Chrome the run's launcher started and the host names as
 
 test("a capture of a local Chrome is discarded when a person begins driving while it is read, and kept when no one does", { skip: NO_CHROME, timeout: 150_000 }, async (t) => {
   const userData = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "vault-gate-"));
-  const child = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userData}`, "--no-first-run", "--password-store=basic", "--use-mock-keychain", "--remote-allow-origins=*", "about:blank"], { stdio: "ignore", detached: true });
+  const child = spawn(CHROME, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${userData}`, "--no-first-run", "--password-store=basic", "--use-mock-keychain", "--remote-allow-origins=*", "about:blank"], { stdio: "ignore", detached: true, env: { ...process.env, TMPDIR: ownTmp(t) } });
   t.after(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, { timeout: 30_000 });
   t.after(() => fs.rmSync(userData, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }), { timeout: 30_000 });
   let port;
