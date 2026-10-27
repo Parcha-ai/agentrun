@@ -307,8 +307,14 @@ test("serve: a request to a released run starts it and gets the answer; a repeat
   assert.equal(first.status, 200, JSON.stringify(first.body));
   const body = first.body as { generation: number; submission: { id: number; status: string }; answer: { text: string } };
   assert.equal(body.answer.text, "echo: hello");
-  assert.equal(body.generation, 1);
-  const handleA = startedBy(first);
+  // Every start is a generation. A cold start answers at generation 1, unless the instance it started lost its lease
+  // before it answered (a commit stalled past the lease) and the request's ensure started it again: then each further
+  // start is a lease-expired takeover, and the answer comes from the last one.
+  const starts = first.ensured.filter((e): e is Extract<EnsureResult, { action: "started" }> => e.action === "started");
+  assert.ok(starts.length >= 1, `the request started the run: ${JSON.stringify(r.coldStart)}`);
+  assert.deepEqual(starts.slice(1).map((e) => e.reason), starts.slice(1).map(() => "lease-expired"), `a start after the first is a takeover: ${JSON.stringify(r.coldStart)}`);
+  assert.equal(body.generation, starts.length, `one generation per start: ${JSON.stringify(r.coldStart)}`);
+  const handleA = starts.at(-1)!.handle;
   const recordA = (await s3(ref.id))!;
   assert.equal(recordA.holder?.serve, first.url, "the instance's address is in run.json's holder");
 
@@ -340,7 +346,7 @@ test("serve: a request to a released run starts it and gets the answer; a repeat
   r.takeover = { freezeToAnswerMs: Date.now() - frozeAt, requestMs: retried.ms, ensured: retried.ensured.map((e) => e.action === "started" ? { action: e.action, reason: e.reason, stonith: e.stonith, startMs: e.startMs } : e) };
   assert.equal(retried.status, 200, JSON.stringify(retried.body));
   assert.equal(rb.submission.id, q2.id, "the same submission");
-  assert.equal(rb.generation, 2);
+  assert.equal(rb.generation, body.generation + 1, "the takeover on B is the next generation");
   assert.equal(rb.answer.text, "finished");
   assert.ok(retried.ensured.some((e) => e.action === "started" && e.reason === "lease-expired"));
   assert.notEqual(retried.url, first.url, "B answered");
