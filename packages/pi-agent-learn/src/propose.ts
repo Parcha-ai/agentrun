@@ -139,7 +139,13 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
   const out = <T extends object>(result: T): T => (withheld.length ? { ...result, withheld } : result);
   const described = new Map(candidates.filter((c) => c.type === "workflow" && typeof c.id === "string").map((c) => [c.id!, c.text] as const));
   const names = [...new Set([...Object.keys(records ?? {}), ...described.keys()])].sort();
-  if (candidates.length === 0 && uses === undefined && names.length === 0) return out({ status: "empty" as const });
+  // A run that noted nothing still proposes its memo when it reflected.
+  const nothing = candidates.length === 0 && uses === undefined && names.length === 0;
+  if (nothing && reflection === undefined) return out({ status: "empty" as const });
+  if (nothing && reflectionProblem(reflection!) !== undefined) {
+    withheld.push({ name: "reflection", reason: reflectionProblem(reflection!)! });
+    return out({ status: "empty" as const });
+  }
   if (typeof rest.runId !== "string" || !RUN_ID.test(rest.runId)) return { status: "refused", refusals: [{ reason: "invalid", detail: "the run id is not valid" }] };
   // The commit the run was seeded from: its branch starts there, and its memo and notes name it. A run that was not seeded
   // starts from main as it is now.
@@ -183,6 +189,7 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
       const hits = createGuard(rest.caps)({ role: "run", runId: rest.runId, files: reflected, candidates, ...(secrets ? { secrets } : {}), ...(caseValues ? { caseValues } : {}) }).filter((r) => r.path === memo);
       if (hits.length) withheld.push({ name: "reflection", reason: `the guard: ${[...new Set(hits.map((r) => r.reason))].join(", ")}` });
       else files = reflected;
+      if (hits.length && nothing) return out({ status: "empty" as const });
     }
   }
   const result = await proposeFiles({ ...rest, ...(secrets ? { secrets } : {}), ...(caseValues ? { caseValues } : {}), files, candidates, parent: base });

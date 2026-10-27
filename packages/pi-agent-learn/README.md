@@ -277,7 +277,8 @@ with a `Run-Id` trailer, pushed by sha. `@parcha/agentrun-learn`'s checker accep
 - `{ status: "proposed", sha }`: the commit was made and pushed.
 - `{ status: "already", sha }`: the branch already held a commit for this run, from this host or a restarted one with an
   empty local repository; none was made, and the push is repeated so a crash between commit and push heals.
-- `{ status: "empty" }`: the run noted nothing.
+- `{ status: "empty" }`: the run noted nothing and has no reflection to propose (a reflection alone is a proposal: its
+  branch holds just the memo).
 - `{ status: "refused", refusals }`: any guard hit refuses all of it, and nothing is committed or pushed, so no ref or
   object holds the refused value.
 
