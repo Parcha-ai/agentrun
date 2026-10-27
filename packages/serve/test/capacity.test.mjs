@@ -3,6 +3,7 @@
 // process was killed answered again at once.
 import assert from "node:assert/strict";
 import { chmod, readFile, writeFile } from "node:fs/promises";
+import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -99,26 +100,35 @@ test("a run whose process fails at its start is never started again while its en
 });
 
 test("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", async (t) => {
-  let busy = false;
-  // A deadline of 1 s, and one store retry 4 s away: the run's end waits longer than a message may.
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname, readyTimeoutMs: 1_000, carryBackRetry: { delaysMs: [4_000], onBusy: () => void (busy = true) } });
+  // A deadline of 2 s, and a store retry 10 s away: the run's end waits longer than a message may.
+  const { data, port, token, api } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname, readyTimeoutMs: 2_000, carryBackRetry: { delaysMs: [10_000] } });
   assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
   const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
+  // The agent store held by another writer from here until the message is answered, so the run's end stays unwritten.
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  t.after(() => store.isOpen && store.close());
   store.exec("BEGIN IMMEDIATE");
-  for (let i = 0; !busy; i++) {
-    assert.ok(i < 300, "the run's end met the busy store");
+  t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
+  const log = join(data, "runs", run.body.run_id, "process.log");
+  for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes("has no default export"); i++) {
+    assert.ok(i < 200, "the run's process failed at its start");
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  store.exec("ROLLBACK");
-  store.close();
   const from = Date.now();
-  const sent = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "still there?" });
+  // A fresh connection: nothing rides a pooled socket the server may be closing.
+  const sent = await new Promise((resolve, reject) => {
+    const body = JSON.stringify({ content: "still there?" });
+    const req = request({ host: "127.0.0.1", port, method: "POST", path: `/v2/runs/${run.body.run_id}/messages`, agent: false, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
+      let text = "";
+      res.on("data", (chunk) => (text += chunk)).on("end", () => resolve({ status: res.statusCode, retryAfter: res.headers["retry-after"], json: JSON.parse(text) }));
+    });
+    req.once("error", reject).end(body);
+  });
   const took = Date.now() - from;
-  assert.deepEqual([sent.status, sent.body.error?.code, sent.headers.get("retry-after")], [503, "unavailable", "1"], JSON.stringify(sent.body));
-  assert.ok(took < 3_000, `answered at its 1 s deadline, not at the settle's end: ${took} ms`);
+  assert.deepEqual([sent.status, sent.json.error?.code, sent.retryAfter], [503, "unavailable", "1"], JSON.stringify(sent.json));
+  // The store's write waits out its 5 s busy timeout without yielding, so the answer can trail the 2 s deadline by that;
+  // it still comes before the settle's retry, 10 s away, and the store is still held.
+  assert.ok(took < 9_000, `answered before the settle could end: ${took} ms`);
 });
 
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
