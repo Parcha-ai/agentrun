@@ -45,7 +45,7 @@ async function proxy(t, extra = {}) {
   const forwarded = [];
   const hooks = { before: [], after: [], logged: [], responses: [] };
   const p = await startModelProxy({
-    onResponse: (r) => hooks.responses.push(r),
+    onResponse: extra.onResponse ?? ((r) => hooks.responses.push(r)),
     log: (message, detail) => hooks.logged.push({ message, ...detail }),
     policy: extra.policy ?? policy,
     model: 'session-model',
@@ -140,6 +140,15 @@ test("a provider that does not serve a free route answers it as it does (a 404 p
   await send(p.url);
   assert.deepEqual(hooks.responses, [{ method: 'POST', path: '/v1/count', free: true, status: 404 }, { method: 'POST', path: '/v1/test', free: false, status: 200 }]);
   assert.equal(forwarded.length, 0, 'this test forwards through its own fetch');
+});
+
+test("an onResponse that throws loses neither the provider's answer nor its booking", async (t) => {
+  const { p, hooks } = await proxy(t, { onResponse: () => { throw new Error('a host bug'); } });
+  const r = await send(p.url);
+  assert.equal(r.status, 200);
+  assert.match(r.text, /"done":true/);
+  assert.deepEqual(hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001 }], 'the paid request is booked once');
+  assert.ok(hooks.logged.some((l) => /onResponse threw/.test(l.message) && /a host bug/.test(l.error)));
 });
 
 test('a free route is forwarded without asking the runner, and reports no usage', async (t) => {

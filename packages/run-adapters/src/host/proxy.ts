@@ -263,7 +263,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let length = 0;
     try {
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
-      options.onResponse?.({ method: route.method, path: route.path, free: route.free === true, status: upstream.status });
+      // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
+      // its booking.
+      try {
+        options.onResponse?.({ method: route.method, path: route.path, free: route.free === true, status: upstream.status });
+      } catch (error) {
+        options.log?.(`model proxy (${policy.id}): onResponse threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
       if (upstream.body) {
