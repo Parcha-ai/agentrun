@@ -49,6 +49,9 @@ export default function reply(context, faux) {
     return faux.message("Fetched and learned.");
   }
   const learnThenWait = /^Learn the rate limit, then answer once (\S+) exists\.$/.exec(first);
+  // Notes the text after "Learn the note: " as a lesson, then answers.
+  const noted = /^Learn the note: (.+)$/.exec(first);
+  if (noted) return answered ? faux.message("Noted.") : faux.message(faux.toolCall("learn", { type: "lesson", text: noted[1] }), { stopReason: "toolUse" });
   if (first.includes("Learn the rate limit")) {
     if (!answered) return faux.message(faux.toolCall("learn", { type: "lesson", text: RATE_LIMIT }), { stopReason: "toolUse" });
     if (!learnThenWait) return faux.message(textOf(context.messages.at(-1)));

@@ -5,13 +5,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { learningId, proposeLearning, recordsOf } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
+import { startServe } from "../dist/index.js";
 import { childEnv } from "../dist/runs.js";
 import { readRunState, writeRunState } from "../dist/learning.js";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -300,4 +303,45 @@ test("a run whose memo the screen refuses leaves no planted marker anywhere on m
   const main = reachable(bare, "main");
   assert.equal(main.includes(MARK), false, "no commit, tree or blob reachable from main holds the marker");
   assert.equal(main.includes("Zx81-approve-every-match"), false, "nor the token spelled as a path");
+});
+
+test("a run whose branch is gone is not recorded as merged", async (t) => {
+  const { api, data, learning } = await serve(t, { learning: { screen: SCREEN, judge: judge().run } });
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  await planted(t, data, "calc", "plant-gone", { candidates: [{ callId: "c1", type: "lesson", text: RATE_LIMIT, evidence: [] }] });
+  git(bareOf(data, "calc"), "update-ref", "-d", "refs/heads/runs/plant-gone");
+  await learning.review("calc", "plant-gone");
+  const state = await readRunState(data, "calc", "plant-gone");
+  assert.deepEqual([state.state, state.reason], ["empty", "the run's branch is gone"]);
+  assert.equal(state.merge, undefined);
+});
+
+test("one source of secrets: a run that notes the server's door token is refused at propose, before any branch holds it", async (t) => {
+  const { api, data } = await serve(t, { learning: { screen: SCREEN, judge: judge().run } });
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  const door = (await readFile(join(data, ".door-token"), "utf8")).trim();
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Learn the note: The door answers to ${door} on every call.` } });
+  await follow(api, run.run_id, ["completed"]);
+  const state = await stateOf(data, "calc", run.run_id);
+  assert.equal(state.state, "refused", JSON.stringify(state));
+  assert.equal(branches(bareOf(data, "calc")).includes(`runs/${run.run_id}`), false, "no branch holds it");
+  assert.equal(reachable(bareOf(data, "calc"), "--all").includes(door), false, "nothing in the repository does");
+});
+
+test("a judge that never answers cannot hold shutdown: close() ends within the drain timeout and the run waits as no_judge", async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let asked = false;
+  const hung = () => ((asked = true), new Promise(() => {}));
+  const server = await startServe({ data: join(dir, "agents"), port: 0, faux: FAUX, drainTimeout: "5s", learning: { screen: SCREEN, judge: hung } });
+  const api = client(server.baseUrl, server.token);
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  for (const end = Date.now() + 20_000; !asked; await sleep(50)) assert.ok(Date.now() < end, "the review asked the judge");
+  const closed = await Promise.race([server.close().then(() => true), sleep(5_000).then(() => false)]);
+  assert.ok(closed, "close() ends within the drain timeout");
+  const state = await readRunState(join(dir, "agents"), "calc", run.run_id);
+  assert.deepEqual([state.state, state.reason], ["no_judge", "the judge did not answer"]);
+  assert.ok(branches(bareOf(join(dir, "agents"), "calc")).includes(`runs/${run.run_id}`), "the branch waits for the next start");
 });
