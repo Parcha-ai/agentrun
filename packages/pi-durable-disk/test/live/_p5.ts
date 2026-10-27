@@ -2,7 +2,7 @@
 // for hosts A, B and C, the run, token and unit bookkeeping, the CLI supervisor helpers, and the before and after hooks
 // that set up /mnt/pda/p5 and remove everything a test made (recorded in P5-STATE.json), also on failure. Each file that
 // imports it runs in its own process, with its own hooks; they share the ledger.
-import { after, before } from "node:test";
+import { after, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,6 +24,17 @@ export const B = `${BASE}/b`;
 export const C = `${BASE}/c`;
 export const STAMP = Date.now().toString(36);
 export const OUT = fileURLToPath(new URL(`../../.tmp/live-${STAMP}`, import.meta.url));
+/**
+ * A test hook, never in src: PDA_LIVE_FAIL_TEST=<a test's full name> makes that test throw at its first `waitFor` after it
+ * started an instance, with the instance's unit and mount still up. It shows what one red leaves for the tests after it.
+ */
+const FAIL_TEST = process.env.PDA_LIVE_FAIL_TEST ?? "";
+let currentTest = "";
+let startsInTest = 0;
+beforeEach((t) => {
+  currentTest = t.name;
+  startsInTest = 0;
+});
 /** Next to the ledger, named after it: P5-STATE.json gives P5-live-results.json. */
 let resultsFile: string;
 /** Where `after` writes this file's measurements: by default <ledger>-live-results.json next to the ledger. */
@@ -56,6 +67,7 @@ export async function newRun(name: string): Promise<string> {
 /** Every line a supervisor prints is a decision; record each token user and unit the moment it appears. */
 export function noteLine(line: Record<string, unknown>): void {
   if (line.action === "started") {
+    startsInTest++;
     const t = line.token as { identifier: string; nickname: string };
     tokens.add(t.identifier);
     ledger.token(t.identifier, t.nickname, `live, minted by a supervise process for ${line.run}`);
@@ -125,6 +137,7 @@ export function superviseLoop(id: string, flags: string[], every = "3s") {
 }
 
 export async function waitFor<T>(what: string, fn: () => Promise<T | null | undefined | false> | T | null | undefined | false, timeoutMs = 60_000, everyMs = 100): Promise<T> {
+  if (FAIL_TEST && currentTest === FAIL_TEST && startsInTest > 0) throw new Error(`PDA_LIVE_FAIL_TEST: "${FAIL_TEST}" failed on purpose while waiting for ${what}`);
   const t0 = Date.now();
   for (;;) {
     const v = await fn();
