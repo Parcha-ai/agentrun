@@ -10,7 +10,7 @@ import { request as httpRequest } from "node:http";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import { serveUntilDone } from "../src/cli.ts";
 import type { DurableRun } from "../src/run.ts";
-import type { DoorContext, DoorHook, DoorInput } from "../src/door.ts";
+import { killGroup, startOf, type DoorContext, type DoorHook, type DoorInput } from "../src/door.ts";
 import { serveRun, type RunServer } from "../src/serve.ts";
 import { lifecycleApp, LocalDisk, newCounters, openOn, sleep, until } from "./_lifecycle.ts";
 import { alive, ctx, killQuietly, waitGone } from "./_run-support.ts";
@@ -482,6 +482,54 @@ describe("the door hook: abort, status, events", () => {
       await s.server.close();
     } finally {
       disk.remove();
+    }
+  });
+
+  it("a second run_start ends the open turn first: run_start, run_end, run_start, run_end", async () => {
+    const disk = new LocalDisk("door-pair-twice");
+    try {
+      const { hook } = scripted({
+        submit: async (_input, ctx) => {
+          ctx.emit({ type: "run_start" });
+          ctx.emit({ type: "run_start" });
+          ctx.emit({ type: "run_end" });
+          return { accepted: true };
+        },
+      });
+      const s = await served(disk, hook);
+      const stream = openEvents(s.server);
+      await stream.ready;
+      await until("the snapshot", () => stream.frames().length >= 1);
+      assert.equal((await submit(s.server, "t1")).status, 200);
+      await until("both run_ends", () => stream.events().filter((e) => e.type === "run_end").length >= 2, 2_000);
+      const runs = stream.events().filter((e) => e.type === "run_start" || e.type === "run_end").map((e) => e.type);
+      assert.deepEqual(runs, ["run_start", "run_end", "run_start", "run_end"]);
+      stream.close();
+      await s.run.release();
+      await s.server.close();
+    } finally {
+      disk.remove();
+    }
+  });
+});
+
+describe("the door hook: adopted children", () => {
+  it("a stop signals only the process it adopted: a live pid whose start is another's, or was never known, is left alone", async () => {
+    const child = spawn("sleep", ["600"], { detached: true, stdio: "ignore" });
+    child.unref();
+    const pid = child.pid!;
+    try {
+      const start = startOf(pid);
+      assert.notEqual(start, undefined, "the process table sees the child");
+      // The pid now names a process other than the one adopted, as after a reuse.
+      await killGroup(pid, start! - 1);
+      assert.ok(alive(pid), "another process with the adopted pid is never signalled");
+      await killGroup(pid, undefined);
+      assert.ok(alive(pid), "a child whose start was never known is never signalled");
+      await killGroup(pid, start);
+      assert.ok(await waitGone(pid, 2_000), "the adopted process itself is killed");
+    } finally {
+      killQuietly(pid);
     }
   });
 });

@@ -79,7 +79,7 @@ async function append(tx: Tx, root: ConversationId, requestId: string, n: 0 | 1 
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-const startOf = (pid: number): number | undefined => {
+export const startOf = (pid: number): number | undefined => {
   try {
     return processTable().snapshot().info(pid)?.start;
   } catch {
@@ -91,7 +91,7 @@ const startOf = (pid: number): number | undefined => {
  * SIGKILL an adopted child's process group, or the process when it leads none, while it is the process that was adopted
  * (its start tells it from a later one with its pid); then wait, bounded, until it is gone.
  */
-async function killGroup(pid: number, start: number | undefined): Promise<void> {
+export async function killGroup(pid: number, start: number | undefined): Promise<void> {
   if (start === undefined || startOf(pid) !== start) return;
   for (const target of [-pid, pid]) {
     try {
