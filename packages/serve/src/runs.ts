@@ -36,6 +36,8 @@ const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
 const MAX_RELAUNCHES = 3;
+/** How often a run's end that the agent store refused is written again. */
+const SETTLE_RETRY_MS = 30_000;
 /** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`. */
 const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "failed", stopped: "cancelled" };
 
@@ -186,8 +188,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
 /** The waits between carry backs that found the store busy, and a hook called at each such refusal. */
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** `token` is the server's own: no run's process sees it. */
-/** `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; log?: (event: string, fields: Record<string, string | number>) => void };
+/** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
+ *  tried again; `log` takes a run's start and end (print.ts). */
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -229,6 +232,8 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** Runs past the cap's check whose process is not started yet. */
+  private starting = 0;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -299,6 +304,9 @@ export class Runs {
   /** The door a live run serves, from its run.json: running, a fresh heartbeat, and a loopback address. */
   private doorOf(record: Json | null): string | undefined {
     if (record?.status !== "running" || !isObject(record.holder) || typeof record.holder.serve !== "string") return undefined;
+    // A run's process is a process on this machine: one that is gone serves no door, however fresh its heartbeat.
+    const pid = holderPid(record);
+    if (pid !== undefined && !alive(pid)) return undefined;
     if (typeof record.heartbeatAt !== "string" || Date.now() - Date.parse(record.heartbeatAt) >= LEASE_MS) return undefined;
     const url = URL.parse(record.holder.serve);
     return url?.protocol === "http:" && isLoopback(url.hostname) ? url.origin : undefined;
@@ -501,7 +509,8 @@ export class Runs {
       if (door) return door;
       if (!this.live(run)) {
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
-        const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS;
+        const pid = holderPid(record);
+        const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
         if (!fresh) this.launch(run), (launched = true);
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
@@ -643,16 +652,35 @@ export class Runs {
     const cost = costOf(run.rows);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
-    await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        this.store.carryBack(run.id, ending);
-        break;
-      } catch (error) {
-        if (error instanceof AgentHomeError && error.code === "exists") break;
-        if (!sqliteBusy(error) || !(await this.retryBusy(run.id, attempt, "the agent store"))) throw error;
+    const persist = async () => {
+      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          this.store.carryBack(run.id, ending);
+          return;
+        } catch (error) {
+          if (error instanceof AgentHomeError && error.code === "exists") return;
+          if (!sqliteBusy(error) || !(await this.retryBusy(run.id, attempt, "the agent store"))) throw error;
+        }
       }
+    };
+    try {
+      await persist();
+    } catch (error) {
+      // A store that refuses the write (a full disk, a store fenced by it) must not leave the run unended: it ends here
+      // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
+      // run as it was in the store.
+      warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
+      run.costUsd = cost ?? 0;
+      run.endedAt ??= new Date().toISOString();
+      run.outcome = outcome;
+      run.finishing = undefined;
+      run.settled = true;
+      run.updatedAt = new Date().toISOString();
+      this.refresh(run);
+      this.persistLater(run, persist);
+      return;
     }
     const row = this.store.readRun(run.id);
     run.endedAt = row?.endedAt ?? run.endedAt ?? new Date().toISOString();
@@ -663,6 +691,19 @@ export class Runs {
     run.settled = true;
     run.updatedAt = new Date().toISOString();
     this.refresh(run);
+  }
+
+  /** Tries `persist` again every settleRetryMs while the server lives, until it lands. */
+  private persistLater(run: Run, persist: () => Promise<void>): void {
+    const timer = setTimeout(() => {
+      if (this.closing) return;
+      persist().then(() => {
+        const row = this.store.readRun(run.id);
+        if (row?.endedAt) run.endedAt = row.endedAt;
+        if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
+      }, () => this.persistLater(run, persist));
+    }, this.options.settleRetryMs ?? SETTLE_RETRY_MS);
+    timer.unref();
   }
 
   /** After refusal `attempt` because `what` is busy: waits out the next delay and says whether to try again. */
@@ -691,6 +732,20 @@ export class Runs {
   /** Start a run of `revision` (number `version`) of `entry`'s agent: `startRun` in the store, then its process, then an
    *  agentic run's first message, `input.content`. */
   async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+    const max = this.options.maxRuns;
+    if (max !== undefined && [...this.runs.values()].filter((run) => this.live(run)).length + this.starting >= max) {
+      throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+    }
+    // Counted from here, so two starts at once cannot both take the last place.
+    this.starting++;
+    try {
+      return await this.start(entry, revision, version, options);
+    } finally {
+      this.starting--;
+    }
+  }
+
+  private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
     const started = await this.store.startRun({ agent: entry.agent.id, revision: revision.id }).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),

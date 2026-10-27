@@ -3,7 +3,6 @@
 // a scripted lead and scripted models over the example's committed files; with --live the real models over every file,
 // those fetched by URL checked by size and SHA-256.
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { demo, type DemoOptions } from '@parcha/agentrun-harness';
 import { exampleAt, filesRefusal, inputOf, job, jobOf, positionalAt, thinkingOf, thinkingRefusal } from './agent.ts';
 import spec from './demo.json' with { type: 'json' };
@@ -59,7 +58,7 @@ const inlineObject = (text: string | undefined): Record<string, unknown> | undef
   } catch { return undefined; }
 };
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   let argv: string[] = [];
   let refused: string | undefined;
   // A folder that cannot be placed, a thinking level that is not low, medium or high, a file the input names that the run does not have, or
