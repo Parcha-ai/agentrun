@@ -346,7 +346,9 @@ decision })` lands it once the person decides: `"approve"` lands it as curate wo
 the merge's second parent; `{ refuse: reason }` lands the memo alone, its Review `curate: run <id>: refused by a person:
 <reason>` (one line, 1 to 200 characters), so the run counts as curated and is never judged again. A run already
 curated answers `already`, and a main that moved since the plan answers `stale` with nothing landed: plan it again.
-`landHeld` checks the plan's shape and guards its files as the curator before it writes anything.
+`landHeld` checks the plan's shape and guards its files as the curator before it writes anything, and a plan writes no
+run's memo but its own. That is a shape check, not an integrity check: a plan someone altered can still write any note
+text a curator may write, so the host's custody of the plan file is the control (keep it where no run's tools reach).
 
 The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
 `@parcha/agentrun-jev` is one (it comes with this package through `@parcha/agentrun-pi`; add it to your own dependencies

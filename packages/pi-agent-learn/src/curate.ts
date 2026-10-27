@@ -349,7 +349,9 @@ export type LandHeldResult =
 
 const SHA40 = /^[0-9a-f]{40}$/;
 
-/** The plan, checked as read back from wherever the host kept it, or why not. */
+/** The plan, checked as read back from wherever the host kept it, or why not. A shape check, not an integrity check: a
+ *  plan someone altered can still write any note text a curator may write, so the host's custody of the plan file is the
+ *  control (in AgentRun Server, the learning state files no run's tools can reach). It writes no run's memo but its own. */
 function checkHeldPlan(plan: HeldPlan): HeldPlan {
   const bad = (why: string): never => {
     throw new LearnError("invalid", `the held plan is out of shape: ${why}`);
@@ -366,6 +368,7 @@ function checkHeldPlan(plan: HeldPlan): HeldPlan {
   const curated = trailers[CURATED_RUN];
   if ((Array.isArray(curated) ? curated : [curated]).join("\n") !== plan.run) bad("its Curated-Run is not its run");
   assertNotRulesLocked(Object.keys(plan.files));
+  if (Object.keys(plan.files).some((path) => path.startsWith(`${LAYOUT.memos}/`) && path !== memoPath(plan.run))) bad("it writes another run's memo");
   const refusals = guard({ role: "curate", files: plan.files });
   if (refusals.length) throw new LearnError("invalid", `the held plan writes what a curator may not: ${refusalReason(refusals)}`);
   return plan;
