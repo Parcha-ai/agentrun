@@ -85,7 +85,7 @@ tokens.
 - **Pi**, with `PI_CODING_AGENT_DIR=pi-home` and `pi-home/models.json`:
 
   ```json
-  { "providers": { "broker": { "baseUrl": "$BROKER_URL/v1", "api": "openai-responses", "apiKey": "broker-placeholder",
+  { "providers": { "broker": { "baseUrl": "$BROKER_URL/v1", "api": "openai-responses", "apiKey": "not-a-secret",
     "models": [{ "id": "gpt-6-luna", "reasoning": true, "input": ["text"], "contextWindow": 200000, "maxTokens": 32000 }] } } }
   ```
 
