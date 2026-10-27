@@ -2,7 +2,7 @@
   "name": "@parcha/agentrun-adapters",
   "version": "0.1.0-beta.27",
   "private": true,
-  "description": "Agent harnesses other than Pi (Codex, OpenCode, the Claude Agent SDK, an ACP agent) behind one seam: a DSL node's runNode and an AgentRun run on any of them, durable in AgentRun's own store.",
+  "description": "Agent harnesses other than Pi, starting with Codex, behind one seam: a DSL node's runNode and an AgentRun run on a harness adapter, durable in AgentRun's own store.",
   "keywords": [
     "agentrun",
     "agent",

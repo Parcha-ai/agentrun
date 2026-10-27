@@ -1,5 +1,5 @@
 // A DSL node on any harness: createHarnessRunner turns an AgentAdapter into exactly the interpreter's `runNode`, so a
-// DSL host and serve run a node on Codex, OpenCode or the Claude Agent SDK the way createPiRunner runs it on Pi. The
+// DSL host and serve run a node on a harness adapter (Codex first) the way createPiRunner runs it on Pi. The
 // node's record arrives through an injected `submit` tool whose input is the node's schema under `value`
 // (submitParameters, the envelope both runners use); a review that does not accept it is the tool's result, in the
 // same session. Every paid request passes the runner first: the turn cap, then the host's `beforeRequest` (its budget),
