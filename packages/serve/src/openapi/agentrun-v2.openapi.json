@@ -1,0 +1,4804 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Agentrun API",
+    "version": "agentrun.v2/0",
+    "summary": "Agents with a home, and the runs they make. One contract for the hosted API and the local server.",
+    "description": "The frozen /v2 contract (lane X0 draft, 2026-10-16). One document serves both backends:\nthe hosted API at https://api.agentrun.ai/v2 and `npx @parcha/agentrun-serve` on http://127.0.0.1:7340/v2.\n\nThe unit is the **agent home** (agentrun #571): a definition, its skills, its sign-ins and its runs.\nA run's timeline rows are `@parcha/pi-durable-agent/timeline` rows (agentrun #572). The run routes follow\nthe example server (agentrun #577).\n\nConventions:\n- JSON bodies, snake_case fields, times in RFC 3339 UTC, money in US dollars as decimal numbers.\n- Every error is one envelope, `{\"error\": {\"code\", \"message\", \"retryable\", \"next_action\"?}}`, with a code from\n  the closed list in `ErrorCode`. Each code has one HTTP status.\n- A backend that does not offer a feature answers `501 unsupported_here` and names the capability. It never\n  answers 404 for a route in this document. `GET /capabilities` says in advance what each backend offers, so a\n  client can refuse an unsupported call before it sends it.\n- `Idempotency-Key` is accepted on every create (`POST /agents`, `POST /agents/{agent_id}/runs`,\n  `POST /runs/{run_id}/messages`, `POST /files`). The same key with the same body replays the first answer; the\n  same key with another body is `409 idempotency_mismatch`.\n- Lists page with an opaque `cursor`; a page answers `next_cursor`, null on the last page.\n- Routes marked `x-agentrun-backends: [local]` exist only on the local server; hosted answers 501.\n- A method this document does not list on a path answers 405 `method_not_allowed` with an `Allow` header. A path\n  this document does not list answers `404 not_found`.\n",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "x-agentrun-source": {
+      "contract": "agentrun.v2/0",
+      "file": "agentrun-v2.openapi.yaml",
+      "sha256": "6f5906b9ff6b5ed84a063962b3361f39f904a84f4fe65451095b829e274b82b2",
+      "converted": "YAML 1.2 to JSON, unchanged"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.agentrun.ai/v2",
+      "description": "Hosted. Keys `ar_live_...`, or a console OAuth token."
+    },
+    {
+      "url": "http://127.0.0.1:7340/v2",
+      "description": "Local, `npx @parcha/agentrun-serve`. The token is in the data directory (mode 0600)."
+    }
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "capabilities",
+      "description": "What this backend offers."
+    },
+    {
+      "name": "agents",
+      "description": "Agents and their homes."
+    },
+    {
+      "name": "runs",
+      "description": "One run of an agent, its timeline, its messages and its files."
+    },
+    {
+      "name": "files",
+      "description": "Files a caller uploads for a run's input."
+    },
+    {
+      "name": "billing",
+      "description": "Quotes and usage."
+    },
+    {
+      "name": "local",
+      "description": "Local-only routes."
+    }
+  ],
+  "paths": {
+    "/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "tags": [
+          "capabilities"
+        ],
+        "summary": "What this backend offers",
+        "description": "Readable without a credential, so a client learns the backend before it holds a key.",
+        "security": [
+          {},
+          {
+            "bearer": []
+          }
+        ],
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "responses": {
+          "200": {
+            "description": "The capabilities document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                },
+                "examples": {
+                  "hosted": {
+                    "$ref": "#/components/examples/CapabilitiesHosted"
+                  },
+                  "local": {
+                    "$ref": "#/components/examples/CapabilitiesLocal"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
+    "/agents": {
+      "post": {
+        "operationId": "createAgent",
+        "tags": [
+          "agents"
+        ],
+        "summary": "Create an agent home",
+        "description": "Creates a home from a definition and its skill files, in one write. The definition holds exactly the fields\nof #571's `agent.definition`; any other field (a model, for one) is refused with `422 input_invalid` naming\nit, and nothing is created. A definition `id` that already names an agent here is `409 agent_exists`\n(replace a home with `PUT /agents/{agent_id}/home`). Tool names are not checked here: a run checks that\neach is bound (`409 agent_not_runnable`).\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The agent.",
+            "headers": {
+              "Location": {
+                "$ref": "#/components/headers/Location"
+              },
+              "Idempotent-Replayed": {
+                "$ref": "#/components/headers/IdempotentReplayed"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listAgents",
+        "tags": [
+          "agents"
+        ],
+        "summary": "List agents",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of agents, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
+    "/agents/{agent_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AgentId"
+        }
+      ],
+      "get": {
+        "operationId": "getAgent",
+        "tags": [
+          "agents"
+        ],
+        "summary": "One agent",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent.",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/HomeETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
+    "/agents/{agent_id}/definition": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AgentId"
+        }
+      ],
+      "put": {
+        "operationId": "updateDefinition",
+        "tags": [
+          "agents"
+        ],
+        "summary": "Replace the agent's definition",
+        "description": "Replaces the definition with the full one in the body, in one write. `If-Match` carries the home's ETag the\ncaller last read (from `GET /agents/{agent_id}`: the home revision, `homeRevision`). An ETag that is no longer\ncurrent is `412 precondition_failed`, and nothing is written. The body's `version` must be greater than the\ncurrent definition's (`422 input_invalid` on `definition.version`), and its `id`, when present, must be\n`agent_id`. The same field rules as `POST /agents` apply: any field #571 does not keep is refused.\n\nEvery home has a repo: hosted uses the agent's own Code Storage repo, and local serve creates `<home>/repo`\nwith no remote when it is absent. The server commits the new definition into that repo, then refreshes the\nhome from it in one check under the owner lock: `refreshAgentHome(home, {sha: <new commit>, from: <its parent,\nthe cached source.sha>, ifRevision: <the If-Match revision>, definition, skills})`. A mismatch on either\n`from` or `ifRevision` is `412 precondition_failed` with nothing written. The answer's `source.sha` is the new\ncommit. A moved home arrives without `<home>/repo` (it never travels in a pack): the target clones the agent's\nrepo, or creates one and commits the definition and skills at this first refresh.\n\nRuns already started keep the definition they started with (`Run.agent_version`, `Run.sha`); the next run\nstarts from this one. Skill files do not change here: a skill the new definition names must already be in the\nhome, or the run refuses with `409 agent_not_runnable`. The home's ETag changes with the write.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "x-agentrun-capability": "features.agents.update",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "description": "The home's current ETag (`homeRevision`), as `GET /agents/{agent_id}` returned it.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DefinitionInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The agent, with the new definition, version and `source.sha`.",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/HomeETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/agents/{agent_id}/runs": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AgentId"
+        }
+      ],
+      "post": {
+        "operationId": "createRun",
+        "tags": [
+          "runs"
+        ],
+        "summary": "Start a run",
+        "description": "Starts a run of the agent with a typed input. The input is checked against the definition's `input_schema`,\nor against the default schema `{content: string}` when the definition has none.\n\nAdmission checks, in order: every tool in the definition is bound here (`409 agent_not_runnable`), the\nquote when one is named (`409 quote_invalid`), then the run's spend authority, the least of the run cap, the\naccount and key caps left this month and the balance (`402 spend_cap_reached`, `402 insufficient_credits`).\nA local server checks only the first.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The run, accepted. Follow it on its timeline.",
+            "headers": {
+              "Location": {
+                "$ref": "#/components/headers/Location"
+              },
+              "Idempotent-Replayed": {
+                "$ref": "#/components/headers/IdempotentReplayed"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                },
+                "examples": {
+                  "queued": {
+                    "$ref": "#/components/examples/RunQueued"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "402": {
+            "$ref": "#/components/responses/PaymentRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listRuns",
+        "tags": [
+          "runs"
+        ],
+        "summary": "The agent's runs index",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Only runs with this status.",
+            "schema": {
+              "$ref": "#/components/schemas/RunStatus"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of runs, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
+    "/agents/{agent_id}/home": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AgentId"
+        }
+      ],
+      "get": {
+        "operationId": "exportHome",
+        "tags": [
+          "agents"
+        ],
+        "summary": "Export the packed home, or its manifest",
+        "description": "With `Accept: application/vnd.agentrun.home+tar`, the packed home: a tar whose first member is\n`manifest.json` (a `HomeManifest`). With `Accept: application/json`, the manifest alone, which is what\n`PUT ...?check=1` takes at another backend.\n\n**The pack is an allowlist** (`x-agentrun-pack`): `manifest.json` first, then `agent.sqlite`, then for each\nrun `runs/<run_id>/store/run.sqlite` and `runs/<run_id>/work/**`. Members are regular files and directories\nonly: no symlink, no absolute path, no `..`, and no dotfile at the top of `work/`. Everything else stays out,\n`<home>/chrome/` (live session cookies) and `<home>/repo/` (it moves by its own remote) by name.\n\nEach `.sqlite` is a `VACUUM INTO` copy, `agent.sqlite` taken under the home's writer lock. A run whose claim is\nlive is not copied: its runs-index entry travels, its store and files stay out, and the manifest counts it in\n`runs.live`.\n\n`agent.sqlite` carries the kinds `agent.identity`, `agent.definition`, `agent.skills`, `agent.runs` (with\n`host` removed) and `agent.source`. Never `agent.bindings`, `agent.aliases`, `agent.leases` or\n`browser.profiles`: **no sign-in travels in agentrun.v2/0**. The manifest lists the sign-ins the source had,\nso the target can ask the person to sign in again.\n\nEvery run store in any pack, hosted or local, is the redacted export (the DSL lead's D-4: `SECRET_KINDS`\ndropped, then vacuumed). Until D-4 ships, packs carry no run store: the runs index and each run's `work/`\nonly. `@parcha/pi-durable-agent` (`packHome`) writes every pack.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "x-agentrun-capability": "features.home.export",
+        "responses": {
+          "200": {
+            "description": "The packed home, or its manifest.",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/HomeETag"
+              }
+            },
+            "content": {
+              "application/vnd.agentrun.home+tar": {
+                "schema": {
+                  "type": "string",
+                  "contentMediaType": "application/vnd.agentrun.home+tar"
+                },
+                "x-agentrun-pack": {
+                  "$ref": "#/components/x-agentrun-pack"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeManifest"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          }
+        }
+      },
+      "put": {
+        "operationId": "importHome",
+        "tags": [
+          "agents"
+        ],
+        "summary": "Import a home, or check one without writing",
+        "description": "`?check=1` takes the source's `HomeManifest` as JSON, runs every target check (format, definition, tools\nbound, sign-ins, vault, quote, size, live runs) and writes nothing. It answers 200 with the report when no\ncheck fails, and `422 home_check_failed` with the same report when one does.\n\nWithout `check`, the body is the packed home, in the format `GET .../home` describes (`@parcha/pi-durable-agent`\n`readPack` reads it). The target runs the same checks on the pack's own manifest; a member outside the\nallowlist fails check `format` and names the member. Any failure refuses with `422 home_check_failed` and\nwrites nothing. Otherwise the home is written in one step: 201 when the agent is new here, 200 when it\nreplaced one.\n\nThe manifest's `agent_id` must be the path's `agent_id` (`422 input_invalid` on `manifest.agent_id`), for the\ncheck and for the import. No sign-in travels: check `sign_ins` warns with the sign-ins to redo at the target.\nUntil the redacted run-store export ships, a pack holds no run store (see `GET .../home`).\n\n`<home>/repo` never travels, so a moved home arrives with `source.sha` and no repo. The target clones the\nagent's repo, or creates one and commits the definition and skills at the home's next refresh.\n\nReplacing an agent that exists here needs `If-Match` with its current home ETag (from `GET /agents/{agent_id}`\nor `GET .../home`); without it the answer is `409 agent_exists`, and a stale ETag is\n`412 precondition_failed`. `If-None-Match: *` asks for create only.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "x-agentrun-capability": "features.home.import",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Check"
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": false,
+            "description": "Replace only the home with this revision ETag (`home_etag`, `homeRevision`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "description": "`*`: create only; refuse when the agent exists here.",
+            "schema": {
+              "type": "string",
+              "const": "*"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HomeManifest"
+              }
+            },
+            "application/vnd.agentrun.home+tar": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/vnd.agentrun.home+tar"
+              },
+              "x-agentrun-pack": {
+                "$ref": "#/components/x-agentrun-pack"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`?check=1`: the report, every check passed or warned, nothing written. Without it: the home replaced an existing one.",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/HomeETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/HomeCheckReport"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HomeImportResult"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The home was written and the agent is new here.",
+            "headers": {
+              "ETag": {
+                "$ref": "#/components/headers/HomeETag"
+              },
+              "Location": {
+                "$ref": "#/components/headers/Location"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "get": {
+        "operationId": "getRun",
+        "tags": [
+          "runs"
+        ],
+        "summary": "One run",
+        "description": "Answers at once. To wait for a change, long-poll the timeline.",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "responses": {
+          "200": {
+            "description": "The run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                },
+                "examples": {
+                  "completed": {
+                    "$ref": "#/components/examples/RunCompleted"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/timeline": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "get": {
+        "operationId": "getTimeline",
+        "tags": [
+          "runs"
+        ],
+        "summary": "The run's timeline, as a page or a stream",
+        "description": "The run's rows (#572 `TimelineEvent`), with one cursor for both forms.\n\n**The cursor is a change number, not a row's `seq`.** A row can change after it was sent (a call's label\nonce its result lands, a subagent's parent, the cost row) and a live row can be dropped (a streaming\nthinking or text row, a wait). So the server numbers every change to the run's rows, and `after=N` answers\nthe current version of each row changed after change N, plus the ids dropped after N. Change numbers\nincrease strictly within a run and may have gaps. A client upserts rows by `id`, deletes the `drop` ids, and\nsorts by `seq`, never by time.\n\n`after=0` (the default) answers every row with `reset: true`. A server that cannot answer from N (it lost\nthe change log, or N is ahead of it) also answers every row with `reset: true`: the client drops what it\nholds first. A local server starts its change numbers at its process start time in microseconds, so any\ncursor from before a restart is below that and answers `reset: true`.\n\nA live row (a streaming thinking or text row, a wait) keeps its `seq` while it changes. When the committed row\nlands, the live row's id is in `drop` and the committed row comes with its own id and `seq`.\n\n**JSON** (default): `wait_ms` above 0 holds the request until a change after `after` or the wait ends, then\nanswers; `unchanged: true` when nothing changed. Poll again after `poll_after_ms` with `after=next_after`.\nA terminal status alone does not mean the rows are all in: the last rows can land after the status flips.\n`final: true` says they are. A follow-up message reopens a completed run, and a later page is `final: false`.\n\n**SSE** (`Accept: text/event-stream`): each `rows` event carries one `TimelinePage` (without `poll_after_ms`)\nand `id: <next_after>`. Reconnect with `Last-Event-ID`, which wins over `after`. A comment line every 15 s\nkeeps the stream open. The server may end the stream with an `end` event (`reason: reconnect`), and ends it\nwith `reason: terminal` right after the first page with `final: true`. A backend with\n`features.timeline.sse` false answers `Accept: text/event-stream` with `501 unsupported_here`\n(`timeline.sse`), never with JSON.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "The change cursor last applied, from `next_after` or the last SSE `id`. 0 is the start.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "wait_ms",
+            "in": "query",
+            "required": false,
+            "description": "JSON only. How long to hold the request for a change after `after`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 25000,
+              "default": 0
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "SSE reconnect. Same meaning as `after`, and wins over it.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of changes, or a stream of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelinePage"
+                },
+                "examples": {
+                  "live": {
+                    "$ref": "#/components/examples/TimelinePageLive"
+                  }
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Server-sent events. `event: rows` with `id: <next_after>` and a `TimelinePage` as `data`;\n`event: end` with a `TimelineEnd` as `data`; comment keepalives.\n"
+                },
+                "x-agentrun-sse": {
+                  "rows": {
+                    "$ref": "#/components/schemas/TimelinePage"
+                  },
+                  "end": {
+                    "$ref": "#/components/schemas/TimelineEnd"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/messages": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "post": {
+        "operationId": "sendMessage",
+        "tags": [
+          "runs"
+        ],
+        "summary": "Send the run a message",
+        "description": "One route for every message a person or a program sends a run. The run's state decides what it does, and\nthe answer says which (`mode`):\n\n| Run | `mode` | What happens |\n| --- | --- | --- |\n| `queued`, or `working` with state `working` | `steer` | Lands after the current tool round. |\n| `input_required` with state `waiting` | `answer` | Answers what the agent asked; the run goes back to work. |\n| `input_required` with state `idle` (stopped), `working` with state `idle` (parked), `completed` | `follow_up` | Starts a new turn of the same run, under the same cap. |\n| `failed`, `cancelled` | none | `409 not_continuable`. |\n\nEach mode is gated by `features.messages`: an off mode answers `501 unsupported_here` naming\n`messages.<mode>`. A steer to a workflow run where `features.messages.steer_workflow_runs` is false answers\n`501 unsupported_here` naming `messages.steer_workflow_runs`. A local run whose sign-ins already went back to\nits agent is finished: `409 not_continuable`.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The message is accepted; the timeline shows it applied.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "$ref": "#/components/headers/IdempotentReplayed"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "402": {
+            "$ref": "#/components/responses/PaymentRequired"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/stop": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "post": {
+        "operationId": "stopRun",
+        "tags": [
+          "runs"
+        ],
+        "summary": "End the current turn",
+        "description": "Aborts the turn that is running. The run stays open: its status becomes `input_required` with state `idle`,\nand a message within `limits.input_wait_s` starts a new turn (after that the run ends `input_expired`). Stopping a run with no turn running changes nothing and answers\n`stopped: false`.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "x-agentrun-capability": "features.runs.stop",
+        "responses": {
+          "200": {
+            "description": "Whether a turn was stopped, and the run now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/cancel": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "post": {
+        "operationId": "cancelRun",
+        "tags": [
+          "runs"
+        ],
+        "summary": "End the run",
+        "description": "Records the intent to cancel and signals the run. The run reaches `cancelled` when it has stopped; read the\nstatus for the final truth. Cancelling a run that already ended answers `already_terminal: true`.\nUsage consumed before the cancel is billed.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "x-agentrun-capability": "features.runs.cancel",
+        "responses": {
+          "202": {
+            "description": "The cancel intent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/kill": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "post": {
+        "operationId": "killRun",
+        "tags": [
+          "local"
+        ],
+        "summary": "Kill the run's process; the run resumes on the same directory",
+        "description": "Local only. The server kills the run's process group and starts it again on the same run directory, where\nthe run resumes at the next generation. Hosted answers `501 unsupported_here` (`runs.kill`).\n",
+        "x-agentrun-backends": [
+          "local"
+        ],
+        "x-agentrun-capability": "features.runs.kill",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The run was killed and started again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/files": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "get": {
+        "operationId": "listRunFiles",
+        "tags": [
+          "runs"
+        ],
+        "summary": "The files the run wrote",
+        "description": "The run's workspace files. Never the run store: a path with any segment that starts with `.` is not listed\n(`.agentrun/`, `.agents/skills/`). `complete: false` while the backend still syncs files: hosted lists a\nrun's files after its terminal push, so during a run it shows only inputs and earlier turns.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "responses": {
+          "200": {
+            "description": "The files.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunFileList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}/files/{path}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RunId"
+        },
+        {
+          "$ref": "#/components/parameters/FilePath"
+        }
+      ],
+      "get": {
+        "operationId": "readRunFile",
+        "tags": [
+          "runs"
+        ],
+        "summary": "One file's raw bytes",
+        "description": "Raw bytes with the file's content type, never the run store. A path with an empty, `.` or `..` segment, a\nbackslash, a NUL or a leading `/` is `400 invalid_file_path`. A path with any segment that starts with `.`\nis `403 system_file_forbidden`. A symlink on the way is `404 not_found`.\n\nEvery answer carries `X-Content-Type-Options: nosniff`. HTML carries\n`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'`.\n`?download=1` forces `Content-Disposition: attachment`. `Range` is honoured when `features.files.range`.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "description": "`1` forces a download.",
+            "schema": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ],
+              "default": 0
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "required": false,
+            "description": "One byte range, `bytes=<start>-<end>`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The whole file.",
+            "headers": {
+              "Content-Disposition": {
+                "$ref": "#/components/headers/ContentDisposition"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "contentMediaType": "application/octet-stream"
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "The requested byte range.",
+            "headers": {
+              "Content-Range": {
+                "$ref": "#/components/headers/ContentRange"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/NoSniff"
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "contentMediaType": "application/octet-stream"
+                }
+              },
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "416": {
+            "$ref": "#/components/responses/RangeNotSatisfiable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    },
+    "/files": {
+      "post": {
+        "operationId": "createFile",
+        "tags": [
+          "files"
+        ],
+        "summary": "Reserve an upload",
+        "description": "Reserves a file for a run's input and answers where to send its bytes (`upload`). The file is `pending`\nuntil its bytes arrive. Its `path` is relative and keeps its folders: a run sees the file at the same path\non both backends.\n\nThe upload URL is this server's `PUT /files/{file_id}`, or a presigned URL on hosted. A client sends its\nbearer credential only when the URL's origin is the API's own.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "x-agentrun-capability": "features.files.upload",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The reserved file and where to send its bytes.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "$ref": "#/components/headers/IdempotentReplayed"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileUpload"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          }
+        }
+      }
+    },
+    "/files/{file_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/FileId"
+        }
+      ],
+      "put": {
+        "operationId": "uploadFile",
+        "tags": [
+          "files"
+        ],
+        "summary": "Send a reserved file's bytes",
+        "description": "The body is the file's bytes. Its length must equal the reserved `size_bytes`, and its SHA-256 the reserved\n`sha256` when one was given (`422 input_invalid`). Sending the same bytes again is a no-op.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "x-agentrun-capability": "features.files.upload",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/octet-stream"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The file, ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/File"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          }
+        }
+      }
+    },
+    "/quotes": {
+      "post": {
+        "operationId": "createQuote",
+        "tags": [
+          "billing"
+        ],
+        "summary": "Price a run before it starts",
+        "description": "The full price of one run, before anything is charged: a hold at the start, settled to metered usage at the\nend, never above `max_cost_usd`. Name the `quote_id` on `POST /agents/{agent_id}/runs` to run at these terms.\nLocal answers `501 unsupported_here` (`quotes`); a local run honours `max_cost_usd` with a meter instead.\n",
+        "x-agentrun-backends": [
+          "hosted"
+        ],
+        "x-agentrun-capability": "features.quotes",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The quote.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Quote"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          },
+          "501": {
+            "$ref": "#/components/responses/Unsupported"
+          }
+        }
+      }
+    },
+    "/usage": {
+      "get": {
+        "operationId": "getUsage",
+        "tags": [
+          "billing"
+        ],
+        "summary": "Usage by meter over a period",
+        "description": "Hosted: what was charged, per meter, at the rate card, with the account's cap and balance. Local: the model\ncost the runs report, as an estimate, with no account.\n",
+        "x-agentrun-backends": [
+          "hosted",
+          "local"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "Start of the period, inclusive. Default the start of this calendar month, UTC.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "End of the period, exclusive. Default now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "group_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "meter",
+                "agent",
+                "key",
+                "day",
+                "region"
+              ],
+              "default": "meter"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The usage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/Internal"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "x-agentrun-pack": {
+      "description": "The members a packed home may hold, in this order: `manifest.json` first, then `agent.sqlite`, then the runs.\nMember types are regular files and directories only. Anything that does not match `member_pattern` is refused\nby the import (check `format`) and never written by an export.\n",
+      "first_member": "manifest.json",
+      "member_types": [
+        "file",
+        "directory"
+      ],
+      "member_pattern": "^(?:manifest\\.json|agent\\.sqlite|runs/|runs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/|runs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/store/|runs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/store/run\\.sqlite|runs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/work/|runs/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/work/(?!\\.)[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*/?)$",
+      "never": [
+        "chrome/",
+        "repo/",
+        "owner.lock",
+        "runs/<run_id>/run.json",
+        "runs/<run_id>/live.json",
+        "runs/<run_id>/tmp/",
+        "runs/<run_id>/work/.agents/"
+      ]
+    },
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Hosted: an Agentrun API key (`ar_live_` prefix; `parcha-` keys stay valid) or a console OAuth token.\nLocal: the token `agentrun-serve` writes to its data directory, mode 0600.\n"
+      }
+    },
+    "parameters": {
+      "AgentId": {
+        "name": "agent_id",
+        "in": "path",
+        "required": true,
+        "description": "The agent's id, the definition's `id`.",
+        "schema": {
+          "$ref": "#/components/schemas/Id"
+        }
+      },
+      "RunId": {
+        "name": "run_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Id"
+        }
+      },
+      "FileId": {
+        "name": "file_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Id"
+        }
+      },
+      "FilePath": {
+        "name": "path",
+        "in": "path",
+        "required": true,
+        "description": "A path relative to the run's workspace. It may hold `/` between segments, sent as is; each segment is\npercent-encoded. The server matches the rest of the URL after `/files/`.\n",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first\nanswer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first\nis in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route.\n",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "required": false,
+        "description": "`next_cursor` from the previous page.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "Check": {
+        "name": "check",
+        "in": "query",
+        "required": false,
+        "description": "`1`: run the target's checks on a manifest and write nothing.",
+        "schema": {
+          "type": "integer",
+          "enum": [
+            0,
+            1
+          ],
+          "default": 0
+        }
+      }
+    },
+    "headers": {
+      "Location": {
+        "description": "The new resource's URL.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "IdempotentReplayed": {
+        "description": "`true` when this answer replays an earlier request with the same `Idempotency-Key`.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "true"
+          ]
+        }
+      },
+      "HomeETag": {
+        "description": "The home's revision (`homeRevision`). Changes with every write to `agent.sqlite`. `If-Match` on `PUT .../home` and `PUT .../definition` takes it.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "RetryAfter": {
+        "description": "Seconds to wait before retrying.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "RequestId": {
+        "description": "This request's id, also in `error.request_id`.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ContentDisposition": {
+        "description": "`attachment; filename=\"...\"` for downloads and non-preview types.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ContentRange": {
+        "description": "`bytes <start>-<end>/<size>`.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "NoSniff": {
+        "description": "Always `nosniff`.",
+        "schema": {
+          "type": "string",
+          "const": "nosniff"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "`bad_request` (the body is not JSON, or a parameter is malformed) or `invalid_file_path`.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unauthenticated": {
+        "description": "`unauthenticated`: no credential, or one this backend does not accept.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "PaymentRequired": {
+        "description": "`insufficient_credits` or `spend_cap_reached`. `next_action` says what raises the authority.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "cap": {
+                "$ref": "#/components/examples/ErrorSpendCap"
+              }
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "`forbidden` (the credential lacks the scope) or `system_file_forbidden`.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "`not_found`. Another account's agent or run is not found, never forbidden.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "`agent_exists`, `agent_not_runnable`, `home_busy`, `idempotency_mismatch`, `idempotency_in_progress`,\n`not_continuable` or `quote_invalid`.\n",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "not_continuable": {
+                "$ref": "#/components/examples/ErrorNotContinuable"
+              }
+            }
+          }
+        }
+      },
+      "PreconditionFailed": {
+        "description": "`precondition_failed`: the `If-Match` home ETag is not current, or the home's source moved since it was read.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "`payload_too_large`: over a limit in `limits`, named in `details.limit`.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "`unsupported_media_type`.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "RangeNotSatisfiable": {
+        "description": "`range_not_satisfiable`.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unprocessable": {
+        "description": "`input_invalid` (with `fields`) or `home_check_failed` (with `checks`).",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "input": {
+                "$ref": "#/components/examples/ErrorInputInvalid"
+              }
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "`rate_limited`.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Internal": {
+        "description": "`internal`.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "Unsupported": {
+        "description": "`unsupported_here`: this backend does not offer the feature named in `capability`.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "quotes_local": {
+                "$ref": "#/components/examples/ErrorUnsupported"
+              }
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "`unavailable`: try again after `Retry-After`.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Id": {
+        "type": "string",
+        "description": "An id safe in a URL path segment. UUIDs, UUIDv7s and slugs like `site-reporter` all match.",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "Usd": {
+        "type": "number",
+        "minimum": 0,
+        "description": "US dollars."
+      },
+      "JsonObject": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "type": "string",
+            "description": "One plain sentence for a person. Never parse it."
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "The same request may succeed later, unchanged."
+          },
+          "next_action": {
+            "$ref": "#/components/schemas/NextAction"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "retry_after_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "capability": {
+            "type": "string",
+            "description": "`unsupported_here` only: the dotted path under `features` that is off, e.g. `quotes`, `messages.steer`."
+          },
+          "fields": {
+            "type": "array",
+            "description": "`input_invalid` only: each field that is missing or wrong.",
+            "items": {
+              "$ref": "#/components/schemas/InputIssue"
+            }
+          },
+          "checks": {
+            "type": "array",
+            "description": "`home_check_failed` only: every check, failed ones included.",
+            "items": {
+              "$ref": "#/components/schemas/HomeCheck"
+            }
+          },
+          "details": {
+            "type": "object",
+            "description": "The figures behind the refusal, e.g. `{cap_usd, used_usd, period, scope}` for `spend_cap_reached`.",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "The closed list. Each code has one HTTP status:\n\n| Code | Status | Retryable |\n| --- | --- | --- |\n| `bad_request` | 400 | no |\n| `invalid_file_path` | 400 | no |\n| `unauthenticated` | 401 | no |\n| `insufficient_credits` | 402 | no |\n| `spend_cap_reached` | 402 | no |\n| `forbidden` | 403 | no |\n| `system_file_forbidden` | 403 | no |\n| `not_found` | 404 | no |\n| `method_not_allowed` | 405 | no |\n| `agent_exists` | 409 | no |\n| `agent_not_runnable` | 409 | no |\n| `home_busy` | 409 | yes |\n| `idempotency_mismatch` | 409 | no |\n| `idempotency_in_progress` | 409 | yes |\n| `not_continuable` | 409 | no |\n| `quote_invalid` | 409 | no |\n| `precondition_failed` | 412 | no |\n| `payload_too_large` | 413 | no |\n| `unsupported_media_type` | 415 | no |\n| `range_not_satisfiable` | 416 | no |\n| `input_invalid` | 422 | no |\n| `home_check_failed` | 422 | no |\n| `rate_limited` | 429 | yes |\n| `internal` | 500 | yes |\n| `unsupported_here` | 501 | no |\n| `unavailable` | 503 | yes |\n",
+        "enum": [
+          "bad_request",
+          "invalid_file_path",
+          "unauthenticated",
+          "insufficient_credits",
+          "spend_cap_reached",
+          "forbidden",
+          "system_file_forbidden",
+          "not_found",
+          "method_not_allowed",
+          "agent_exists",
+          "agent_not_runnable",
+          "home_busy",
+          "idempotency_mismatch",
+          "idempotency_in_progress",
+          "not_continuable",
+          "quote_invalid",
+          "precondition_failed",
+          "payload_too_large",
+          "unsupported_media_type",
+          "range_not_satisfiable",
+          "input_invalid",
+          "home_check_failed",
+          "rate_limited",
+          "internal",
+          "unsupported_here",
+          "unavailable"
+        ]
+      },
+      "NextAction": {
+        "description": "The exact next step, so a client never infers the protocol. A request it can make, or a page a person opens.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/RequestAction"
+          },
+          {
+            "$ref": "#/components/schemas/PersonAction"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "RequestAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "method",
+          "path"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "request"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative to the server URL, starting with `/`, e.g. `/quotes`.",
+            "pattern": "^/"
+          },
+          "body": {
+            "type": "object",
+            "description": "The arguments the server already knows.",
+            "additionalProperties": true
+          },
+          "caller_supplies": {
+            "type": "array",
+            "description": "What the caller adds, e.g. a new `Idempotency-Key`.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PersonAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "url",
+          "description"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "person"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "A page a person opens, e.g. the console's limits page."
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "InputIssue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "reason",
+          "message"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The path the caller writes to reach the value, e.g. `input.task` or `definition.model`."
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "wrong_type",
+              "not_allowed",
+              "not_an_option",
+              "too_short",
+              "too_long",
+              "too_few",
+              "too_many",
+              "bad_format",
+              "duplicate",
+              "invalid"
+            ]
+          },
+          "expected": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "fix": {
+            "type": "string",
+            "description": "The exact change that makes the call valid."
+          }
+        }
+      },
+      "Capabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "backend",
+          "contract",
+          "server",
+          "runtimes",
+          "features",
+          "regions",
+          "limits"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "enum": [
+              "hosted",
+              "local"
+            ]
+          },
+          "contract": {
+            "type": "string",
+            "description": "The contract this backend serves. This document is `agentrun.v2/0`.",
+            "pattern": "^agentrun\\.v2/[0-9]+$"
+          },
+          "server": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "version"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "e.g. `api.agentrun.ai` or `@parcha/agentrun-serve`."
+              },
+              "version": {
+                "type": "string"
+              },
+              "platform": {
+                "type": "string",
+                "description": "Local: the OS a run opens on today, e.g. `linux`."
+              }
+            }
+          },
+          "runtimes": {
+            "type": "array",
+            "description": "What runs a run here. Informational; a run never names one.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "models": {
+            "type": "object",
+            "description": "Where this backend's models come from. The definition names no model; the host binds it.",
+            "additionalProperties": false,
+            "required": [
+              "source"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "managed",
+                  "chatgpt",
+                  "env",
+                  "faux"
+                ]
+              },
+              "default": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`provider/model` of the lead model, when one is fixed."
+              }
+            }
+          },
+          "features": {
+            "$ref": "#/components/schemas/Features"
+          },
+          "regions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/Region"
+            }
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          }
+        }
+      },
+      "Features": {
+        "type": "object",
+        "description": "Every flag is present, so a client never guesses. An off feature answers `501 unsupported_here`.",
+        "additionalProperties": false,
+        "required": [
+          "agents",
+          "home",
+          "runs",
+          "messages",
+          "timeline",
+          "files",
+          "quotes",
+          "usage",
+          "efforts",
+          "browser",
+          "sign_ins",
+          "vault",
+          "query"
+        ],
+        "properties": {
+          "agents": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "create",
+              "list",
+              "update"
+            ],
+            "properties": {
+              "create": {
+                "type": "boolean"
+              },
+              "update": {
+                "type": "boolean",
+                "description": "`PUT /agents/{agent_id}/definition`."
+              },
+              "list": {
+                "type": "boolean"
+              }
+            }
+          },
+          "home": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "export",
+              "import",
+              "check"
+            ],
+            "properties": {
+              "export": {
+                "type": "boolean"
+              },
+              "import": {
+                "type": "boolean"
+              },
+              "check": {
+                "type": "boolean"
+              }
+            }
+          },
+          "runs": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "stop",
+              "cancel",
+              "kill"
+            ],
+            "properties": {
+              "stop": {
+                "type": "boolean"
+              },
+              "cancel": {
+                "type": "boolean"
+              },
+              "kill": {
+                "type": "boolean",
+                "description": "Local only."
+              }
+            }
+          },
+          "messages": {
+            "type": "object",
+            "description": "Which modes `POST /runs/{run_id}/messages` takes here.",
+            "additionalProperties": false,
+            "required": [
+              "steer",
+              "answer",
+              "follow_up",
+              "steer_workflow_runs"
+            ],
+            "properties": {
+              "steer": {
+                "type": "boolean"
+              },
+              "answer": {
+                "type": "boolean"
+              },
+              "follow_up": {
+                "type": "boolean"
+              },
+              "steer_workflow_runs": {
+                "type": "boolean",
+                "description": "Whether a steer reaches a run of a definition with a `workflow`. Hosted false today."
+              }
+            }
+          },
+          "timeline": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "long_poll",
+              "sse",
+              "live_rows"
+            ],
+            "properties": {
+              "long_poll": {
+                "type": "boolean"
+              },
+              "sse": {
+                "type": "boolean"
+              },
+              "live_rows": {
+                "type": "boolean",
+                "description": "The server sends rows it later drops (a streaming thinking or text row, a wait)."
+              }
+            }
+          },
+          "files": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "upload",
+              "read",
+              "range",
+              "during_run"
+            ],
+            "properties": {
+              "upload": {
+                "type": "boolean"
+              },
+              "read": {
+                "type": "boolean"
+              },
+              "range": {
+                "type": "boolean"
+              },
+              "during_run": {
+                "type": "boolean",
+                "description": "The file list shows what a live run wrote. Hosted false until the terminal push."
+              }
+            }
+          },
+          "quotes": {
+            "type": "boolean"
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "basis",
+              "meters"
+            ],
+            "properties": {
+              "basis": {
+                "type": "string",
+                "enum": [
+                  "charge",
+                  "estimate"
+                ]
+              },
+              "meters": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Meter"
+                }
+              }
+            }
+          },
+          "efforts": {
+            "type": "array",
+            "description": "The `effort` values a run takes here. The host maps each to its model and thinking level.",
+            "items": {
+              "$ref": "#/components/schemas/Effort"
+            }
+          },
+          "browser": {
+            "type": "string",
+            "enum": [
+              "browserbase",
+              "chrome",
+              "none"
+            ]
+          },
+          "sign_ins": {
+            "type": "boolean",
+            "description": "Runs carry the agent's saved sign-ins between runs."
+          },
+          "vault": {
+            "type": "boolean"
+          },
+          "query": {
+            "type": "boolean",
+            "description": "Read-only SQL on a run's store. Not in `agentrun.v2/0`; false everywhere."
+          }
+        }
+      },
+      "Region": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "jurisdiction",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "e.g. `us`, `eu`, `local`."
+          },
+          "jurisdiction": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the data rests, e.g. `US`, `EU`. Null for `local` (the user's own machine)."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "live",
+              "beta",
+              "planned"
+            ]
+          }
+        }
+      },
+      "Limits": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "max_body_bytes",
+          "max_upload_bytes",
+          "max_files_per_run",
+          "max_message_chars",
+          "max_concurrent_runs",
+          "timeline_max_wait_ms",
+          "timeline_page_rows",
+          "idempotency_ttl_s",
+          "input_wait_s",
+          "max_cost_usd"
+        ],
+        "properties": {
+          "max_body_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Largest JSON body."
+          },
+          "max_upload_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "The largest upload body: a file's bytes (`PUT /files/{file_id}`) or a packed home (`PUT .../home`).\nHosted 99614720 (95 MiB) under the 100 MB request cap of its edge; local may say more, and null is no\nlimit.\n"
+          },
+          "max_files_per_run": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_message_chars": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_concurrent_runs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Null is no limit."
+          },
+          "timeline_max_wait_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 25000
+          },
+          "timeline_page_rows": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "idempotency_ttl_s": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "input_wait_s": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "How long an `input_required` run waits for a message before it ends `failed` (`input_expired`)."
+          },
+          "max_cost_usd": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The range a run's `max_cost_usd` may take. Null when this backend has no billing.",
+            "additionalProperties": false,
+            "required": [
+              "min",
+              "max"
+            ],
+            "properties": {
+              "min": {
+                "$ref": "#/components/schemas/Usd"
+              },
+              "max": {
+                "$ref": "#/components/schemas/Usd"
+              }
+            }
+          }
+        }
+      },
+      "Definition": {
+        "description": "#571's `agent.definition`, field for field. No model and no thinking level: the host binds them. `skills` and\n`tools` are names; where each tool runs is the host's binding. Any other field is refused.\n",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DefinitionInput"
+          }
+        ],
+        "required": [
+          "id",
+          "version",
+          "name",
+          "instructions",
+          "skills",
+          "tools"
+        ]
+      },
+      "DefinitionInput": {
+        "type": "object",
+        "description": "A definition as given. `id` is optional; the server mints a UUIDv7 when it is absent.",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "name",
+          "instructions",
+          "skills",
+          "tools"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "instructions": {
+            "type": "string"
+          },
+          "skills": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "tools": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "input_schema": {
+            "$ref": "#/components/schemas/JsonObject",
+            "description": "A JSON Schema for a run's `input`."
+          },
+          "output_schema": {
+            "$ref": "#/components/schemas/JsonObject",
+            "description": "A JSON Schema for a run's `result.output`."
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/JsonObject",
+            "description": "An AgentRun workflow document (no model in it)."
+          },
+          "max_cost_usd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "The default cap of each run, in US dollars."
+          }
+        }
+      },
+      "SkillFiles": {
+        "type": "object",
+        "description": "Skill files by path under `.agents/skills/`, e.g. `cite/SKILL.md`, to their text.",
+        "propertyNames": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*/$)[^/\\\\\\u0000][^\\\\\\u0000]*$"
+        },
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "AgentCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "definition"
+        ],
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/DefinitionInput"
+          },
+          "skills": {
+            "$ref": "#/components/schemas/SkillFiles"
+          }
+        }
+      },
+      "SkillFileInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256",
+          "size_bytes"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "SignIn": {
+        "type": "object",
+        "description": "One saved sign-in, by its profile key. Never its `ref`, which opens a signed-in session. A profile with an\nempty `ref` is not listed. `state` is `held` while an unexpired `agent.leases` entry names a run, and\n`held_by` is that run's id; otherwise `ready` and `held_by` null.\n",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "provider",
+          "state",
+          "held_by"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The profile key, e.g. `acme.example`."
+          },
+          "provider": {
+            "type": "string",
+            "description": "e.g. `browserbase`."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "held"
+            ]
+          },
+          "held_by": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`held`: the run whose save lease names this profile."
+          },
+          "verified_at": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "if": {
+          "properties": {
+            "state": {
+              "const": "held"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "held_by": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "held_by": {
+              "type": "null"
+            }
+          }
+        }
+      },
+      "Source": {
+        "type": "object",
+        "description": "The commit of the home's repo that the home was last refreshed from.",
+        "additionalProperties": false,
+        "required": [
+          "sha",
+          "refreshed_at"
+        ],
+        "properties": {
+          "sha": {
+            "$ref": "#/components/schemas/CommitSha"
+          },
+          "refreshed_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "CommitSha": {
+        "type": "string",
+        "description": "A git commit id, SHA-1 or SHA-256.",
+        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+      },
+      "Agent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent_id",
+          "definition",
+          "source",
+          "skills",
+          "sign_ins",
+          "runs",
+          "region",
+          "home_etag",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "agent_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "definition": {
+            "$ref": "#/components/schemas/Definition"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The repo commit the home was last refreshed from."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFileInfo"
+            }
+          },
+          "sign_ins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignIn"
+            }
+          },
+          "runs": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "count",
+              "live"
+            ],
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "live": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "region": {
+            "type": "string",
+            "description": "The `regions[].id` the home rests in."
+          },
+          "home_etag": {
+            "type": "string",
+            "description": "The home's revision (`homeRevision`), for `If-Match` on `PUT .../home` and `PUT .../definition`."
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "AgentList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agents",
+          "next_cursor"
+        ],
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Agent"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "HomeManifest": {
+        "type": "object",
+        "description": "What a packed home holds, without its bytes. The first member of a pack, and the body of `PUT ...?check=1`.",
+        "additionalProperties": false,
+        "required": [
+          "format",
+          "agent_id",
+          "definition",
+          "source",
+          "skills",
+          "sign_ins",
+          "vault",
+          "runs",
+          "size_bytes"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "The pack format. `agentrun.home/1` is",
+            "pattern": "^agentrun\\.home/[0-9]+$"
+          },
+          "agent_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "definition": {
+            "$ref": "#/components/schemas/Definition"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The source home's `agent.source`. The repo itself is not in the pack."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillFileInfo"
+            }
+          },
+          "sign_ins": {
+            "type": "array",
+            "description": "What the source had, by key and provider; none travel in agentrun.v2/0. Never a `ref`.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "provider"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "vault": {
+            "type": "array",
+            "description": "What the source had, by name; none travel in agentrun.v2/0, and it is empty there. Never a value.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "runs": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "count",
+              "live"
+            ],
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "live": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Runs whose claim was live at pack time. Their index entries travel; their stores and files do not."
+              }
+            }
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        }
+      },
+      "HomeCheck": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "status",
+          "message"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "format",
+              "definition",
+              "tools",
+              "sign_ins",
+              "vault",
+              "quote",
+              "size",
+              "live_runs"
+            ],
+            "description": "`format` fails on a newer format or a pack member outside the allowlist. `sign_ins` warns when the source\nhad sign-ins: they are to redo at the target, since none travel in agentrun.v2/0.\n"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "warn",
+              "fail"
+            ],
+            "description": "Only `fail` refuses."
+          },
+          "message": {
+            "type": "string",
+            "description": "One line, e.g. `7 of 7 bound at hosted` or `1 sign-in to redo at the target: acme.example`."
+          },
+          "detail": {
+            "type": "object",
+            "description": "e.g. `{bound: [...], unbound: [...]}` for `tools`.",
+            "additionalProperties": true
+          }
+        }
+      },
+      "HomeCheckReport": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "agent_id",
+          "target",
+          "checks",
+          "written"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "No check failed."
+          },
+          "agent_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "backend",
+              "region"
+            ],
+            "properties": {
+              "backend": {
+                "type": "string",
+                "enum": [
+                  "hosted",
+                  "local"
+                ]
+              },
+              "region": {
+                "type": "string"
+              }
+            }
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HomeCheck"
+            }
+          },
+          "written": {
+            "type": "boolean",
+            "description": "Always false for `?check=1` and for a refusal."
+          },
+          "replaces": {
+            "type": "boolean",
+            "description": "The agent exists at the target, so the import needs `If-Match`."
+          }
+        }
+      },
+      "HomeImportResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent",
+          "report"
+        ],
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/Agent"
+          },
+          "report": {
+            "$ref": "#/components/schemas/HomeCheckReport"
+          }
+        }
+      },
+      "Effort": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "RunStatus": {
+        "type": "string",
+        "description": "The six public statuses (Parcha `ExpertOperationPublicStatus`). `completed`, `failed` and `cancelled` end a\nturn of work; only a follow-up message reopens a `completed` run.\n",
+        "enum": [
+          "queued",
+          "working",
+          "input_required",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "RunState": {
+        "type": "string",
+        "description": "What a run page shows (#577). The only combinations:\n\n| `status` | `state` |\n| --- | --- |\n| `queued` | `working` |\n| `working` | `working`, or `idle` when the run is parked between turns (a scheduled wake) |\n| `input_required` | `waiting` (the agent asked the person), or `idle` (a person stopped the turn) |\n| `completed`, `failed`, `cancelled` | `idle` |\n\nAn `input_required` run that gets no message for `limits.input_wait_s` (30 minutes) ends `failed` with\n`input_expired`, and its browser closes. A hosted browser is billed while it stays open. A message after that\nis `409 not_continuable`; start a new run.\n",
+        "enum": [
+          "working",
+          "waiting",
+          "idle"
+        ]
+      },
+      "RunCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "input"
+        ],
+        "properties": {
+          "input": {
+            "type": "object",
+            "description": "Checked against the definition's `input_schema`, or `{content: string}` when it has none.",
+            "additionalProperties": true
+          },
+          "file_ids": {
+            "type": "array",
+            "maxItems": 100,
+            "uniqueItems": true,
+            "description": "Ready files from `POST /files`, at most `limits.max_files_per_run`.",
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "max_cost_usd": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default."
+          },
+          "quote_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "description": "Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`."
+          }
+        }
+      },
+      "RunResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "output",
+          "final_answer"
+        ],
+        "properties": {
+          "output": {
+            "description": "The structured output, checked against `output_schema`. Null when the definition has none."
+          },
+          "final_answer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The agent's last answer as text."
+          }
+        }
+      },
+      "RunError": {
+        "type": "object",
+        "description": "Why a run failed, and what to do next.",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/RunErrorCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "next_action": {
+            "$ref": "#/components/schemas/NextAction"
+          }
+        }
+      },
+      "RunErrorCode": {
+        "type": "string",
+        "description": "Why a run ended `failed`. A closed list apart from `ErrorCode`: these describe a run, not a request.\nThe first six are Parcha's `ExpertTerminalError` codes.\n",
+        "enum": [
+          "run_failed",
+          "moderated",
+          "agent_not_runnable",
+          "needs_connection",
+          "needs_reconnect",
+          "connection_revoked",
+          "output_invalid",
+          "spend_cap_reached",
+          "wall_clock_timeout",
+          "input_expired",
+          "internal"
+        ]
+      },
+      "Cost": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "usd",
+          "basis"
+        ],
+        "properties": {
+          "usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Null while unknown. A client shows null as \"unknown\", never as $0."
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "charge",
+              "estimate"
+            ],
+            "description": "`charge`: what the account pays (hosted). `estimate`: the model cost the run reports (local)."
+          },
+          "charge_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "held",
+              "settled",
+              "released",
+              null
+            ],
+            "description": "`charge` only. `held` may still settle lower; `released` is not billed."
+          },
+          "cap_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "The run's spend authority, when it has one."
+          }
+        }
+      },
+      "Run": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "agent_id",
+          "agent_version",
+          "status",
+          "state",
+          "title",
+          "created_at",
+          "updated_at",
+          "ended_at",
+          "result",
+          "error",
+          "cost",
+          "poll_after_ms",
+          "sha"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "agent_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "agent_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The definition's `version` the run started from."
+          },
+          "sha": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CommitSha"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The repo commit the run's skills came from."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80,
+            "description": "The first message or input, on one line."
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "ended_at": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "result": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when `completed`."
+          },
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when `failed`."
+          },
+          "cost": {
+            "$ref": "#/components/schemas/Cost"
+          },
+          "poll_after_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "When to look again."
+          }
+        }
+      },
+      "RunList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runs",
+          "next_cursor"
+        ],
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RunSummary": {
+        "type": "object",
+        "description": "A runs-index row.",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "agent_id",
+          "agent_version",
+          "sha",
+          "status",
+          "state",
+          "title",
+          "created_at",
+          "ended_at",
+          "cost"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "agent_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "agent_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sha": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CommitSha"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The repo commit the run's skills came from."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "ended_at": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cost": {
+            "$ref": "#/components/schemas/Cost"
+          }
+        }
+      },
+      "TimelineKind": {
+        "type": "string",
+        "description": "#572 `TimelineKind`: Grep's ten kinds, then `user_message`, `waiting` and `usage`.",
+        "enum": [
+          "thinking",
+          "text_block",
+          "tool_use",
+          "tool_result",
+          "phase",
+          "subagent_started",
+          "subagent_progress",
+          "subagent_completed",
+          "final_answer",
+          "error",
+          "user_message",
+          "waiting",
+          "usage"
+        ]
+      },
+      "TimelineRow": {
+        "type": "object",
+        "description": "#572 `TimelineEvent`, field for field: Grep's 13 fields, then the open additions. `seq` is optional in the\ntype (Grep's rows have none) and required here: every /v2 row has it, and a page sorts by it.\nCaps are Grep's: summary and previews 500, text 2000. A row never carries a live-view URL, a browser\ncontext id or a cookie; every string but a person's own message keeps a URL's origin, path and query keys\nand drops the rest.\n",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "timestamp",
+          "created_at",
+          "kind",
+          "summary",
+          "agent_label",
+          "tool_name",
+          "tool_use_id",
+          "tool_status",
+          "tool_input_preview",
+          "tool_result_preview",
+          "tool_result_size_bytes",
+          "text",
+          "seq"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timestamp": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TimelineKind"
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "agent_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_use_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "success",
+              "failed",
+              null
+            ]
+          },
+          "tool_input_preview": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "tool_result_preview": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "tool_result_size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Log order inside the run. Sort by it, never by time. Not a cursor."
+          },
+          "conversation_id": {
+            "type": "integer"
+          },
+          "round": {
+            "type": "integer",
+            "description": "The assistant entry whose calls these are."
+          },
+          "parent_tool_use_id": {
+            "type": "string",
+            "description": "A nested call's caller, or a subagent's spawning call."
+          },
+          "session": {
+            "type": "string",
+            "pattern": "^[\\w.-]{1,64}$",
+            "description": "The browser session a hand-over is about, as a tag; never a URL."
+          },
+          "path": {
+            "type": "string",
+            "description": "The file a \"Saved\" phase row is about."
+          },
+          "usage": {
+            "$ref": "#/components/schemas/TimelineUsage"
+          }
+        }
+      },
+      "TimelineUsage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "usd",
+          "requests"
+        ],
+        "properties": {
+          "usd": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "requests": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "TimelinePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "status",
+          "state",
+          "reset",
+          "rows",
+          "drop",
+          "next_after",
+          "unchanged",
+          "has_more",
+          "final",
+          "cost"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "reset": {
+            "type": "boolean",
+            "description": "Drop every row held, then apply `rows`."
+          },
+          "rows": {
+            "type": "array",
+            "description": "Rows added or changed after `after`, each at its current version, in `seq` order.",
+            "items": {
+              "$ref": "#/components/schemas/TimelineRow"
+            }
+          },
+          "drop": {
+            "type": "array",
+            "description": "Ids of rows removed after `after`. A live row is replaced this way by its committed row.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "next_after": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The change cursor to send as `after` next (and the SSE `id`)."
+          },
+          "unchanged": {
+            "type": "boolean",
+            "description": "Nothing changed after `after`, status and state included."
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "The page stopped at `limits.timeline_page_rows`; ask again at once with `next_after`."
+          },
+          "final": {
+            "type": "boolean",
+            "description": "The run is completed, failed or cancelled, and every row it will write is in this page or an earlier one.\nOnly a follow-up message changes the rows after this. `cost` may still settle: read the run for it.\n"
+          },
+          "cost": {
+            "$ref": "#/components/schemas/Cost"
+          },
+          "poll_after_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "JSON only. When to ask again."
+          }
+        }
+      },
+      "TimelineEnd": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "terminal",
+              "reconnect"
+            ],
+            "description": "`terminal`: the run ended and its last rows are sent. `reconnect`: the server closes the stream; reconnect with `Last-Event-ID`."
+          }
+        }
+      },
+      "MessageCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "description": "At most `limits.max_message_chars`. Not only whitespace.",
+            "pattern": "\\S"
+          }
+        }
+      },
+      "MessageResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "message_id",
+          "mode",
+          "status",
+          "state",
+          "poll_after_ms"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "message_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "steer",
+              "answer",
+              "follow_up"
+            ],
+            "description": "What the message did."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "poll_after_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "StopResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "stopped",
+          "status",
+          "state"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "stopped": {
+            "type": "boolean",
+            "description": "A turn was running and is now stopped."
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          }
+        }
+      },
+      "CancelResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "cancel_requested",
+          "already_terminal",
+          "status"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "cancel_requested": {
+            "type": "boolean"
+          },
+          "already_terminal": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          }
+        }
+      },
+      "KillRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "process"
+            ],
+            "default": "process",
+            "description": "`process` kills the run's process group. Other kinds come later."
+          }
+        }
+      },
+      "KillResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "kind",
+          "generation_before",
+          "generation_after"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "process"
+            ]
+          },
+          "generation_before": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "generation_after": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "RunFile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "size_bytes",
+          "modified_at"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Relative to the run's workspace, `/` between segments."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "modified_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RunFileList": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "files",
+          "complete",
+          "truncated"
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunFile"
+            }
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "False while the backend still syncs the run's files."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The list stopped at the server's cap."
+          }
+        }
+      },
+      "FilePathString": {
+        "type": "string",
+        "description": "A relative path, `/` between segments, no `.` or `..` segment, no segment that starts with `.`.",
+        "minLength": 1,
+        "maxLength": 1024,
+        "pattern": "^(?!.*(?:^|/)\\.)(?!.*//)(?!.*/$)[^/\\\\\\u0000][^\\\\\\u0000]*$"
+      },
+      "FileCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "size_bytes"
+        ],
+        "properties": {
+          "path": {
+            "$ref": "#/components/schemas/FilePathString"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "At most `limits.max_upload_bytes`."
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "File": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file_id",
+          "path",
+          "size_bytes",
+          "content_type",
+          "sha256",
+          "status",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "file_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "path": {
+            "$ref": "#/components/schemas/FilePathString"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready"
+            ]
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "expires_at": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When an unused file is deleted. Null locally."
+          }
+        }
+      },
+      "FileUpload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "file",
+          "upload"
+        ],
+        "properties": {
+          "file": {
+            "$ref": "#/components/schemas/File"
+          },
+          "upload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "method",
+              "url",
+              "expires_at"
+            ],
+            "properties": {
+              "method": {
+                "type": "string",
+                "const": "PUT"
+              },
+              "url": {
+                "type": "string",
+                "description": "Absolute, or relative to the server URL. Send the bearer only to the API's own origin."
+              },
+              "headers": {
+                "type": "object",
+                "description": "Headers the upload must carry, e.g. a presigned URL's content type.",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "expires_at": {
+                "$ref": "#/components/schemas/Timestamp"
+              }
+            }
+          }
+        }
+      },
+      "QuoteCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent_id"
+        ],
+        "properties": {
+          "agent_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "input": {
+            "type": "object",
+            "description": "Checked like a run's input, so a quote never prices a run that would be refused.",
+            "additionalProperties": true
+          },
+          "file_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "max_cost_usd": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        }
+      },
+      "Quote": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "quote_id",
+          "expires_at",
+          "agent_id",
+          "agent_version",
+          "effort",
+          "pricing_model",
+          "currency",
+          "min_cost_usd",
+          "max_cost_usd",
+          "typical_duration_s",
+          "charge_timing",
+          "balance",
+          "next_action"
+        ],
+        "properties": {
+          "quote_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "expires_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "agent_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "agent_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "effort": {
+            "$ref": "#/components/schemas/Effort"
+          },
+          "pricing_model": {
+            "type": "string",
+            "const": "metered_with_cap"
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          },
+          "min_cost_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "max_cost_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "typical_duration_s": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "min",
+              "max"
+            ],
+            "properties": {
+              "min": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "charge_timing": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "at_start",
+              "hold_usd",
+              "at_end",
+              "never_above_usd",
+              "summary"
+            ],
+            "properties": {
+              "at_start": {
+                "type": "string",
+                "const": "hold"
+              },
+              "hold_usd": {
+                "$ref": "#/components/schemas/Usd"
+              },
+              "at_end": {
+                "type": "string",
+                "const": "settle_to_metered_usage"
+              },
+              "never_above_usd": {
+                "$ref": "#/components/schemas/Usd"
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          },
+          "balance": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "What this credential draws from, at quote time.",
+            "additionalProperties": false,
+            "required": [
+              "usd_remaining",
+              "can_start",
+              "covers_cap"
+            ],
+            "properties": {
+              "usd_remaining": {
+                "type": "number"
+              },
+              "can_start": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "covers_cap": {
+                "type": "boolean"
+              },
+              "shortfall_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "monthly_cap_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "monthly_cap_left_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "next_action": {
+            "$ref": "#/components/schemas/RequestAction"
+          }
+        }
+      },
+      "Meter": {
+        "type": "string",
+        "enum": [
+          "tokens",
+          "agent_time",
+          "browser_time",
+          "disk"
+        ]
+      },
+      "Usage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to",
+          "currency",
+          "basis",
+          "group_by",
+          "total_usd",
+          "lines",
+          "account"
+        ],
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "to": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "currency": {
+            "type": "string",
+            "const": "USD"
+          },
+          "basis": {
+            "type": "string",
+            "enum": [
+              "charge",
+              "estimate"
+            ]
+          },
+          "group_by": {
+            "type": "string",
+            "enum": [
+              "meter",
+              "agent",
+              "key",
+              "day",
+              "region"
+            ]
+          },
+          "total_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageLine"
+            }
+          },
+          "account": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Hosted only. The account's month and balance.",
+            "additionalProperties": false,
+            "required": [
+              "monthly_cap_usd",
+              "month_to_date_usd",
+              "balance_usd",
+              "hard_stop"
+            ],
+            "properties": {
+              "monthly_cap_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "month_to_date_usd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "balance_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "hard_stop": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "UsageLine": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "group",
+          "usd"
+        ],
+        "properties": {
+          "group": {
+            "type": "string",
+            "description": "The value grouped by, e.g. `tokens`, an agent id, `2026-10-16`, `us`."
+          },
+          "meter": {
+            "$ref": "#/components/schemas/Meter"
+          },
+          "quantity": {
+            "type": "number",
+            "minimum": 0
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "token",
+              "second",
+              "gib_month"
+            ]
+          },
+          "usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "examples": {
+      "CapabilitiesHosted": {
+        "summary": "Hosted at launch",
+        "value": {
+          "backend": "hosted",
+          "contract": "agentrun.v2/0",
+          "server": {
+            "name": "api.agentrun.ai",
+            "version": "2026.10.16"
+          },
+          "runtimes": [
+            "agentrun"
+          ],
+          "models": {
+            "source": "managed",
+            "default": null
+          },
+          "features": {
+            "agents": {
+              "create": true,
+              "list": true,
+              "update": true
+            },
+            "home": {
+              "export": true,
+              "import": true,
+              "check": true
+            },
+            "runs": {
+              "stop": true,
+              "cancel": true,
+              "kill": false
+            },
+            "messages": {
+              "steer": true,
+              "answer": false,
+              "follow_up": true,
+              "steer_workflow_runs": false
+            },
+            "timeline": {
+              "long_poll": true,
+              "sse": false,
+              "live_rows": false
+            },
+            "files": {
+              "upload": true,
+              "read": true,
+              "range": true,
+              "during_run": false
+            },
+            "quotes": true,
+            "usage": {
+              "basis": "charge",
+              "meters": [
+                "tokens",
+                "agent_time",
+                "browser_time",
+                "disk"
+              ]
+            },
+            "efforts": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "browser": "browserbase",
+            "sign_ins": true,
+            "vault": false,
+            "query": false
+          },
+          "regions": [
+            {
+              "id": "us",
+              "jurisdiction": "US",
+              "state": "live"
+            },
+            {
+              "id": "eu",
+              "jurisdiction": "EU",
+              "state": "planned"
+            }
+          ],
+          "limits": {
+            "max_body_bytes": 1048576,
+            "max_upload_bytes": 99614720,
+            "max_files_per_run": 10,
+            "max_message_chars": 20000,
+            "max_concurrent_runs": null,
+            "timeline_max_wait_ms": 25000,
+            "timeline_page_rows": 200,
+            "idempotency_ttl_s": 86400,
+            "input_wait_s": 1800,
+            "max_cost_usd": {
+              "min": 0.5,
+              "max": 2000
+            }
+          }
+        }
+      },
+      "CapabilitiesLocal": {
+        "summary": "agentrun-serve 0.1.0 on Linux",
+        "value": {
+          "backend": "local",
+          "contract": "agentrun.v2/0",
+          "server": {
+            "name": "@parcha/agentrun-serve",
+            "version": "0.1.0",
+            "platform": "linux"
+          },
+          "runtimes": [
+            "reference"
+          ],
+          "models": {
+            "source": "chatgpt",
+            "default": null
+          },
+          "features": {
+            "agents": {
+              "create": true,
+              "list": true,
+              "update": true
+            },
+            "home": {
+              "export": true,
+              "import": true,
+              "check": true
+            },
+            "runs": {
+              "stop": true,
+              "cancel": true,
+              "kill": true
+            },
+            "messages": {
+              "steer": true,
+              "answer": true,
+              "follow_up": false,
+              "steer_workflow_runs": false
+            },
+            "timeline": {
+              "long_poll": true,
+              "sse": true,
+              "live_rows": true
+            },
+            "files": {
+              "upload": true,
+              "read": true,
+              "range": false,
+              "during_run": true
+            },
+            "quotes": false,
+            "usage": {
+              "basis": "estimate",
+              "meters": [
+                "tokens"
+              ]
+            },
+            "efforts": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "browser": "browserbase",
+            "sign_ins": true,
+            "vault": false,
+            "query": false
+          },
+          "regions": [
+            {
+              "id": "local",
+              "jurisdiction": null,
+              "state": "live"
+            }
+          ],
+          "limits": {
+            "max_body_bytes": 1048576,
+            "max_upload_bytes": null,
+            "max_files_per_run": 100,
+            "max_message_chars": 20000,
+            "max_concurrent_runs": 2,
+            "timeline_max_wait_ms": 25000,
+            "timeline_page_rows": 500,
+            "idempotency_ttl_s": 86400,
+            "input_wait_s": 1800,
+            "max_cost_usd": null
+          }
+        }
+      },
+      "RunQueued": {
+        "value": {
+          "run_id": "0199e7a2-5c1e-7b3a-9f10-2d4c8e6a1b20",
+          "agent_id": "site-reporter",
+          "agent_version": 1,
+          "sha": "3f1c2a9b8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b",
+          "status": "queued",
+          "state": "working",
+          "title": "Log in to acme.example and report what is behind the login",
+          "effort": "low",
+          "created_at": "2026-10-16T05:30:00Z",
+          "updated_at": "2026-10-16T05:30:00Z",
+          "ended_at": null,
+          "result": null,
+          "error": null,
+          "cost": {
+            "usd": null,
+            "basis": "charge",
+            "charge_state": "held",
+            "cap_usd": 2
+          },
+          "poll_after_ms": 2000
+        }
+      },
+      "RunCompleted": {
+        "value": {
+          "run_id": "r1k2j3h4-9f2a",
+          "agent_id": "site-reporter",
+          "agent_version": 1,
+          "sha": null,
+          "status": "completed",
+          "state": "idle",
+          "title": "Log in to acme.example and report what is behind the login",
+          "created_at": "2026-10-16T05:30:00Z",
+          "updated_at": "2026-10-16T05:41:12Z",
+          "ended_at": "2026-10-16T05:41:12Z",
+          "result": {
+            "output": {
+              "report": "report.md",
+              "pages": "pages.csv"
+            },
+            "final_answer": "I signed in and wrote report.md and pages.csv."
+          },
+          "error": null,
+          "cost": {
+            "usd": 0.4123,
+            "basis": "estimate",
+            "charge_state": null,
+            "cap_usd": 1
+          },
+          "poll_after_ms": 0
+        }
+      },
+      "TimelinePageLive": {
+        "value": {
+          "run_id": "r1k2j3h4-9f2a",
+          "status": "input_required",
+          "state": "waiting",
+          "reset": false,
+          "rows": [
+            {
+              "id": "0:7:1",
+              "timestamp": "2026-10-16T05:33:02.120Z",
+              "created_at": "2026-10-16T05:33:02.120Z",
+              "kind": "tool_use",
+              "summary": "Asked you to sign in to acme.example",
+              "agent_label": null,
+              "tool_name": "request_sign_in",
+              "tool_use_id": "call_9",
+              "tool_status": null,
+              "tool_input_preview": "{\"site\":\"acme.example\"}",
+              "tool_result_preview": null,
+              "tool_result_size_bytes": null,
+              "text": null,
+              "seq": 41,
+              "conversation_id": 0,
+              "round": 7
+            },
+            {
+              "id": "0:8:waiting",
+              "timestamp": "2026-10-16T05:33:02.300Z",
+              "created_at": "2026-10-16T05:33:02.300Z",
+              "kind": "waiting",
+              "summary": "Waiting for you: sign in on the live browser",
+              "agent_label": null,
+              "tool_name": null,
+              "tool_use_id": null,
+              "tool_status": null,
+              "tool_input_preview": null,
+              "tool_result_preview": null,
+              "tool_result_size_bytes": null,
+              "text": null,
+              "seq": 43,
+              "conversation_id": 0
+            }
+          ],
+          "drop": [
+            "0:live:text_block"
+          ],
+          "next_after": 118,
+          "unchanged": false,
+          "has_more": false,
+          "final": false,
+          "cost": {
+            "usd": 0.0812,
+            "basis": "estimate",
+            "charge_state": null,
+            "cap_usd": 1
+          },
+          "poll_after_ms": 2000
+        }
+      },
+      "ErrorSpendCap": {
+        "value": {
+          "error": {
+            "code": "spend_cap_reached",
+            "message": "This run needs $2.00 and the account has $0.40 left of its $200.00 monthly cap.",
+            "retryable": false,
+            "details": {
+              "scope": "account",
+              "period": "month",
+              "cap_usd": 200,
+              "used_usd": 199.6,
+              "needed_usd": 2
+            },
+            "next_action": {
+              "type": "person",
+              "url": "https://agentrun.ai/console/limits",
+              "description": "Raise the monthly cap, up to $2,000."
+            }
+          }
+        }
+      },
+      "ErrorNotContinuable": {
+        "value": {
+          "error": {
+            "code": "not_continuable",
+            "message": "This run failed. Start a new run of the agent.",
+            "retryable": false,
+            "next_action": {
+              "type": "request",
+              "method": "POST",
+              "path": "/agents/site-reporter/runs",
+              "caller_supplies": [
+                "input",
+                "Idempotency-Key"
+              ]
+            }
+          }
+        }
+      },
+      "ErrorInputInvalid": {
+        "value": {
+          "error": {
+            "code": "input_invalid",
+            "message": "The definition has a field it does not keep.",
+            "retryable": false,
+            "fields": [
+              {
+                "field": "definition.model",
+                "reason": "not_allowed",
+                "message": "The definition names no model; the host binds it.",
+                "fix": "Remove definition.model."
+              }
+            ]
+          }
+        }
+      },
+      "ErrorUnsupported": {
+        "value": {
+          "error": {
+            "code": "unsupported_here",
+            "message": "This server has no billing, so it gives no quotes.",
+            "retryable": false,
+            "capability": "quotes"
+          }
+        }
+      }
+    }
+  }
+}
