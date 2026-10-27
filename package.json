@@ -54,6 +54,12 @@
   "homepage": "https://agentrun.ai",
   "license": "Apache-2.0",
   "overrides": {
-    "zod": "$zod"
+    "zod": "$zod",
+    "disk": {
+      "undici": "8.12.2"
+    },
+    "@earendil-works/pi-coding-agent": {
+      "undici": "8.12.2"
+    }
   }
 }
