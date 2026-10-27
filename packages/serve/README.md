@@ -324,6 +324,9 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   between a carry back and its proposal loses nothing. The commit's `Run-Id` trailer makes a second proposal of the
   same run add nothing. A proposal that fails (a push the repository refuses) is logged; the run has ended as it would
   have, and the next start proposes it. A run that learned nothing leaves no branch.
+- The guard refuses a note that holds a value of one of the server's secrets: the variables whose names end in `KEY`,
+  `TOKEN`, `SECRET` or `PASSWORD`. A credential inside a variable named otherwise (a `..._URL` such as
+  `postgres://user:password@host/db`) is not among them.
 - Then the server reviews the proposal, in the same queue, through a clone of its own, `DATA/agents/<id>/curator`:
   `@parcha/pi-agent-learn`'s curate, with the checker on the tools this server binds (`read`, `write`, `edit`), the
   injection screen, and the judge. The agent's current revision decides how. `auto` merges what passes into `main`, a
