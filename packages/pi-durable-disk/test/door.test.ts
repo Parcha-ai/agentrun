@@ -199,7 +199,7 @@ describe("the door hook: admission", () => {
       disk.remove();
     }
   });
-  it("a lease lost between the admission and the call: the hook is not called and the record stays ADMITTED", async () => {
+  it("a lease lost between the admission and the call: the hook is not called and the record ends UNKNOWN", async () => {
     const disk = new LocalDisk("door-fence-after");
     try {
       const { hook, calls } = scripted();
@@ -216,7 +216,8 @@ describe("the door hook: admission", () => {
       const r = await submit(server, "late-fence");
       assert.deepEqual([r.status, r.body.error], [503, "RELEASED"]);
       assert.equal(calls.submit.length, 0, "the hook was not called");
-      assert.deepEqual((await doorEntries(run)).map((e) => [e.kind, e.data.status]), [["door.input", "ADMITTED"]]);
+      // The commit could still land here (the lease is lost only as the door sees it): the record says UNKNOWN at once.
+      assert.deepEqual((await doorEntries(run)).map((e) => [e.kind, e.data.status]), [["door.input", "ADMITTED"], ["door.status", "UNKNOWN"]]);
       await run.release();
       await server.close();
       // The next instance answers that record UNKNOWN: the hook may or may not have been called, and never is again.
@@ -342,6 +343,7 @@ describe("the door hook: outcomes", () => {
       const admitted = await submit(c.server, "admitted");
       assert.deepEqual([admitted.status, admitted.body.error, admitted.body.status], [504, "UNKNOWN", "UNKNOWN"], "an earlier instance's ADMITTED is not a hook running here");
       assert.match(admitted.body.message, /admitted by an earlier instance, or before the lease was lost: whether the hook took it is unknown/);
+      await until("the open's UNKNOWN in the store", async () => (await doorEntries(c.run)).some((e) => e.kind === "door.status" && e.data.requestId === "admitted" && e.data.status === "UNKNOWN"));
       assert.equal(three.calls.submit.length, 0, "the resume submitted nothing again");
       await c.run.release();
       await c.server.close();
