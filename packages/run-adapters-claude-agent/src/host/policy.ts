@@ -28,12 +28,17 @@ export const CLAUDE_MESSAGES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "POST", path: "/v1/messages/count_tokens", query: ["beta=true"], headers: ANTHROPIC_HEADERS, free: true },
 ]);
 
-/** The `anthropic-beta` values the pinned CLI sends (recorded from CLI 2.1.286 behind this proxy, in the real-CLI
- *  test); any other is refused, so a CLI that starts sending a new one is seen before it is trusted. */
+/** The `anthropic-beta` values the pinned CLI (2.1.286) sends, recorded per model behind this proxy (the real-CLI test
+ *  and a probe of claude-sonnet-4-5, claude-sonnet-5-5, claude-opus-5-5 and claude-haiku-5-5): the set depends on the
+ *  model. Any other is refused, so a CLI or a model that starts sending a new one is seen before it is trusted. */
 export const CLAUDE_BETAS: ReadonlySet<string> = new Set([
   "claude-code-20250219",
   "context-management-2025-06-27",
+  "effort-2025-11-24",
   "interleaved-thinking-2025-05-14",
+  "mid-conversation-system-2026-04-07",
+  "mid-conversation-tool-changes-2026-07-01",
+  "per-turn-control-2026-07-01",
   "prompt-caching-scope-2026-01-05",
   "thinking-token-count-2026-05-13",
 ]);
@@ -51,10 +56,21 @@ export interface AnthropicPolicyOptions {
   smallModel?: string;
   /** The session's own tool names (`spec.tools`): every other tool definition is dropped. */
   tools: readonly string[];
-  /** The most output tokens one request may ask for. Default 32 000. */
+  /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
   auth?: "x-api-key" | "bearer";
+  /** Told when a request on the session's main model carries no thinking and no effort: the model would answer without
+   *  reasoning, which a session never asks for (the small model's background calls are not told). */
+  onThinkingDisabled?: (request: { model: string }) => void;
+}
+
+/** Whether a Messages body asks the model to think: thinking on (adaptive, or a budget), or an effort level. */
+export function thinks(body: Record<string, unknown>): boolean {
+  const thinking = body.thinking;
+  if (isPlain(thinking) && (thinking.type === "adaptive" || thinking.type === "enabled")) return true;
+  const config = body.output_config;
+  return isPlain(config) && typeof config.effort === "string" && config.effort.length > 0;
 }
 
 const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -127,7 +143,12 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   if (body.model !== options.model && body.model !== small) refuse(403, "the model is not this session's");
   const out: Record<string, unknown> = { ...body, ...(tools === undefined ? {} : { tools }) };
   if (count) return out;
-  const most = options.maxOutputTokens ?? 32_000;
+  // A main-model request that would not think is said, never passed silently (it is still forwarded: the CLI decides
+  // its own requests, and this is the record that one went without reasoning).
+  if (body.model === options.model && !thinks(body)) {
+    try { options.onThinkingDisabled?.({ model: options.model }); } catch { /* a host callback never breaks a request */ }
+  }
+  const most = options.maxOutputTokens ?? 128_000;
   const asked = typeof body.max_tokens === "number" && body.max_tokens > 0 ? body.max_tokens : most;
   const max = Math.min(asked, most);
   return { ...out, max_tokens: max, ...(body.thinking !== undefined ? { thinking: thinking(body.thinking, max) } : {}) };

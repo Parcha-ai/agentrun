@@ -10,6 +10,7 @@ import { request } from 'node:http';
 import { ProxyRefusal, startModelProxy } from '@parcha/agentrun-adapters/host';
 import { anthropicPolicy } from '@parcha/agentrun-claude-agent';
 import { childEnv, localMachine } from '../dist/host/machine.js';
+import { CLAUDE_BETAS } from '../dist/host/policy.js';
 import { gatewayHandler, isBrandedMachine, journalLedger, ModelSteps, settleAbandonedModelSteps } from '../dist/host/process.js';
 import { isResumeDir, spawnProblem } from '../dist/spawn.js';
 
@@ -78,6 +79,47 @@ test("anthropic-beta: the pinned CLI's values pass; any other refuses the reques
   for (const other of ['context-1m-2025-08-07', 'prompt-caching-2024-07-31', 'fine-grained-tool-streaming-2025-05-14']) refused(() => policy.header('anthropic-beta', other), 403, /not one the pinned CLI sends/);
   assert.equal(policy.header('anthropic-version', '2023-06-01'), '2023-06-01');
   refused(() => policy.header('anthropic-beta', 'claude-code-20250219, files-api-2025-04-14'), 403, /not one the pinned CLI sends/);
+});
+
+// A beta can turn on a capability on the provider's side (its files, code execution, the web, an MCP client, computer
+// use, its skills, a tool search, a wider context). The body rules refuse those tools; a beta is no way around them: a
+// request that carries one is refused whole, never forwarded with the value dropped, even beside the CLI's own values.
+/** Every `anthropic-beta` value the pinned CLI (2.1.286) knows, read from its beta table (and two internal markers it
+ *  defines beside it): the allowlist's nine, and the ones it would send on another model, sign-in or feature. */
+const CLI_BETAS = ['claude-code-20250219', 'oauth-2025-04-20', 'interleaved-thinking-2025-05-14', 'context-1m-2025-08-07', 'context-management-2025-06-27', 'structured-outputs-2025-12-15', 'web-search-2025-03-05', 'advanced-tool-use-2025-11-20', 'tool-search-tool-2025-10-19', 'effort-2025-11-24', 'task-budgets-2026-03-13', 'prompt-caching-scope-2026-01-05', 'prompt-caching-evict-2026-05-12', 'cache-keepalive-2026-09-03', 'extended-cache-ttl-2025-04-11', 'fast-mode-2026-02-01', 'redact-thinking-2026-02-12', 'thinking-resumption-2026-07-17', 'thinking-token-count-2026-05-13', 'afk-mode-2026-01-31', 'advisor-tool-2026-03-01', 'cache-diagnosis-2026-04-07', 'context-hint-2026-04-09', 'mcp-servers-2025-12-04', 'files-api-2025-04-14', 'environments-2025-11-01', 'ccr-byoc-2025-07-29', 'mid-conversation-system-2026-04-07', 'per-turn-control-2026-07-01', 'timing-2026-09-09', 'mid-conversation-tool-changes-2026-07-01', 'inline-tools-2026-09-15', 'server-side-fallback-2026-06-01', 'server-side-fallback-2026-07-01', 'fallback-credit-2026-06-01', 'x-cc-internal-mid-conv-cache-promotion', 'x-cc-internal-mid-conv-cache-promotion-ok', 'auto-mode-classifier-2026-07-16', 'dangerous-tool-use-2026-09-03', 'thinking-display-updates-2026-08-18', 'thinking-binding-controls-2026-08-01', 'message-threads-2026-08-12', 'mid-conversation-system-clear-at-2026-08-21'];
+/** The API's betas for a tool the provider runs (code execution, the web, an MCP client, computer use, skills). */
+const HOSTED_TOOL_BETAS = ['code-execution-2025-05-22', 'code-execution-2025-08-25', 'web-fetch-2025-09-10', 'mcp-client-2025-04-04', 'mcp-client-2025-11-20', 'computer-use-2025-01-24', 'computer-use-2025-11-24', 'skills-2025-10-02'];
+const CAPABILITY_BETAS = [...CLI_BETAS.filter((b) => !CLAUDE_BETAS.has(b)), ...HOSTED_TOOL_BETAS];
+
+test("the allowlist is a part of the pinned CLI's own beta table", () => {
+  for (const beta of CLAUDE_BETAS) assert.ok(CLI_BETAS.includes(beta), beta);
+  assert.equal(CAPABILITY_BETAS.length, CLI_BETAS.length - CLAUDE_BETAS.size + HOSTED_TOOL_BETAS.length);
+});
+
+test('a capability beta the allowlist lacks refuses the request through the proxy: 403, nothing forwarded, nothing dropped', async () => {
+  const logged = [];
+  const sent = [];
+  const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, log: (message, detail) => logged.push({ message, ...detail }), fetch: async (_url, init) => { sent.push(init); return new Response('{}', { headers: { 'content-type': 'application/json' } }); } }, 'session-key');
+  const post = (beta) => fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01', 'anthropic-beta': beta }, body: JSON.stringify(body()) });
+  try {
+    for (const beta of CAPABILITY_BETAS) {
+      assert.equal(CLAUDE_BETAS.has(beta), false, beta);
+      for (const value of [beta, `${[...CLAUDE_BETAS].join(',')},${beta}`, `${beta},claude-code-20250219`]) {
+        const res = await post(value);
+        await res.text();
+        assert.equal(res.status, 403, value);
+      }
+    }
+    assert.equal(sent.length, 0, 'nothing was forwarded');
+    assert.equal(logged.filter((l) => /refused/.test(l.message)).length, CAPABILITY_BETAS.length * 3);
+    // The CLI's own values, all nine at once, still pass.
+    const ok = await post([...CLAUDE_BETAS].join(','));
+    await ok.text();
+    assert.equal(ok.status, 200);
+    assert.equal(sent.length, 1);
+  } finally {
+    await proxy.close();
+  }
 });
 
 test("usage: a stream's message_start and last message_delta, a whole body's, and nothing for a cut stream", () => {
@@ -215,4 +257,22 @@ test("a token count is free on either answer: a provider's 200 or 404 passes thr
     assert.deepEqual(hooks, { before: 0, after: 0 }, 'a token count is never a turn');
     assert.deepEqual(logged, [{ message: 'claude-agent: the provider answered count_tokens', status }], 'said once per session');
   }
+});
+
+test("a main-model request that would not think is said (thinking.disabled), never passed silently; the small model's background calls and token counts are exempt", () => {
+  const told = [];
+  const watched = anthropicPolicy({ model: 'claude-main', smallModel: 'claude-small', tools: [], onThinkingDisabled: (r) => told.push(r.model) });
+  const ask = (extra, r = MESSAGES) => watched.apply(body(extra), r);
+  ask({ thinking: { type: 'adaptive' } });
+  ask({ thinking: { type: 'enabled', budget_tokens: 2000 }, max_tokens: 4000 });
+  ask({ output_config: { effort: 'medium' } });
+  ask({ model: 'claude-small' });
+  watched.apply({ model: 'claude-main', messages: [{ role: 'user', content: 'hi' }] }, COUNT);
+  assert.deepEqual(told, [], 'thinking, a budget or an effort, the small model, and a token count are not told');
+  ask({});
+  ask({ thinking: { type: 'disabled' } });
+  assert.deepEqual(told, ['claude-main', 'claude-main']);
+  // A callback that throws never breaks the request.
+  const throwing = anthropicPolicy({ model: 'claude-main', tools: [], onThinkingDisabled: () => { throw new Error('host bug'); } });
+  assert.equal(throwing.apply(body(), MESSAGES).model, 'claude-main');
 });

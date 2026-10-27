@@ -17,10 +17,13 @@ import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as Ke
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
-import { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch } from "./errors.js";
+import { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { localMachine } from "./host/machine.js";
 import { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
+
+/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
+export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
 
 /** The adapter's id, as a host's `harness` field names it. */
 export const CLAUDE_AGENT_ID = "claude-agent";
@@ -52,7 +55,7 @@ export interface ClaudeAgentAdapterOptions {
   provider: ClaudeAgentProvider;
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
-  /** The most output tokens one request may ask for. Default 32 000. */
+  /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
@@ -72,8 +75,30 @@ export interface ClaudeAgentAdapterOptions {
   /** For tests only (AGENTRUN_CLAUDE_AGENT_STANDIN=1 under a test runner): a scripted SDK's stand-in CLI, which no
    *  pin is checked against. */
   standIn?: { command: string };
+  /** How hard the model thinks when a node names no level (its `thinking`, else its `effort`). Default medium; it is
+   *  never off. */
+  thinking?: ClaudeAgentThinking;
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
+}
+
+/** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
+export type ClaudeAgentThinking = "low" | "medium" | "high" | "xhigh" | "max";
+const THINKING: ReadonlySet<string> = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+/** A session's level: the node's thinking, else its effort (minimal thinks at low, never at nothing), else the adapter's. */
+export function thinkingOf(spec: Pick<SessionSpec, "thinking" | "effort">, fallback: ClaudeAgentThinking): ClaudeAgentThinking {
+  const asked = (spec.thinking ?? spec.effort) as string | undefined;
+  if (asked === "minimal") return "low";
+  return asked && THINKING.has(asked) ? (asked as ClaudeAgentThinking) : fallback;
+}
+
+/** The SDK with every query thinking at `level`: adaptive thinking, at that effort. */
+function thinkingAt(sdk: ClaudeAgentSdk, level: ClaudeAgentThinking): ClaudeAgentSdk {
+  return {
+    ...sdk,
+    query: ((args: Parameters<ClaudeAgentSdk["query"]>[0]) => sdk.query({ ...args, options: { ...args.options, thinking: { type: "adaptive" }, effort: level } })) as ClaudeAgentSdk["query"],
+  };
 }
 
 /** The pins a CLI is checked against: its sha256 on this platform (where one is recorded) and its version. */
@@ -146,6 +171,8 @@ function kernelTool(tool: HostTool, io: SessionIO): KernelTool {
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
 export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAdapter {
+  const thinking = options.thinking ?? "medium";
+  if (!THINKING.has(thinking)) throw new ClaudeAgentThinkingOff(thinking);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
   if (options.standIn) {
@@ -193,6 +220,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.fetch ? { fetch: options.fetch } : {}),
         },
       });
+      // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
+      // the session's level.
+      const sdk = thinkingAt(options.sdk ?? (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeAgentSdk, thinkingOf(spec, thinking));
       const harness = claudeCodeHarness({
         name: CLAUDE_AGENT_ID,
         sandbox: {
@@ -204,13 +234,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         tools: spec.tools.map((tool) => kernelTool(tool, io)),
         builtins: false,
+        // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
+        // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
+        disallowedTools: [...CLAUDE_AGENT_ALSO_OFF],
         model: modelFor(spec),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         credential: async () => options.provider.credential(),
         gatewayUrl: options.provider.origin,
         executable,
-        ...(options.sdk ? { sdk: options.sdk } : {}),
+        sdk,
         ...(options.log ? { log: options.log } : {}),
       });
 

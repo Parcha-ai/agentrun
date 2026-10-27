@@ -125,6 +125,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         tools: options.proxy.tools,
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
+        onThinkingDisabled: ({ model: main }) => options.proxy.log?.("claude-agent: thinking.disabled", { model: main }),
       }),
       hooks: options.proxy.hooks,
       model: route.models.model,

@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/versions.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; pinned to the SDK release whose CLI the production deployment runs (0.3.286, CLI 2.1.286); npm's install line; the message names the Claude Agent harness.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; pinned to the SDK release whose CLI the production deployment runs (0.3.286, CLI 2.1.286); npm's install line; the message names the Claude Agent harness; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; the pinned CLI's tool set is pinned by test/tool-off.test.mjs.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

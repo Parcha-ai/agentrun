@@ -20,3 +20,12 @@ export class ClaudeAgentNotInstalled extends Error {
     this.name = "ClaudeAgentNotInstalled";
   }
 }
+
+/** A thinking level that would turn the model's reasoning off: never taken; a node that names none thinks at medium. */
+export class ClaudeAgentThinkingOff extends Error {
+  readonly code = "CLAUDE_AGENT_THINKING_OFF";
+  constructor(readonly level: string) {
+    super(`agentrun-claude-agent: thinking is never off; ${JSON.stringify(String(level).slice(0, 20))} is not a level (low, medium, high, xhigh or max)`);
+    this.name = "ClaudeAgentThinkingOff";
+  }
+}

@@ -9,7 +9,7 @@ import { after, test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { claudeAgentAdapter } from '@parcha/agentrun-claude-agent';
+import { ClaudeAgentThinkingOff, claudeAgentAdapter, thinkingOf } from '@parcha/agentrun-claude-agent';
 import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
@@ -130,6 +130,22 @@ test("a call to anything but the session's own tools is denied by the gate and n
   assert.deepEqual(decided.map((d) => [d.name, d.decision]), names.map((name) => [name, 'deny']));
   for (const d of decided) assert.match(d.reason, /only tools are its own/, d.name);
   for (const name of names) assert.equal(existsSync(canary(name)), false, `${name} ran`);
+});
+
+test("every session thinks: medium when its node names no level, the node's level when it does, and never off", async (t) => {
+  const seen = [];
+  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}', 'call submit {"value":{"answer":"ok"}}', 'call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push([options.thinking, options.effort]) } });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore() });
+  const ask = (extra) => runNode({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: [], ...extra });
+  await ask({});
+  await ask({ thinking: 'high' });
+  await ask({ effort: 'minimal' });
+  assert.deepEqual(seen, [[{ type: 'adaptive' }, 'medium'], [{ type: 'adaptive' }, 'high'], [{ type: 'adaptive' }, 'low']]);
+  assert.deepEqual([thinkingOf({}, 'medium'), thinkingOf({ effort: 'high' }, 'medium'), thinkingOf({ thinking: 'low', effort: 'high' }, 'medium')], ['medium', 'high', 'low']);
+  // A level that would turn reasoning off is refused when the adapter is made, typed.
+  for (const level of ['off', 'none', 'disabled', '']) {
+    assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, sdk: fakeSdk(), standIn: { command: process.execPath }, thinking: level }), (e) => e instanceof ClaudeAgentThinkingOff && e.code === 'CLAUDE_AGENT_THINKING_OFF');
+  }
 });
 
 test("a crash inside a never tool's call: the next process recovers the turn, and the call is reported, never run again", async (t) => {

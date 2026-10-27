@@ -12,7 +12,8 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
 import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
 import { CLAUDE_BETAS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
 
@@ -27,7 +28,31 @@ test('the pinned Claude Agent SDK and CLI are present where they are required', 
   assert.equal(problem, undefined, problem);
 });
 
-const MODEL = 'claude-sonnet-4-5';
+/** The tools the pinned CLI (2.1.286) has with its whole preset, as its system/init message lists them. */
+const PINNED_CLI_TOOLS = ['Bash', 'CronCreate', 'CronDelete', 'CronList', 'Edit', 'EnterWorktree', 'ExitWorktree', 'ListAgents', 'NotebookEdit', 'Read', 'ReportFindings', 'ScheduleWakeup', 'SendMessage', 'Skill', 'Task', 'TaskStop', 'WebFetch', 'WebSearch', 'Workflow', 'Write'];
+
+test("the pinned CLI's tool set is the one the harness's lists decide: each of its tools is allowlisted or off, and the allowlist names only tools it has", { skip, timeout: 60_000 }, async (t) => {
+  const sdk = await import('@anthropic-ai/claude-agent-sdk');
+  const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
+  t.after(() => provider.close());
+  const home = mkdtempSync(join(ROOT, 'preset-'));
+  const abortController = new AbortController();
+  let tools;
+  // The whole preset, read from the CLI's system/init (sent before any model request), then stopped.
+  const q = sdk.query({ prompt: 'hi', options: {
+    pathToClaudeCodeExecutable: claudeAgentExecutable(), cwd: home, settingSources: [], abortController,
+    env: { PATH: '/usr/bin:/bin', HOME: home, CLAUDE_CONFIG_DIR: join(home, 'config'), ANTHROPIC_BASE_URL: provider.url, ANTHROPIC_AUTH_TOKEN: 'probe', DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' },
+  } });
+  for await (const m of q) if (m.type === 'system' && m.subtype === 'init') { tools = [...m.tools].sort(); break; }
+  abortController.abort();
+  // A CLI whose tools differ (a new one, or one gone) is caught here, before it is trusted.
+  assert.deepEqual(tools, PINNED_CLI_TOOLS);
+  const decided = new Set([...CLAUDE_BUILTINS, ...CLAUDE_BUILTINS_OFF, ...CLAUDE_AGENT_ALSO_OFF]);
+  for (const tool of tools) assert.ok(decided.has(tool), `${tool} is neither allowlisted nor off`);
+  for (const tool of CLAUDE_BUILTINS) assert.ok(tools.includes(tool), `the allowlist names ${tool}, which this CLI does not have`);
+});
+
+const MODEL = 'claude-sonnet-5-5';
 const SMALL = 'claude-haiku-4-5';
 
 test("the CLI's every built-in, the web, a sub-agent and another MCP server are unavailable; only the host's tools run", { skip, timeout: 240_000 }, async (t) => {
@@ -56,7 +81,12 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
   t.after(() => provider.close());
 
   const logged = [];
+  const real = await import('@anthropic-ai/claude-agent-sdk');
+  let asked;
+  const sdk = { ...real, query: (args) => { asked = args.options; return real.query(args); } };
   const adapter = claudeAgentAdapter({
+    sdk,
+    sdkVersion: CLAUDE_AGENT_SDK_VERSION,
     model: MODEL,
     smallModel: SMALL,
     provider: { origin: provider.url, credential: () => 'provider-secret' },
@@ -92,13 +122,75 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
     assert.ok(r.query === '' || CLAUDE_MESSAGES_ROUTES.find((x) => x.path === r.path)?.query?.includes(r.query), `query ${r.query} on ${r.path}`);
   }
   assert.deepEqual(logged.filter((l) => /refused/.test(l.message)), [], 'the proxy refused nothing the CLI asked');
+  // Even with its built-ins on, a session could not reach a tool of this CLI's that the allowlist does not name.
+  assert.deepEqual(asked.tools, []);
+  for (const tool of PINNED_CLI_TOOLS.filter((t) => !CLAUDE_BUILTINS.includes(t))) assert.ok(asked.disallowedTools.includes(tool), `${tool} is not off by name`);
   // The model is offered the host's tools only.
   for (const r of provider.messages()) for (const name of r.tools) assert.match(name, /^mcp__hands__(lookup|submit)$/, `the model was offered ${name}`);
   // The betas the pinned CLI sends: each one the policy knows.
   const betas = new Set(forwarded.flatMap((r) => (r.headers['anthropic-beta'] ?? '').split(',').map((b) => b.trim()).filter(Boolean)));
   for (const b of betas) assert.ok(CLAUDE_BETAS.has(b), `the CLI sent the beta ${b}`);
+  // Every main-model request thinks: the session's level (medium, as no node level was named) is on the wire, as
+  // adaptive thinking or an effort. The small model's background calls (titles, summaries) are exempt.
+  const mainCalls = forwarded.filter((r) => r.path === '/v1/messages' && r.model === MODEL);
+  assert.ok(mainCalls.length >= plan.length);
+  for (const r of mainCalls) {
+    const thinking = r.body.thinking;
+    const effort = r.body.output_config?.effort;
+    assert.ok(thinking?.type === 'adaptive' || thinking?.type === 'enabled' || typeof effort === 'string', `a main-model request without thinking: ${JSON.stringify({ thinking, effort })}`);
+    if (effort !== undefined) assert.equal(effort, 'medium');
+  }
+  assert.deepEqual(logged.filter((l) => /thinking\.disabled/.test(l.message)), [], 'the proxy saw no main-model request without thinking');
+  const small = forwarded.filter((r) => r.path === '/v1/messages' && r.model === SMALL);
+  t.diagnostic(`thinking on the wire: ${JSON.stringify([...new Set(mainCalls.map((r) => JSON.stringify({ thinking: r.body.thinking, effort: r.body.output_config?.effort })))])}; small-model calls (exempt): ${small.length}`);
   t.diagnostic(`routes: ${[...routes].sort().join(' | ')}`);
   t.diagnostic(`betas: ${[...betas].sort().join(', ')}`);
   t.diagnostic(`requests: ${forwarded.length}, main-model: ${main}, sdk ${CLAUDE_AGENT_SDK_VERSION}`);
   assert.ok(forwarded.length >= plan.length, 'every model request came through the proxy, with the provider key');
+});
+
+/** One node through the adapter on the pinned CLI, `model` its main model, `extra` the node's own fields: what reached
+ *  the scripted provider through the proxy, and what the adapter logged. */
+async function oneNode(t, model, extra = {}) {
+  const dir = mkdtempSync(join(ROOT, 'wire-'));
+  let asked = 0;
+  const provider = await fakeAnthropic({ reply: (r) => (r.model === model && asked++ === 0 ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
+  t.after(() => provider.close());
+  const logged = [];
+  const adapter = claudeAgentAdapter({
+    model,
+    smallModel: SMALL,
+    provider: { origin: provider.url, credential: () => 'provider-secret' },
+    sessionsDir: join(dir, 'sessions'),
+    log: (message, detail) => logged.push({ message, ...detail }),
+  });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
+  const output = await runNode({ kind: 'agent', label: 'wire', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [], ...extra });
+  assert.deepEqual(output, { answer: 'ok' });
+  const forwarded = provider.requests.filter((r) => r.authorized);
+  const main = forwarded.filter((r) => r.path === '/v1/messages' && r.model === model);
+  assert.ok(main.length >= 1, `${model}: no main-model request`);
+  assert.deepEqual(logged.filter((l) => /refused|thinking\.disabled/.test(l.message)), [], `${model}: the proxy refused nothing and saw no request without thinking`);
+  const betas = forwarded.flatMap((r) => (r.headers['anthropic-beta'] ?? '').split(',').map((b) => b.trim()).filter(Boolean));
+  return { main, betas, efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
+}
+
+// The models a host runs now. The CLI's betas and its thinking depend on the model: a model it sends a beta for that the
+// allowlist lacks would be refused, so each is run here. On each, a node that names no level thinks at medium, on the
+// wire; claude-haiku-5-5's own default is high, so the adapter's default is what puts medium there.
+const CURRENT_MODELS = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
+
+test("on each current model, a node that names no level thinks at medium on the wire, a node's own level reaches it, and every beta the CLI sends is allowlisted", { skip, timeout: 240_000 }, async (t) => {
+  const seen = new Set();
+  for (const model of CURRENT_MODELS) {
+    const { main, betas, efforts } = await oneNode(t, model);
+    for (const b of betas) { assert.ok(CLAUDE_BETAS.has(b), `${model}: the CLI sent the beta ${b}`); seen.add(b); }
+    for (const r of main) assert.equal(r.body.thinking?.type, 'adaptive', `${model}: ${JSON.stringify(r.body.thinking)}`);
+    assert.deepEqual(efforts, ['medium'], model);
+    t.diagnostic(`${model}: ${main.length} main-model requests, betas ${[...new Set(betas)].sort().join(',')}`);
+  }
+  const high = await oneNode(t, 'claude-sonnet-5-5', { thinking: 'high' });
+  assert.deepEqual(high.efforts, ['high'], "the node's level");
+  // The allowlist is what these models were recorded sending, no more: a value only guessed at is not in it.
+  assert.deepEqual([...seen].sort(), [...CLAUDE_BETAS].sort());
 });

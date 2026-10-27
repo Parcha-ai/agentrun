@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/binary.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the override variable is AGENTRUN_CLAUDE_AGENT_EXECUTABLE; comments name no other product.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the override variable is AGENTRUN_CLAUDE_AGENT_EXECUTABLE; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { CLAUDE_AGENT_SDK_VERSION } from './versions.js';
