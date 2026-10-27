@@ -195,7 +195,7 @@ export class Accounts {
    *  owner: its link, or null. */
   attach(baseUrl: string, port: number, loopbackDefault = false): string | null {
     const origin = new URL(baseUrl).origin;
-    const origins = loopbackDefault ? [...new Set([origin, `http://localhost:${port}`])] : [origin];
+    const origins = loopbackDefault ? [...new Set([origin, `${new URL(baseUrl).protocol}//localhost:${port}`])] : [origin];
     this.auth = build(this.db, this.secret, { baseUrl, port, origins });
     this.site = { baseUrl, origin, origins, cookie: sessionCookie(baseUrl, port) };
     if (this.hasOwner()) return null;
@@ -320,32 +320,38 @@ export class Accounts {
 
   /** POST /v2/setup: the owner, made with the code from the server's log (or the token as a Bearer), and signed in. */
   async setup(req: IncomingMessage, res: ServerResponse): Promise<{ status: number; body: unknown }> {
-    const { auth, origins } = this.ready();
+    const { origins } = this.ready();
     const bearer = req.headers.authorization;
     if (bearer !== undefined && !same(bearer, `Bearer ${this.token}`)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
     const byToken = bearer !== undefined;
     if (!byToken && !this.isOrigin(req.headers.origin)) throw new ApiError("forbidden", `setup must come from ${origins.join(" or ")}`);
-    if (this.hasOwner() || this.settingUp) throw new ApiError("forbidden", "this server has an owner: sign in");
+    if (this.hasOwner() || this.settingUp) throw new ApiError("forbidden", "this server has an owner, or is being set up: sign in");
+    // Taken with nothing awaited since the check, so a setup arriving meanwhile is refused whatever its body says.
+    this.settingUp = true;
+    try {
+      return await this.makeFirstOwner(req, res, byToken);
+    } finally {
+      this.settingUp = false;
+    }
+  }
+
+  private async makeFirstOwner(req: IncomingMessage, res: ServerResponse, byToken: boolean): Promise<{ status: number; body: unknown }> {
+    const { auth } = this.ready();
     if (!isJson(req)) throw new ApiError("unsupported_media_type", "the body must be application/json");
     const body = await jsonBody(req);
-    if (!byToken) this.spendCode(body.code);
     const issues: InputIssue[] = Object.keys(body).filter((key) => !["code", "name", "email", "password"].includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
     const { name, email, password } = body;
     if (typeof name !== "string" || !name.trim() || name.length > 100) issues.push({ field: "name", reason: name === undefined ? "missing" : "wrong_type", message: "name is 1 to 100 characters" });
     if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) issues.push({ field: "email", reason: email === undefined ? "missing" : "wrong_type", message: "email is an email address" });
     if (typeof password !== "string" || password.length < MIN_PASSWORD || password.length > MAX_PASSWORD) issues.push({ field: "password", reason: password === undefined ? "missing" : "too_short", message: `password is ${MIN_PASSWORD} to ${MAX_PASSWORD} characters` });
     if (issues.length) throw invalid(issues);
-    this.settingUp = true;
-    try {
-      if (this.hasOwner()) throw new ApiError("forbidden", "this server has an owner: sign in");
-      const { id } = await this.make({ email: email as string, name: (name as string).trim(), password: password as string, role: "admin" }, auth, true);
-      this.setupCode = null;
-      const signedIn = await auth.api.signInEmail({ body: { email: email as string, password: password as string }, headers: headersOf(req), returnHeaders: true });
-      for (const cookie of signedIn.headers.getSetCookie()) res.appendHeader("set-cookie", cookie);
-      return { status: 201, body: this.view(this.row(id)!) };
-    } finally {
-      this.settingUp = false;
-    }
+    // A refused form keeps the code; a matching code is spent here, before the owner is made.
+    if (!byToken) this.spendCode(body.code);
+    const { id } = await this.make({ email: email as string, name: (name as string).trim(), password: password as string, role: "admin" }, auth, true);
+    this.setupCode = null;
+    const signedIn = await auth.api.signInEmail({ body: { email: email as string, password: password as string }, headers: headersOf(req), returnHeaders: true });
+    for (const cookie of signedIn.headers.getSetCookie()) res.appendHeader("set-cookie", cookie);
+    return { status: 201, body: this.view(this.row(id)!) };
   }
 
   private spendCode(given: unknown): void {
@@ -354,7 +360,10 @@ export class Accounts {
       this.setupCode = null;
       throw new ApiError("forbidden", "the setup code is spent or expired: restart the server for a new one");
     }
-    if (typeof given === "string" && same(given, setup.code)) return;
+    if (typeof given === "string" && same(given, setup.code)) {
+      this.setupCode = null;
+      return;
+    }
     if (++setup.tries >= SETUP_TRIES) this.setupCode = null;
     throw new ApiError("forbidden", "that is not the setup code in the server's log");
   }
