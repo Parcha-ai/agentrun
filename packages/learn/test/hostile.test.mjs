@@ -44,7 +44,7 @@ describe("the hostile corpus through the checker", { concurrency: 4 }, () => {
       const out = await cli(repo, env, ["check", "--base", base, "--head", head, "--branch", "runs/hostile-1", "--json"]);
       assert.equal(out.status, 1, out.stderr);
       const report = JSON.parse(out.stdout);
-      assert.equal(report.merge, "refused");
+      assert.equal(report.ok, false);
       assert.equal(existsSync(built.marker), false, "nothing planted ran");
       const named = new Set(report.problems.map((p) => p.path));
       if (report.problems.some((p) => p.rule === "too_many_files")) assert.ok(changed.length > 64);

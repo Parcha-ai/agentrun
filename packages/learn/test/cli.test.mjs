@@ -52,8 +52,7 @@ test("agentrun-learn check passes a clean run's branch, reading the run from HEA
   const { dir, tools } = await repo(t);
   const out = cli(dir, ["check", "--base", "main", "--tools", tools]);
   assert.equal(out.status, 0, out.stderr);
-  assert.match(out.stdout, new RegExp(`${BRANCH}: ok, a person approves the merge`));
-  assert.match(out.stdout, /skill\s+\.agents\/skills\/find-policies\/SKILL\.md\s+person/);
+  assert.equal(out.stdout, `${BRANCH}: ok\n`);
 });
 
 test("agentrun-learn check refuses a branch that changes AGENTS.md, naming the rule and the file", async (t) => {
@@ -74,7 +73,7 @@ test("a planted run branch that edits the review skill is refused", async (t) =>
   });
   const report = JSON.parse(cli(dir, ["check", "--base", "main", "--tools", tools, "--json"]).stdout);
   assert.deepEqual(found(report), [["locked", ".agents/skills/review/SKILL.md"]]);
-  assert.equal(report.merge, "refused");
+  assert.equal(report.ok, false);
 });
 
 test("the repository's own hooks folder, core.hooksPath, is locked", async (t) => {
@@ -93,7 +92,7 @@ test("agentrun-learn check refuses a Codex-only and a Pi-only tool in a draft, a
     const { dir, tools } = await repo(t, { ...cleanFiles(), "workflows/find-policies/workflow.json": workflow({ tools: [tool] }) });
     const out = cli(dir, ["check", "--base", "main", "--tools", tools]);
     assert.equal(out.status, status, `${tool}: ${out.stdout}${out.stderr}`);
-    if (status) assert.match(out.stdout, new RegExp(`unknown_tool\\s+workflows/find-policies/workflow\\.json.*${tool}`));
+    if (status) assert.match(out.stdout, new RegExp(`workflow\\s+workflows/find-policies/workflow\\.json.*tool "${tool}" is not one of the host's tools`));
   }
 });
 
@@ -157,15 +156,14 @@ test("symlinks on the branch are refused as a file mode, never followed", async 
   assert.deepEqual(found(report).sort(), [["file_mode", ".agents/skills/find-policies/SKILL.md"], ["file_mode", ".agents/skills/find-policies/extra"]]);
 });
 
-test("checkBranch reports the run, the branch, the fork point and each path's class", async (t) => {
+test("checkBranch reports the run, the branch and the fork point", async (t) => {
   const { dir, main } = await repo(t);
-  const report = await checkBranch({ cwd: dir, base: "main", tools: HOST_TOOLS, policy: { skill: "auto", workflow: "auto" } });
-  assert.deepEqual({ ...report, paths: report.paths.length }, { run: RUN, branch: BRANCH, forkPoint: main, problems: [], paths: 6, merge: "auto" });
+  assert.deepEqual(await checkBranch({ cwd: dir, base: "main", tools: HOST_TOOLS }), { run: RUN, branch: BRANCH, forkPoint: main, problems: [] });
 });
 
 test("agentrun-learn prints its usage on a bad command line and exits 2", async (t) => {
   const { dir } = await repo(t);
-  for (const args of [[], ["check"], ["check", "--base"], ["check", "--base", "main", "--nope"], ["other"], ["check", "--base", "main", "--auto-merge", "everything"]]) {
+  for (const args of [[], ["check"], ["check", "--base"], ["check", "--base", "main", "--nope"], ["other"], ["check", "--base", "main", "--auto-merge", "skill"]]) {
     const out = cli(dir, args);
     assert.equal(out.status, 2, args.join(" "));
     assert.match(out.stderr, /usage: agentrun-learn check --base <ref>/);
