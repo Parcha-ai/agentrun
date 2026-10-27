@@ -28,3 +28,12 @@ test('an undici whose version npm cannot report fails', () => {
   assert.deepEqual(staleUndici(tree('8.12.2', undefined)), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.1.0 > undici@?']);
   assert.deepEqual(staleUndici(tree('8.12.2', '8.12')), ['@parcha/agentrun-pi@0.1.0 > @earendil-works/pi-coding-agent@1.1.0 > undici@8.12']);
 });
+
+test('each major has its own floor: 6.29.1, 7.30.1 and 8.12.2; before 6 fails, and 9 or later passes', () => {
+  for (const version of ['5.29.0', '6.29.0', '7.29.0', '7.30.0', '8.12.1']) {
+    assert.deepEqual(staleUndici(tree('8.12.2', '8.12.2', version)), [`@parcha/pi-browser@0.1.0 > undici@${version}`], version);
+  }
+  for (const version of ['6.29.1', '6.30.0', '7.30.1', '7.31.0', '8.12.2', '9.0.0', '10.1.0']) {
+    assert.deepEqual(staleUndici(tree('8.12.2', '8.12.2', version)), [], version);
+  }
+});
