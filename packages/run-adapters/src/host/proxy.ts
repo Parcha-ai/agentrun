@@ -3,7 +3,8 @@
 // and a `ProviderPolicy` says what one provider's API may carry (its routes, how its client sends a key, the body it may
 // forward, where a response reports its usage). The core:
 //  - admits a request only with the session's key (compared in constant time), on a route the policy lists, by exact
-//    path text: an absolute URL, `..`, `//`, `%` escapes or a query never match;
+//    path text, with no query or one the route lists exactly: an absolute URL, `..`, `//` or `%` escapes never match. A
+//    route may be answered here (a client's connectivity check) or be free (a token count, which the runner never pays);
 //  - parses the body strictly (one JSON value, no duplicate key at any depth, so a check on one `model` cannot pass while
 //    the provider reads another), then has the policy shape it (or refuse it);
 //  - asks the runner before every paid request (`beforeRequest`, where a turn cap or the host's budget refuses it) and
@@ -19,7 +20,13 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Serv
 export interface ProxyRoute {
   readonly method: string;
   readonly path: string;
+  /** Exact query strings it admits besides none (`beta=true`); forwarded as the table has them. */
+  readonly query?: readonly string[];
   readonly headers?: readonly string[];
+  /** Answered here with this status and an empty body, never forwarded (a client's connectivity check). */
+  readonly local?: number;
+  /** Not a paid request (a token count): forwarded without asking the runner, and no usage is reported. */
+  readonly free?: boolean;
 }
 
 /** Token counts a response reports. */
@@ -39,6 +46,9 @@ export interface ProviderPolicy {
   keyOf(headers: IncomingHttpHeaders): string;
   /** The headers that carry the provider's credential. */
   authHeaders(credential: string): Record<string, string>;
+  /** A listed request header's value as forwarded, or undefined to drop it (a beta the policy does not know). Default:
+   *  as sent. */
+  header?(name: string, value: string): string | undefined;
   /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. */
   apply(body: unknown, route: ProxyRoute): Record<string, unknown>;
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
@@ -93,13 +103,17 @@ export class ProxyRefusal extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "ProxyRefusal"; }
 }
 
-/** Match a request's method and path text against the routes, never parsing the path as a URL. */
-export function matchRoute(routes: readonly ProxyRoute[], method: string, path: string): ProxyRoute {
+/** Match a request's method and path text against the routes, never parsing the path as a URL: the route, and the
+ *  query it carried, which is one the route lists exactly, or none. */
+export function matchRoute(routes: readonly ProxyRoute[], method: string, path: string): { route: ProxyRoute; query: string } {
   if (typeof path !== "string" || path.length === 0 || path.length > 2048 || UNSAFE_PATH.test(path)) throw new ProxyRefusal(403, "the path is not one the table can match");
-  if (path.includes("?")) throw new ProxyRefusal(403, "no query is listed");
-  const route = routes.find((r) => r.method === method && r.path === path);
-  if (!route) throw new ProxyRefusal(403, `${method.slice(0, 16)} ${path.slice(0, 128)} is not in the table`);
-  return route;
+  const at = path.indexOf("?");
+  const pathname = at < 0 ? path : path.slice(0, at);
+  const query = at < 0 ? "" : path.slice(at + 1);
+  const route = routes.find((r) => r.method === method && r.path === pathname);
+  if (!route) throw new ProxyRefusal(403, `${method.slice(0, 16)} ${pathname.slice(0, 128)} is not in the table`);
+  if (at >= 0 && !route.query?.includes(query)) throw new ProxyRefusal(403, `the query on ${pathname.slice(0, 128)} is not in the table`);
+  return { route, query };
 }
 
 /** Parse one JSON value, refusing a duplicate key at any depth and nesting past 64 levels. */
@@ -192,9 +206,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     res.once("finish", () => { if (!req.complete) req.resume(); });
     if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required");
     let route: ProxyRoute;
-    try { route = matchRoute(policy.routes, req.method ?? "", req.url ?? ""); } catch (error) {
+    let query: string;
+    try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", req.url ?? "")); } catch (error) {
       const e = error as ProxyRefusal;
       return refuse(res, e.status ?? 403, e.message);
+    }
+    if (route.local !== undefined) {
+      res.writeHead(route.local, { "content-length": "0" });
+      return res.end();
     }
     const chunks: Buffer[] = [];
     let size = 0;
@@ -211,7 +230,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       return refuse(res, e instanceof ProxyRefusal ? e.status : 400, e instanceof ProxyRefusal ? e.message : "the body was refused");
     }
     try {
-      await hooks.beforeRequest({ model });
+      if (!route.free) await hooks.beforeRequest({ model });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`);
@@ -221,7 +240,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     const headers: Record<string, string> = { "content-type": "application/json" };
     for (const name of route.headers ?? []) {
       const value = req.headers[name.toLowerCase()];
-      if (typeof value === "string") headers[name] = value;
+      const kept = typeof value === "string" ? (policy.header ? policy.header(name, value) : value) : undefined;
+      if (kept !== undefined) headers[name] = kept;
     }
     Object.assign(headers, policy.authHeaders(credential));
     const controller = new AbortController();
@@ -231,7 +251,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let tail = "";
     let length = 0;
     try {
-      const upstream = await forward(`${origin}${route.path}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
+      const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
       if (upstream.body) {
@@ -247,7 +267,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       res.end();
       // A provider's error answer was not a paid response: it costs nothing.
       const usage = upstream.ok ? policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`) : { input: 0, output: 0, cacheRead: 0 };
-      if (usage) {
+      if (usage && !route.free) {
         const usd = upstream.ok ? (options.price?.(model, usage) ?? null) : 0;
         await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) });
       }

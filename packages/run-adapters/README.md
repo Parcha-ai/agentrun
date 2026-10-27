@@ -24,7 +24,8 @@ harness adapter the way they run on Pi, durable in AgentRun's own store. It is h
   recovery note, the tool bridge, the built-ins' hook-pair calls, the inbox (and `waitForSubmissions`, for a harness that
   waits for input while a turn runs), and `zodShapeFromJsonSchema`, for harness SDKs whose tool APIs take zod.
 - `./host` is the session's model proxy, provider-neutral: on the loopback interface, it admits only the session's key,
-  only the routes a `ProviderPolicy` lists (by exact path text), and strict JSON, has the policy shape or refuse the
+  only the routes a `ProviderPolicy` lists (by exact path text, with no query or one the route lists exactly; a route
+  may also be answered by the proxy, or be free, like a token count), and strict JSON, has the policy shape or refuse the
   body, asks the runner's `beforeRequest` before each paid request, adds the provider's credential (which never reaches
   the harness), and reports each response's usage to `afterRequest`. Model spend is accounted only there, by the runner.
 

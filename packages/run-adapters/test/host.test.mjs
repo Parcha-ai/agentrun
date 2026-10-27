@@ -15,7 +15,17 @@ const KEY = 'session-key-for-tests';
 /** A provider's rules, for the tests: one route, a bearer key, the model fixed, a `hosted` tool refused. */
 const policy = {
   id: 'test',
-  routes: [{ method: 'POST', path: '/v1/test', headers: ['x-request-id'] }],
+  routes: [
+    { method: 'POST', path: '/v1/test', query: ['beta=true'], headers: ['x-request-id', 'x-beta'] },
+    { method: 'HEAD', path: '/v1/hello', local: 200 },
+    { method: 'POST', path: '/v1/count', free: true },
+  ],
+  // A beta the policy knows passes; any other is dropped from the list, and an empty list drops the header.
+  header: (name, value) => {
+    if (name !== 'x-beta') return value;
+    const known = value.split(',').map((v) => v.trim()).filter((v) => ['b1', 'b2'].includes(v));
+    return known.length ? known.join(',') : undefined;
+  },
   keyOf: (headers) => { const auth = String(headers.authorization ?? ''); return auth.startsWith('Bearer ') ? auth.slice(7) : ''; },
   authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
   apply(body) {
@@ -92,6 +102,33 @@ test("only the policy's routes, by their exact text: an absolute URL, a foreign 
   for (const method of ['GET', 'PUT']) assert.equal((await send(p.url, { method })).status, 403, method);
   assert.equal(forwarded.length, 0, 'nothing refused reached the provider');
   assert.throws(() => matchRoute(policy.routes, 'POST', 'v1/test'), /not one the table can match/);
+  // A query the route lists exactly passes, and is forwarded as the table has it; any other is refused.
+  for (const path of ['/v1/test?beta=false', '/v1/test?beta=true&x=1', '/v1/test?beta=true?', '/v1/count?beta=true']) assert.equal((await send(p.url, { path })).status, 403, path);
+  assert.equal(forwarded.length, 0);
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  assert.equal(forwarded[0].url, 'https://provider.invalid/v1/test?beta=true');
+});
+
+test("a local route is answered by the proxy, with the session key, and nothing is forwarded or asked", async (t) => {
+  const { p, forwarded, hooks } = await proxy(t);
+  assert.equal((await send(p.url, { method: 'HEAD', path: '/v1/hello', key: null })).status, 401);
+  const hello = await send(p.url, { method: 'HEAD', path: '/v1/hello' });
+  assert.equal(hello.status, 200);
+  assert.deepEqual([forwarded.length, hooks.before.length, hooks.after.length], [0, 0, 0]);
+});
+
+test('a free route is forwarded without asking the runner, and reports no usage', async (t) => {
+  const { p, forwarded, hooks } = await proxy(t, { refuse: 'turn_limit' });
+  assert.equal((await send(p.url, { path: '/v1/count' })).status, 200, 'the runner refusing paid requests does not refuse a free one');
+  assert.deepEqual([forwarded.length, hooks.before.length, hooks.after.length], [1, 0, 0]);
+});
+
+test("a listed header's value is the policy's: unknown betas are dropped, and none left drops the header", async (t) => {
+  const { p, forwarded } = await proxy(t);
+  await send(p.url, { headers: { 'x-beta': 'b1, evil, b2' } });
+  await send(p.url, { headers: { 'x-beta': 'evil' } });
+  assert.equal(forwarded[0].headers['x-beta'], 'b1,b2');
+  assert.equal(forwarded[1].headers['x-beta'], undefined);
 });
 
 test("the provider gets the policy's body, its own credential, the route's path and only the route's listed headers", async (t) => {
