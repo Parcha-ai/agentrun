@@ -79,8 +79,8 @@ test("cold start: one start answers at generation 1, and journald is not read", 
 });
 
 test("cold start: a takeover with no stall on the first instance's mount fails, also with no journald or no takeover time", () => {
-  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2), stub([])), /generation 1/);
-  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2), stub(null)), /generation 1/);
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2), stub([])), /generation 1 \(no stall on the first instance.s own mount/);
+  assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2), stub(null)), /generation 1 \(journald not read/);
   assert.throws(() => checkColdStart(cold(["none", "lease-expired"], 2, { takeoverAt: null }), stub(RECORDED)), /generation 1/);
 });
 

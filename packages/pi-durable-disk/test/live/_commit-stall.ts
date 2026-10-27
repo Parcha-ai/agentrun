@@ -93,13 +93,28 @@ export interface ColdStart {
   readonly takeoverAt: number | null;
 }
 
-/** The serve test's cold start: one generation per start, the first a cold one and every later one a takeover. */
+/** A stall that can cost an instance its lease: a server_timeout retry, or a sync of a second or more. */
+export const stalled = (s: CommitStall | null): s is CommitStall => s !== null && (s.retries > 0 || s.longestSyncMs >= 1000);
+
+/**
+ * The serve test's cold start answers at generation 1 from its one start. More starts (one generation per start, every
+ * later one a lease-expired takeover) pass only when journald shows a stall on the first instance's own mount between the
+ * request and the takeover. With no such stall, or no journald to tell, a lost lease is the product's (a heartbeat that
+ * stopped, a starved loop), and generation 1 is required. Returns the stall that was accepted, or null.
+ */
 export function checkColdStart(c: ColdStart, journal: (from: number, to: number) => JournalLine[] | null = readJournal): CommitStall | null {
   const at = JSON.stringify(c);
   assert.ok(c.reasons.length >= 1, `the request started the run: ${at}`);
   assert.equal(c.reasons[0], "none", `the run was never started, so its first start is a cold one: ${at}`);
+  // Read up to now: a sync is logged when it ends, and one that began before the takeover may end after it.
+  const lines = c.reasons.length > 1 && c.takeoverAt !== null ? journal(c.from, Date.now()) : null;
+  const stall = lines && commitStall(lines, c.mountpoint, c.from, c.takeoverAt!);
+  if (!stalled(stall)) {
+    const why = c.reasons.length === 1 ? "" : lines ? " (no stall on the first instance's own mount before the takeover)" : " (journald not read: no evidence of a stall)";
+    assert.deepEqual([c.reasons.length, c.generation], [1, 1], `one start, at generation 1${why}: ${at}`);
+    return null;
+  }
   assert.deepEqual(c.reasons.slice(1), c.reasons.slice(1).map(() => "lease-expired"), `a start after the first is a takeover: ${at}`);
   assert.equal(c.generation, c.reasons.length, `one generation per start: ${at}`);
-  void journal;
-  return null;
+  return stall;
 }
