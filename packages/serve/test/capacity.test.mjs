@@ -141,6 +141,23 @@ test("a run's first message waits for a process slower to come up than a request
   assert.equal(last.status, "completed", JSON.stringify(last));
 });
 
+test("once the server has stopped, no run of it settles: a first message still on its way writes nothing after close", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname, drainTimeout: "5s" });
+  const api = client(one.baseUrl, one.token);
+  assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await one.close();
+  // The server runs in this process: what it says about the run after its close is written here.
+  const said = [];
+  const write = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => (String(chunk).includes(run.body.run_id) && said.push(String(chunk)), write.call(process.stderr, chunk, ...rest));
+  t.after(() => void (process.stderr.write = write));
+  await sleep(1_500);
+  assert.deepEqual(said, [], "nothing of the run after the server stopped");
+});
+
 test("a run whose first message never landed before the server stopped gets it from the next server, however slow its process", async (t) => {
   const SLOW = new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname;
   const data = join(await scratch(t), "agents");
