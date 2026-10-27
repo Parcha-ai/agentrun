@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-anthropic.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from this package; a reply may open with a thinking or a redacted_thinking block, as a model that thinks answers; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
+// Changed by Parcha, 2026-10-27: imports from this package; its usage is the real API's nested shape; a reply may open with a thinking or a redacted_thinking block, as a model that thinks answers; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
 /**
  * A scripted Anthropic Messages API for the real Claude Code CLI (docs/workspaces.md
  * §11.4, "the restart-on-a-new-sandbox tests"): what `query()` and the pinned
@@ -263,7 +263,8 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
     if ('text' in reply && reply.text) blocks.push({ type: 'text', text: reply.text });
     if ('tool' in reply) blocks.push({ type: 'tool_use', id: reply.tool.id ?? `toolu_fake_${String(++toolSeq).padStart(4, '0')}_${Date.now().toString(36)}`, name: reply.tool.name, input: reply.tool.input });
     const stopReason = 'tool' in reply ? 'tool_use' : 'end_turn';
-    const usage = { input_tokens: Math.ceil(text.length / 4), output_tokens: 12, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+    // The real API's shape, nested objects included (a recorded response is in test/fixtures/).
+    const usage = { input_tokens: Math.ceil(text.length / 4), cache_creation_input_tokens: 0, cache_read_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 }, output_tokens: 12, output_tokens_details: { thinking_tokens: 0 }, service_tier: 'standard' };
     const id = `msg_fake_${requests.length}`;
     const metadata = { gateway: { cost, gatewayCost: cost } };
 
@@ -273,7 +274,7 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
     }
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'request-id': `req_fake_${requests.length}` });
     const ev = (type: string, data: unknown) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-    ev('message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: parsed.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 1 } } });
+    ev('message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: parsed.model, content: [], stop_reason: null, stop_sequence: null, usage: { ...usage, output_tokens: 1, output_tokens_details: undefined } } });
     if (held) await held;
     blocks.forEach((b, index) => {
       if (b.type === 'thinking') {
@@ -291,7 +292,7 @@ export async function fakeAnthropic(options: FakeAnthropicOptions): Promise<Fake
       }
       ev('content_block_stop', { type: 'content_block_stop', index });
     });
-    ev('message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: 12 }, provider_metadata: metadata });
+    ev('message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { input_tokens: usage.input_tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 12, output_tokens_details: { thinking_tokens: 0 } }, provider_metadata: metadata });
     ev('message_stop', { type: 'message_stop' });
     res.end();
   }

@@ -2,7 +2,7 @@
 // hook that starts the CLI, and the local machine's environment. No network, no CLI.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -163,6 +163,45 @@ test("usage: a stream's message_start and last message_delta, a whole body's, an
   assert.deepEqual(policy.usageOf(stream + ev('message_stop', {})), { input: 120, output: 42, cacheRead: 30, cacheWrite: 5 });
   assert.equal(policy.usageOf(stream), undefined, 'a stream cut before message_stop');
   assert.deepEqual(policy.usageOf(JSON.stringify({ id: 'm', usage: { input_tokens: 3, output_tokens: 4 } })), { input: 3, output: 4, cacheRead: 0, cacheWrite: 0 });
+});
+
+// Recorded from the Messages API through a LiteLLM gateway (claude-sonnet-5-5, a cached system prompt): the stream wrote
+// the cache and the whole body read it. Their usage nests objects (cache_creation, output_tokens_details).
+const RECORDED_STREAM = readFileSync(new URL('./fixtures/messages-stream-claude-sonnet-5-5.sse', import.meta.url), 'utf8');
+const RECORDED_BODY = readFileSync(new URL('./fixtures/messages-body-claude-sonnet-5-5.json', import.meta.url), 'utf8');
+/** Each kind of token at its own rate, per million. */
+const RATES = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+const priced = (_model, u) => (u.input * RATES.input + u.output * RATES.output + u.cacheRead * RATES.cacheRead + (u.cacheWrite ?? 0) * RATES.cacheWrite) / 1e6;
+
+test('a recorded real answer, streamed and whole, is booked with its input, output and cache tokens and its price', async () => {
+  const booked = [];
+  const answer = (text, type) => async () => new Response(text, { headers: { 'content-type': type } });
+  // A long stream: the proxy keeps only its head and tail, and the usage is read across them.
+  const long = RECORDED_STREAM.replace('event: content_block_stop', `${'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"' + 'x'.repeat(200) + '"}}\n\n'.repeat(1)}`.repeat(1500) + 'event: content_block_stop');
+  assert.ok(long.length > 3 * 64 * 1024);
+  for (const [text, type] of [[RECORDED_STREAM, 'text/event-stream'], [RECORDED_BODY, 'application/json'], [long, 'text/event-stream']]) {
+    const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: priced, hooks: { beforeRequest: async () => {}, afterRequest: async (u) => { booked.push(u); } }, fetch: answer(text, type) }, 'session-key');
+    try {
+      const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(body({ stream: type === 'text/event-stream' })) });
+      assert.equal(await res.text(), text, 'the client gets the answer as it came');
+    } finally {
+      await proxy.close();
+    }
+  }
+  const tokens = (u) => [u.input, u.output, u.cacheRead, u.cacheWrite];
+  assert.deepEqual(booked.map(tokens), [[11, 15, 0, 3842], [11, 15, 3842, 0], [11, 15, 0, 3842]]);
+  for (const u of booked) assert.ok(u.usd > 0 && !u.estimated, JSON.stringify(u));
+  assert.equal(booked[0].usd, priced('', { input: 11, output: 15, cacheRead: 0, cacheWrite: 3842 }), 'the cache write is priced at its own rate');
+  assert.equal(booked[1].usd, priced('', { input: 11, output: 15, cacheRead: 3842, cacheWrite: 0 }), 'the cache read is priced at its own rate');
+});
+
+test('usage that cannot be read stays unknown, never zero: no stop, no usage, a usage without counts, an answer that is not JSON', () => {
+  const stopless = RECORDED_STREAM.split('event: message_stop')[0];
+  assert.equal(policy.usageOf(stopless), undefined);
+  assert.equal(policy.usageOf(RECORDED_STREAM.replace(/"usage":\{"input_tokens":11,/g, '"usage":{"in":11,').replace(/,"output_tokens":(4|15)/g, '')), undefined);
+  assert.equal(policy.usageOf(JSON.stringify({ id: 'm', usage: { input_tokens: 'many', output_tokens: 4 } })), undefined);
+  assert.equal(policy.usageOf('<html>gateway timeout</html>'), undefined);
+  assert.equal(policy.usageOf(JSON.stringify({ id: 'm' })), undefined);
 });
 
 test('the spawn hook starts only the pinned binary, with exactly the env the harness gave, and a resume dir that holds only the transcript', () => {

@@ -132,6 +132,20 @@ test("a call to anything but the session's own tools is denied by the gate and n
   for (const name of names) assert.equal(existsSync(canary(name)), false, `${name} ran`);
 });
 
+test("every model request reaches the host with its tokens and its price: request_end carries input, output and cache tokens, usd above 0", async (t) => {
+  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}'] });
+  const ends = [];
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), onEvent: (e) => { if (e.type === 'request_end') ends.push(e.usage); } });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: [] }), { answer: 'ok' });
+  assert.ok(ends.length >= 1);
+  for (const u of ends) {
+    assert.ok(u.input > 0 && u.output > 0, `tokens: ${JSON.stringify(u)}`);
+    assert.equal(typeof u.cacheRead, 'number');
+    assert.equal(typeof u.cacheWrite, 'number');
+    assert.ok(u.usd > 0 && !u.estimated, `price: ${JSON.stringify(u)}`);
+  }
+});
+
 test("every session thinks: medium when its node names no level, the node's level when it does, and never off", async (t) => {
   const seen = [];
   const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}', 'call submit {"value":{"answer":"ok"}}', 'call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push([options.thinking, options.effort]) } });

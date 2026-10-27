@@ -154,31 +154,43 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
   return { ...out, max_tokens: max, ...(body.thinking !== undefined ? { thinking: thinking(body.thinking, max) } : {}) };
 }
 
-/** The usage a Messages response reports: the stream's `message_start` and last `message_delta`, or a whole body's. */
+/** A non-negative whole count, or undefined. */
+const tokenCount = (value: unknown): number | undefined => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+
+/** A Messages `usage` object as the proxy books it, or undefined when it says no input or output count. */
+function bookedUsage(usage: unknown): ProxyUsage | undefined {
+  if (!isPlain(usage)) return undefined;
+  const input = tokenCount(usage.input_tokens);
+  const output = tokenCount(usage.output_tokens);
+  if (input === undefined || output === undefined) return undefined;
+  return { input, output, cacheRead: tokenCount(usage.cache_read_input_tokens) ?? 0, cacheWrite: tokenCount(usage.cache_creation_input_tokens) ?? 0 };
+}
+
+/** The usage a Messages response reports, read by parsing it, never by matching its text (the API nests objects in
+ *  `usage`): a whole body's `usage`, or a stream's `message_start` usage (input and cache tokens) with its last
+ *  `message_delta` usage over it (the final counts). Each SSE `data:` line is parsed on its own and one that does not
+ *  parse is skipped (the proxy keeps only the head and tail of a long answer). A stream that never stopped, or an
+ *  answer with no readable usage, is unknown. */
 export function anthropicUsage(text: string): ProxyUsage | undefined {
-  const number = (from: string, field: string) => {
-    const m = new RegExp(`"${field}"\\s*:\\s*(\\d+)`).exec(from);
-    return m ? Number(m[1]) : undefined;
-  };
-  // A whole (non-streamed) body.
-  if (!/^\s*(?:event|data):/m.test(text)) {
-    const usage = /"usage"\s*:\s*\{[^{}]*\}/.exec(text)?.[0];
-    const input = usage ? number(usage, "input_tokens") : undefined;
-    const output = usage ? number(usage, "output_tokens") : undefined;
-    if (input === undefined || output === undefined) return undefined;
-    return { input, output, cacheRead: number(usage!, "cache_read_input_tokens") ?? 0, cacheWrite: number(usage!, "cache_creation_input_tokens") ?? 0 };
+  const lines = text.split(/\r?\n/);
+  if (!lines.some((line) => line.startsWith("data:") || line.startsWith("event:"))) {
+    let body: unknown;
+    try { body = JSON.parse(text); } catch { return undefined; }
+    return isPlain(body) ? bookedUsage(body.usage) : undefined;
   }
-  // A stream counts only once it stopped: a cut one reports nothing.
-  if (!/"type"\s*:\s*"message_stop"/.test(text)) return undefined;
-  const start = /"type"\s*:\s*"message_start"[\s\S]*?"usage"\s*:\s*(\{[^{}]*\})/.exec(text)?.[1];
-  if (!start) return undefined;
-  const end = [...text.matchAll(/"type"\s*:\s*"message_delta"[\s\S]*?"usage"\s*:\s*(\{[^{}]*\})/g)].at(-1)?.[1];
-  return {
-    input: number(start, "input_tokens") ?? 0,
-    output: (end ? number(end, "output_tokens") : undefined) ?? number(start, "output_tokens") ?? 0,
-    cacheRead: number(start, "cache_read_input_tokens") ?? 0,
-    cacheWrite: number(start, "cache_creation_input_tokens") ?? 0,
-  };
+  const events: Record<string, unknown>[] = [];
+  for (const line of lines) {
+    if (!line.startsWith("data:")) continue;
+    try {
+      const event: unknown = JSON.parse(line.slice(5));
+      if (isPlain(event)) events.push(event);
+    } catch { /* cut at the kept window's edge, or not JSON: skipped */ }
+  }
+  if (!events.some((e) => e.type === "message_stop")) return undefined;
+  const started = events.find((e) => e.type === "message_start")?.message;
+  const startUsage = isPlain(started) && isPlain(started.usage) ? started.usage : {};
+  const lastDelta = events.filter((e) => e.type === "message_delta").at(-1)?.usage;
+  return bookedUsage({ ...startUsage, ...(isPlain(lastDelta) ? lastDelta : {}) });
 }
 
 /** The Claude Agent CLI's provider policy for one session. */
