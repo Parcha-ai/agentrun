@@ -260,16 +260,22 @@ hook again, in this process or the next: the record is in the store, and a looku
 
 | Status | Means | A submit of that requestId answers |
 |---|---|---|
-| `ADMITTED` | admitted; the hook is running, or the process died before it answered | 202 `{ status: "ADMITTED" }` |
+| `ADMITTED` | only: the hook is running in this instance, on a record this instance admitted | 202 `{ status: "ADMITTED" }` |
 | `ACCEPTED` | the hook took the input | 200 `{ status: "ACCEPTED" }`; never submitted again |
 | `REJECTED_BUSY` | the hook refused it as busy | 409 `BUSY`, `status: "REJECTED_BUSY"`; terminal: send a new requestId |
 | `FAILED` | `hook.submit` threw, before taking the input | 500 `FAILED`, `status: "FAILED"` |
-| `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
+| `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting; or the record was admitted by an earlier instance, or before the lease was lost, and no call here carries it | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
 
 A late answer to an `UNKNOWN` submit is never dropped: the door writes the real outcome (`ACCEPTED`, `REJECTED_BUSY`, or
 `FAILED` if it threw) on the same requestId, unless the lease is gone by then (the fenced commit fails, and the record
-stays `UNKNOWN`). An abort that loses the race to delivery so ends `ACCEPTED`. An `ADMITTED` or `UNKNOWN` record that
-never resolves stays so across a restart; the next incarnation never submits it again.
+stays `UNKNOWN`). An abort that loses the race to delivery so ends `ACCEPTED`.
+
+A record whose instance died, or lost its lease, between the admission and the hook's outcome was dispatched or not,
+nobody knows: it is `UNKNOWN`, and final, since no later outcome can come from a dead or fenced instance. A retry
+answers it `UNKNOWN` ("admitted by an earlier instance, or before the lease was lost: whether the hook took it is
+unknown") as soon as no call in this instance carries it, and each open writes a `door.status` `UNKNOWN` for every such
+record through the fenced commit, so the store and the events say it too. A lease lost between the admission and the
+call writes it at once when the commit can still land. No incarnation submits an `ADMITTED` or `UNKNOWN` record again.
 
 `POST /abort` calls `hook.abort` (bounded) and answers `{ result: "aborted" | "idle" }`. `GET /status`'s `busy` is
 `hook.busy()`. `GET /events` keeps its contract (a snapshot, then batches of events, then `end`) on the root
