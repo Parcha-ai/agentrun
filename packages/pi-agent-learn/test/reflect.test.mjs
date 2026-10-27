@@ -172,3 +172,25 @@ test("a refused memo's Proposed changes keep only the paths the run's branch cha
   assert.match(landed, new RegExp(`\\n- learnings/${id}\\.md\\n`), "a path the branch changed stays");
   assert.match(landed, /\n- learnings\/\n/, "and so does a folder that holds one");
 });
+
+test("a reflection alone is a proposal: a run that noted nothing still gets its branch with its memo, and curate lands the memo", async () => {
+  const w = await world();
+  const quiet = { snapshot: async (doc) => (doc.definition.kind === "learn.seed" ? { sha: w.main, index: [], omitted: [], workflows: [], copied: false } : { order: [], byCall: {} }) };
+  const none = await proposeLearning({ runId: "run-0", repo: w.runs, target: quiet, secrets: [], caseValues: [] });
+  assert.equal(none.status, "empty", "no notes, uses, workflows or reflection: nothing to propose");
+  const bad = await proposeLearning({ runId: "run-0", repo: w.runs, target: quiet, secrets: [], caseValues: [], reflection: { whatHappened: "## Proposed changes", couldBeBetter: BETTER } });
+  assert.equal(bad.status, "empty", "a reflection out of shape is withheld, and then there is nothing");
+  assert.deepEqual(bad.withheld?.map((x) => x.name), ["reflection"]);
+
+  const result = await proposeLearning({ runId: "run-1", repo: w.runs, target: quiet, secrets: [], caseValues: [], reflection: parseReflection(REPLY) });
+  assert.equal(result.status, "proposed", JSON.stringify(result));
+  const changed = (await w.runs.list("", result.sha)).map((e) => e.path).filter((p) => !(p in { "AGENTS.md": 1, "agent.json": 1 }) && !p.startsWith("learnings/"));
+  assert.deepEqual(changed, ["memos/run-1.md"]);
+  const memo = await w.runs.read("memos/run-1.md", result.sha);
+  assert.ok(memo.includes(`## What happened\n${HAPPENED}\n`) && memo.includes("## What I learned\n- Nothing new.\n"), memo);
+  assert.deepEqual((await checkBranch({ cwd: w.bare, base: "main", head: "runs/run-1", branch: "runs/run-1", tools: HOST_TOOLS })).problems, []);
+  const [run] = (await curate({ repo: w.curator, judge, screen: SCREEN, tools: HOST_TOOLS })).runs;
+  assert.equal(run.run, "run-1");
+  assert.deepEqual(run.accepted, []);
+  assert.ok((await w.curator.read("memos/run-1.md", "main")).includes(`## What happened\n${HAPPENED}\n`), "the memo lands");
+});
