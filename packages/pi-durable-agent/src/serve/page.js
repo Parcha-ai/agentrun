@@ -662,30 +662,34 @@
     return el("span", { class: kind + (known ? "" : " unknown") }, known || (kind === "c cost" ? "unknown" : "cost unknown"));
   }
 
-  function picker(token) {
+  /** The agents, archived ones hidden unless `archived`, which shows only those. */
+  function picker(token, archived) {
     crumb([]);
     titled(null);
     get("api/store").then(
       function (data) {
         if (token !== view) return;
-        var agents = data && Array.isArray(data.agents) ? data.agents : [];
+        var every = data && Array.isArray(data.agents) ? data.agents : [];
+        var agents = every.filter(function (agent) { return Boolean(agent.archivedAt) === archived; });
+        var hidden = every.length - agents.length;
         show(
           el(
             "section",
             { class: "card picker" },
             kicker("Agent store"),
-            el("h1", null, plural(agents.length, "agent")),
+            el("h1", null, plural(agents.length, archived ? "archived agent" : "agent")),
+            archived || hidden ? el("nav", { class: "filters" }, el("a", { class: "filter archived", href: archived ? "#/" : "#/?archived=1" }, archived ? "Hide archived" : "Show archived (" + hidden + ")")) : null,
             agents.length
               ? el("div", { class: "agents" }, agents.map(function (agent) {
                   return el(
                     "a",
                     { class: "agent-tile", href: agentHref(agent.id) },
-                    el("span", { class: "head" }, el("b", null, agent.name || agent.id), kindPill(agent.currentKind)),
+                    el("span", { class: "head" }, el("b", null, agent.name || agent.id), kindPill(agent.currentKind), agent.archivedAt ? pill("archived") : null),
                     agent.description ? el("span", { class: "lede" }, agent.description) : null,
                     el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no revision yet"), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
                   );
                 }))
-              : host && host.empty ? host.empty() : el("p", { class: "none" }, "No agents in this store yet.")
+              : archived ? el("p", { class: "none" }, "No archived agents.") : host && host.empty ? host.empty() : el("p", { class: "none" }, "No agents in this store yet.")
           )
         );
       },
@@ -826,7 +830,7 @@
                   "a",
                   { class: "run", href: "#/runs/" + encodeURIComponent(run.id) },
                   el("span", { class: "c when" }, el("b", null, when(run.startedAt)), el("small", null, ago(run.startedAt))),
-                  el("span", { class: "c state" }, runState(run.state)),
+                  el("span", { class: "c state" }, runState(run.state), run.archivedAt ? [" ", pill("archived")] : null),
                   el("span", { class: "c rev" }, el("span", { class: "rev-id" }, short(run.revision)), " ", el("span", { class: "word" }, run.kind)),
                   cost(run.costUsd, "c cost"),
                   el("span", { class: "c reason" }, run.gone ? el("span", { class: "unknown" }, "its directory is gone") : run.summary ? md(run.summary) : ""),
@@ -854,7 +858,7 @@
             { class: "card agent" },
             kicker("Agent"),
             el("h1", null, agent.name),
-            el("p", { class: "facts" }, kindPill(current && current.kind), el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null),
+            el("p", { class: "facts" }, kindPill(current && current.kind), agent.archivedAt ? pill("archived") : null, el("span", { class: "id" }, agent.id), el("span", null, "created " + when(agent.createdAt)), agent.current ? el("span", null, "current " + short(agent.current)) : null, agent.archivedAt ? el("span", null, "archived " + when(agent.archivedAt)) : null),
             agent.description ? el("p", { class: "lede" }, agent.description) : null,
             host && host.agent ? host.agent(agent, revisions) : null
           ),
@@ -907,7 +911,7 @@
       { class: "card run-head" },
       kicker("Run"),
       el("h1", { class: "id" }, run.id),
-      el("p", { class: "facts" }, runState(run.state), facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
+      el("p", { class: "facts" }, runState(run.state), run.archivedAt ? pill("archived") : null, facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
       el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, short(run.revision)), kindPill(run.kind), data.note ? el("span", null, data.note) : null),
       run.summary ? el("div", { class: "lede summary" }, md(run.summary)) : null,
       data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null,
@@ -949,7 +953,7 @@
     if (m) return storeRunPage(decoded(m[1]), token);
     m = /^#\/agents\/([^/?#]+)(?:\?revision=([^&#]*))?$/.exec(hash);
     if (m) return agentPage(decoded(m[1]), m[2] ? decoded(m[2]) : null, token);
-    picker(token);
+    picker(token, hash === "#/?archived=1");
   }
 
   function decoded(part) {

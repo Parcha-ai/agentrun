@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import { localBoxes } from "../src/box/local.ts";
-import { launch } from "../src/home/launch.ts";
+import { launch } from "../src/launch/launch.ts";
 import { HANG_GUARD_MS, recording, registerLaunchSuite, sh, until } from "./home-launch-support.ts";
 import { assertNothingOfBox, guardLeaks } from "./leak-guard.ts";
 

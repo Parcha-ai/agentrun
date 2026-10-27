@@ -33,16 +33,15 @@ test("a workflow run executes its model node and completes with the workflow's o
   assert.deepEqual((await api("GET", "/runs?agent=flow")).body.runs.map((r) => [r.kind, r.status]), [["workflow", "completed"]]);
 });
 
-test("a workflow needing a tool call, a judge or code is not runnable here (409), and an input it does not take is 422", async (t) => {
+test("a workflow needing a tool call, a judge or code is not saved here (422), and an input it does not take is 422", async (t) => {
   const { api } = await serve(t);
   const call = answerFlow();
   call.schemas.Stock = { type: "object", required: ["tier"], properties: { tier: { type: "string" } } };
   call.root.steps.unshift({ node: "call", label: "stock", via: "tool", tool: "stock.check", args: { sku: "{question}" }, out: "Stock", as: "stock", deadline_s: 20 });
-  assert.equal((await api("POST", "/agents", { definition: { id: "caller", name: "caller", workflow: call, tools: ["stock.check"] } })).status, 201);
-  const refused = await api("POST", "/agents/caller/runs", { input: { question: "x" } });
-  assert.equal(refused.status, 409);
-  assert.equal(refused.body.error.code, "agent_not_runnable");
-  assert.deepEqual(refused.body.error.details.unbound, ["stock.check"], "a call to a tool outside the table");
+  const refused = await api("POST", "/agents", { definition: { id: "caller", name: "caller", workflow: call, tools: ["stock.check"] } });
+  assert.equal(refused.status, 422);
+  assert.equal(refused.body.error.code, "input_invalid");
+  assert.ok(refused.body.error.fields.some((f) => f.field === "definition.workflow" && /also calls stock\.check/.test(f.message)), JSON.stringify(refused.body.error.fields));
   assert.equal((await api("POST", "/agents", flowAgent("flow"))).status, 201);
   const wrong = await api("POST", "/agents/flow/runs", { input: { content: "no question" } });
   assert.equal(wrong.status, 422);
@@ -132,4 +131,29 @@ test("a run loads only the tiers its revision uses: a fast-only workflow runs on
   }
   await api("POST", `/runs/${started.body.run_id}/cancel`);
   await follow(api, started.body.run_id, ["cancelled", "failed"]);
+});
+
+test("data shaped like a node is no node: a model node's state holding an example call node and an example agent node is runnable, not a false 409", async (t) => {
+  const { api } = await serve(t);
+  const flow = answerFlow();
+  flow.root.steps[0].state = {
+    question: "{question}",
+    example: { node: "call", label: "Example call", via: "tool", tool: "http_get", args: { url: "https://example.com/" }, out: "Answer", as: "fetched", deadline_s: 60 },
+    samples: [{ node: "agent", label: "Example agent", instructions: "Shell out.", out: "Answer", tools: ["bash"], tier: "strong" }],
+  };
+  const started = await start(api, "shaped", { question: "What is six times seven?" }, flow);
+  await follow(api, started.run_id, ["completed"]);
+  assert.deepEqual((await api("GET", `/runs/${started.run_id}`)).body.result.output, { answer: 42 });
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  const { nodeTiers, workflowNodes } = await import("../dist/model.js");
+  const { workflowTools } = await import("../dist/tools.js");
+  const nodes = workflowNodes(flow, inspectWorkflow(flow));
+  assert.deepEqual(nodes.map((node) => node.node), ["chain", "extract"]);
+  assert.deepEqual([workflowTools(nodes), nodeTiers(nodes)], [{ nodes: [], calls: [] }, ["default"]]);
+  // The same nodes for real are still refused.
+  const real = answerFlow();
+  real.root.steps.push(flow.root.steps[0].state.example);
+  const refused = await api("POST", "/agents", flowAgent("real-call", real, { tools: ["http_get"] }));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.match(refused.body.error.fields[0].message, /also calls http_get/);
 });

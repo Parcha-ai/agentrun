@@ -4,6 +4,7 @@ import { WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowStateErr
 import { createJevRunner } from '@parcha/agentrun-jev';
 import { ExtensionServiceError, WorkflowExtensionService } from '../dist/extension-service.js';
 import { inspectCandidate } from '../dist/workflow-tool.js';
+import { OperatorError } from '../dist/operator-error.js';
 const Result = { type: 'object', additionalProperties: false, required: ['accept'], properties: { accept: { type: 'boolean', description: 'Does the evidence support the claim?' } } };
 const workflow = root => ({ v: 2, name: 'screen', schemas: { Result }, output: { schemaId: 'Result', path: 'decision' }, root: root ?? { node: 'judge', label: 'screen', state: { evidence: '{evidence}' }, out: 'Result', as: 'decision' } });
 const answer = async ({ questions }) => ({ answers: Object.fromEntries(Object.keys(questions).map(id => [id, { type: 'noul', noul: .95 }])) });
@@ -372,4 +373,13 @@ test('inspectCandidate keeps a service refusal\'s type and code, with the refusa
   assert.throws(() => inspectCandidate(service, calling), error => error instanceof ExtensionServiceError && error.code === original.code
     && error.message === `Cannot inspect workflow: ${original.message}` && error.cause instanceof ExtensionServiceError && error.cause.code === original.code);
   await service.dispose();
+});
+
+test('inspectCandidate makes any other refusal an operator message, with that same error as its cause', () => {
+  const original = new Error('the checker refused this candidate');
+  let thrown;
+  try { inspectCandidate({ preflight() { throw original; } }, workflow(agent())); } catch (error) { thrown = error; }
+  assert.ok(thrown instanceof OperatorError && !(thrown instanceof ExtensionServiceError), 'the refusal is an operator message');
+  assert.equal(thrown.message, `Cannot inspect workflow: ${original.message}`);
+  assert.strictEqual(thrown.cause, original);
 });

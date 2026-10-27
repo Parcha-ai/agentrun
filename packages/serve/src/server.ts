@@ -7,14 +7,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import type { Revision } from "@parcha/pi-durable-agent";
+import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
-import { NODE_TOOLS, toolRefusal, toolsView, workflowTools } from "./tools.js";
-import { ApiError, invalid, unsupported } from "./errors.js";
-import { chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
+import { NODE_TOOLS, toolsView } from "./tools.js";
+import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
+import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { answerPage } from "./page.js";
+import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -56,28 +58,31 @@ export type ServeOptions = {
   fauxWeb?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
+  /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** Where the log lines go (print.ts); none without it. AGENTRUN_LOG=quiet leaves out the request lines. */
+  log?: (line: string) => void;
   /** The waits between carry backs that found the store held by another writer (default 0.5, 1, 2, 4 and 8 s), and a
    *  hook called at each such refusal. */
   carryBackRetry?: CarryBackRetry;
 };
 
-/** `tokenFile` is null when `options.token` gave the token. */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; close(): Promise<void> };
+/** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
-/** A private token in `file` (0600), made once and kept. */
-async function tokenIn(file: string): Promise<string> {
+/** A private token in `file` (0600), made once and kept; `made` when this call made it. */
+async function tokenIn(file: string): Promise<{ token: string; made: boolean }> {
   const known = await readFile(file, "utf8").then((text) => text.trim(), () => "");
   if (known && !/\s/.test(known)) {
     await chmod(file, 0o600);
-    return known;
+    return { token: known, made: false };
   }
   const token = `ar_local_${randomBytes(24).toString("base64url")}`;
   await writeFile(file, `${token}\n`, { mode: 0o600, flag: "w" });
   await chmod(file, 0o600);
-  return token;
+  return { token, made: true };
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
@@ -91,6 +96,7 @@ const ROUTES: Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
+  { method: "POST", pattern: /^\/agents\/([^/]+)\/(archive|unarchive)$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/runs$/, name: "createRun" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/runs$/, name: "listRuns" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/home$/, name: "exportHome", capability: "home.export" },
@@ -102,6 +108,7 @@ const ROUTES: Route[] = [
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/cancel$/, name: "cancelRun" },
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/(archive|unarchive)$/, name: "archiveRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/kill$/, name: "killRun", capability: "runs.kill" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files$/, name: "listRunFiles" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/files\/(.+)$/, name: "readRunFile" },
@@ -128,6 +135,9 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env) {
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
+      /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
+       *  lists only those) and kept, with its history; a run of an archived agent is refused. */
+      archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"] },
       /** This server's own route, outside the contract: a run's input as it was started, whole. */
@@ -179,18 +189,40 @@ function integerParam(value: string | null, name: string, max: number): number {
   return Number(value);
 }
 
+/** The agent homes 0.1.0-beta.26 and earlier kept in the data directory (`<data>/<agent>/agent.sqlite`, an agent named
+ *  `runs` or a symlinked home included), which this version's store does not read: their agents and runs would not
+ *  show. This version keeps no `agent.sqlite` under the data directory. */
+async function oldHomes(data: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const name of await readdir(data)) {
+    const file = join(data, name, "agent.sqlite");
+    if (await stat(file).then((info) => info.isFile(), () => false)) found.push(file);
+  }
+  return found.sort();
+}
+
 export async function startServe(options: ServeOptions): Promise<Serve> {
   const data = resolve(options.data);
   await mkdir(data, { recursive: true, mode: 0o700 });
+  const homes = await oldHomes(data);
+  if (homes.length) {
+    const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
+    throw new Error(`this data directory holds agent homes from AgentRun Server 0.1.0-beta.26 or earlier (${named.join(", ")}), which this version does not read: started here, it would show none of their agents or runs. Keep them with the earlier version, or move those directories out of ${data} to start this one; see "Upgrading from 0.1.0-beta.26" in the serve README.`);
+  }
   if (options.token !== undefined && (options.token.length < 32 || /\s/.test(options.token))) throw new Error("the token must be 32 characters or more, with no whitespace");
   const tokenFile = options.token === undefined ? join(data, TOKEN_FILE) : null;
-  const token = options.token ?? (await tokenIn(tokenFile!));
+  const stored = options.token === undefined ? await tokenIn(tokenFile!) : undefined;
+  const token = options.token ?? stored!.token;
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
-  const doorToken = await tokenIn(doorTokenFile);
+  const { token: doorToken } = await tokenIn(doorTokenFile);
+  if (options.drainTimeout !== undefined && durationMs(options.drainTimeout) === undefined) throw new Error(`the drain timeout ${options.drainTimeout} is not a duration such as 8s`);
+  const log = options.log;
+  const quiet = process.env.AGENTRUN_LOG === "quiet";
+  const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
   const caps = capabilities(env);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -278,29 +310,27 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  /** What keeps `revision` from running here, checked before anything starts: tools this host does not bind, workflow
-   *  adapters it does not give, and a model it cannot reach. */
+  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow });
+
+  /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
+   *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
   async function runnable(revision: Revision): Promise<void> {
-    if (revision.kind === "agentic") {
-      const refusal = toolRefusal(revision.body.tools, env);
-      if (refusal) throw new ApiError("agent_not_runnable", refusal.message, { details: { unbound: refusal.unbound, missing: refusal.missing } });
-      const chosen = await chooseModel(env, revision.body.model);
-      if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { unbound: [] } });
-      return;
-    }
-    const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
-    const { requires } = inspectWorkflow(revision.body.workflow);
-    const adapters = requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name));
-    const named = workflowTools(revision.body.workflow);
-    const refusal = adapters.length || requires.executableCode ? undefined : (toolRefusal(named.nodes, env, "nodes") ?? toolRefusal(named.calls, env, "calls"));
-    const why = adapters.length || requires.executableCode
-      ? `agentrun-serve runs a workflow's model nodes (agent, decide, extract, report) and its tool calls; this workflow also needs ${[...adapters, ...(requires.executableCode ? ["code"] : [])].join(", ")}.`
-      : refusal?.message;
-    if (why) throw new ApiError("agent_not_runnable", why, { details: { adapters, unbound: refusal?.unbound ?? [], missing: refusal?.missing ?? {}, code: requires.executableCode } });
-    for (const tier of nodeTiers(revision.body.workflow)) {
-      const chosen = await chooseModel(env, undefined, tier);
-      if ("why" in chosen) throw new ApiError("agent_not_runnable", chosen.why, { details: { adapters: [], unbound: [], code: false, tier } });
-    }
+    const blockers = await blockersOf(env, shapeOf(revision));
+    if (!blockers.length) return;
+    const message = blockers.map((b) => b.message).join(" ");
+    const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
+    const missing = Object.fromEntries(blockers.flatMap((b) => (b.missing ? [[b.missing.tool, b.missing.vars]] : [])));
+    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing } });
+    const tier = blockers.find((b) => b.tier)?.tier;
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}) } });
+  }
+
+  /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
+  async function saveable(revision: NewRevision): Promise<InputIssue[]> {
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow });
+    const never = blockers.filter((b) => !b.host);
+    if (never.length) throw invalid(never.map(issueOf));
+    return blockers.map(issueOf);
   }
 
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
@@ -313,6 +343,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = needAgent(agentId);
+    if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
       const issues = Object.keys(body).filter((k) => !["input", "revision", "file_ids", "effort", "max_cost_usd", "quote_id"].includes(k)).map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` }));
@@ -339,13 +370,21 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 
   /** A page of runs from the store, newest first: `agent`, `revision` and `status` narrow it. */
+  /** A list's `archived`: true lists only what is archived, false (the default) only what is not. */
+  function archivedParam(url: URL): boolean {
+    const value = url.searchParams.get("archived");
+    if (value !== null && value !== "true" && value !== "false") throw new ApiError("bad_request", "archived is true or false");
+    return value === "true";
+  }
+
   async function runsPage(url: URL, filter: { agent?: string; revision?: string }) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
-    let rows = agents.store.listRuns(filter);
+    const archived = archivedParam(url);
+    let rows = agents.store.listRuns(filter).filter((row) => Boolean(row.archivedAt) === archived);
     if (status !== null) {
       const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
@@ -451,22 +490,26 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!Number.isFinite(from) || !Number.isFinite(to)) throw new ApiError("bad_request", "from and to are RFC 3339 times");
     const group = url.searchParams.get("group_by") ?? "meter";
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
-    const lines = new Map<string, number | null>();
-    let total: number | null = 0;
+    const lines = new Map<string, { usd: number; unpriced: number }>();
+    const total = { usd: 0, unpriced: 0 };
     for (const row of agents.store.listRuns()) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
       const live = row.state === "running" ? await runs.get(row.id) : null;
       const usd = live ? runs.cost(live).usd : (row.costUsd ?? null);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
-      const before = lines.has(key) ? lines.get(key)! : 0;
-      lines.set(key, before === null || usd === null ? null : before + usd);
-      total = total === null || usd === null ? null : total + usd;
+      // A run whose cost is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it
+      // never passes as $0.
+      const line = lines.get(key) ?? lines.set(key, { usd: 0, unpriced: 0 }).get(key)!;
+      for (const sum of [line, total]) {
+        if (usd === null) sum.unpriced++;
+        else sum.usd += usd;
+      }
     }
-    const round = (v: number | null) => (v === null ? null : Math.round(v * 1e6) / 1e6);
+    const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
-      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total),
-      lines: [...lines].map(([key, usd]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(usd) })),
+      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
+      lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: "tokens" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced })),
       account: null,
     };
   }
@@ -479,7 +522,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "capabilities") return send(res, 200, caps);
-    if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
+    if (!timingSafeEqual(digest(String(req.headers.authorization ?? "")), expected)) {
+      authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
+      throw new ApiError("unauthenticated", "this route needs Authorization: Bearer <the token in the data directory>", {}, { "www-authenticate": "Bearer" });
+    }
     if (found.capability) {
       const off: Record<string, string> = {
         "home.export": "This server does not export a home yet.",
@@ -496,15 +542,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "createAgent": {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
-          const entry = await agents.create(checkDefinitionBody(body));
-          return { status: 201, body: agentView(entry), headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
+          let warnings: InputIssue[] = [];
+          const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
+          return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listAgents": {
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
-        const all = agents.list();
+        const archived = archivedParam(url);
+        const all = agents.list().filter((entry) => Boolean(entry.agent.archivedAt) === archived);
         return send(res, 200, { agents: all.slice(offset, offset + limit).map((entry) => agentView(entry)), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
@@ -518,8 +566,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const body = await bodyOf(req);
         // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
         // the same revision exactly one lands.
-        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null });
-        return send(res, 200, agentView(edited), { etag: etagOf(edited) });
+        let warnings: InputIssue[] = [];
+        const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
+        const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), { check, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
         const entry = needAgent(id);
@@ -539,6 +589,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = agents.setCurrent(entry, revision);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
+      }
+      case "archiveAgent": {
+        needAgent(id);
+        agents.store.setArchived("agent", id, second === "archive");
+        const entry = needAgent(id);
+        return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
       case "createRun": {
         const answer = await createRun(req, id);
@@ -586,6 +642,11 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const view = await runs.view(run);
         return send(res, 202, { run_id: run.id, cancel_requested: requested, already_terminal: !requested, status: view.status });
       }
+      case "archiveRun": {
+        const run = await needRun(id);
+        agents.store.setArchived("run", run.id, second === "archive");
+        return send(res, 200, await runs.view(run));
+      }
       case "listRunFiles": {
         const run = await needRun(id);
         const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
@@ -609,6 +670,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const server = createServer((req, res) => {
     const requestId = `req_${randomBytes(8).toString("hex")}`;
     res.setHeader("x-request-id", requestId);
+    if (log && !quiet) {
+      const started = performance.now();
+      const method = req.method ?? "GET";
+      const path = (req.url ?? "/").split("?")[0]!;
+      res.once("finish", () => log(logLine("request", { method, path, status: res.statusCode, ms: Math.round(performance.now() - started) })));
+    }
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
       const known = error instanceof ApiError ? error : new ApiError("internal", (error as Error)?.message ?? String(error));
@@ -625,7 +692,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
-    if (answerPage(req, res, raw, { token, dir: data })) return;
+    if (answerPage(req, res, raw, { token, dir: data, authFailed })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
@@ -642,6 +709,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     port: address.port,
     token,
     tokenFile,
+    tokenMade: stored?.made ?? false,
     async close() {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));

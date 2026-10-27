@@ -17,6 +17,7 @@ import {
 	type BoxStatus,
 	isReservedLabel,
 } from "./box.ts";
+import { refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_API_URL = "https://app.daytona.io/api";
 const DEFAULT_WORKSPACE = "/tmp/workspace";
@@ -147,6 +148,9 @@ type SandboxInfo = {
 	readonly toolboxProxyUrl?: string;
 	readonly sandboxClass?: string;
 	readonly errorReason?: string;
+	/** Disk in GiB and the creation time, as Daytona reports them. */
+	readonly disk?: number;
+	readonly createdAt?: string;
 };
 
 type Response = { readonly status: number; readonly bytes: Uint8Array };
@@ -460,6 +464,10 @@ function factsOf(info: SandboxInfo, provider: DaytonaBoxesOptions): BoxFacts {
 		workspace: info.labels?.[WORKSPACE_LABEL] ?? provider.workspace ?? DEFAULT_WORKSPACE,
 		maxLifetimeMs: Number.isFinite(lifetime) && lifetime > 0 ? lifetime : null,
 		snapshot: null,
+		...(typeof info.disk === "number" && info.disk > 0 ? { diskGb: Math.floor(info.disk) } : {}),
+		...(info.createdAt !== undefined && !Number.isNaN(Date.parse(info.createdAt))
+			? { startedAt: new Date(info.createdAt).toISOString() }
+			: {}),
 	};
 }
 
@@ -815,6 +823,8 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			if (spec.workspace !== undefined && !spec.workspace.startsWith("/")) {
 				return err(new BoxError("invalid", `the workspace ${spec.workspace} is not an absolute path in the box`));
 			}
+			const refused = refuseNetworkFields(spec, "daytona");
+			if (refused !== undefined) return err(refused);
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {
 				return err(new BoxError("invalid", `the label ${reserved} is in the providers' own namespace`));

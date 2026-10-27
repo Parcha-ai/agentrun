@@ -220,7 +220,8 @@ test("a real Chrome downloads a file; the cdp provider lists it once finished, a
     assert.deepEqual(await provider.downloads.list(ref), [], "nothing downloaded yet");
     let browser;
     try {
-      browser = await localBrowser.connect({ cdpUrl: (await provider.attach(ref)).sdkCdpUrl });
+      const attached = await provider.attach(ref);
+      browser = await localBrowser.connect({ cdpUrl: attached.sdkCdpUrl, ...(attached.extensionId ? { extensionId: attached.extensionId } : {}) });
       stagehand = await Stagehand.create({ browser, logging: { level: "off" }, telemetry: LOCAL_TELEMETRY });
     } catch (error) { if (skipIncapable(t, error)) return; throw error; }
     const [page] = await browser.context.pages();

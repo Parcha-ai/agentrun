@@ -1,5 +1,6 @@
 import type { Context } from "@earendil-works/chord";
 import type { Result } from "@earendil-works/pi-durable/env";
+import type { Launch, LaunchError, LaunchSpec, LaunchState } from "../launch/launch.ts";
 
 /**
  * Why a box call failed. Codes are the contract; messages are diagnostic.
@@ -30,6 +31,23 @@ export class BoxError extends Error {
 	}
 }
 
+/**
+ * What a box may reach. `open` is the provider's own default. `none` blocks all traffic. An allowlist names the only
+ * destinations: a domain (`api.example.com`), a wildcard domain (`*.example.com`) or an IPv4 CIDR (`10.0.0.0/8`).
+ */
+export type BoxNetwork = "open" | "none" | { readonly allow: readonly string[] };
+
+/** A port to reach from outside the box. A bare number is `https`: TLS, reached by an `https` URL. `tcp` is a raw socket. */
+export type BoxPort = number | { readonly port: number; readonly kind: "https" | "tcp" };
+
+/** Where an exposed port is reached, from `Box.endpoint`. Never a provider's id for the box. */
+export type BoxEndpoint =
+	| { readonly kind: "https"; readonly url: string }
+	| { readonly kind: "tcp"; readonly host: string; readonly port: number };
+
+/** Something a box can be asked to have. A provider that cannot give it refuses the spec with `unsupported`. */
+export type BoxCapability = "fuse";
+
 /** What a provider needs to create a box. A provider documents the fields it ignores. */
 export type BoxSpec = {
 	/** Image the box starts from, in the provider's own naming. */
@@ -38,7 +56,7 @@ export type BoxSpec = {
 	readonly snapshot?: string;
 	readonly cpus?: number;
 	readonly memoryMb?: number;
-	/** GPU model in the provider's own naming, for example `T4` or `H100`. */
+	/** GPU model in the provider's own naming, for example `T4` or `H100`. The request: `BoxFacts.gpu` says what was served. */
 	readonly gpu?: string;
 	readonly region?: string;
 	/** The separation the box must have. A provider that cannot give it refuses the spec with `unsupported`. */
@@ -58,6 +76,12 @@ export type BoxSpec = {
 	 * names one is refused with `invalid`. A host that wants every box of a provider asks `list` with no labels.
 	 */
 	readonly labels?: Readonly<Record<string, string>>;
+	/** What the box may reach. Absent means the provider's default, which `BoxFacts.network` then says. */
+	readonly network?: BoxNetwork;
+	/** Ports to reach from outside. A provider that cannot expose a port refuses the spec with `unsupported`. */
+	readonly ports?: readonly BoxPort[];
+	/** What the box must have. `fuse`: the device exists and root in the box can open it; a FUSE mount there is root's. */
+	readonly capabilities?: readonly BoxCapability[];
 };
 
 /** What a box is and can do, as its provider reports it. Fixed for the life of the box. */
@@ -67,10 +91,47 @@ export type BoxFacts = {
 	readonly isolation: "none" | "container" | "gvisor" | "vm";
 	readonly cpus: number | null;
 	readonly memoryMb: number | null;
+	/**
+	 * The GPU the box has, `null` when it has none. Modal reads the model served from the box (`nvidia-smi`), which may differ from
+	 * the request (a bare `H100` may be served an H200): one name for identical cards, every model for a mixed box (joined by ` + `, so a label that joins the provider, the GPU and the isolation with `, ` stays unambiguous). A provider that
+	 * does not read it from the box repeats the request, and its documentation says so (Docker does).
+	 */
 	readonly gpu: string | null;
 	/** Absolute directory programs start in. */
 	readonly workspace: string;
 	readonly maxLifetimeMs: number | null;
+	/**
+	 * What the box may reach: `open`, `none`, or `allowlist` (the list itself is not repeated here). Absent means
+	 * unknown: a caller that needs `none` or an allowlist must refuse the box.
+	 */
+	readonly network?: "open" | "none" | "allowlist";
+	/**
+	 * The ports the spec asked to reach from outside, each with the kind of address `Box.endpoint` gives; `[]` when the
+	 * provider made the box with none. Absent means unknown, not none: a caller that must be sure no port is exposed
+	 * must refuse the box.
+	 */
+	readonly ports?: readonly { readonly port: number; readonly kind: "https" | "tcp" }[];
+	/**
+	 * The size of the filesystem the workspace is on, in whole GiB as the box reports it. Absent means unknown, also when the box
+	 * reports a size no disk has (over 1 PiB: gVisor's filesystem says 2^63 bytes).
+	 */
+	readonly diskGb?: number;
+	/**
+	 * When the box began to run, as an ISO 8601 UTC time (a provider that queues gives the moment it was asked). Absent
+	 * means unknown: a receipt falls back to the time the create call answered.
+	 */
+	readonly startedAt?: string;
+	/**
+	 * `true` only when the spec asked for `fuse` and `/dev/fuse` was checked to be a character device that root in the box can
+	 * open; a FUSE mount there is root's (no user who is not root is promised the device).
+	 * Absent means `false`: a caller that needs FUSE must refuse the box.
+	 */
+	readonly fuse?: boolean;
+	/**
+	 * `kernel.yama.ptrace_scope` as read in the box (a box without the setting reads 0). Absent means unknown: a caller
+	 * that chooses a box must not assume 1 or more. A launcher that measures the setting itself at the start does not need it.
+	 */
+	readonly ptraceScope?: 0 | 1 | 2 | 3;
 	/** The kind of snapshot `Box.snapshot` takes, or `null` when the box has none. */
 	readonly snapshot: "disk" | "memory" | null;
 	/**
@@ -86,6 +147,13 @@ export type BoxFacts = {
 	 * arrives after the call). Absent means true. A box that cannot keep a program running can never be a home.
 	 */
 	readonly liveProcesses?: boolean;
+	/**
+	 * How this box takes a secret for a program: `fd`, a real stdin path, so the launcher (`@parcha/pi-transport/launch`)
+	 * gets a launch's stdin and secrets on the stdin of the one exec that starts it and holds them only in its memory;
+	 * `substitution`, a provider that fills an outbound credential so the value never enters the box; `file`, the one
+	 * staging exception. Absent: it takes none, and a launch with `stdin` or `secrets` is refused `unsupported`.
+	 */
+	readonly secretsVia?: "fd" | "substitution" | "file";
 };
 
 /** Whether a box still runs. */
@@ -149,6 +217,25 @@ export interface Box {
 	destroy(context: Context): Promise<Result<void, BoxError>>;
 	/** Only on boxes whose `facts().snapshot` is not `null`. */
 	snapshot?(context: Context): Promise<Result<BoxSnapshot, BoxError>>;
+	/**
+	 * Optional: a box that keeps a program alive natively (a fake box in a test). `launch`, `launchState` and `launchStop`
+	 * (`@parcha/pi-transport/launch`) use it when it is there, read on every call, and otherwise run the launcher in the box
+	 * with `exec`. A provider leaves it undefined.
+	 */
+	readonly launcher?: BoxLauncher;
+	/** Where `facts().ports` reaches the box from outside. Only on boxes whose provider can expose a port. */
+	endpoint?(port: number, context: Context): Promise<Result<BoxEndpoint, BoxError>>;
+}
+
+/** The launcher's three calls, done natively by a box (`Box.launcher`), with the same answers as the launcher in a box. */
+export interface BoxLauncher {
+	launch(name: string, spec: LaunchSpec, context: Context): Promise<Result<LaunchState, LaunchError>>;
+	state(launch: Launch, context: Context): Promise<Result<LaunchState | undefined, LaunchError>>;
+	stop(
+		launch: Launch,
+		options: { readonly graceMs?: number } | undefined,
+		context: Context,
+	): Promise<Result<LaunchState, LaunchError>>;
 }
 
 /** A source of boxes: one vendor, or one kind of machine. */

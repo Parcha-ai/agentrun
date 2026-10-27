@@ -19,7 +19,8 @@ export type AgenticBody = { instructions: string; skills: Record<string, string>
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[] };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
-export type Agent = { id: string; name: string; description?: string; createdAt: string; current: string | null };
+/** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
+export type Agent = { id: string; name: string; description?: string; createdAt: string; current: string | null; archivedAt?: string };
 export type AgentRow = Agent & { currentKind: RevisionKind | null; runs: number };
 export type RevisionRow = { id: string; agent: string; parent: string | null; createdAt: string; note?: string; kind: RevisionKind; current: boolean };
 export type RunState = "running" | "completed" | "failed" | "stopped" | "escalated";
@@ -32,7 +33,10 @@ function cutSummary(text: string): string {
   return text.slice(0, end) + "\u2026";
 }
 
-export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string };
+/** `archivedAt`: when the run was archived, else when its agent was, while it is. */
+export type RunRow = { id: string; agent: string; revision: string; kind: RevisionKind; state: RunState; startedAt: string; endedAt?: string; costUsd?: number; summary?: string; archivedAt?: string };
+/** What can be archived. */
+export type ArchiveKind = "agent" | "run";
 export type NewRevision =
   | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; note?: string };
@@ -71,8 +75,21 @@ CREATE TABLE IF NOT EXISTS runs (
   cost_usd    REAL,
   summary     TEXT
 );
-CREATE INDEX IF NOT EXISTS runs_by_agent ON runs(agent_id, started_at);`;
+CREATE INDEX IF NOT EXISTS runs_by_agent ON runs(agent_id, started_at);
+CREATE TABLE IF NOT EXISTS archive_changes (
+  seq      INTEGER PRIMARY KEY,
+  kind     TEXT NOT NULL CHECK (kind IN ('agent', 'run')),
+  id       TEXT NOT NULL,
+  archived INTEGER NOT NULL CHECK (archived IN (0, 1)),
+  at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS archive_changes_by_item ON archive_changes(kind, id, seq);
+CREATE TRIGGER IF NOT EXISTS archive_changes_are_written_once BEFORE UPDATE ON archive_changes
+BEGIN SELECT RAISE(ABORT, 'an archive change is written once'); END;
+CREATE TRIGGER IF NOT EXISTS archive_changes_are_kept BEFORE DELETE ON archive_changes
+BEGIN SELECT RAISE(ABORT, 'an archive change is written once'); END;`;
 
+// archive_changes came after version 1 without a new version: an earlier version opens the file and ignores the table.
 const STORE_VERSION = 1;
 const SQLITE_READONLY_ROLLBACK = 776;
 /** Fail closed on a file a newer version wrote. */
@@ -119,13 +136,27 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
 
 /** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` reads `store.sqlite` in place: it writes nothing and makes no copy, and a store with an unfinished write is named, not rolled back. */
 export class AgentStoreReader {
-  constructor(readonly dir: string, protected readonly db: DatabaseSync) {}
+  /** A store an earlier version wrote has no archive_changes until a writer opens it: nothing in it is archived. */
+  private readonly archives: boolean;
+  constructor(readonly dir: string, protected readonly db: DatabaseSync) {
+    this.archives = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'archive_changes'").get() !== undefined;
+  }
   close(): void { this.db.close(); }
 
+  /** SQL for when the `kind` whose id is `id` (an SQL expression) was archived, while it is; else NULL. */
+  protected archivedAtSql(kind: ArchiveKind, id: string): string {
+    return this.archives ? `(SELECT CASE WHEN c.archived = 1 THEN c.at END FROM archive_changes c WHERE c.kind = '${kind}' AND c.id = ${id} ORDER BY c.seq DESC LIMIT 1)` : "NULL";
+  }
+  /** A run's own archive time, else its agent's. */
+  private runArchivedAtSql(): string {
+    return `COALESCE(${this.archivedAtSql("run", "r.id")}, ${this.archivedAtSql("agent", "r.agent_id")})`;
+  }
+
   listAgents(): AgentRow[] {
-    const rows = this.db.prepare(`SELECT a.id, a.name, a.description, a.created_at, a.current_revision, cur.kind AS current_kind, (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id) AS runs
+    const rows = this.db.prepare(`SELECT a.id, a.name, a.description, a.created_at, a.current_revision, cur.kind AS current_kind, (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id) AS runs,
+      ${this.archivedAtSql("agent", "a.id")} AS archived_at
       FROM agents a LEFT JOIN revisions cur ON cur.id = a.current_revision ORDER BY a.name, a.id`).all() as Array<Record<string, unknown>>;
-    return rows.map((r) => ({ id: r.id as string, name: r.name as string, ...(r.description ? { description: r.description as string } : {}), createdAt: r.created_at as string, current: (r.current_revision as string | null) ?? null, currentKind: (r.current_kind as RevisionKind | null) ?? null, runs: Number(r.runs) }));
+    return rows.map((r) => ({ id: r.id as string, name: r.name as string, ...(r.description ? { description: r.description as string } : {}), createdAt: r.created_at as string, current: (r.current_revision as string | null) ?? null, currentKind: (r.current_kind as RevisionKind | null) ?? null, runs: Number(r.runs), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}) }));
   }
   /** Newest first. */
   listRevisions(agent: string): RevisionRow[] {
@@ -140,25 +171,25 @@ export class AgentStoreReader {
   }
   /** Newest first; a run joined to its revision's kind. */
   listRuns(filter: { agent?: string; revision?: string } = {}): RunRow[] {
-    const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary FROM runs r JOIN revisions v ON v.id = r.revision_id
+    const rows = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, ${this.runArchivedAtSql()} AS archived_at FROM runs r JOIN revisions v ON v.id = r.revision_id
       WHERE (? IS NULL OR r.agent_id = ?) AND (? IS NULL OR r.revision_id = ?) ORDER BY r.started_at DESC, r.rowid DESC`).all(filter.agent ?? null, filter.agent ?? null, filter.revision ?? null, filter.revision ?? null) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}) }));
+    return rows.map((r) => ({ id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}) }));
   }
   /** One run: the README's join (runs, agents, revisions) for one run id, in one statement. The run plus its agent's name and its revision's note; undefined for an unknown run. */
   readRun(runId: string): (RunRow & { agentName: string; note?: string }) | undefined {
-    const r = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, a.name AS agent_name, v.note
+    const r = this.db.prepare(`SELECT r.id, r.agent_id, r.revision_id, v.kind, r.state, r.started_at, r.ended_at, r.cost_usd, r.summary, a.name AS agent_name, v.note, ${this.runArchivedAtSql()} AS archived_at
       FROM runs r JOIN agents a ON a.id = r.agent_id JOIN revisions v ON v.id = r.revision_id WHERE r.id = :id`).get({ id: checkId(runId, "run") }) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}) };
+    return { id: r.id as string, agent: r.agent_id as string, revision: r.revision_id as string, kind: r.kind as RevisionKind, state: r.state as RunState, startedAt: r.started_at as string, ...(r.ended_at ? { endedAt: r.ended_at as string } : {}), ...(r.cost_usd !== null ? { costUsd: Number(r.cost_usd) } : {}), ...(r.summary ? { summary: r.summary as string } : {}), agentName: r.agent_name as string, ...(r.note ? { note: r.note as string } : {}), ...(r.archived_at ? { archivedAt: r.archived_at as string } : {}) };
   }
   /** One agent with every revision and its body, newest first, `current` marked: one statement. Each revision is hash-verified as `readRevision` verifies it. Undefined for an unknown agent. */
   readAgent(agentId: string): { agent: Agent; revisions: Array<Revision & { current: boolean }> } | undefined {
-    const rows = this.db.prepare(`SELECT a.id AS agent_id, a.name, a.description, a.created_at AS agent_created_at, a.current_revision,
+    const rows = this.db.prepare(`SELECT a.id AS agent_id, a.name, a.description, a.created_at AS agent_created_at, a.current_revision, ${this.archivedAtSql("agent", "a.id")} AS archived_at,
         v.id, v.parent_id, v.kind, v.body_json, v.note, v.created_at
       FROM agents a LEFT JOIN revisions v ON v.agent_id = a.id WHERE a.id = :id ORDER BY v.created_at DESC, v.rowid DESC`).all({ id: checkId(agentId, "agent") }) as Array<Record<string, unknown>>;
     const first = rows[0];
     if (!first) return undefined;
-    const agent: Agent = { id: first.agent_id as string, name: first.name as string, ...(first.description ? { description: first.description as string } : {}), createdAt: first.agent_created_at as string, current: (first.current_revision as string | null) ?? null };
+    const agent: Agent = { id: first.agent_id as string, name: first.name as string, ...(first.description ? { description: first.description as string } : {}), createdAt: first.agent_created_at as string, current: (first.current_revision as string | null) ?? null, ...(first.archived_at ? { archivedAt: first.archived_at as string } : {}) };
     const revisions = rows.filter((r) => r.id !== null).map((r) => ({ ...revisionOf({ ...r, agent_id: r.agent_id }), current: r.id === first.current_revision }));
     return { agent, revisions };
   }
@@ -219,6 +250,22 @@ export class AgentStore extends AgentStoreReader {
   setCurrent(agent: string, revision: string): void {
     const done = this.db.prepare("UPDATE agents SET current_revision = ? WHERE id = ? AND EXISTS (SELECT 1 FROM revisions WHERE id = ? AND agent_id = ?)").run(checkId(revision, "revision"), checkId(agent, "agent"), revision, agent);
     if (done.changes === 0) throw invalid("that revision is not a revision of that agent");
+  }
+
+  /** Archive (`archived`) or unarchive an agent or a run: one row appended when its state changes, none when it does
+   *  not. When it is archived now, the time it was; else null. A run of an archived agent is archived with it, but its
+   *  own state is its own. */
+  setArchived(kind: ArchiveKind, id: string, archived: boolean): string | null {
+    if (kind !== "agent" && kind !== "run") throw invalid("only an agent or a run is archived");
+    checkId(id, kind);
+    return this.tx(() => {
+      if (!this.db.prepare(`SELECT 1 FROM ${kind === "agent" ? "agents" : "runs"} WHERE id = ?`).get(id)) throw new AgentHomeError("missing", `there is no such ${kind}`);
+      const own = (this.db.prepare(`SELECT ${this.archivedAtSql(kind, "?")} AS at`).get(id) as { at: string | null }).at;
+      if (Boolean(own) === archived) return own;
+      const at = new Date().toISOString();
+      this.db.prepare("INSERT INTO archive_changes (kind, id, archived, at) VALUES (?, ?, ?, ?)").run(kind, id, archived ? 1 : 0, at);
+      return archived ? at : null;
+    });
   }
 
   /** Start a run pinned to `revision` (default: the agent's current one): the run's directory is seeded in pi-durable-disk's layout, then its row goes in as `running`. */
