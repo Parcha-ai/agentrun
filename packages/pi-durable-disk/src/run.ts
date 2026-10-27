@@ -297,8 +297,8 @@ export interface RunLease {
   checkSeal(store: StoreHeadSource): Promise<void>;
   /**
    * `storage` reporting to the lease: every resolved commit's sequence counts toward the seal `release()` writes; a
-   * commit is refused once the watchdog found the lease lapsed, and one stuck meanwhile ends in the fence; a FencedError
-   * from a commit fences the lease. Wrap every Storage a Harness of the run opens over.
+   * commit is refused once the lease is fenced or the watchdog found it lapsed, and one stuck meanwhile ends in the
+   * fence; a FencedError from a commit fences the lease. Wrap every Storage a Harness of the run opens over.
    */
   observe(storage: Storage): Storage;
   /** The store is open and checked: clear the seal in `run.json` (a heartbeat write). */
@@ -741,6 +741,7 @@ class Lease implements RunLease {
   observe(storage: Storage): Storage {
     return observeCommits(storage, {
       before: () => {
+        if (this.#fence) throw this.#fence.error;
         const lapse = this.#watchdogLapse();
         if (lapse) throw this.fence(lapse);
       },
