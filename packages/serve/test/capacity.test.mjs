@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, serve, storeRun } from "./support.mjs";
@@ -75,6 +76,26 @@ test("a start that fails gives its place back: after a store write refused, and 
     assert.equal(run.status, 202, `start ${i}: ${JSON.stringify(run.body)}`);
     await follow(broken.api, run.body.run_id, ["failed"]);
   }
+});
+
+test("a run whose process fails at its start is never started again while its end is written: one process, and its place is free once it reads failed", async (t) => {
+  const { api, data } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
+  const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // The agent store held by another writer while the process fails, as a loaded host's slow store does: the run's end
+  // waits, and nothing may start its process again meanwhile.
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
+  store.exec("BEGIN IMMEDIATE");
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  store.exec("ROLLBACK");
+  store.close();
+  await follow(api, run.body.run_id, ["failed"]);
+  const log = await readFile(join(data, "runs", run.body.run_id, "process.log"), "utf8");
+  assert.equal(log.split("has no default export").length - 1, 1, `one process for the run:\n${log}`);
+  const next = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+  assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
 });
 
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
