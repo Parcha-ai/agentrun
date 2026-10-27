@@ -14,7 +14,7 @@ automatically; [SPEC.md](SPEC.md#the-merge-policy) sets the order. Whether a not
 
 Anything an agent learns on any harness must run on the workflow DSL, so a workflow draft must pass the DSL's own
 `validateWorkflow`, given the host's tool list as its `tools` option. With no list, a draft that names a tool is
-refused.
+refused. A draft merges without a person, so a call node that runs a command (via shell or executor) is refused.
 
 It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
 tarball (`npm pack -w @parcha/agentrun-learn`).
@@ -69,7 +69,7 @@ agentrun-learn check --base origin/main --head "$GITHUB_SHA" --branch "$GITHUB_H
 import { checkBranch, checkRun } from "@parcha/agentrun-learn";
 
 // A git repository: the changes from where the branch starts on base to head.
-const { problems } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["fetch_page", "browser"] });
+const { ok, problems } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["fetch_page", "browser"] });
 
 // Or changes you already hold: path, status, git mode and the file's bytes at the branch's head.
 const found = checkRun({
@@ -79,4 +79,4 @@ const found = checkRun({
 });
 ```
 
-Each problem is `{ rule, path?, detail }`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.
+Each returns `{ ok, problems }`, and each problem is `{ rule, path?, detail }`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.

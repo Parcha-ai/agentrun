@@ -8,7 +8,7 @@ export type Rule =
   | "branch" | "too_many_files" | "locked" | "git_file" | "file_mode" | "outside_layout" | "deleted" | "too_large"
   | "too_many_notes" | "encoding" | "lfs_pointer" | "invisible_unicode" | "secret_shape" | "secret_value" | "memo_missing"
   | "memo" | "memo_run" | "memo_base" | "memo_unlisted" | "other_memo" | "note" | "note_run" | "index" | "index_note" | "skill"
-  | "workflow" | "no_tool_list";
+  | "workflow" | "no_tool_list" | "executable_call";
 
 /** One problem with a run's branch. `detail` never repeats a value that was refused. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };
@@ -43,8 +43,8 @@ export type CheckInput = {
   readonly lockedPaths?: readonly string[];
 };
 
-/** `problems` empty passes: the branch may go on to the injection screen and the review. */
-export type RunCheck = { readonly problems: Problem[] };
+/** `ok` when `problems` is empty: the branch may go on to the injection screen and the review. */
+export type RunCheck = { readonly ok: boolean; readonly problems: Problem[] };
 
 const CAP: Record<Kind, number> = { note: CAPS.note, index: CAPS.index, memo: CAPS.memo, skill: CAPS.file, workflow: CAPS.file, readme: CAPS.file };
 const NEVER_DELETED: readonly Kind[] = ["note", "index", "memo"];
@@ -64,7 +64,7 @@ export function checkRun(input: CheckInput): RunCheck {
   if (!run) add("branch", input.branch === "" ? "no branch was named: give the branch the run pushes to" : `${JSON.stringify(input.branch)} is not runs/<run id>`);
   if (input.changes.length > CAPS.changes) {
     add("too_many_files", `${input.changes.length} changed paths; the cap is ${CAPS.changes} a run, and nothing else was read`);
-    return { problems };
+    return { ok: problems.length === 0, problems };
   }
   const refused = valueMatcher(input.refuseValues ?? []);
   const head = input.headFiles === undefined ? undefined : new Set(input.headFiles);
@@ -166,5 +166,5 @@ export function checkRun(input: CheckInput): RunCheck {
       }
     }
   }
-  return { problems };
+  return { ok: problems.length === 0, problems };
 }

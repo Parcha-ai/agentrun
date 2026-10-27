@@ -177,6 +177,9 @@ Anything an agent learns on any harness must run on the workflow DSL. So:
   run) and with the host's tool list as its `tools` option. Only the DSL's node types pass, and every tool a node names
   (a model or prose-artifact node's `tools`, a `call` node's `tool`, in a child workflow too) must be in the host's
   list. A refusal carries the validator's own issue: its code, the node's path and the message.
+- A draft holds no `call` node with `via: "shell"` or `via: "executor"`, at any depth: it merges without a person, so it
+  carries no way to run a command. A `code` node is allowed; it is the DSL's own compute, syntax-checked and never run
+  here.
 - The host's tool list is the one list of names a workflow can bind on any harness. Under AgentRun the server passes
   its tool table's names. A harness's built-in tool names (Codex's `exec_command`, Pi's `bash`, Claude Code's `Bash`)
   are not in it unless the host puts them there: a harness adapter maps its calls back to the host's names.
@@ -198,12 +201,15 @@ Before every merge, in this order:
 3. The review skill reads what is left and merges what is general, new and consistent with `main`. It refuses
    duplicates, notes that contradict `main` without superseding the old note, and anything tied to one case.
 
+Outside AgentRun, with no injection screen, nothing merges automatically: the checker alone never stands for the screen.
+
 A merge is a merge commit on `main` whose message holds the review's verdict and its reason. `main` is never force-pushed
 or rebased.
 
 ## What the checker reports
 
-`{ problems }`; none means the branch goes on to the injection screen and the review. Each problem names a rule and,
+`{ ok, problems }`, with the run, the branch and its fork point when the checker reads a repository. `ok` means the
+branch goes on to the injection screen and the review. Each problem names a rule and,
 when there is one, the file; it never prints a value it refused.
 
 | Rule | Meaning |
@@ -235,3 +241,4 @@ when there is one, the file; it never prints a value it refused.
 | `skill` | a skill out of shape |
 | `workflow` | a draft the DSL refuses (a tool outside the host's list among them), not named for its folder, or incomplete |
 | `no_tool_list` | a draft names a tool and the host gave no tool list |
+| `executable_call` | a draft holds a call node via shell or executor |

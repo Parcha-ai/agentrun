@@ -1,4 +1,4 @@
-import { validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
+import { inspectWorkflow, validateWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import { LEARNING_ID, RUN_ID } from "./layout.js";
 import { NO_TOOL_LIST } from "./tools.js";
 
@@ -174,7 +174,19 @@ export function skillProblems(text: string, name: string): string[] {
   return out;
 }
 
-export type DraftProblem = { rule: "workflow" | "no_tool_list"; detail: string };
+export type DraftProblem = { rule: "workflow" | "no_tool_list" | "executable_call"; detail: string };
+
+/** The value at a JSON Pointer (RFC 6901) in `doc`. */
+const at = (doc: unknown, pointer: string): unknown =>
+  pointer.split("/").slice(1).reduce<unknown>((value, key) => (value as Record<string, unknown> | undefined)?.[key.replace(/~1/g, "/").replace(/~0/g, "~")], doc);
+
+/** A draft merges without a person, so it carries no call that runs a command: the DSL's inspection lists each node and
+ *  its pointer, and a call node there whose `via` is shell or executor is refused. A code node is the DSL's own compute. */
+const executableCalls = (doc: unknown): DraftProblem[] =>
+  inspectWorkflow(doc).nodes.filter((node) => node.kind === "call").flatMap((node) => {
+    const via = (at(doc, node.path) as { via?: unknown } | undefined)?.via;
+    return via === "shell" || via === "executor" ? [{ rule: "executable_call" as const, detail: `the call node at ${node.path} runs via ${via}; a learned draft never runs a command` }] : [];
+  });
 
 const issuesOf = (doc: unknown, tools?: readonly string[]) => {
   const valid = validateWorkflow(doc as Workflow, { executeCode: false, ...(tools ? { tools } : {}) });
@@ -194,6 +206,8 @@ export function draftProblems(text: string, name: string, tools?: readonly strin
   }
   const issues = issuesOf(doc, tools);
   if (issues.length) return issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
-  if (!tools && issuesOf(doc, []).length) return [{ rule: "no_tool_list", detail: NO_TOOL_LIST }];
-  return (doc as { name?: unknown }).name === name ? [] : [{ rule: "workflow", detail: `its name is not the folder's name, ${name}` }];
+  const out = executableCalls(doc);
+  if (!tools && issuesOf(doc, []).length) out.push({ rule: "no_tool_list", detail: NO_TOOL_LIST });
+  if ((doc as { name?: unknown }).name !== name) out.push({ rule: "workflow", detail: `its name is not the folder's name, ${name}` });
+  return out;
 }

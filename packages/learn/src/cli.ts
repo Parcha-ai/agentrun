@@ -72,8 +72,8 @@ async function main(argv: string[]): Promise<number> {
     ...(toolsInRepo ? { lockedPaths: [toolsInRepo] } : {}),
     refuseValues: refuseValues(values["refuse-values-from-env"]),
   });
-  const ok = report.problems.length === 0;
-  if (values.json) console.log(JSON.stringify({ ok, ...report }, null, 2));
+  const { ok } = report;
+  if (values.json) console.log(JSON.stringify(report, null, 2));
   else {
     const name = report.branch ?? "(no branch)";
     console.log(ok ? `${name}: ok` : `${name}: ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}`);
