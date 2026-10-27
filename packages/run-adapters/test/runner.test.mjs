@@ -146,6 +146,21 @@ function counted(adapter) {
   };
   return { adapter, sends };
 }
+/** The adapter, with the sends numbered in `idle` (from 1) ending at once with no paid request. */
+function idleOn(adapter, idle) {
+  let n = 0;
+  const open = adapter.open.bind(adapter);
+  adapter.open = async (spec, io) => {
+    const session = await open(spec, io);
+    const send = session.send.bind(session);
+    const turnEnd = session.turnEnd.bind(session);
+    let now = false;
+    session.send = async (text) => { now = idle.includes(++n); if (!now) return send(text); };
+    session.turnEnd = () => (now ? Promise.resolve({ status: 'completed' }) : turnEnd());
+    return session;
+  };
+  return { adapter, sends: () => n };
+}
 const idleRun = async (options) => {
   const { adapter, sends } = counted(fauxAdapter({ script: () => [] }));
   const started = Date.now();
@@ -161,9 +176,10 @@ test('turns that make no paid request end the node no_progress, final, after thr
     assert.deepEqual([run.sends, run.requests, run.error.turns], [3, 0, 0], `maxTurns ${maxTurns}`);
     assert.ok(run.ms < 1000, 'at once');
   }
-  // A turn that pays resets the count: idle turns between paid ones never end the node.
-  const mixed = fauxAdapter({ script: () => [{ end: true }, { end: true }, { submit: { answer: 'ok' } }] });
-  assert.deepEqual(await createHarnessRunner(mixed, { store: memorySessionStore() })(stepRequest()), { answer: 'ok' });
+  // A turn that pays resets the count: two idle turns between paid ones, twice, never end the node.
+  const mixed = idleOn(fauxAdapter({ script: () => [{ end: true }, { end: true }, { submit: { answer: 'ok' } }] }), [2, 3, 5, 6]);
+  assert.deepEqual(await createHarnessRunner(mixed.adapter, { store: memorySessionStore() })(stepRequest()), { answer: 'ok' });
+  assert.deepEqual([mixed.sends(), mixed.adapter.requests], [7, 3]);
 });
 
 test('sends have their own count against the turn limit, or maxSends when it is null: exhausted is turn_limit, final', async () => {
