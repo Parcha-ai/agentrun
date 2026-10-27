@@ -200,9 +200,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const refusedStatus = policy.refusedStatus ?? 400;
   const inflight = new Set<AbortController>();
 
+  /** The host's log, which must never break a request (a throw from it is dropped). */
+  const say = (message: string, detail?: Record<string, unknown>) => {
+    try { options.log?.(message, detail); } catch { /* the host's log failed; the request goes on */ }
+  };
   const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage) => {
     // Every refusal is reported, so a client that calls something the table does not hold is seen, not silently refused.
-    options.log?.(`model proxy (${policy.id}): refused`, { status, method: String(req?.method ?? "").slice(0, 16), path: String(req?.url ?? "").slice(0, 200), reason: message.slice(0, 200) });
+    say(`model proxy (${policy.id}): refused`, { status, method: String(req?.method ?? "").slice(0, 16), path: String(req?.url ?? "").slice(0, 200), reason: message.slice(0, 200) });
     res.writeHead(status, { "content-type": "application/json", connection: "close" });
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
   };
@@ -261,6 +265,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let head = "";
     let tail = "";
     let length = 0;
+    /** The provider's answer, once it reached the client whole. */
+    let answered: { ok: boolean } | undefined;
     try {
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
@@ -268,7 +274,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       try {
         options.onResponse?.({ method: route.method, path: route.path, free: route.free === true, status: upstream.status });
       } catch (error) {
-        options.log?.(`model proxy (${policy.id}): onResponse threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        say(`model proxy (${policy.id}): onResponse threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       }
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
@@ -283,18 +289,46 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         }
       }
       res.end();
-      // A provider's error answer was not a paid response: it costs nothing.
-      const usage = upstream.ok ? policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`) : { input: 0, output: 0, cacheRead: 0 };
-      if (usage && !route.free) {
-        const usd = upstream.ok ? (options.price?.(model, usage) ?? null) : 0;
-        await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) });
-      }
+      answered = { ok: upstream.ok };
     } catch (error) {
-      options.log?.(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      say(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
       else res.destroy();
     } finally {
       inflight.delete(controller);
+    }
+    // The client has the provider's whole answer: now it is booked. Nothing here can turn it into an error the client
+    // sees (and might pay again for): a policy or a price that fails books the request at an unknown cost, and a
+    // booking that fails is reported (the runner stops the node on it).
+    if (!answered || route.free) return;
+    let usage: ProxyUsage | undefined;
+    let usd: number | null = null;
+    if (!answered.ok) {
+      // A provider's error answer was not a paid response: it costs nothing.
+      usage = { input: 0, output: 0, cacheRead: 0 };
+      usd = 0;
+    } else {
+      let unread = false;
+      try {
+        usage = policy.usageOf(length <= USAGE_WINDOW ? tail : `${head}\n${tail}`);
+      } catch (error) {
+        say(`model proxy (${policy.id}): the usage could not be read; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        usage = { input: 0, output: 0, cacheRead: 0 };
+        unread = true;
+      }
+      // A stream cut before its usage reports nothing: the runner counts the request at an unknown cost.
+      if (!usage) return;
+      try {
+        usd = unread ? null : options.price?.(model, usage) ?? null;
+      } catch (error) {
+        say(`model proxy (${policy.id}): the price could not be computed; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        usd = null;
+      }
+    }
+    try {
+      await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) });
+    } catch (error) {
+      say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
   };
 

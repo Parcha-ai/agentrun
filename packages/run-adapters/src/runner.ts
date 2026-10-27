@@ -112,6 +112,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     let turns = earlier.filter((r) => r.kind === RUNNER_RECORDS.request).length;
     let submissions = earlier.filter((r) => r.kind === RUNNER_RECORDS.submit).length;
     const answered = earlier.filter((r) => r.kind === RUNNER_RECORDS.turn);
+    let answeredTurns = answered.length;
     let spentUsd: number | null = answered.length < turns ? null : answered.reduce<number | null>((sum, r) => {
       const usd = (r.data as { usd?: number | null }).usd;
       return sum === null || usd === null ? null : sum + (usd ?? 0);
@@ -202,6 +203,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const models = {
       beforeRequest: async ({ model }: { model: string }) => {
         if (stopped) throw stopped;
+        // A request admitted earlier that never reported its usage (a stream cut short) cost an unknown amount.
+        if (answeredTurns < turns) spentUsd = null;
         if (limit !== null && turns >= limit) {
           stop(failure("turn_limit"));
           throw stopped;
@@ -217,8 +220,15 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         emit({ type: "request_start", turn: turns, model });
       },
       afterRequest: async (usage: ModelUsage) => {
+        answeredTurns += 1;
         spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
-        await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
+        try {
+          await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
+        } catch (error) {
+          // A paid request whose cost can't be kept: the node stops, saying so, rather than spend on uncounted.
+          if (!stopped) stop(failure("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`));
+          throw error;
+        }
         emit({ type: "request_end", turn: turns, usage });
       },
     };

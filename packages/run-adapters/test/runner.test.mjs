@@ -380,6 +380,29 @@ test("a stale runner's accepted submission is refused once a newer process opene
   assert.deepEqual(await createHarnessRunner(live, { store })(stepRequest()), { answer: 'live' });
 });
 
+test("a paid request that never reported its usage leaves the node's spend unknown, in the same process too", async () => {
+  // The harness's first request is answered with no usage (a stream cut short): the next one sees an unknown spend.
+  const adapter = fauxAdapter({ script: () => [{ say: 'one', usd: 0.25 }, { say: 'two', usd: 0.25 }, { submit: { answer: 'ok' } }] });
+  const open = adapter.open.bind(adapter);
+  adapter.open = async (spec, io) => {
+    let dropped = false;
+    const models = { ...io.models, afterRequest: async (usage) => { if (!dropped) { dropped = true; return; } return io.models.afterRequest(usage); } };
+    return open(spec, { ...io, models });
+  };
+  const asked = [];
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });
+  assert.deepEqual(await runNode(stepRequest()), { answer: 'ok' });
+  assert.deepEqual(asked, [0, null, null]);
+});
+
+test("a paid request whose cost can't be recorded stops the node, saying so, not spending on uncounted", async () => {
+  const store = memorySessionStore();
+  const failing = { ...store, open: async (key) => { const writer = await store.open(key); return { ...writer, key, read: writer.read, append: async (records) => { if (records.some((r) => r.kind === RUNNER_RECORDS.turn)) throw new Error('the store is down'); return writer.append(records); } }; } };
+  const adapter = fauxAdapter({ script: () => [{ say: 'one' }, { submit: { answer: 'ok' } }] });
+  await assert.rejects(createHarnessRunner(adapter, { store: failing, timeoutMs: 5_000 })(stepRequest()), (error) => error instanceof HarnessRunError && error.reason === 'model_error' && /could not be recorded: the store is down/.test(error.message));
+  assert.equal(adapter.requests, 1, 'nothing more was spent');
+});
+
 test('a stop that lands while the session store is being read rejects aborted at once, and opens no session, on either signal', async () => {
   for (const via of ['request', 'options']) {
     const store = memorySessionStore();

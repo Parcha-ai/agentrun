@@ -46,13 +46,13 @@ async function proxy(t, extra = {}) {
   const hooks = { before: [], after: [], logged: [], responses: [] };
   const p = await startModelProxy({
     onResponse: extra.onResponse ?? ((r) => hooks.responses.push(r)),
-    log: (message, detail) => hooks.logged.push({ message, ...detail }),
+    log: extra.log ?? ((message, detail) => hooks.logged.push({ message, ...detail })),
     policy: extra.policy ?? policy,
     model: 'session-model',
     origin: 'https://provider.invalid/ignored/path',
     credential: extra.credential ?? (() => 'provider-secret'),
-    hooks: { beforeRequest: async (r) => { hooks.before.push(r); if (extra.refuse) throw new Error(extra.refuse); }, afterRequest: async (u) => { hooks.after.push(u); } },
-    price: () => 0.001,
+    hooks: { beforeRequest: async (r) => { hooks.before.push(r); if (extra.refuse) throw new Error(extra.refuse); }, afterRequest: async (u) => { hooks.after.push(u); if (extra.afterThrows) throw new Error(extra.afterThrows); } },
+    price: extra.price ?? (() => 0.001),
     fetch: extra.fetch ?? (async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body) }); return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); }),
   }, KEY);
   t.after(() => p.close());
@@ -149,6 +149,28 @@ test("an onResponse that throws loses neither the provider's answer nor its book
   assert.match(r.text, /"done":true/);
   assert.deepEqual(hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001 }], 'the paid request is booked once');
   assert.ok(hooks.logged.some((l) => /onResponse threw/.test(l.message) && /a host bug/.test(l.error)));
+});
+
+test("no host callback that runs after a paid answer can turn it into an error or lose its booking", async (t) => {
+  // A log that throws, beside an onResponse that throws: the answer and its booking go on.
+  const noisy = await proxy(t, { onResponse: () => { throw new Error('host bug'); }, log: () => { throw new Error('log bug'); } });
+  assert.equal((await send(noisy.p.url)).status, 200);
+  assert.deepEqual(noisy.hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001 }]);
+  // A policy that cannot read the usage, or a price that throws: booked once, at an unknown cost.
+  const unreadable = await proxy(t, { policy: { ...policy, usageOf: () => { throw new Error('policy bug'); } } });
+  const answer = await send(unreadable.p.url);
+  assert.deepEqual([answer.status, /"done":true/.test(answer.text)], [200, true]);
+  assert.deepEqual(unreadable.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }]);
+  const unpriced = await proxy(t, { price: () => { throw new Error('price bug'); } });
+  assert.equal((await send(unpriced.p.url)).status, 200);
+  assert.deepEqual(unpriced.hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: null, estimated: true }]);
+  // A booking that fails: the client still has the whole answer, and the failure is reported, not a 502.
+  const unbooked = await proxy(t, { afterThrows: 'store down' });
+  const kept = await send(unbooked.p.url);
+  assert.deepEqual([kept.status, /"done":true/.test(kept.text)], [200, true]);
+  assert.equal(unbooked.hooks.after.length, 1);
+  assert.ok(unbooked.hooks.logged.some((l) => /afterRequest threw/.test(l.message) && /store down/.test(l.error)));
+  assert.ok(!unbooked.hooks.logged.some((l) => /did not complete/.test(l.message)));
 });
 
 test('a free route is forwarded without asking the runner, and reports no usage', async (t) => {
