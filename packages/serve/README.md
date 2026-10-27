@@ -301,8 +301,8 @@ A link opens the sign-in page, and only its Continue button spends it, so a mail
 nobody in. A session lasts 7 days idle and 30 at most. People have a role (member or admin) and no password. The server's
 token keeps working for scripts and the CLI.
 
-Writes from a browser must come from the page's own origin: the public URL, or `http://localhost:<port>` and
-`http://127.0.0.1:<port>` without one. Serve the image on another address or port, and set `AGENTRUN_PUBLIC_URL` to the
+Writes from a browser must come from the page's own origin: the public URL, or this machine's loopback address on the
+server's port (localhost or 127.0.0.1) without one. Serve the image on another address or port, and set `AGENTRUN_PUBLIC_URL` to the
 address people open.
 
 ## A run's life
