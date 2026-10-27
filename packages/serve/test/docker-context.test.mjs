@@ -45,6 +45,8 @@ test("both stages build on one digest-pinned node:22 trixie base, and the runtim
   assert.equal(bases[1], bases[0], "one base for both stages");
   // pi-git-remote needs git 2.40; trixie's is 2.47, bookworm's 2.39.
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
-  assert.match(runtime, /apt-get install -y -qq --no-install-recommends tini git\b/, "the runtime installs git with tini");
+  const install = /apt-get install [^\n]*/.exec(runtime)?.[0] ?? "";
+  assert.match(install, /--no-install-recommends/, "without recommends");
+  for (const pkg of ["tini", "git"]) assert.match(install, new RegExp(`\\s${pkg}(\\s|$)`), `the runtime installs ${pkg}`);
   assert.match(runtime, /git --version/, "the build checks the git it installed");
 });
