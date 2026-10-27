@@ -4,7 +4,8 @@
 import { inspectWorkflow } from "@parcha/agentrun-dsl";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
-import { CAPS, COMMIT_SHA, LAYOUT, LEARNING_ID, learningPath, memoPath, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { CAPS, COMMIT_SHA, LAYOUT, LEARNING_ID, learningPath, memoPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import type { Reflection } from "./reflect.js";
 import { repoWorkflowDir } from "./trial.js";
 import { type Candidate, ENTRY_TYPES } from "./types.js";
 
@@ -26,6 +27,8 @@ export type RunBranchInput = {
   readonly uses?: string;
   readonly outcome?: "completed" | "failed" | "stopped";
   readonly costUsd?: number;
+  /** The memo's two sections in the agent's words, already checked; without it the host's lines stand. */
+  readonly reflection?: Reflection;
 };
 
 const NOTE_TYPES: readonly string[] = ENTRY_TYPES;
@@ -107,13 +110,13 @@ export function runBranchFiles(input: RunBranchInput): Record<string, string> {
     ...(input.costUsd === undefined ? [] : [`cost_usd: ${input.costUsd}`]),
     "---",
     "## What happened",
-    `The run proposed ${count(fresh.length, "note")}, used ${count(used.size, "note")} again and handed over ${count(input.drafts?.length ?? 0, "workflow")}.`,
+    input.reflection?.whatHappened ?? `The run proposed ${count(fresh.length, "note")}, used ${count(used.size, "note")} again and handed over ${count(input.drafts?.length ?? 0, "workflow")}.`,
     "",
     "## What I learned",
     ...(learned.length ? learned : ["- Nothing new."]),
     "",
     "## What could be better",
-    "- The run recorded nothing here.",
+    input.reflection?.couldBeBetter ?? "- The run recorded nothing here.",
     "",
     "## Proposed changes",
     ...Object.keys(files).sort().map((path) => `- ${path}`),
@@ -121,6 +124,54 @@ export function runBranchFiles(input: RunBranchInput): Record<string, string> {
   ].join("\n");
   files[memoPath(runId)] = memo;
   return files;
+}
+
+const FRONT = /^---\n([\s\S]*?)\n---\n/;
+const PLAIN_PATH = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\/?$/;
+
+/** The memo as the host renders it when it cannot land as the run wrote it: the front matter's facts, each checked, a line
+ *  saying why in "What happened", a host line in "What I learned" and "What could be better", and "Proposed changes" as
+ *  the paths it named that the run's branch `changed` (or a folder, ending in `/`, that holds one) and nothing after them.
+ *  No text of the run's lands, not even a Review it wrote or a token spelled as a path. Undefined when the front matter
+ *  does not hold a run, a base and an outcome. */
+export function hostRenderedMemo(memo: string, reason: string, changed: Iterable<string>): string | undefined {
+  const touched = [...changed];
+  const named = (path: string) => (path.endsWith("/") ? touched.some((file) => file.startsWith(path)) : touched.includes(path));
+  const front = FRONT.exec(memo);
+  if (!front) return undefined;
+  const facts = new Map(front[1]!.split("\n").map((line) => /^([a-z_]+): (.*)$/.exec(line.replace(/\s+#.*$/, ""))).filter((m) => m !== null).map((m) => [m![1]!, m![2]!.trim()]));
+  const run = facts.get("run");
+  const base = facts.get("base");
+  const outcome = facts.get("outcome");
+  if (run === undefined || !RUN_ID.test(run) || base === undefined || !/^[0-9a-f]{12,40}$/.test(base) || !["completed", "failed", "stopped"].includes(outcome ?? "")) return undefined;
+  const harness = facts.get("harness");
+  const untrusted = facts.get("untrusted");
+  const cost = facts.get("cost_usd");
+  const body = memo.slice(front[0].length);
+  const proposed = /(?:^|\n)## Proposed changes\n([\s\S]*?)(?=\n## |$)/.exec(body)?.[1] ?? "";
+  const paths = [...new Set(proposed.split("\n").map((line) => /^- (\S+)/.exec(line)?.[1]).filter((p): p is string => p !== undefined && PLAIN_PATH.test(p) && !p.split("/").includes("..") && named(p)))].slice(0, CAPS.files);
+  return [
+    "---",
+    `run: ${run}`,
+    `base: ${base}`,
+    ...(harness !== undefined && /^[a-z0-9][a-z0-9-]{0,31}$/.test(harness) ? [`harness: ${harness}`] : []),
+    `outcome: ${outcome}`,
+    ...(untrusted === "true" || untrusted === "false" ? [`untrusted: ${untrusted}`] : []),
+    ...(cost !== undefined && /^\d+(?:\.\d+)?$/.test(cost) ? [`cost_usd: ${cost}`] : []),
+    "---",
+    "## What happened",
+    `The run's memo is not landed: ${reason}.`,
+    "",
+    "## What I learned",
+    "- The run's own lines are not landed.",
+    "",
+    "## What could be better",
+    "- The run's own lines are not landed.",
+    "",
+    "## Proposed changes",
+    ...(paths.length ? paths.map((p) => `- ${p}`) : ["- Nothing named."]),
+    "",
+  ].join("\n");
 }
 
 /** A candidate as curate reads it off a run's branch. */
@@ -138,7 +189,6 @@ export type RunBranch = {
   readonly uses?: string;
 };
 
-const FRONT = /^---\n([\s\S]*?)\n---\n/;
 
 /** Reads a run's branch back from the files it changed (`after`) and what they were where it started (`before`); a string
  *  is why it cannot be read. */

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
-import { type BranchCandidate, readRunBranch, renderIndex } from "./branch.js";
+import { type BranchCandidate, hostRenderedMemo, readRunBranch, renderIndex } from "./branch.js";
 import { assertNotRulesLocked, CAPS, COMMIT_SHA, isRulesLocked, LAYOUT, learningPath, memoPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
 import { repoWorkflowDir } from "./trial.js";
 import { byUse, indexLine, renderSection } from "./section.js";
@@ -104,6 +104,10 @@ export type CurateOptions = {
   /** The host's tool list, the names a workflow can bind on any harness, for the step 1 checker: a draft that names a
    *  tool outside it, or names one when the host gave none, is refused. A Pi host passes its registered tools' names. */
   readonly tools?: readonly string[];
+  /** The run ids to curate; every other run's branch is left as it is, unjudged. Default: every run. */
+  readonly only?: readonly string[];
+  /** Plan each run and commit nothing: the report's `planned` holds each plan, for `landHeld` once a person decides. */
+  readonly hold?: boolean;
   readonly signal?: AbortSignal;
 };
 
@@ -156,7 +160,26 @@ export type CurateReport = {
   readonly skipped: readonly { readonly branch: string; readonly reason: string }[];
   /** Pushes to main, rejected ones included. */
   readonly pushes: number;
+  /** With `hold`: each run's plan, landed by nothing yet. */
+  readonly planned?: readonly PlannedRun[];
 };
+
+/** A run's curation as planned and not landed, in plain JSON: what `landHeld` lands once a person decides. */
+export type HeldPlan = {
+  readonly version: 1;
+  readonly run: string;
+  /** Main when the plan was made: the plan lands on exactly this main, else it is stale. */
+  readonly main: string;
+  /** The commit the run's branch starts from: the landed second parent's parent. */
+  readonly base?: string;
+  readonly files: Readonly<Record<string, string | null>>;
+  readonly message: string;
+  readonly trailers: Readonly<Record<string, string | readonly string[]>>;
+  /** The memo as it would land, before its Review: a refusal lands it with the person's reason. */
+  readonly memo?: string;
+};
+
+export type PlannedRun = { readonly run: string; readonly plan: HeldPlan; readonly report: Omit<RunReport, "commit"> };
 
 const CURATED_RUN = "Curated-Run";
 /** The trailer on a merge's second parent: the run as it lands. */
@@ -226,6 +249,8 @@ export async function curate(options: CurateOptions): Promise<CurateReport> {
   if (options.runs !== undefined && (!options.runs || typeof options.runs.branches !== "function")) throw new LearnError("invalid", "runs is a repository to read run branches from");
   if (options.admitWorkflow !== undefined && options.admitWorkflow !== null && typeof options.admitWorkflow !== "function") throw new LearnError("invalid", "admitWorkflow is a function");
   if (options.settleUses !== undefined && options.settleUses !== null && typeof options.settleUses !== "function") throw new LearnError("invalid", "settleUses is a function");
+  if (options.only !== undefined && (!Array.isArray(options.only) || !options.only.every((id) => typeof id === "string" && RUN_ID.test(id)))) throw new LearnError("invalid", "only is a list of run ids");
+  if (options.hold !== undefined && typeof options.hold !== "boolean") throw new LearnError("invalid", "hold is true or false");
   const thresholds = checkThresholds(options.thresholds);
   const caps = checkCaps(options.caps);
   const secrets = [...(options.secrets ?? [])];
@@ -243,6 +268,7 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
   const memo = new Map<string, number>();
   const runs: RunReport[] = [];
   const skipped: { branch: string; reason: string }[] = [];
+  const planned: PlannedRun[] = [];
   let pushes = 0;
 
   let main = await mainTip(repo);
@@ -263,6 +289,7 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
       skipped.push({ branch: branch.name, reason: "the name after runs/ is not a run id" });
       continue;
     }
+    if (options.only !== undefined && !options.only.includes(runId)) continue;
     // One question budget per run, across its retries: an answer already given is free, a new one is not.
     const budget = { left: caps.questionsPerRun, asked: 0 };
     for (let attempt = 0; ; attempt++) {
@@ -276,6 +303,11 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
         break;
       }
       assertNotRulesLocked(Object.keys(plan.files));
+      if (options.hold) {
+        const held: HeldPlan = { version: 1, run: runId, main, ...(plan.base ? { base: plan.base } : {}), files: plan.files, message: plan.message, trailers: plan.trailers, ...(plan.memo !== undefined ? { memo: plan.memo } : {}) };
+        planned.push({ run: runId, plan: JSON.parse(JSON.stringify(held)) as HeldPlan, report: plan.report });
+        break;
+      }
       let commit: { sha: string };
       try {
         // commitTo fetches first: a main that moved since `main` was read is a conflict here, before any push.
@@ -300,7 +332,93 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
       break;
     }
   }
-  return { at, main, runs, skipped, pushes };
+  return { at, main, runs, skipped, pushes, ...(options.hold ? { planned } : {}) };
+}
+
+export type LandHeldOptions = {
+  readonly repo: Pick<Repo, "fetch" | "resolve" | "log" | "makeCommit" | "commitTo" | "push">;
+  readonly plan: HeldPlan;
+  /** `approve` lands the plan; `{ refuse }` lands only the memo, its Review the person's reason (one line, 1 to 200
+   *  characters, no control or invisible character). Either way the run is curated. */
+  readonly decision: "approve" | { readonly refuse: string };
+};
+
+export type LandHeldResult =
+  | { readonly status: "landed"; readonly commit: string; readonly main: string }
+  | { readonly status: "already" | "stale"; readonly main: string };
+
+const SHA40 = /^[0-9a-f]{40}$/;
+
+/** The plan, checked as read back from wherever the host kept it, or why not. A shape check, not an integrity check: a
+ *  plan someone altered can still write any note text a curator may write, so the host's custody of the plan file is the
+ *  control (in AgentRun Server, the learning state files no run's tools can reach). It writes no run's memo but its own. */
+function checkHeldPlan(plan: HeldPlan): HeldPlan {
+  const bad = (why: string): never => {
+    throw new LearnError("invalid", `the held plan is out of shape: ${why}`);
+  };
+  if (!plan || typeof plan !== "object" || plan.version !== 1) bad("not a held plan");
+  if (typeof plan.run !== "string" || !RUN_ID.test(plan.run)) bad("its run is not a run id");
+  if (typeof plan.main !== "string" || !SHA40.test(plan.main)) bad("its main is not a commit id");
+  if (plan.base !== undefined && (typeof plan.base !== "string" || !SHA40.test(plan.base))) bad("its base is not a commit id");
+  if (!plan.files || typeof plan.files !== "object" || Array.isArray(plan.files) || !Object.values(plan.files).every((v) => v === null || typeof v === "string")) bad("its files are not path to text");
+  if (typeof plan.message !== "string" || plan.message.trim() === "") bad("it has no message");
+  if (plan.memo !== undefined && typeof plan.memo !== "string") bad("its memo is not text");
+  const trailers = plan.trailers;
+  if (!trailers || typeof trailers !== "object" || Object.values(trailers).some((v) => typeof v !== "string" && !(Array.isArray(v) && v.every((x) => typeof x === "string")))) bad("its trailers are not text");
+  const curated = trailers[CURATED_RUN];
+  if ((Array.isArray(curated) ? curated : [curated]).join("\n") !== plan.run) bad("its Curated-Run is not its run");
+  assertNotRulesLocked(Object.keys(plan.files));
+  if (Object.keys(plan.files).some((path) => path.startsWith(`${LAYOUT.memos}/`) && path !== memoPath(plan.run))) bad("it writes another run's memo");
+  const refusals = guard({ role: "curate", files: plan.files });
+  if (refusals.length) throw new LearnError("invalid", `the held plan writes what a curator may not: ${refusalReason(refusals)}`);
+  return plan;
+}
+
+/**
+ * Lands a plan `curate({ hold: true })` made, once a person decided: approved, it lands as curate would have landed it,
+ * a merge whose second parent is the run as it lands; refused, it lands the memo with the person's reason as its Review
+ * and nothing else. A run already curated answers `already`; a main that moved since the plan answers `stale`, and
+ * nothing lands: plan it again.
+ */
+export async function landHeld(options: LandHeldOptions): Promise<LandHeldResult> {
+  if (!options || typeof options !== "object" || !options.repo) throw new LearnError("invalid", "landHeld needs { repo, plan, decision }");
+  const { decision } = options;
+  let reason: string | undefined;
+  if (decision !== "approve") {
+    const text = decision && typeof decision === "object" ? decision.refuse : undefined;
+    if (typeof text !== "string" || text.trim() === "" || Array.from(text).length > 200 || /[\p{Cc}\p{Cf}]/u.test(text)) {
+      throw new LearnError("invalid", "a decision is \"approve\" or { refuse: one line of 1 to 200 characters }");
+    }
+    reason = text.trim();
+  }
+  const plan = checkHeldPlan(options.plan);
+  const { repo } = options;
+  return exclusive(repo, async () => {
+    const main = await mainTip(repo);
+    if ((await curatedRuns(repo as CurateRepo, main)).has(plan.run)) return { status: "already" as const, main };
+    if (main !== plan.main) return { status: "stale" as const, main };
+    let files: Record<string, string | null> = { ...plan.files };
+    let message = plan.message;
+    let trailers: Record<string, string | string[]> = Object.fromEntries(Object.entries(plan.trailers).map(([k, v]) => [k, typeof v === "string" ? v : [...v]]));
+    if (reason !== undefined) {
+      message = `curate: run ${plan.run}: refused by a person: ${reason}`;
+      trailers = { [CURATED_RUN]: plan.run };
+      files = {};
+      if (plan.memo !== undefined) {
+        const reviewed = `${plan.memo.replace(/\n+$/, "")}\n\n## Review\n${message}\n`;
+        if (Buffer.byteLength(reviewed, "utf8") <= CAPS.memo) files[memoPath(plan.run)] = reviewed;
+      }
+    }
+    const landed = await repo.makeCommit({ parent: plan.base ?? main, files, message: `curate: run ${plan.run} as it lands`, trailers: { [LANDED_RUN]: plan.run } });
+    try {
+      const commit = await repo.commitTo("main", { files, message, trailers, parent: main, mergeParent: landed, allowEmpty: true });
+      await repo.push(commit.sha, "main");
+      return { status: "landed" as const, commit: commit.sha, main: commit.sha };
+    } catch (error) {
+      if (!(error instanceof GitRemoteError) || error.code !== "conflict") throw error;
+      return { status: "stale" as const, main: await mainTip(repo) };
+    }
+  });
 }
 
 export type RetireOptions = {
@@ -391,8 +509,8 @@ type PlanInput = {
   readonly main: string;
 };
 
-const SCREENED = /^(?:learnings\/L-[0-9a-f]{12}\.md|\.agents\/skills\/[^/]+\/SKILL\.md|workflows\/[^/]+\/(?:workflow\.json|README\.md))$/;
-const kindOf = (path: string) => (path.startsWith("learnings/") ? "a note" : path.startsWith(".agents/") ? "a skill" : "a workflow draft");
+const SCREENED = /^(?:learnings\/L-[0-9a-f]{12}\.md|\.agents\/skills\/[^/]+\/SKILL\.md|workflows\/[^/]+\/(?:workflow\.json|README\.md)|memos\/[^/]+\.md)$/;
+const kindOf = (path: string) => (path.startsWith("learnings/") ? "a note" : path.startsWith(".agents/") ? "a skill" : path.startsWith("memos/") ? "the memo" : "a workflow draft");
 
 /** Each file the screen refuses, with why; empty when every one passes. */
 async function screenFiles(options: Resolved, { classify, threshold }: InjectionScreen, files: Readonly<Record<string, string | null>>): Promise<Map<string, string>> {
@@ -424,6 +542,8 @@ type Plan = {
   readonly message: string;
   readonly trailers: Record<string, string | string[]>;
   readonly report: Omit<RunReport, "commit">;
+  /** The memo as it lands, before the Review is added. */
+  readonly memo?: string;
 };
 
 type Lists = { [K in "accepted" | "superseded" | "duplicates" | "used" | "held" | "refused" | "archived" | "settled"]: CurateItem[] };
@@ -835,8 +955,11 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     files[`${dir}/workflow.json`] = `${JSON.stringify(revision.workflow, null, 2)}\n`;
     if (typeof readme !== "string" && (await repo.read(`${dir}/README.md`, main)) === undefined) files[`${dir}/README.md`] = `# ${name}\n\nThe ${name} workflow. When to use it: \`${LAYOUT.skills}/${name}/SKILL.md\`.\n`;
   }
+  // The memo lands as the run wrote it when the screen passed it, else as the host renders it: none of the run's text.
   const memo = runFiles[memoPath(runId)];
-  if (typeof memo === "string") files[memoPath(runId)] = memo;
+  const screenedMemo = screened.get(memoPath(runId));
+  const landed = typeof memo !== "string" ? undefined : screenedMemo === undefined ? memo : hostRenderedMemo(memo, screenedMemo, Object.keys(runFiles));
+  if (landed !== undefined) files[memoPath(runId)] = landed;
   const index = renderIndex([...entries.values()].filter((l) => l.status === "active"));
   if (index !== undefined) files[LAYOUT.index] = index;
   for (const id of [...touched].sort()) {
@@ -906,6 +1029,7 @@ function finish(input: PlanInput, lists: Lists, files: Record<string, string | n
   // The memo the run proposed lands with the review's verdict and reasons as its last section, when it still fits its cap.
   const memoFile = memoPath(input.runId);
   const memo = files[memoFile];
+  const unreviewed = typeof memo === "string" ? memo : undefined;
   if (typeof memo === "string") {
     const reviewed = `${memo.replace(/\n+$/, "")}\n\n## Review\n${message}\n`;
     if (Buffer.byteLength(reviewed, "utf8") <= CAPS.memo) files[memoFile] = reviewed;
@@ -918,6 +1042,7 @@ function finish(input: PlanInput, lists: Lists, files: Record<string, string | n
     message,
     trailers,
     report: { run: input.runId, ...lists, questions },
+    ...(unreviewed !== undefined ? { memo: unreviewed } : {}),
   };
 }
 
