@@ -72,15 +72,16 @@ host's tool list for the checker is the file <tools file>. The agentrun-learn co
 every new and changed file on the branch and found no instruction planted in it: the injection screen passed.
 ```
 
+The prompt's claim that a person had read the files was not true; an agent had.
+
 The runs used the skills as first written, whose principle line was "A workflow draft uses DSL nodes and the host's
 tools only, never a harness's built-in tool, and never a shell or executor call." The skills now say "DSL model, judge
 and tool-call nodes ... never a code, shell or executor node". No run wrote a workflow draft, so the change touches
 nothing the runs did.
 
-Outside AgentRun there is no injection screen. For this proof no person reviewed. The building agent read every changed
-file, and the review prompt was told that had happened, so that the merge path could be exercised. Under the skill's
-rule an agent reading is not a stand-in for the screen. Where a merge message says the screen passed, it repeats what
-the review prompt told it.
+For this proof no person reviewed. The building agent read every new and changed file, and the review prompt was told a
+person had, so that the merge path could be exercised. Under the review skill's rule an agent reading is not a stand-in
+for the screen, and outside AgentRun nothing should merge without a person or the host's screen.
 
 ## The model
 
@@ -128,6 +129,9 @@ tokens.
 | Run 2 memo | [`pi/memos/2026-10-27-0330-b3c4.md`](pi/memos/2026-10-27-0330-b3c4.md) | [`claude-code/memos/2026-10-27-0340-cc02.md`](claude-code/memos/2026-10-27-0340-cc02.md) |
 | The note on run 2's branch | [`pi/run2-L-25097a8b5536.md`](pi/run2-L-25097a8b5536.md), now naming both runs | [`claude-code/run2-L-d9e97c144a17.md`](claude-code/run2-L-d9e97c144a17.md), now naming both runs |
 | History | [`pi/history.txt`](pi/history.txt) | [`claude-code/history.txt`](claude-code/history.txt) |
+
+The merge messages are recorded as the reviews wrote them. Where one says the screen passed, it repeats the review
+prompt. The prompt's claim that a person had read the files was not true; an agent had.
 
 Both answers are right in both runs. In each repository the review merged run 1's branch with a merge commit, and run
 2's branch starts from that merge. Run 2's memo names the note it followed, and run 2 added its own id to that note's
