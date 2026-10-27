@@ -2,7 +2,7 @@
 // for hosts A, B and C, the run, token and unit bookkeeping, the CLI supervisor helpers, and the before and after hooks
 // that set up /mnt/pda/p5 and remove everything a test made (recorded in P5-STATE.json), also on failure. Each file that
 // imports it runs in its own process, with its own hooks; they share the ledger.
-import { after, afterEach, before, beforeEach } from "node:test";
+import { after, afterEach, before, beforeEach, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -229,13 +229,15 @@ const ours = (name: string) => name.includes(`p5-${STAMP}-`);
 
 /**
  * After each test, whatever it left up on this host: daemons it froze, supervise loops, units and mounts of this run.
- * A test that passed has already cleaned up (its last assertion is an empty mount table), so this matters after a red:
- * without it, every later test fails its own empty-mount-table check on the red one's leftovers. Only this run's
- * processes, units and mounts, by name; run directories and token users stay for `after`, which records their removal.
+ * After a red, this keeps every later test from failing its own empty-mount-table check on the red one's leftovers. A
+ * test that passed must have left nothing: what was cleaned after one is recorded with `passed`, and the last `after`
+ * fails the run on it. Only this run's processes, units and mounts, by name; run directories and token users stay for
+ * `after`, which records their removal.
  */
-afterEach(async () => {
-  if (!LIVE) return;
-  const left: Record<string, unknown> = { test: currentTest, thawed: [...stopped], loops: loops.size, units: [], mounts: [] };
+afterEach(async (t) => {
+  // node:test sets `passed` on a test's context (Node 20.12 and later); @types/node 22 does not declare it.
+  const { passed } = t as TestContext & { readonly passed: boolean };
+  const left: Record<string, unknown> = { test: t.name, passed, thawed: [...stopped], loops: loops.size, units: [], mounts: [] };
   for (const pid of stopped) sh("sudo", ["-n", "kill", "-CONT", String(pid)]);
   stopped.clear();
   for (const l of [...loops]) {
@@ -247,7 +249,8 @@ afterEach(async () => {
     const r = await stopInstance(h, "stopped after its test").then(() => "stopped", (e: unknown) => `stop failed: ${(e as Error).message}`);
     (left.units as unknown[]).push({ unit: h.unit, r });
   }
-  for (const line of sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p5-*"]).stdout.trim().split("\n").filter(Boolean)) {
+  const units = LIVE ? sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p5-*"]).stdout : "";
+  for (const line of units.trim().split("\n").filter(Boolean)) {
     const unit = line.split(/\s+/)[0];
     if (!ours(unit)) continue;
     sh("sudo", ["-n", "systemctl", "stop", unit]);
@@ -255,7 +258,7 @@ afterEach(async () => {
     (left.units as unknown[]).push({ unit, r: "stray, stopped" });
     ledger.unitGone(unit, "stray, stopped after its test");
   }
-  for (const mp of archilMounts().filter(ours)) {
+  for (const mp of LIVE ? archilMounts().filter(ours) : []) {
     const via = await unmountClaim(mp).catch((e: unknown) => `failed: ${(e as Error).message}`);
     (left.mounts as unknown[]).push({ mp, via });
     ledger.unmounted(mp, `${String(via)} (after its test)`);
@@ -335,5 +338,11 @@ after(async () => {
   cleanup.delegationsAfter = (await Promise.all(runIds.map((id) => findDelegations(disk, id)))).flat().length;
   results.cleanup = cleanup;
   writeFileSync(resultsFile, JSON.stringify(results, null, 2) + "\n");
+});
+
+// Last, after the cleanup and the results file: anything afterEach had to clean after a test that passed was a leak.
+after(() => {
+  const leaks = ((results.afterEach ?? []) as { passed: boolean }[]).filter((l) => l.passed);
+  assert.deepEqual(leaks, [], `a test that passed left these up (afterEach stopped them): ${JSON.stringify(leaks)}`);
 });
 
