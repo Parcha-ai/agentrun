@@ -163,7 +163,7 @@ export async function verifyPublished(root, selected, { allowAbsent = false, fet
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   assert.equal(process.argv[2], '--package', 'Usage: node scripts/verify-published.mjs --package dsl|jev|pi|pi-durable-disk|all [--allow-absent]');
   assert.ok(process.argv.length === 4 || (process.argv.length === 5 && process.argv[4] === '--allow-absent'));
   const selected = process.argv[3];

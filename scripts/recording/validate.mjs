@@ -7,7 +7,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { BLOB_EXTENSIONS, PAGE_EXTENSIONS, SHEET_EXTENSIONS, TEXT_FILE, credentialIn, credentialInFile, credentialInValue } from '../../packages/harness/src/scan.ts';
 import { artifactProblems, readFile, readsAs } from '../../packages/harness/src/artifact.ts';
 
@@ -404,7 +403,7 @@ export function validateRecording(dir) {
   return problems;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   const dir = process.argv[2];
   if (!dir) { console.error('usage: node scripts/recording/validate.mjs <recording-dir>'); process.exit(2); }
   const problems = validateRecording(dir);
