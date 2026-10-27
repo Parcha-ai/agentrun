@@ -228,3 +228,17 @@ test("an open timeline stream ends with its session: when its person is disabled
   assert.ok(await endsWithin(second, 6_000), "signing the other sessions out ends their streams");
   await owner("POST", `/runs/${run_id}/cancel`, {});
 });
+
+test("an open stream whose session ends any other way ends within the 5 s re-check", { timeout: 60_000 }, async (t) => {
+  const server = await withMember(t);
+  const owner = asPerson(server, server.cookie);
+  assert.equal((await owner("POST", "/agents", { definition: { id: "slow", name: "slow", instructions: "Answer.", tools: [] } })).status, 201);
+  const { run_id } = (await owner("POST", "/agents/slow/runs", { input: { content: "Take your time." } })).json;
+  const watched = stream(server.port, run_id, server.boCookie);
+  assert.equal(await watched.opened, 200);
+  const db = new DatabaseSync(join(server.data, "auth.sqlite"));
+  t.after(() => db.close());
+  db.prepare(`DELETE FROM session WHERE userId = ?`).run(server.bo);
+  assert.ok(await endsWithin(watched, 6_500), "the re-check finds the session gone");
+  await owner("POST", `/runs/${run_id}/cancel`, {});
+});

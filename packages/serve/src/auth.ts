@@ -22,6 +22,8 @@ export const CLIENT_IP_HEADER = "x-agentrun-client-ip";
 const BASE_PATH = "/v2/auth";
 const DAY_S = 86_400;
 const MAX_SESSION_MS = 30 * DAY_S * 1000;
+/** How often an open stream's session is looked at again, the backstop to the closes a change makes at once. */
+const STREAM_RECHECK_MS = 5_000;
 const SETUP_TTL_MS = 30 * 60_000;
 const SETUP_TRIES = 5;
 /** How long a sign-in token lives between the plugin's callback and its verify call, which follows at once. */
@@ -197,6 +199,9 @@ export class Accounts {
   private auth: Auth | undefined;
   private site: { baseUrl: string; origin: string; origins: string[]; cookie: string } | undefined;
   private setupCode: { code: string; until: number; tries: number } | null = null;
+  /** Open streams a session signed in, each with who opened it and how to end it. */
+  private readonly streams = new Set<{ id: string; role: Role; req: IncomingMessage; end: () => void }>();
+  private recheckTimer: NodeJS.Timeout | undefined;
   private settingUp = false;
   /** Sign-ins serve asked for and has not verified yet, by nonce: each takes its token from the plugin's callback. */
   private readonly pending = new Map<string, (token: string) => void>();
@@ -229,7 +234,29 @@ export class Accounts {
   }
 
   close(): void {
+    clearInterval(this.recheckTimer);
     this.db.close();
+  }
+
+  /** Keeps an open stream to the session that opened it: `end` is called once the session no longer signs in the same
+   *  person with the same role (disabled, a role change, signed out). Returns what forgets it when the stream ends. */
+  watch(principal: Principal, req: IncomingMessage, end: () => void): () => void {
+    if (principal.kind !== "person") return () => undefined;
+    const entry = { id: principal.id, role: principal.role, req, end };
+    this.streams.add(entry);
+    this.recheckTimer ??= setInterval(() => void this.recheck(), STREAM_RECHECK_MS).unref();
+    return () => void this.streams.delete(entry);
+  }
+
+  /** Ends every open stream (of person `id`, when given) whose session no longer signs in its person and role. */
+  private async recheck(id?: string): Promise<void> {
+    for (const entry of [...this.streams]) {
+      if (id !== undefined && entry.id !== id) continue;
+      const now = await this.person(entry.req).catch(() => null);
+      if (now?.kind === "person" && now.id === entry.id && now.role === entry.role) continue;
+      this.streams.delete(entry);
+      entry.end();
+    }
   }
 
   private ready() {
@@ -324,7 +351,7 @@ export class Accounts {
     if (!method) throw new ApiError("not_found", `no route ${raw}`);
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${raw}`, {}, { allow: method });
     // The 30-day limit holds here too: a session past it is deleted before the library sees it.
-    await this.person(req);
+    const who = await this.person(req);
     let body: string | undefined;
     if (method !== "GET") {
       this.checkWrite(req);
@@ -336,6 +363,8 @@ export class Accounts {
       body = JSON.stringify(value);
     }
     const answer = await auth.handler(new Request(`${baseUrl}${raw}${search}`, { method, headers: headersOf(req), ...(body === undefined ? {} : { body }) }));
+    // A signed-out session's streams end now, not at the next look.
+    if (who?.kind === "person" && (path === "/sign-out" || path === "/revoke-other-sessions")) await this.recheck(who.id);
     const headers: Record<string, string | string[]> = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
     answer.headers.forEach((value, name) => void (name !== "set-cookie" && (headers[name] = value)));
     const cookies = answer.headers.getSetCookie();
@@ -454,6 +483,7 @@ export class Accounts {
     if (changed) {
       await internalAdapter.updateUser(id, { ...(role === undefined ? {} : { role }), ...(disabled === undefined ? {} : { banned: disabled, banReason: null }) });
       await internalAdapter.deleteUserSessions(id);
+      await this.recheck(id);
     }
     return this.view(this.row(id)!);
   }

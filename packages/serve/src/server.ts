@@ -450,7 +450,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
 
-  async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run): Promise<void> {
+  async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, run: Run, principal: Principal): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
     const pageOf = async (from: number, wait: number) => {
@@ -468,6 +468,11 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const beat = setInterval(() => res.write(": keepalive\n\n"), 15_000);
     let open = true;
     res.once("close", () => void (open = false));
+    // A stream a session opened ends with that session.
+    const unwatch = accounts?.watch(principal, req, () => {
+      open = false;
+      res.end();
+    });
     try {
       for (let first = true; open; first = false) {
         const page = await pageOf(cursor, first ? 0 : 15_000);
@@ -481,6 +486,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }
     } finally {
       clearInterval(beat);
+      unwatch?.();
       res.end();
     }
   }
@@ -690,7 +696,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "getRun":
         return send(res, 200, await runs.view(await needRun(id)));
       case "getTimeline":
-        return timeline(req, res, url, await needRun(id));
+        return timeline(req, res, url, await needRun(id), principal);
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
