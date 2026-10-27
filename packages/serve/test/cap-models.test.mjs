@@ -66,3 +66,18 @@ test("the input is priced at the cache-write price when it is dearer than input,
     await answer.result();
   }
 });
+
+test("the worst case is the model's full output ceiling, not the max tokens a request asks for: a thinking budget can raise any request to it", async () => {
+  // No input price, $1 per million output tokens, a ceiling of 1,000: the worst case is $0.001 whatever the request asks.
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const asks = { maxTokens: 100 };
+  for (const [cap, sends] of [[0.0005, 0], [0.0011, 1]]) {
+    const { models, sent } = fakeModels();
+    const capped = await capModels(models, cap, 0);
+    const answer = capped.streamSimple(priced, context, asks);
+    assert.equal(sent.length, sends, `a cap of ${cap}: the worst case is the ceiling's $0.001, not the asked 100 tokens' $0.0001`);
+    if (sends) sent[0].end(0);
+    else assert.match((await answer.result()).errorMessage, /could cost up to \$0\.001000/);
+    await answer.result();
+  }
+});

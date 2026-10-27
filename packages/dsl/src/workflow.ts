@@ -39,7 +39,10 @@ export type WorkflowNode =
   | { node: "code"; label: string; code: string; as?: string; metadata?: NodeMetadata }
   | { node: "agent"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier;
       /** The most the node asks to spend, in dollars. @exclusiveMinimum 0 */
-      budget_usd?: number; context?: AgentContext; metadata?: NodeMetadata }
+      budget_usd?: number;
+      /** The most turns the node asks its host for, per attempt. The host applies it within its own cap; the engine
+       *  enforces nothing. @minimum 1 @TJS-type integer */
+      max_turns?: number; context?: AgentContext; metadata?: NodeMetadata }
   | { node: "decide"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "extract"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; out: string; as?: string; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; verify?: VerifyClause; tier?: ModelTier; metadata?: NodeMetadata }
   | { node: "report"; label: string; instructions: string; state?: Record<string, unknown>; sopSection?: string | string[]; requires?: string[]; tools?: string[]; effort?: WorkflowEffort; thinking?: WorkflowThinking; metadata?: NodeMetadata }
@@ -293,6 +296,9 @@ export type WorkflowDeps = {
     /** An `agent` node's `budget_usd`: the most the node asks to spend, recorded; enforcement belongs to the host.
      *  No runner stops a run on money. A host may cap it by what it has left. */
     budgetUsd?: number;
+    /** An `agent` node's `max_turns`: the most turns it asks for, per attempt. The host applies it within its own cap
+     *  and refuses a node that asks for more; the engine enforces nothing. */
+    maxTurns?: number;
     /** An `agent` node's `context`. `fork` asks the host to start the session from the caller's transcript;
      *  a host that has none to fork refuses it. */
     context?: AgentContext;
@@ -1001,6 +1007,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         checkRequires(node, path);
         if ((node as any).tier !== undefined && !(MODEL_TIERS as readonly string[]).includes(String((node as any).tier))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): tier must be fast|default|strong`);
         if (node.node === "agent" && node.budget_usd !== undefined && !(typeof node.budget_usd === "number" && Number.isFinite(node.budget_usd) && node.budget_usd > 0)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): budget_usd must be a number of dollars greater than 0`);
+        if (node.node === "agent" && node.max_turns !== undefined && !(Number.isSafeInteger(node.max_turns) && node.max_turns >= 1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): max_turns must be a positive integer`);
         if (node.node === "agent" && node.context !== undefined && !(AGENT_CONTEXTS as readonly string[]).includes(String(node.context))) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): context must be ${AGENT_CONTEXTS.join("|")}`);
         if (node.node !== "report" && node.verify !== undefined) {
           const v = node.verify as VerifyClause;
@@ -2441,6 +2448,7 @@ async function runNodeBody(node: WorkflowNode, state: Record<string, unknown>, w
       ...(review ? { review } : {}),
       ...((node as any).tier ? { tier: (node as any).tier } : {}),
       ...(node.node === "agent" && node.budget_usd !== undefined ? { budgetUsd: node.budget_usd } : {}),
+      ...(node.node === "agent" && node.max_turns !== undefined ? { maxTurns: node.max_turns } : {}),
       ...(node.node === "agent" && node.context !== undefined ? { context: node.context } : {}),
       system: [sopSlice, deps.skill, node.instructions, ...(policy?.systemBlocks && context ? policy.systemBlocks(context) : [])].filter(Boolean) as string[],
       user: JSON.stringify(promptState),

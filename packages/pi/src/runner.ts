@@ -38,11 +38,18 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
     for (const name of requested) if (!names.has(name)) throw new Error(`Pi tool was not explicitly registered: ${name}`);
     // Every Pi node starts a fresh session, so there is no caller transcript to fork.
     if (request.context === "fork") throw new Error(`Pi node "${request.label}" asks for context: "fork", but the Pi runner starts every node in a fresh session and has no caller transcript to fork. Declare context: "fresh", or run it on a host that supports fork.`);
+    // A node's max_turns applies within this runner's limit, which caps it; without one the node gets the limit.
+    if (request.maxTurns !== undefined) {
+      positive(request.maxTurns, "maxTurns");
+      if (maxTurns !== null && request.maxTurns > maxTurns) throw new Error(`Pi node "${request.label}" asks max_turns ${request.maxTurns}, above this host's cap of ${maxTurns} turns`);
+    }
+    const limit = request.maxTurns ?? maxTurns;
     const validator = Compile(request.schema as never);
     const parameters = submitParameters(request.schema) as ToolDefinition["parameters"];
     const envelopeValidator = Compile(parameters as never);
     let session: PiSession | undefined;
     let turns = 0, submissions = 0;
+    let lastTool: string | undefined;
     let accepted = false;
     let submission: unknown;
     const pendingSubmissions = new Map<string, { args?: unknown; executed: boolean }>();
@@ -58,10 +65,11 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
       void target.abort().catch(() => {});
       target.dispose();
     };
+    const failure = (reason: PiRunError["reason"]) => new PiRunError(reason, turns, submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }) });
     const stop = (reason?: PiRunError["reason"]) => {
       stopped ??= reason;
       if (fatal) rejectStopped(fatal);
-      else if (stopped) rejectStopped(new PiRunError(stopped, turns, submissions));
+      else if (stopped) rejectStopped(failure(stopped));
 
       void session?.abort().catch(() => {});
     };
@@ -120,11 +128,11 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
         appendSystemPromptOverride: () => [], agentsFilesOverride: () => ({ agentsFiles: [] }),
       });
       await bounded(resourceLoader.reload());
-      if (stopped) throw new PiRunError(stopped, turns, submissions);
+      if (stopped) throw failure(stopped);
       const sessionManager = SessionManager.inMemory(cwd);
       const prepared: PiSessionOptions = {
         cwd, model: options.model, modelRuntime: options.modelRuntime,
-        thinkingLevel: nodeThinking(request.thinking, options.thinkingLevel), maxTurns: maxTurns ?? undefined, resourceLoader, settingsManager,
+        thinkingLevel: nodeThinking(request.thinking, options.thinkingLevel), maxTurns: limit ?? undefined, resourceLoader, settingsManager,
         sessionManager,
         tools: [...requested, SUBMIT_TOOL],
         customTools: [...(options.tools ?? []).filter(tool => requested.includes(tool.name)).map(tool => ({
@@ -150,10 +158,11 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
         return opened;
       });
       ({ session } = await bounded(opening));
-      if (stopped) throw new PiRunError(stopped, turns, submissions);
+      if (stopped) throw failure(stopped);
       unsubscribe = session.subscribe(event => {
         // Native events carry correlation IDs, including SDK-rejected calls. Custom
         // sessions without IDs use execute's counter so one attempt is not counted twice.
+        if (event.type === "tool_execution_start" && typeof event.toolName === "string") lastTool = event.toolName.slice(0, 64);
         if (event.type === "tool_execution_start" && event.toolName === SUBMIT_TOOL && event.toolCallId !== undefined && !accepted && !stopped && !fatal) {
           submissions++;
           pendingSubmissions.set(event.toolCallId, {
@@ -167,11 +176,11 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
         }
         if (event.type === "turn_start") turns++;
         if (event.type === "turn_end" && !accepted && event.message?.role === "assistant" && (event.message.stopReason === "error" || event.message.stopReason === "aborted")) stop(event.message.stopReason === "error" ? "model_error" : "aborted");
-        if (event.type === "turn_end" && (accepted || fatal || maxTurns !== null && turns >= maxTurns)) stop(accepted || fatal ? undefined : "turn_limit");
+        if (event.type === "turn_end" && (accepted || fatal || limit !== null && turns >= limit)) stop(accepted || fatal ? undefined : "turn_limit");
         options.onEvent?.(event);
       });
       let prompt = request.user;
-      while (!accepted && !stopped && !fatal && (maxTurns === null || turns < maxTurns)) {
+      while (!accepted && !stopped && !fatal && (limit === null || turns < limit)) {
         const before = turns;
         await bounded(session.prompt(prompt, { expandPromptTemplates: false }));
 
@@ -179,13 +188,13 @@ export function createPiRunner(options: PiRunnerOptions): PiRunner {
         prompt = "You finished without an accepted submission. Call submit with the complete result; plain text does not deliver it.";
       }
       if (fatal) throw fatal;
-      if (stopped) throw new PiRunError(stopped, turns, submissions);
+      if (stopped) throw failure(stopped);
       if (accepted) return submission;
       // The loop ends only on one of the three above or at the turn cap, so what is left is the cap.
-      throw new PiRunError("turn_limit", turns, submissions);
+      throw failure("turn_limit");
     } catch (error) {
       if (fatal) throw fatal;
-      if (stopped) throw new PiRunError(stopped, turns, submissions);
+      if (stopped) throw failure(stopped);
       if (accepted) return submission;
       throw error;
     } finally {

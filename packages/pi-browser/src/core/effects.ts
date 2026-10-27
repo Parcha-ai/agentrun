@@ -15,6 +15,18 @@ const SAFE = new Set(["GET", "HEAD", "OPTIONS"]);
 const SESSIONS = new Set(["page", "iframe", "worker", "service_worker", "shared_worker"]);
 const HARMLESS = { irreversibleBelow: 0.5, atLeast: 0.7 };
 const REFUSED: EffectDecision = { allow: false, verdict: null };
+const EXTENSION = "chrome-extension://";
+/** The run code's own words in `trigger`, so a host asked about the request knows where it came from. */
+const RUN_CODE = "run code";
+
+/** An extension's pages (its offscreen document, its wake page) send nothing a model chose; its service worker is where
+ *  run code executes, and is watched like a page. */
+const ownsExtensionPage = (type: string, url: string): boolean => url.startsWith(EXTENSION) && type !== "service_worker";
+/** Where Stagehand's trace exporter, which cannot be turned off, is pointed: a closed loopback port, so a request to it
+ *  arrives nowhere and is neither held nor journaled. */
+export const INERT_TRACE_ENDPOINT = "http://127.0.0.1:9/v1/traces";
+/** A request to an extension's own files, or to the closed trace port, goes nowhere a model chose. */
+const isOwnTraffic = (url: string): boolean => url.startsWith(EXTENSION) || url === INERT_TRACE_ENDPOINT;
 
 /** Judgments are memoized per request shape, so a page that beacons every second costs one question; `ask` approvals
  *  are not. No judge, a null answer or a failure leaves the request judged irreversible. */
@@ -69,7 +81,7 @@ export class EffectObserver {
   private cut!: () => void;
   private isCut = false;
 
-  private constructor(private readonly ws: WebSocket, private readonly decide: EffectDecider | null, private readonly decideMs: number) {
+  private constructor(private readonly ws: WebSocket, private readonly decide: EffectDecider | null, private readonly decideMs: number, private readonly endpoints: string[]) {
     this.arm();
   }
 
@@ -80,7 +92,9 @@ export class EffectObserver {
   static async open(target: AttachTarget, decide: EffectDecider | null, decideMs = 60_000): Promise<EffectObserver> {
     const ws = openDial(target);
     await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = () => reject(failed("attach_refused", "the effect observer could not reach the browser")); });
-    const observer = new EffectObserver(ws, decide, decideMs);
+    // Where the browser's own DevTools endpoint is: the extension's connection to it is not a socket anyone chose.
+    const endpoints = [target.sdkCdpUrl, target.dial?.url].flatMap((u) => { try { return [new URL(u!).href]; } catch { return []; } });
+    const observer = new EffectObserver(ws, decide, decideMs, endpoints);
     // A throw in a socket listener is an uncaught exception that ends the process: a frame the observer cannot read is dropped.
     ws.onmessage = (event) => { try { observer.receive(JSON.parse(String(event.data))); } catch {} };
     ws.onclose = () => { observer.closed = true; for (const p of observer.pending.values()) p.reject(failed("cdp_closed", "the effect observer's socket closed")); observer.pending.clear(); };
@@ -150,6 +164,7 @@ export class EffectObserver {
       }
     }
     else if (m.method === "Network.loadingFailed" || m.method === "Network.loadingFinished") this.unannounce(m.params.requestId);
+    else if (m.method === "Network.webSocketCreated") this.track(this.socket(m.sessionId!, m.params));
     else if (m.method === "Page.frameRequestedNavigation" && m.params.reason === "formSubmissionPost" && this.sessions.get(m.sessionId!)?.holds) this.announced.set(`navigation:${m.params.frameId}`, { sessionId: m.sessionId!, seq: (this.announceSeq += 1) });
   }
 
@@ -176,7 +191,7 @@ export class EffectObserver {
    *  renderer-side commands only after it resumes. */
   private async setup({ sessionId, targetInfo, waitingForDebugger }: { sessionId: string; targetInfo: { targetId: string; type: string; url: string }; waitingForDebugger: boolean }): Promise<void> {
     const { targetId, type, url } = targetInfo;
-    const holds = this.decide !== null && SESSIONS.has(type) && type !== "worker" && !url.startsWith("chrome-extension://");
+    const holds = this.decide !== null && SESSIONS.has(type) && type !== "worker" && !ownsExtensionPage(type, url);
     this.sessions.set(sessionId, { targetId, type, url, holds });
     const steps: Array<Promise<unknown>> = [];
     if (SESSIONS.has(type)) steps.push(this.send("Network.enable", {}, sessionId));
@@ -204,16 +219,33 @@ export class EffectObserver {
 
   private async sent(sessionId: string, p: { requestId: string; request: { method: string; url: string } }): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (SAFE.has(p.request.method) || !session || session.url.startsWith("chrome-extension://") || session.holds) return;
+    if (SAFE.has(p.request.method) || !session || ownsExtensionPage(session.type, session.url) || isOwnTraffic(p.request.url) || session.holds) return;
     await this.journal(p.requestId, describeRequest(p.request.method, p.request.url), null, null);
+  }
+
+  /** A socket cannot be held (Fetch does not see it), so it is journaled when it is created and never decided, whoever opens
+   *  it. The browser's own DevTools endpoint is the extension's connection to its host, not a request out. */
+  private async socket(sessionId: string, p: { requestId: string; url: string }): Promise<void> {
+    if (!this.sessions.has(sessionId) || this.isOwnEndpoint(p.url)) return;
+    let request: EffectRequest;
+    try { request = describeRequest("WEBSOCKET", p.url); } catch { return; }
+    await this.journal(p.requestId, request, null, null);
+  }
+
+  private isOwnEndpoint(url: string): boolean {
+    // The whole URL, query included: a provider's connection URL carries the session in its query, so a different query is a different socket.
+    try { return this.endpoints.includes(new URL(url).href); } catch { return false; }
   }
 
   private async paused(sessionId: string, p: { requestId: string; networkId?: string; request: { method: string; url: string; postData?: string; headers?: Record<string, string> } }): Promise<void> {
     const { method, url, postData, headers } = p.request;
-    if (SAFE.has(method) || !this.decide) return this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId);
+    if (SAFE.has(method) || !this.decide || isOwnTraffic(url)) return this.send("Fetch.continueRequest", { requestId: p.requestId }, sessionId);
     let request: EffectRequest;
     // A request the observer cannot describe cannot be judged or journaled, and a held request nobody answers waits forever: refuse it.
     try { request = describeRequest(method, url, postData, headers); } catch { return this.send("Fetch.failRequest", { requestId: p.requestId, errorReason: "BlockedByClient" }, sessionId); }
+    // Only the extension's own worker runs the model's code: a website's worker sends what the website sent.
+    const session = this.sessions.get(sessionId);
+    if (session?.type === "service_worker" && session.url.startsWith(EXTENSION)) request = { ...request, trigger: RUN_CODE };
     const cutoff = this.cutoff;
     // Journaled `pending` and committed before deciding: a process that dies mid-decision loses the hold and the
     // request goes, so the journal must already name it. A request whose row could not be saved never leaves.

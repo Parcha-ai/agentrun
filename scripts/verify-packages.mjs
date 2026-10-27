@@ -69,7 +69,9 @@ const allowedExtraFiles = {
 const allowedEndpoints = {
   'pi-browser': [
     // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
-    ['dist/driver/stagehand.js', 'http://127.0.0.1:9/v1/traces'],
+    // The request observer owns the URL (it exempts that export from its holds) and the driver's types carry it.
+    ['dist/core/effects.js', 'http://127.0.0.1:9/v1/traces'],
+    ['dist/core/effects.d.ts', 'http://127.0.0.1:9/v1/traces'],
     ['dist/driver/stagehand.d.ts', 'http://127.0.0.1:9/v1/traces'],
     // The DevTools endpoint of the Chrome the provider started itself, on the free port it chose.
     ['dist/providers/cdp.js', 'http://127.0.0.1:${port}'],

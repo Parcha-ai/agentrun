@@ -343,6 +343,23 @@ test('an operator kill carries to the next attempt only the tool kills that did 
   assert.equal(bad.kills.length, 0, 'and no kill happened');
 
 });
+test('the local place stops at release a child the supervisor gave up on: demo() returns with no child left writing under its scratch', { timeout: 120_000 }, async (t) => {
+  const { tmp, options } = await specWith(t, { name: 'reference' });
+  // The child is held at its linger step until this file exists, so it is still running when the failed kill ends the attempt.
+  const hold = join(tmp, 'hold');
+  process.env.DEMO_LINGER_UNTIL = hold;
+  const control = join(tmp, 'control');
+  const pids = [];
+  t.after(() => reap(pids));
+  const place = ({ paths, self, destroyBoxes, requestFile }) => {
+    const inner = localPlace({ self, paths, destroyBoxes, requestFile });
+    return { ...inner, start: async (order) => { const runner = await inner.start(order); pids.push(runner.pid); setTimeout(() => mkdirSync(control), 50); return runner; } };
+  };
+  const result = await demo({ ...options, argv: ['--json', '--operator-kill', control], place });
+  assert.equal(result.failedKills.length, 1, 'the attempt was given up with its child still held');
+  const alive = pids.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
+  assert.deepEqual(alive, [], 'no child the place started is still running when demo() returns');
+});
 test('a slow status read does not hold up supervision: the spend cap stops a running child while the place is still answering the first read', { timeout: 120_000 }, async (t) => {
   const { tmp, options } = await specWith(t, { name: 'reference', expectedCost: 0.05 });
   process.env.DEMO_JUDGE_COST = '0.3'; process.env.DEMO_LINGER_MS = '20000';
