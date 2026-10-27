@@ -100,7 +100,7 @@ test("a member cannot make themselves more through any endpoint the library serv
   assert.equal(changed.status, 200, changed.text);
   assert.equal((await call(server.port, { path: "/v2/me", headers: { cookie: first.cookie } })).status, 401, "a new password ends the person's other sessions");
   const now = changed.headers["set-cookie"].map((line) => line.split(";")[0]).join("; ");
-  for (const path of ["/revoke-other-sessions", "/revoke-session", "/sign-out"]) assert.ok([200, 400].includes((await bo(path, { token: "none", ...raise }, now)).status), path);
+  for (const path of ["/revoke-other-sessions", "/sign-out"]) assert.ok([200, 400].includes((await bo(path, { token: "none", ...raise }, now)).status), path);
   const db = new DatabaseSync(join(server.data, "auth.sqlite"), { readOnly: true });
   t.after(() => db.close());
   const row = db.prepare(`SELECT name, role, owner, banned, banReason, emailVerified FROM "user" WHERE id = ?`).get(server.bo);

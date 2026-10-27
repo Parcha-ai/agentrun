@@ -99,7 +99,7 @@ test("setup takes the printed code from this server's origin only, keeps it thro
   assert.deepEqual([me.status, me.json.id, me.json.role, me.json.owner], [200, made.json.id, "admin", true], "setup signs the owner in");
   for (const headers of [{ origin: twoOrigin }, { authorization: `Bearer ${two.token}` }]) {
     const again = await setup(two.port, { code: codeOf(two.setupUrl), ...OWNER, email: "eve@example.com" }, headers);
-    assert.deepEqual([again.status, again.json.error.code], [409, "already_set_up"]);
+    assert.deepEqual([again.status, again.json.error.code], [403, "forbidden"], "a code of the contract's closed list");
   }
 });
 
@@ -212,6 +212,7 @@ test("under /v2/auth only the allowlisted endpoints answer, each on its one meth
     "/v2/auth/sign-up/email", "/v2/auth/admin/set-role", "/v2/auth/admin/create-user", "/v2/auth/admin/list-users", "/v2/auth/admin/ban-user", "/v2/auth/delete-user",
     "/v2/auth/change-email", "/v2/auth/forget-password", "/v2/auth/request-password-reset", "/v2/auth/reset-password", "/v2/auth/send-verification-email", "/v2/auth/verify-email",
     "/v2/auth/sign-in/social", "/v2/auth/sign-in/magic-link", "/v2/auth/list-accounts", "/v2/auth/ok", "/v2/auth/error", "/v2/auth/update-session",
+    "/v2/auth/list-sessions", "/v2/auth/revoke-session",
     "/v2/auth/sign-in/email/", "/v2/auth//sign-in/email", "/v2/auth/./sign-in/email", "/v2/auth/sign-in/%65mail", "/v2/auth/update-user/../admin/set-role", "/v2/auth/Sign-In/Email", "//v2/auth/sign-in/email",
   ]) {
     for (const method of ["GET", "POST"]) {
@@ -219,14 +220,18 @@ test("under /v2/auth only the allowlisted endpoints answer, each on its one meth
       assert.deepEqual([res.status, res.json?.error?.code], [404, "not_found"], `${method} ${path}`);
     }
   }
-  for (const [path, method, wrong] of [["/v2/auth/get-session", "GET", "POST"], ["/v2/auth/list-sessions", "GET", "POST"], ["/v2/auth/sign-out", "POST", "GET"], ["/v2/auth/update-user", "POST", "GET"]]) {
+  for (const [path, method, wrong] of [["/v2/auth/get-session", "GET", "POST"], ["/v2/auth/sign-out", "POST", "GET"], ["/v2/auth/update-user", "POST", "GET"]]) {
     const res = await call(server.port, { method: wrong, path, headers, body: wrong === "POST" ? {} : undefined });
     assert.deepEqual([res.status, res.json.error.code, res.headers.allow], [405, "method_not_allowed", method], `${wrong} ${path}`);
   }
+  // The session's token lives in the HttpOnly cookie only: no answer a page's script can read carries it.
+  const token = (cookie) => decodeURIComponent(cookie.split("=")[1]).split(".")[0];
   const session = await call(server.port, { path: "/v2/auth/get-session", headers });
-  assert.deepEqual([session.status, session.json.user.email], [200, OWNER.email]);
-  const sessions = await call(server.port, { path: "/v2/auth/list-sessions", headers });
-  assert.equal(sessions.json.length, 1);
+  assert.deepEqual([session.status, session.json.user.email, session.json.session.token], [200, OWNER.email, undefined]);
+  assert.ok(!session.text.includes(token(server.cookie)), "get-session holds no token");
+  const again = await signIn(server, OWNER.email, OWNER.password);
+  assert.deepEqual([again.res.status, again.res.json.token], [200, undefined]);
+  assert.ok(!again.res.text.includes(token(again.cookie)), "the sign-in answer holds no token");
 });
 
 test("one write gate in front of every route, the library's included: a cookie's write needs this server's Origin and a JSON body; a Bearer request needs neither", async (t) => {
