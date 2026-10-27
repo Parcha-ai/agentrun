@@ -18,6 +18,11 @@ export async function collectCandidates(target: Pick<Session, "snapshot">, conte
   return doc ? doc.order.map((callId) => structuredClone(doc.byCall[callId]!) as Candidate) : [];
 }
 
+/** Not read yet. */
+export function readCandidates(_store: string): Candidate[] {
+  return [];
+}
+
 type ToolContent = { type: "text"; text: string }[];
 type ToolParameters = Parameters<typeof defineTool>[0]["parameters"];
 

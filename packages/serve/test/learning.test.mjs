@@ -10,7 +10,8 @@ import { test } from "node:test";
 import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
-import { outcomeOf, proposeRun, untrustedOf } from "../dist/learning.js";
+import { openStoreReader } from "@parcha/pi-durable-agent";
+import { isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
 import { agent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
@@ -34,26 +35,61 @@ async function onMain(t, data, id, files) {
   return made.sha;
 }
 const note = (l) => ({ [`learnings/${l.id}.md`]: renderLearning(l) });
+function storeRevision(data, id) {
+  const reader = openStoreReader(data);
+  try {
+    return reader.readRevision(id);
+  } finally {
+    reader.close();
+  }
+}
+/** The run's learning state once the server has proposed it after the carry back. */
+async function stateOf(data, agentId, runId, deadlineMs = 20_000) {
+  for (const end = Date.now() + deadlineMs; ; await sleep(50)) {
+    const state = await readRunState(data, agentId, runId);
+    if (state) return state;
+    assert.ok(Date.now() < end, `the run ${runId} was proposed`);
+  }
+}
 
-test("a new agentic agent learns (auto) unless its definition says otherwise, an edit keeps its switch, and only an agentic agent learns", async (t) => {
+test("a new agentic agent learns (auto, stored), an edit without the field keeps it, null turns it off, and only an agentic agent learns", async (t) => {
   const { api, data } = await serve(t);
-  assert.equal((await api("POST", "/agents", agent("a"))).body.definition.learning, "auto", "a new agent learns by default");
-  assert.equal((await api("POST", "/agents", agent("b", { learning: "off" }))).body.definition.learning, "off");
+  const a = await api("POST", "/agents", agent("a"));
+  assert.equal(a.body.definition.learning, "auto", "a new agent learns by default");
+  assert.equal(storeRevision(data, a.body.revision).body.learning, "auto", "and the revision stores it");
+  assert.equal((await api("POST", "/agents", agent("b", { learning: null }))).body.definition.learning, undefined, "off is the field's absence, as for model");
   assert.equal((await api("POST", "/agents", agent("c", { learning: "approve" }))).body.definition.learning, "approve");
   const edited = await api("PUT", "/agents/c/definition", { definition: { instructions: "Answer briefly.", skills: [], tools: [] } });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
   assert.equal(edited.body.definition.learning, "approve", "an edit that leaves learning out keeps the current revision's");
-  assert.equal((await api("PUT", "/agents/c/definition", { definition: { instructions: "Answer briefly.", skills: [], tools: [], learning: "off" } })).body.definition.learning, "off");
+  const off = await api("PUT", "/agents/c/definition", { definition: { instructions: "Answer briefly.", skills: [], tools: [], learning: null } });
+  assert.equal(off.body.definition.learning, undefined, "learning: null turns it off");
+  assert.equal("learning" in storeRevision(data, off.body.revision).body, false);
+  const kept = await api("PUT", "/agents/c/definition", { definition: { instructions: "Answer.", skills: [], tools: [] } });
+  assert.equal(kept.body.definition.learning, undefined, "and an edit after that keeps it off");
   const wrong = await api("POST", "/agents", agent("d", { learning: "always" }));
-  assert.equal(wrong.status, 422);
-  assert.equal(wrong.body.error.fields[0].field, "definition.learning");
+  assert.deepEqual([wrong.status, wrong.body.error.fields[0].field, wrong.body.error.fields[0].reason], [422, "definition.learning", "not_an_option"]);
   const flow = await api("POST", "/agents", flowAgent("e", undefined, { learning: "auto" }));
-  assert.equal(flow.status, 422, "a workflow agent does not learn");
-  assert.equal(flow.body.error.fields[0].field, "definition.learning");
+  assert.deepEqual([flow.status, flow.body.error.fields[0].field, flow.body.error.fields[0].reason], [422, "definition.learning", "not_an_option"], "a workflow agent does not learn");
   const plain = await api("POST", "/agents", flowAgent("f"));
   assert.equal(plain.status, 201);
   assert.equal(plain.body.definition.learning, undefined, "a workflow definition has no learning field");
   assert.equal(existsSync(bareOf(data, "f")), false);
+});
+
+test("the learn tool comes with learning: naming it while learning is off is refused at save, with the fix", async (t) => {
+  const { api, data } = await serve(t);
+  const refused = await api("POST", "/agents", agent("named", { learning: null, tools: ["read", "learn"] }));
+  assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
+  assert.match(refused.body.error.fields[0].fix, /set definition\.learning to auto or approve/i);
+  await api("POST", "/agents", agent("quiet", { learning: null }));
+  const edit = await api("PUT", "/agents/quiet/definition", { definition: { instructions: "Answer.", skills: [], tools: ["learn"] } });
+  assert.equal(edit.status, 422, "an edit that names it while learning stays off is refused too");
+  const named = await api("POST", "/agents", agent("calc", { tools: ["learn"] }));
+  assert.equal(named.status, 201, "naming it while learning is on is allowed");
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  assert.equal((await stateOf(data, "calc", run.run_id)).state, "proposed", "and the run gets one learn tool");
 });
 
 test("an agent that learns has a repository beside the store whose main holds AGENTS.md and agent.json for its current revision, one host commit per change", async (t) => {
@@ -85,7 +121,7 @@ test("an agent that learns has a repository beside the store whose main holds AG
 
 test("an agent that does not learn has no repository, and its runs leave none", async (t) => {
   const { api, data } = await serve(t);
-  await api("POST", "/agents", agent("quiet", { learning: "off" }));
+  await api("POST", "/agents", agent("quiet", { learning: null }));
   const { body: run } = await api("POST", "/agents/quiet/runs", { input: { content: "What have you learned?" } });
   const { last } = await follow(api, run.run_id, ["completed"]);
   assert.equal(last.final, true);
@@ -107,6 +143,8 @@ test("a run starts from main's notes at one commit: they are in its workspace an
   assert.equal(await readFile(join(work, ".agent", "learnings", "L-0123456789ab.md"), "utf8"), renderLearning(lesson("L-0123456789ab", "Search both forms of the legal name.")));
   const bare = bareOf(data, "calc");
   const branch = `runs/${run.run_id}`;
+  const state = await stateOf(data, "calc", run.run_id);
+  assert.deepEqual(state, { state: "proposed", branch, base, sha: tip(bare, branch) }, "the server records what it proposed");
   assert.ok(branches(bare).includes(branch), `the run leaves ${branch}`);
   assert.equal(git(bare, "merge-base", branch, "main"), base, "the branch starts from the commit the run was seeded from");
   const memo = front(show(bare, branch, `memos/${run.run_id}.md`));
@@ -180,9 +218,19 @@ test("a run's base stays where it was seeded when its process dies, main moves, 
   const { last } = await follow(api, run.run_id, ["completed"]);
   assert.equal(last.final, true);
   const bare = bareOf(data, "calc");
+  await stateOf(data, "calc", run.run_id);
   assert.equal(front(show(bare, `runs/${run.run_id}`, `memos/${run.run_id}.md`)).base, base, "the base is the commit the run was first seeded from");
   assert.equal(git(bare, "merge-base", `runs/${run.run_id}`, "main"), base);
   assert.equal(existsSync(join(data, "runs", run.run_id, "work", ".agent", "learnings", "L-ba9876543210.md")), false, "a note main gained later is not the run's");
+});
+
+test("a run that called a tool reaching outside it is untrusted on its memo", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Fetch the page, then learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  await stateOf(data, "calc", run.run_id);
+  assert.equal(front(show(bareOf(data, "calc"), `runs/${run.run_id}`, `memos/${run.run_id}.md`)).untrusted, "true");
 });
 
 test("a cancelled run's memo says it stopped", async (t) => {
@@ -197,24 +245,77 @@ test("a cancelled run's memo says it stopped", async (t) => {
   }
   assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
   await follow(api, run.run_id, ["cancelled"]);
+  await stateOf(data, "calc", run.run_id);
   assert.ok(existsSync(bare) && branches(bare).includes(`runs/${run.run_id}`), "the cancelled run left its branch");
   assert.equal(front(show(bare, `runs/${run.run_id}`, `memos/${run.run_id}.md`)).outcome, "stopped");
   assert.equal(storeRun(data, run.run_id).state, "stopped");
 });
 
-test("proposing a run again makes no second commit: the branch's Run-Id answers already", async (t) => {
+test("the server proposes once the run's end is written, so the memo carries the carried-back cost; proposing again makes no second commit", async (t) => {
   const { api, data } = await serve(t);
   await api("POST", "/agents", agent("calc"));
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   await follow(api, run.run_id, ["completed"]);
+  const { sha } = await stateOf(data, "calc", run.run_id);
   const bare = bareOf(data, "calc");
   const branch = `runs/${run.run_id}`;
-  assert.ok(existsSync(bare) && branches(bare).includes(branch), `the run left ${branch}`);
-  const sha = tip(bare, branch);
-  const again = await proposeRun({ data, agentId: "calc", runId: run.run_id, storeFile: join(data, "runs", run.run_id, "store", "run.sqlite"), outcome: "completed", costUsd: 0, untrusted: false, caseValues: [], secrets: [] });
-  assert.deepEqual(again, { status: "already", sha });
+  const ended = storeRun(data, run.run_id);
+  assert.equal(ended.state, "completed");
+  assert.equal(Number(front(show(bare, branch, `memos/${run.run_id}.md`)).cost_usd), ended.costUsd, "the cost the carry back wrote");
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.deepEqual(await proposeFor(data, reader, run.run_id), { status: "already", sha });
   assert.equal(tip(bare, branch), sha);
   assert.equal(git(bare, "log", "--format=%H", `main..${branch}`), sha, "one commit for the run");
+});
+
+test("a push that fails ends the run as it would have; the next start proposes it, once, and a start after that proposes nothing", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let api = client(first.baseUrl, first.token);
+  await api("POST", "/agents", agent("calc"));
+  const bare = bareOf(data, "calc");
+  // No new ref can be written in the repository: the run's push fails.
+  await chmod(join(bare, "refs", "heads"), 0o555);
+  t.after(() => chmod(join(bare, "refs", "heads"), 0o755));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  const { last } = await follow(api, run.run_id, ["completed"]);
+  assert.equal(last.final, true);
+  assert.equal(storeRun(data, run.run_id).state, "completed", "the run ends completed");
+  await sleep(1_000);
+  await first.close();
+  assert.equal(await readRunState(data, "calc", run.run_id), undefined, "nothing was proposed");
+  assert.equal(branches(bare).includes(`runs/${run.run_id}`), false);
+  await chmod(join(bare, "refs", "heads"), 0o755);
+  for (let start = 0; start < 2; start++) {
+    const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    api = client(next.baseUrl, next.token);
+    const state = await stateOf(data, "calc", run.run_id);
+    assert.equal(state.state, "proposed");
+    await next.close();
+    assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, `one commit for the run after start ${start + 1}`);
+    assert.equal(git(bare, "log", "--format=%(trailers:key=Run-Id,valueonly)", `runs/${run.run_id}`, "-1"), run.run_id);
+  }
+});
+
+test("every write to an agent's repository waits its turn: host commits and a curator's commits at once all land on main", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const curator = join(await scratch(t), "curator");
+  const notes = [0, 1, 2].map((i) => lesson(`L-00000000000${i}`, `Note ${i}.`));
+  const curate = (l) => withAgentRepo(data, "calc", async () => {
+    const repo = await openAgentRepo(data, "calc", curator);
+    const made = await repo.commitTo("main", { files: note(l), message: `curator: ${l.id}` });
+    await repo.push(made.sha, "main");
+  });
+  const edits = ["One.", "Two.", "Three.", "Four."].map((instructions) => api("PUT", "/agents/calc/definition", { definition: { instructions, skills: [], tools: [] } }));
+  const results = await Promise.allSettled([...edits, ...notes.map(curate)]);
+  assert.deepEqual(results.filter((r) => r.status === "rejected").map((r) => r.reason?.message), [], "no writer failed");
+  const bare = bareOf(data, "calc");
+  for (const l of notes) assert.match(show(bare, "main", `learnings/${l.id}.md`), new RegExp(`Note ${l.id.at(-1)}`), `${l.id} is on main`);
+  const current = (await api("GET", "/agents/calc")).body;
+  assert.equal(show(bare, "main", "AGENTS.md"), current.definition.instructions, "main holds the current revision");
+  assert.equal(git(bare, "rev-list", "--merges", "--count", "main"), "0");
 });
 
 test("on a host without git 2.40 a new agent does not learn, one that asks to saves with a warning, and its run is refused", async (t) => {
@@ -240,10 +341,9 @@ test("on a host without git 2.40 a new agent does not learn, one that asks to sa
   assert.equal(ran.status, 202, "an agent that does not learn runs as before");
 });
 
-test("a run's outcome on its memo, and what makes a run untrusted", () => {
-  assert.deepEqual(["completed", "failed", "cancelled"].map(outcomeOf), ["completed", "failed", "stopped"]);
-  const call = (tool_name) => ({ kind: "tool_use", tool_name });
-  assert.equal(untrustedOf([call("read"), call("write"), call("edit"), call("ask_person"), call("learn"), { kind: "text_block", tool_name: null }]), false);
-  assert.equal(untrustedOf([call("read"), call("fetch_page")]), true, "a page from the web");
-  assert.equal(untrustedOf([call("snapshot")]), true, "a tool this host does not know is counted as untrusted, never as safe");
+test("a run's outcome on its memo, and which tools bring outside content in", () => {
+  assert.deepEqual(["completed", "failed", "escalated", "stopped"].map(outcomeOf), ["completed", "failed", "failed", "stopped"]);
+  assert.deepEqual(["read", "write", "edit", "ask_person", "learn"].map(isExternal), [false, false, false, false, false]);
+  assert.equal(isExternal("fetch_page"), true, "a page from the web");
+  assert.equal(isExternal("snapshot"), true, "a tool this host does not know is counted as external, never as safe");
 });

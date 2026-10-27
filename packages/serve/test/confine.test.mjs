@@ -33,7 +33,7 @@ async function probed(api, data, agent, probe, workflow = false) {
   return { runId: run.body.run_id, done: async () => (await follow(api, run.body.run_id, ["completed"]), answers(data, run.body.run_id)) };
 }
 
-test("read, write and edit reach nothing outside work/: the tokens, the store, another run, /proc, a planted link, the data directory and /tmp", async (t) => {
+test("read, write and edit reach nothing outside work/: the tokens, the store, another run, /proc, a planted link, the data directory, /tmp, the agent's learning repository and the run's clone of it", async (t) => {
   const { api, data } = await serve(t, { faux: PROBE });
   assert.equal((await api("POST", "/agents", { definition: { id: "probe", name: "probe", instructions: "Probe.", tools: ["read", "write", "edit"] } })).status, 201);
   // Another run of the same agent, with a secret in its own work/.
@@ -64,6 +64,14 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
     ["write", { path: outside, content: "evil" }],
     ["write", { path: "../tmp/written.txt", content: "evil" }],
     ["edit", { path: "../../../store.sqlite", edits: [{ oldText: "CREATE TABLE", newText: "CREATE TABLX" }] }],
+    // The agent's learning repository, and the run's own clone of it beside its work/.
+    ["read", { path: "../../../agents/probe/learning.git/HEAD" }],
+    ["read", { path: join(data, "agents", "probe", "learning.git", "config") }],
+    ["read", { path: "../learning.git/HEAD" }],
+    ["write", { path: "../../../agents/probe/learning.git/hooks/pre-receive", content: "#!/bin/sh\nexit 0\n" }],
+    ["write", { path: "../learning.git/hooks/post-checkout", content: "#!/bin/sh\nexit 0\n" }],
+    ["edit", { path: "../../../agents/probe/learning.git/HEAD", edits: [{ oldText: "refs/heads/main", newText: "refs/heads/evil" }] }],
+    ["edit", { path: "../learning.git/HEAD", edits: [{ oldText: "refs/heads/main", newText: "refs/heads/evil" }] }],
   ];
   const control = [["write", { path: "inside.txt", content: "inside" }], ["read", { path: "inside.txt" }], ["read", { path: "../tmp/note.txt" }]];
   const run = await probed(api, data, "probe", [{ wait: go }, ...[...attempts, ...control].map(([tool, args]) => ({ tool, args }))]);
@@ -74,6 +82,13 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   await writeFile(join(data, "runs", run.runId, "tmp", "note.txt"), "note");
   await writeFile(go, "");
   const said = await run.done();
+  // The probes aimed at real files: the agent learns (a new agent's default), so both repositories are there.
+  const repo = join(data, "agents", "probe", "learning.git");
+  const clone = join(data, "runs", run.runId, "learning.git");
+  assert.equal(await readFile(join(repo, "HEAD"), "utf8"), "ref: refs/heads/main\n");
+  assert.equal(await readFile(join(clone, "HEAD"), "utf8"), "ref: refs/heads/main\n");
+  assert.equal(await exists(join(repo, "hooks", "pre-receive")), false);
+  assert.equal(await exists(join(clone, "hooks", "post-checkout")), false);
   assert.equal(said.length, attempts.length + control.length);
   attempts.forEach(([tool, args], i) => {
     assert.equal(said[i].tool, tool);

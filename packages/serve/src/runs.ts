@@ -9,7 +9,7 @@ import { closeSync, openSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentHomeError, type LearningMode, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
+import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.js";
 import { readJson, RUN_META, writeWhole } from "./files.js";
@@ -17,7 +17,6 @@ import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
-import { caseValuesOf, learningOf, proposeRun, secretsOf, untrustedOf } from "./learning.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
@@ -96,8 +95,6 @@ export type Run = {
   revision: string;
   /** The revision's number among its agent's. */
   version: number;
-  /** How its revision learns: read once, so a run settles without reading the agent store. */
-  learning: LearningMode;
   dir: string;
   meta: RunMeta;
   log: RowLog;
@@ -272,7 +269,7 @@ export class Runs {
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
     };
-    const run = this.blank(row, dir, meta, this.options.agents.revisions(row.agent).find((r) => r.id === row.revision)?.version ?? 0, learningOf(this.store.readRevision(row.revision)));
+    const run = this.blank(row, dir, meta, this.options.agents.revisions(row.agent).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
@@ -288,9 +285,9 @@ export class Runs {
     return run;
   }
 
-  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number, learning: LearningMode): Run {
+  private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
-      id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, learning, dir, meta, log: new RowLog(this.clock), rows: [],
+      id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
       working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, updatedAt: meta.created_at,
     };
   }
@@ -622,25 +619,7 @@ export class Runs {
       run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
-    await this.propose(run, ended.outcome);
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
-  }
-
-  /** What a learning run learned, proposed as its branch before it is carried back: a server that stops in between
-   *  settles the run again at its next start, and the branch's `Run-Id` makes that proposal `already`. A proposal that
-   *  fails or is refused is said, and the run ends as it would have. */
-  private async propose(run: Run, outcome: Status): Promise<void> {
-    if (run.learning === "off") return;
-    const cost = costOf(run.rows);
-    try {
-      const result = await proposeRun({
-        data: this.options.agents.dir, agentId: run.agentId, runId: run.id, storeFile: this.storeFile(run), outcome, untrusted: untrustedOf(run.rows),
-        secrets: secretsOf(process.env), caseValues: caseValuesOf(run.meta.input), ...(cost === null ? {} : { costUsd: cost }),
-      });
-      if (result.status === "refused") warn(run.id, `what it learned was refused: ${result.refusals.map((r) => r.detail ?? r.reason).join("; ")}`);
-    } catch (error) {
-      warn(run.id, `what it learned was not proposed: ${(error as Error).message}`);
-    }
   }
 
   /** A workflow run's carry back, `workflowCarry` of @parcha/pi-durable-agent/workflow on its released store, and its
@@ -721,7 +700,7 @@ export class Runs {
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
-    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version, learningOf(revision));
+    const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
     this.runs.set(run.id, run);
     this.options.log?.("run_started", { run: run.id, agent: run.agentId, kind: run.kind });
     if (revision.kind === "agentic") run.submitted = 1;

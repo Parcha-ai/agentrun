@@ -91,7 +91,7 @@ function serial<T>(key: string, work: () => Promise<T>): Promise<T> {
 }
 
 /** The agent's bare repository, made empty on first use, and a clone of it in `clone`. */
-async function openAgentRepo(bare: string, clone: string): Promise<Repo> {
+async function openClone(bare: string, clone: string): Promise<Repo> {
   const { local, openRepo } = await import("@parcha/pi-git-remote");
   if (!existsSync(bare)) {
     await mkdir(dirname(bare), { recursive: true, mode: 0o700 });
@@ -108,7 +108,7 @@ export async function hostCommit(data: string, entry: AgentEntry): Promise<{ sha
   if (!revision || revision.kind !== "agentic" || learningOf(revision) === "off" || (await learningBlocker(process.env))) return undefined;
   const bare = repoOf(data, agent.id);
   return serial(bare, async () => {
-    const repo = await openAgentRepo(bare, join(dirname(bare), HOST_CLONE));
+    const repo = await openClone(bare, join(dirname(bare), HOST_CLONE));
     const files = { "AGENTS.md": `${revision.body.instructions.trim()}\n`, "agent.json": `${JSON.stringify(definitionOf(agent, revision, version), null, 2)}\n` };
     const made = await repo.commitTo("main", { files, message: `host: revision ${version} of ${agent.id}`, trailers: { Revision: revision.id } });
     if (made.created) await repo.push(made.sha, "main");
@@ -156,7 +156,7 @@ export async function proposeRun(options: ProposeRunOptions): Promise<ProposeRes
   if (!existsSync(options.storeFile)) return { status: "empty" };
   const bare = repoOf(options.data, options.agentId);
   return serial(bare, async () => {
-    const [{ proposeLearning }, repo] = await Promise.all([import("@parcha/pi-agent-learn"), openAgentRepo(bare, join(dirname(bare), HOST_CLONE))]);
+    const [{ proposeLearning }, repo] = await Promise.all([import("@parcha/pi-agent-learn"), openClone(bare, join(dirname(bare), HOST_CLONE))]);
     return proposeLearning({
       repo, runId: options.runId, target: releasedStore(options.storeFile) as never, outcome: outcomeOf(options.outcome), untrusted: options.untrusted,
       secrets: options.secrets, caseValues: options.caseValues, ...(options.costUsd === undefined ? {} : { costUsd: options.costUsd }),
@@ -178,7 +178,7 @@ export async function runLearning(where: AppContext, agentId: string, ownSkills:
   const [learn, { modeRefusal }, meta] = await Promise.all([import("@parcha/pi-agent-learn"), import("@parcha/pi-git-remote"), readJson(join(where.root, RUN_META))]);
   const bare = repoOf(resolve(where.root, "..", ".."), agentId);
   if (!existsSync(bare)) throw new Error(`the agent ${agentId} learns, and its repository ${REPO} is not there`);
-  const repo = await openAgentRepo(bare, join(where.root, RUN_CLONE));
+  const repo = await openClone(bare, join(where.root, RUN_CLONE));
   await repo.fetch();
   const journaled = existsSync(storeFile) ? ((await releasedStore(storeFile).snapshot(learn.SeedDoc as never)) as { sha?: string } | undefined)?.sha : undefined;
   const sha = journaled || (await repo.resolve("main"));
@@ -201,4 +201,15 @@ export async function runLearning(where: AppContext, agentId: string, ownSkills:
     skillFiles,
     beforeResume: async ({ harness }) => void (await learn.seedLearning({ repo, ref: sha, target: harness as never, into: where.work })),
   };
+}
+
+// Not built yet: the shapes PR D builds on.
+export const isExternal = (_tool: string): boolean => false;
+export const openAgentRepo = (data: string, agentId: string, clone: string): Promise<Repo> => openClone(repoOf(data, agentId), clone);
+export const withAgentRepo = <T>(_data: string, _agentId: string, work: () => Promise<T>): Promise<T> => work();
+export async function readRunState(_data: string, _agentId: string, _runId: string): Promise<unknown> {
+  return undefined;
+}
+export async function proposeFor(_data: string, _store: unknown, _runId: string): Promise<unknown> {
+  return undefined;
 }

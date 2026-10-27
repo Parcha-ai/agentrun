@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
-import { agentLearn, CAPS, collectCandidates, LEARN_PARAMETERS } from "../dist/index.js";
-import { ask, ctx, done, learnCalls, openRun, scratch, seedIds, toolResults } from "./support.mjs";
+import { agentLearn, CAPS, collectCandidates, LEARN_PARAMETERS, LearnError, readCandidates } from "../dist/index.js";
+import { ask, ctx, done, fauxAssistantMessage, fauxToolCall, learnCalls, openRun, scratch, seedIds, toolResults } from "./support.mjs";
 
 const LESSON = { type: "lesson", text: "Registries list officers under Principals, not Officers.", evidence: ["the registry page read in call 3"] };
 const FACT = { type: "fact", text: "The registry rate-limits after 20 requests a minute." };
@@ -244,4 +244,27 @@ test("agentLearn passes the run's case values to the guard at the call, so case 
   } finally {
     await run.close();
   }
+});
+
+test("readCandidates reads a closed run's candidates from its store file, as collectCandidates reads them from the open run", async () => {
+  const root = await scratch();
+  const store = path.join(root, "run.sqlite");
+  const run = await openRun(store, { steps: [() => learnCalls([LESSON, FACT]), () => fauxAssistantMessage([fauxToolCall("learn", { type: "correction", text: "The registry is not case sensitive." }, { id: "call-later" })], { stopReason: "toolUse" }), done] });
+  let open;
+  try {
+    await ask(run.harness);
+    open = await collectCandidates(run.harness);
+  } finally {
+    await run.close();
+  }
+  assert.equal(open.length, 3);
+  assert.deepEqual(readCandidates(store), open, "the store's last revision of the run's candidates, in the order noted");
+  const quiet = await openRun(path.join(root, "quiet.sqlite"), { steps: [done] });
+  try {
+    await ask(quiet.harness);
+  } finally {
+    await quiet.close();
+  }
+  assert.deepEqual(readCandidates(path.join(root, "quiet.sqlite")), [], "a run that noted nothing has none");
+  assert.throws(() => readCandidates(path.join(root, "absent.sqlite")), (error) => error instanceof LearnError && error.code === "missing");
 });

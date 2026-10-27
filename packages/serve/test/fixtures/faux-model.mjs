@@ -41,6 +41,13 @@ export default function reply(context, faux) {
   if (first.includes("What have you learned?")) return faux.message(`Learned: ${/<learned>([\s\S]*?)<\/learned>/.exec(system)?.[1]?.trim() ?? "nothing"}`);
   if (first.includes("Which skills do you have?")) return faux.message(`Skills: ${[...system.matchAll(/<skill name="([^"]+)">\n([^<]*)/g)].map((m) => `${m[1]}=${m[2].trim()}`).join(", ") || "none"}`);
   // Notes one lesson with `learn`, then answers; "..., then answer once <file> exists." waits for the file first.
+  // Calls fetch_page (any outcome), then notes one lesson, then answers.
+  if (first.includes("Fetch the page, then learn")) {
+    const results = context.messages.filter((m) => m.role === "toolResult").length;
+    if (results === 0) return faux.message(faux.toolCall("fetch_page", { url: "https://example.com/" }), { stopReason: "toolUse" });
+    if (results === 1) return faux.message(faux.toolCall("learn", { type: "lesson", text: RATE_LIMIT }), { stopReason: "toolUse" });
+    return faux.message("Fetched and learned.");
+  }
   const learnThenWait = /^Learn the rate limit, then answer once (\S+) exists\.$/.exec(first);
   if (first.includes("Learn the rate limit")) {
     if (!answered) return faux.message(faux.toolCall("learn", { type: "lesson", text: RATE_LIMIT }), { stopReason: "toolUse" });
