@@ -36,7 +36,7 @@ The twelve packages share one version. `dsl`, `jev` and `pi` are published in th
 
 ## Setup and checks
 
-Use Node 22.19+ (`.nvmrc`; release verification uses 22.23.2) and npm.
+Use Node 22.19+ or 24.2+ (`.nvmrc`; release verification uses 22.23.2) and npm. `scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`.
 
 ```sh
 npm ci --ignore-scripts

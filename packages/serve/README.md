@@ -11,7 +11,7 @@ This package is held: it is built and tested in this repository and not publishe
 
 ## Quick start (no key, no network)
 
-Node 22.19 or later. In a checkout of this repository:
+Node 22.19 or later on 22, or 24.2 or later. In a checkout of this repository:
 
 ```sh
 npm ci --ignore-scripts && npm run build
