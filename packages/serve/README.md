@@ -354,6 +354,8 @@ its runs are refused with `409 agent_not_runnable` until git is there.
     `cursor`), and `POST /agents/{id}/learning/retire` (`{id, reason}`).
   Nothing person-identifying is written into the learning repository: approve, refuse and retire record the stable
   account id (`token` for the server's token), and who did it by name stays in the log.
+  `learning.principal` in ServeOptions is a TEST HOOK only; it goes away when accounts land, in favour of the
+  credential's principal.
   Reads come from the bare repository with git's plumbing, which takes no lock. Every text passes through the host's
   secrets at read time, so a value made secret after a proposal reads `[redacted]`, and a file holding one shows its
   path and `withheld` only. The memo and a file answer with their own type, `nosniff`, and a `sandbox` policy.
