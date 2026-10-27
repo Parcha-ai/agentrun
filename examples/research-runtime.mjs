@@ -188,5 +188,3 @@ export async function runCli(action, args = process.argv.slice(2)) {
     process.removeListener('SIGTERM', cancel);
   }
 }
-
-export function isMain(url) { return !!process.argv[1] && url === pathToFileURL(resolve(process.argv[1])).href; }

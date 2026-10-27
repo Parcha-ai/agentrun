@@ -1,7 +1,6 @@
 // The release's precondition: the tagged commit passed the required checks when it reached main. The release trusts that run
 // instead of running the suites again, so anything it cannot read as a pass stops the release.
 //   node scripts/release-ci-gate.mjs   (GITHUB_REPOSITORY, GITHUB_SHA, GH_TOKEN; exits 0 only on a pass)
-import { pathToFileURL } from 'node:url';
 
 // The verify gates the main ruleset requires. Every other `verify (<node>)` gate of the run must pass as well; jobs that are
 // not gates (real-chrome, the pi legs, lean) do not stop a release.
@@ -45,7 +44,7 @@ export async function readCiVerdict({ repository, sha, token, fetchImpl = fetch,
   return ciVerdict(sha, runs);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   const { GITHUB_REPOSITORY: repository, GITHUB_SHA: sha, GH_TOKEN: token } = process.env;
   try {
     const verdict = await readCiVerdict({ repository, sha, token });
