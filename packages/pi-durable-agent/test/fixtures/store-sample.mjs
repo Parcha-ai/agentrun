@@ -5,7 +5,6 @@
 // `node test/fixtures/store-sample.mjs <dir>` builds it in <dir>/my-agents and serves it, printing the address.
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -144,7 +143,7 @@ export async function buildSampleStore(dir) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (import.meta.main) {
   if (!process.argv[2]) throw new Error("usage: node test/fixtures/store-sample.mjs <dir>");
   const dir = path.resolve(process.argv[2]);
   mkdirSync(dir, { recursive: true });

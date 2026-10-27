@@ -243,6 +243,36 @@ async function inRegistryFixture(fn) {
   } finally { await registry.close(); await rm(work, { recursive: true, force: true }); }
 }
 
+// The consumer's refusal, or what npm did instead: its own error (code, signal, message, stderr), or that the install succeeded,
+// and the pi-codemode the consumer resolved. A red under load then names its cause.
+async function rejectsWithNpmError(install, consumer, pattern) {
+  let error;
+  try { await install; } catch (caught) { error = caught; }
+  if (error && pattern.test(String(error.message))) return;
+  let resolved;
+  try { resolved = JSON.parse(await readFile(join(consumer, `node_modules/${FAMILY}pi-codemode/package.json`), 'utf8')).version; } catch { resolved = 'none'; }
+  assert.fail([
+    `expected npm to refuse the pins with ${pattern}`,
+    ...(error
+      ? [`npm's error: code ${error.code ?? 'none'}, signal ${error.signal ?? 'none'}${error.killed ? ', killed' : ''}`, `message: ${error.message}`, `stderr: ${error.stderr ?? ''}`]
+      : ['the install succeeded']),
+    `the consumer's resolved pi-codemode: ${resolved}`,
+  ].join('\n'));
+}
+test('a refusal other than the one expected names npm\'s error, or that the install succeeded, and the pi-codemode it resolved', async () => {
+  const consumer = await mkdtemp(join(tmpdir(), 'agentrun-npm-error-'));
+  try {
+    const failed = Object.assign(new Error('Command failed: npm install'), { code: 1, signal: null, stderr: 'npm error code E500' });
+    await assert.rejects(rejectsWithNpmError(Promise.reject(failed), consumer, /ETARGET/), error =>
+      /code 1, signal none/.test(error.message) && /stderr: npm error code E500/.test(error.message) && /resolved pi-codemode: none/.test(error.message));
+    await mkdir(join(consumer, `node_modules/${FAMILY}pi-codemode`), { recursive: true });
+    await writeFile(join(consumer, `node_modules/${FAMILY}pi-codemode/package.json`), JSON.stringify({ version: '1.2.0' }));
+    await assert.rejects(rejectsWithNpmError(Promise.resolve(), consumer, /ETARGET/), error =>
+      /the install succeeded/.test(error.message) && /resolved pi-codemode: 1\.2\.0/.test(error.message));
+    await rejectsWithNpmError(Promise.reject(new Error('npm error code ETARGET')), consumer, /ETARGET/);
+  } finally { await rm(consumer, { recursive: true, force: true }); }
+});
+
 test('the control: a consumer with no pins lands on the codemode that dropped the export, and the coding agent dies on import', () => inRegistryFixture(async ({ consumer, registry, run, load }) => {
   await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'control', private: true, type: 'module' }));
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', `--registry=${registry}`, `${FAMILY}pi-coding-agent@1.1.0`], { cwd: consumer });
@@ -256,7 +286,7 @@ test('the registry consumer pins a family edge to the version the repository loc
 }));
 test('the registry consumer fails when the pins cannot be met', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
   await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { ...familyLock, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.0.9' } } }));
-  await assert.rejects(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), /ETARGET|No matching version/);
+  await rejectsWithNpmError(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), consumer, /ETARGET|No matching version/);
 }));
 test('the installed tree is checked against the lockfile: an install that succeeds on a version the lockfile does not hold fails', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
   // The install is honest, then the consumer's lockfile is rewritten as if npm had resolved the edge to the newer minor.

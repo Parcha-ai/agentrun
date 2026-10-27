@@ -1,5 +1,4 @@
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
 import { runWorkflow } from '../packages/dsl/dist/index.js';
 import { rankCandidates } from './rank-candidates.mjs';
 import { createScriptedJudge, request } from './rank-candidates-fixtures.mjs';
@@ -40,6 +39,6 @@ export async function main(args) {
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   main(process.argv.slice(2)).then(code => { process.exitCode = code; }, error => { console.error(error.message); process.exitCode = 1; });
 }
