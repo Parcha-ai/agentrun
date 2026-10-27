@@ -83,6 +83,9 @@ export interface ModelProxyOptions {
   /** The price of a response, or null when it is unknown. */
   price?: (model: string, usage: ProxyUsage) => number | null;
   log?: (message: string, detail?: Record<string, unknown>) => void;
+  /** Told each forwarded request's route and the provider's status once it answers: what a route does on this
+   *  provider (a free route it may not serve), as a status code only, never a body or a key. */
+  onResponse?: (response: { method: string; path: string; free: boolean; status: number }) => void;
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
 }
@@ -260,6 +263,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let length = 0;
     try {
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
+      options.onResponse?.({ method: route.method, path: route.path, free: route.free === true, status: upstream.status });
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
       if (upstream.body) {

@@ -43,8 +43,9 @@ const sse = (usage = { in: 7, out: 2 }) => `data: {"delta":"hi"}\n\ndata: {"done
 /** A proxy with recorded hooks and a provider that records what reached it. */
 async function proxy(t, extra = {}) {
   const forwarded = [];
-  const hooks = { before: [], after: [], logged: [] };
+  const hooks = { before: [], after: [], logged: [], responses: [] };
   const p = await startModelProxy({
+    onResponse: (r) => hooks.responses.push(r),
     log: (message, detail) => hooks.logged.push({ message, ...detail }),
     policy: extra.policy ?? policy,
     model: 'session-model',
@@ -129,6 +130,16 @@ test("a local route is answered by the proxy with its status alone, with or with
   assert.equal((await send(p.url, { path: '/v1/count', key: null })).status, 401);
   for (const path of ['/v1/files', '/v1/test?x=1', '/../etc']) assert.equal((await send(p.url, { path, key: null })).status, 401, path);
   assert.equal(forwarded.length, 0);
+});
+
+test("a provider that does not serve a free route answers it as it does (a 404 passes through), no turn is counted, and the status is told", async (t) => {
+  const { p, forwarded, hooks } = await proxy(t, { fetch: async (url) => (url.endsWith('/v1/count') ? new Response('{"error":"not found"}', { status: 404 }) : new Response(sse(), { status: 200 })) });
+  const counted = await send(p.url, { path: '/v1/count' });
+  assert.equal(counted.status, 404);
+  assert.deepEqual([hooks.before.length, hooks.after.length], [0, 0]);
+  await send(p.url);
+  assert.deepEqual(hooks.responses, [{ method: 'POST', path: '/v1/count', free: true, status: 404 }, { method: 'POST', path: '/v1/test', free: false, status: 200 }]);
+  assert.equal(forwarded.length, 0, 'this test forwards through its own fetch');
 });
 
 test('a free route is forwarded without asking the runner, and reports no usage', async (t) => {
