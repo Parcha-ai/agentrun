@@ -1,0 +1,120 @@
+// What the archil client logged about commits on one mount, read from journald: its server_timeout retries and its
+// syncs of a second or more. For the run suite, a diagnostic for a test whose instance exited before the step the test
+// waited for: it adds a line to the failure message and never changes whether the test passes. For the lifecycle serve
+// test, the only evidence that lets a cold start's takeover pass (checkColdStart).
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+
+/** One journald entry: when (ms since the epoch), the process's command line, the message. */
+export interface JournalLine {
+  readonly at: number;
+  readonly cmdline: string;
+  readonly message: string;
+}
+
+/** The server_timeout retries on a mount and its longest sync (any kind) that overlapped a window. */
+export interface CommitStall {
+  readonly retries: number;
+  readonly longestSyncMs: number;
+}
+
+const SYNC = /long sync [a-z-]+: execute_time=([0-9.]+)(ms|s)\b/;
+
+/** An archil client's own lines: its command line names the mountpoint as a whole argument. */
+const onMount = (line: JournalLine, mountpoint: string) => ` ${line.cmdline} `.includes(` ${mountpoint} `);
+
+/**
+ * The retries and the longest sync on `mountpoint` within [from, to] (ms). A sync is logged when it ends, with how long
+ * it ran, so it counts when its run [end - duration, end] overlaps the window.
+ */
+export function commitStall(lines: readonly JournalLine[], mountpoint: string, from: number, to: number): CommitStall {
+  let retries = 0;
+  let longestSyncMs = 0;
+  for (const line of lines) {
+    if (!onMount(line, mountpoint)) continue;
+    if (line.message.includes("event=client.operation_retrying") && line.message.includes("reason=server_timeout")) {
+      if (line.at >= from && line.at <= to) retries++;
+      continue;
+    }
+    const sync = SYNC.exec(line.message);
+    if (!sync) continue;
+    const ms = Number(sync[1]) * (sync[2] === "s" ? 1000 : 1);
+    if (line.at - ms <= to && line.at >= from) longestSyncMs = Math.max(longestSyncMs, ms);
+  }
+  return { retries, longestSyncMs };
+}
+
+/** journald's entries between `from` and `to` (ms), or null when journald cannot be read on this host. */
+export function readJournal(from: number, to: number): JournalLine[] | null {
+  const r = spawnSync("journalctl", ["--since", `@${Math.floor(from / 1000)}`, "--until", `@${Math.ceil(to / 1000) + 1}`, "-o", "json", "-q", "--no-pager"], {
+    encoding: "utf8",
+    timeout: 20_000,
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  if (r.error || r.status !== 0) return null;
+  return parseJournal(r.stdout);
+}
+
+/** `journalctl -o json` output as entries; a line that is not an entry with a text message is skipped. */
+export function parseJournal(text: string): JournalLine[] {
+  const out: JournalLine[] = [];
+  for (const raw of text.split("\n")) {
+    if (!raw.startsWith("{")) continue;
+    let e: Record<string, unknown>;
+    try {
+      e = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (typeof e.MESSAGE !== "string" || typeof e.__REALTIME_TIMESTAMP !== "string") continue;
+    out.push({ at: Number(e.__REALTIME_TIMESTAMP) / 1000, cmdline: typeof e._CMDLINE === "string" ? e._CMDLINE : "", message: e.MESSAGE });
+  }
+  return out;
+}
+
+/** The line a failure message starts with when a commit on the mount stalled (a retry, or a sync of 1 s or more); else "". */
+export function stallNote(stall: CommitStall | null, before: string): string {
+  if (!stall) return "";
+  const seen = [
+    ...(stall.longestSyncMs >= 1000 ? [`a commit took ${Math.round(stall.longestSyncMs)} ms`] : []),
+    ...(stall.retries > 0 ? [`${stall.retries} server_timeout retries`] : []),
+  ];
+  return seen.length ? `environment: on this test's own mount ${seen.join(", ")} before ${before}; ` : "";
+}
+
+/** The serve test's cold start: each start's reason in order, the answer's generation, and where and when to look. */
+export interface ColdStart {
+  readonly reasons: readonly string[];
+  readonly generation: number;
+  /** The first instance's mountpoint. */
+  readonly mountpoint: string;
+  /** When the request began, and when the second start's unit started (null: one start, or not known), in ms. */
+  readonly from: number;
+  readonly takeoverAt: number | null;
+}
+
+/** A stall that can cost an instance its lease: a server_timeout retry, or a sync of a second or more. */
+export const stalled = (s: CommitStall | null): s is CommitStall => s !== null && (s.retries > 0 || s.longestSyncMs >= 1000);
+
+/**
+ * The serve test's cold start answers at generation 1 from its one start. More starts (one generation per start, every
+ * later one a lease-expired takeover) pass only when journald shows a stall on the first instance's own mount between the
+ * request and the takeover. With no such stall, or no journald to tell, a lost lease is the product's (a heartbeat that
+ * stopped, a starved loop), and generation 1 is required. Returns the stall that was accepted, or null.
+ */
+export function checkColdStart(c: ColdStart, journal: (from: number, to: number) => JournalLine[] | null = readJournal): CommitStall | null {
+  const at = JSON.stringify(c);
+  assert.ok(c.reasons.length >= 1, `the request started the run: ${at}`);
+  assert.equal(c.reasons[0], "none", `the run was never started, so its first start is a cold one: ${at}`);
+  // Read up to now: a sync is logged when it ends, and one that began before the takeover may end after it.
+  const lines = c.reasons.length > 1 && c.takeoverAt !== null ? journal(c.from, Date.now()) : null;
+  const stall = lines && commitStall(lines, c.mountpoint, c.from, c.takeoverAt!);
+  if (!stalled(stall)) {
+    const why = c.reasons.length === 1 ? "" : lines ? " (no stall on the first instance's own mount before the takeover)" : " (journald not read: no evidence of a stall)";
+    assert.deepEqual([c.reasons.length, c.generation], [1, 1], `one start, at generation 1${why}: ${at}`);
+    return null;
+  }
+  assert.deepEqual(c.reasons.slice(1), c.reasons.slice(1).map(() => "lease-expired"), `a start after the first is a takeover: ${at}`);
+  assert.equal(c.generation, c.reasons.length, `one generation per start: ${at}`);
+  return stall;
+}
