@@ -14,7 +14,7 @@ If AgentRun is not checked out, clone `https://github.com/Parcha-ai/agentrun.git
 
 ## Establish a working baseline
 
-Use Node 22.19+ (the checkout includes `.nvmrc`). In the checkout, run:
+Use Node 22.19+ or 24.2+ (the checkout includes `.nvmrc`). In the checkout, run:
 
 ```sh
 npm ci --ignore-scripts
