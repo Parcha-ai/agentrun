@@ -67,7 +67,7 @@ supersedes: []
 
 - A skill: `.agents/skills/<name>/SKILL.md`, with front matter holding its `name` (the folder's name) and a
   `description` of when to use it.
-- A workflow draft: `workflows/<name>/workflow.json`, one workflow DSL document whose `name` is `<name>`, and
+- A workflow draft: `workflows/<name>/workflow.json`, one workflow DSL document saved under `<name>`, and
   `workflows/<name>/README.md`, what it is for and when it applies.
 - A workflow draft uses DSL model, judge and tool-call nodes with the host's tools only: never a harness's built-in tool, and never a code, shell or executor node.
 
