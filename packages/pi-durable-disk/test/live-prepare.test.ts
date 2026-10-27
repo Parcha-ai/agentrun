@@ -37,14 +37,14 @@ it("the box's package install works in the directory the box gets, which has no 
 // Other tests write into the package directory while this suite runs (package.test.ts creates .tmp/ there), and tar fails
 // a directory whose entries change while it reads them. The writer here churns a file git ignores, at the package root,
 // until its stdin closes (two minutes at most).
-const CHURN = `const fs = require("node:fs"); const f = process.argv[1]; let n = 0;
+const CHURN = `const fs = require("node:fs"); const f = process.env.PACK_RACE_FILE; let n = 0;
 process.stdin.on("end", () => process.exit(0)); process.stdin.resume(); setTimeout(() => process.exit(0), 120000).unref();
 process.on("exit", () => fs.rmSync(f, { force: true }));
 (function churn() { fs.writeFileSync(f, "x"); fs.unlinkSync(f); if (++n === 1) process.stdout.write("churning\\n"); setImmediate(churn); })();`;
 
 it("packs the package's files while another process keeps adding and removing an entry in its directory", async () => {
   const race = fileURLToPath(new URL(`../.pack-race-${process.pid}.tgz`, import.meta.url));
-  const writer = spawn(process.execPath, ["-e", CHURN, race], { stdio: ["pipe", "pipe", "inherit"] });
+  const writer = spawn(process.execPath, ["-e", CHURN], { env: { ...process.env, PACK_RACE_FILE: race }, stdio: ["pipe", "pipe", "inherit"] });
   try {
     await once(writer.stdout, "data");
     for (let i = 0; i < 5; i++) {
