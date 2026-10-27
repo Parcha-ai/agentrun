@@ -12,14 +12,16 @@ const self = 'scripts/entry-points.test.mjs';
 // import.meta.main, so it uses the symlink-safe realpathSync form. It stays out of this scan for good.
 const synced = 'packages/pi-browser/';
 
-// A file that reads process.argv[1] and also knows its own URL is red unless it is here, with the reason it is safe.
+// A file that mentions process.argv[1] is red unless it is here, with the reason it is safe.
 const childScript = 'reads argv[1] only inside the text of a child script (node -e or a written file), never as this module';
+const label = 'reads argv[1] only as a label for the script being run, and never decides from it whether it is the command';
 const realpathForm = 'compares realpathSync(argv[1]) with its URL, which is symlink-safe; the published package allows Node 23 and 24.0-24.1, which have no import.meta.main';
 const reviewed = new Map([
   ['packages/pi-durable-disk/src/cli.ts', realpathForm],
   ['packages/pi-durable-disk/src/hosts/daytona-launch.ts', realpathForm],
   ['packages/pi-durable-disk/src/hosts/local-host.ts', childScript],
   ['examples/reference-demo-providers.test.mjs', childScript],
+  ['examples/web/server.test.mjs', childScript],
   ['examples/reference-demo-recording.test.mjs', childScript],
   ['examples/reference-demo-supervision.test.mjs', childScript],
   ['examples/reference-record.test.mjs', childScript],
@@ -30,11 +32,14 @@ const reviewed = new Map([
   ['packages/pi-durable-disk/test/live/_p9.ts', childScript],
   ['packages/pi-durable-disk/test/live/daytona-probe.ts', childScript],
   ['packages/pi-durable-disk/test/live/docker-probe.ts', childScript],
+  ['packages/pi-transport/src/testing/move-conformance.ts', childScript],
   ['packages/pi-vision/test/durable-providers.test.mjs', childScript],
+  ['packages/pi-vision/test/node-env.test.mjs', childScript],
   ['packages/pi/test/signin-entry.test.mjs', childScript],
+  ['spec/lean/sweep/capture-dsl.mjs', label],
 ]);
 
-const suspect = (source) => source.includes('process.argv[1]') && /import\.meta\.(?:url|filename)/.test(source);
+const suspect = (source) => source.includes('process.argv[1]');
 const unreviewed = (sources) => sources.filter(([file, source]) => suspect(source) && !reviewed.has(file)).map(([file]) => file);
 const tracked = () => execFileSync('git', ['ls-files', '*.mjs', '*.js', '*.ts', '*.mts', '*.cjs'], { cwd: root, encoding: 'utf8' })
   .split('\n').filter((file) => file && file !== self && !file.startsWith(synced))
@@ -49,13 +54,14 @@ test('a file not on the list is red, whatever shape its comparison takes', () =>
   assert.deepEqual(unreviewed([['scripts/new-cjs.cjs', 'if (process.argv[1] === __filename) main();']]), ['scripts/new-cjs.cjs']);
   assert.deepEqual(unreviewed([['packages/pi-durable-disk/src/cli.ts', split]]), [], 'a reviewed file passes');
   assert.deepEqual(unreviewed([['examples/main.mjs', 'if (import.meta.main) main(process.argv[2]);']]), [], 'import.meta.main passes');
+  assert.deepEqual(unreviewed([['scripts/main.cjs', 'if (require.main === module) main();']]), [], 'require.main resolves symlinks and needs no entry');
 });
 
-test('no tracked script reads process.argv[1] beside its own URL unless the site is reviewed', () => {
+test('no tracked script mentions process.argv[1] unless the site is reviewed', () => {
   assert.deepEqual(unreviewed(tracked()), [], 'use import.meta.main, or review the site and add it here with its reason');
 });
 
-test('every reviewed site still reads process.argv[1] beside its own URL', () => {
+test('every reviewed site still mentions process.argv[1]', () => {
   const sources = new Map(tracked());
   assert.deepEqual([...reviewed.keys()].filter((file) => !suspect(sources.get(file) ?? '')), [], 'drop the entries that no longer apply');
 });
