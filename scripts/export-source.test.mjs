@@ -226,7 +226,7 @@ const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersi
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
   ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
-  'packages/pi-vision': { peerDependencies: { 'host-agent': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true } } },
+  'packages/pi-vision': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
   ...(requiredBy ? { [`packages/${requiredBy}`]: { dependencies: { 'test-runner': '1.0.0' } } } : {}),
   'node_modules/auth-lib': { version: '1.0.0', license: 'MIT', peerDependencies: { 'test-runner': '*', 'absent-peer': '*' }, peerDependenciesMeta: { 'test-runner': { optional: true }, 'absent-peer': { optional: true } } },
@@ -244,7 +244,8 @@ test('the dependency inventory leaves out an optional peer nothing requires at r
   for (const name of ['test-runner', 'bundler', 'css-engine']) assert.doesNotMatch(inventory, new RegExp(`\\| ${name} \\|`), `${name} is not shipped`);
   assert.match(inventory, /\| host-agent \| 1\.0\.0 \| MIT \| pi-vision \| no \| 1 \|/, 'a workspace package\'s own optional peer is followed');
   assert.match(inventory, /No missing, restrictive, reciprocal, or unrecognized license identifiers/);
-  assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: `absent-peer`/, 'an optional peer the lock does not record is still named');
+  assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: [^\n]*`absent-host`/, 'a workspace package\'s optional peer the lock does not record is named, not an error');
+  assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: [^\n]*`absent-peer`/, 'an optional peer the lock does not record is still named');
 });
 
 test('the dependency inventory keeps an optional peer that a runtime dependency requires, for the package that requires it', async t => {
