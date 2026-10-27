@@ -316,7 +316,7 @@ with nothing of it reaching the judge, when:
 - there is no injection screen: `screen` is missing, or lacks its `classify` judge or its `threshold`.
 
 Both halves of the screen are the host's; this package holds no threshold. A Pi host passes pi-browser's page judge and
-its `INJECTION_THRESHOLD`: `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
+its `INJECTION_THRESHOLD` (`import { INJECTION_THRESHOLD } from "@parcha/pi-browser"`): `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
 contentType: "text/markdown", text })).injection, threshold: INJECTION_THRESHOLD }`. The screen scores every new or
 changed note, skill and draft; a score at or over `threshold` refuses that item, and so does one the screen could not judge: it threw, took longer
 than `screenTimeoutMs` (30 s), or answered out of shape. Then curate judges each candidate and writes the result as a
