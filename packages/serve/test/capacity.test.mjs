@@ -248,6 +248,19 @@ test("a cancel settles a run whose carry back cannot be written: cancelled, fina
   assert.equal(storeRun(data, run.run_id).state, "stopped");
 });
 
+test("a run cancelled as the server stops has its end in the store once the stop is done: no next start opens it again", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(one.baseUrl, one.token);
+  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
+  const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: "Take your time." } });
+  await follow(api, run.run_id, ["working"]);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+  // Stopped at once: the run's process is still going, and its end is written by the stop's own settle.
+  await one.close();
+  assert.equal(storeRun(data, run.run_id).state, "stopped");
+});
+
 test("a message to a run whose process was killed is answered at once: a dead process's fresh heartbeat is not trusted", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
