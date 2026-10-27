@@ -67,8 +67,14 @@ const allowedExtraFiles = {
   learn: ['package/SPEC.md'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
+  'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
 };
 const allowedEndpoints = {
+  'run-adapters-claude-agent': [
+    // The test kit's scripted Anthropic API (`./testing`) listens on the loopback interface, on a port it chose.
+    ['dist/testing/fake-anthropic.js', 'http://127.0.0.1:${port}'],
+    ['dist/testing/fake-anthropic.d.ts', 'http://127.0.0.1:<port>'],
+  ],
   'run-adapters': [
     // The session's model proxy listens on the loopback interface, on the free port it chose; its type documents that.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
@@ -117,7 +123,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'run-adapters', 'harness'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'run-adapters', 'run-adapters-claude-agent', 'harness'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -175,6 +181,7 @@ try {
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
   assert.ok(attributed.includes('@parcha/agentrun-adapters'), 'the harness seam is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-claude-agent'), 'the Claude Agent adapter is checked for its attribution');
   receipt.checks.push(`Boundary rules passed on every package; attribution rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
