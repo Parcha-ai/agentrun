@@ -14,7 +14,7 @@ import { recordProblems } from './reference-record.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
-import { attributionProblems, carriesUpstream } from './upstream-attribution.mjs';
+import { ALLOWED_MARKS, attributionProblems, boundaryProblems, carriesUpstream } from './upstream-attribution.mjs';
 
 const exec = promisify(execFile);
 // `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
@@ -155,17 +155,20 @@ try {
     receipt.packages.push({ name: manifest.name, version: manifest.version, filename: packed.filename, sha256: fileHash, files: names, size: packed.size, unpackedSize: packed.unpackedSize, license: manifest.license });
     tarballs.push(tarball);
     for (const [file, literal] of allowedEndpoints[directory] ?? []) assert.ok(usedEndpoints.has(`${file} ${literal}`), `Allowed endpoint literal no longer in ${manifest.name}: ${file} ${literal}`);
-    // A package that carries vercel-labs/durable-harness code, as packed: NOTICE, LICENSE and UPSTREAM.json ship, NOTICE says
-    // upstream's copyright line verbatim, no pristine upstream copy ships, and nothing depends on or imports @workflow/*,
-    // @vercel/sandbox or @vercel/agent-runs or shows a Vercel name, mark or image beyond the attribution.
+    // Every package, as packed: no dependency on or import of @workflow/*, @vercel/sandbox or @vercel/agent-runs, no Vercel
+    // name or mark beyond the listed allowances, no image file, and a copied-file header only where UPSTREAM.json records it.
+    // A package that carries vercel-labs/durable-harness code also ships NOTICE (upstream's copyright line verbatim), LICENSE
+    // and UPSTREAM.json, no pristine upstream copy, and no SVG markup.
     if (await carriesUpstream(cwd)) {
       assert.deepEqual(await attributionProblems(join(extracted, 'package')), [], `${manifest.name}: the durable-harness attribution and boundary rules (scripts/upstream-attribution.mjs)`);
       attributed.push(manifest.name);
+    } else {
+      assert.deepEqual(await boundaryProblems(join(extracted, 'package'), { allow: ALLOWED_MARKS[directory] }), [], `${manifest.name}: the boundary rules every package keeps (scripts/upstream-attribution.mjs)`);
     }
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
   assert.ok(attributed.includes('@parcha/agentrun-adapters'), 'the harness seam is checked for its attribution');
-  receipt.checks.push(`Attribution and boundary rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
+  receipt.checks.push(`Boundary rules passed on every package; attribution rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
   await mkdir(consumer);

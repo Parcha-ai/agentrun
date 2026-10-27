@@ -1,5 +1,9 @@
-// The attribution and boundary rules for a package that carries code from vercel-labs/durable-harness (Apache-2.0),
-// checked on the package as npm packs it (verify-packages) and on its source tree (the tests):
+// The attribution and boundary rules for code from vercel-labs/durable-harness (Apache-2.0), checked on each package as npm
+// packs it (verify-packages) and on its source tree (the tests). On EVERY package (boundaryProblems): no Vercel name or
+// mark (case-sensitive product names) outside the attribution and the listed allowances, no dependency on or import of
+// @workflow/*, @vercel/sandbox or @vercel/agent-runs, no image file, and a copied-file header only where UPSTREAM.json
+// records the file, so a package that copies code and forgets its provenance fails closed. On a package that carries
+// copied code (attributionProblems), also:
 //  - NOTICE, LICENSE and vendor/durable-harness/UPSTREAM.json ship; NOTICE says upstream's copyright line verbatim, as
 //    UPSTREAM.json records it; UPSTREAM.json records the commit, the license, that upstream has no NOTICE, and per copied
 //    file its upstream path, git blob and sha256;
@@ -20,8 +24,8 @@ export const UPSTREAM_FILE = 'vendor/durable-harness/UPSTREAM.json';
 export const PRISTINE_DIR = 'vendor/durable-harness/upstream/';
 export const NOTICE_LINE = `This product includes software from vercel-labs/durable-harness (https://github.com/vercel-labs/durable-harness), ${UPSTREAM.copyright}, licensed under the Apache License 2.0.`;
 export const BANNED_PACKAGES = [/^@workflow\//, /^@vercel\/sandbox$/, /^@vercel\/agent-runs$/];
-/** Vercel's names and marks, as words in a shipped file. */
-export const MARKS = /\bVercel\b|\bWorkflow SDK\b|\bAI Gateway\b|\bAgent Runs\b|\bv0\.dev\b/i;
+/** Vercel's names and marks, as words in a shipped file: case-sensitive, so "the agent runs" is English, not a product. */
+export const MARKS = /\bVercel\b|\bWorkflow SDK\b|\bAI Gateway\b|\bAgent Runs\b|\bv0\.dev\b|\bvercel-labs\b/;
 const IMAGE = /\.(?:svg|png|jpe?g|gif|webp|ico|bmp|avif)$/i;
 /** A copied file's header: Vercel's copyright, where it came from, and Parcha's change. */
 const HEADER = /^\/\/ (?:Copyright 2026 Vercel Inc\.|From github\.com\/vercel-labs\/durable-harness, )/;
@@ -45,10 +49,62 @@ async function filesUnder(dir) {
   return out;
 }
 
-/** Problems with one package directory as it ships: `root` is the unpacked tarball's `package/`, or a package's source
- *  tree with `shipped` listing what its `files` field ships. Returns a list of problems; empty passes. */
-export async function attributionProblems(root, { shipped } = {}) {
+/** Mentions of a mark that are someone else's words, by package directory: [file, literal, why]. A listed literal that is
+ *  no longer there fails too, so the list cannot go stale. */
+export const ALLOWED_MARKS = {
+  // pi-browser's synced Stagehand facade names the AI SDK its upstream tested with; the file is a snapshot this repository
+  // does not edit (AGENTS.md).
+  'pi-browser': [
+    ['dist/vendor/stagehand-facade/contract.js', 'Vercel AI SDK', "upstream Stagehand's comment"],
+    ['dist/vendor/stagehand-facade/contract.d.ts', 'Vercel AI SDK', "upstream Stagehand's comment"],
+  ],
+};
+
+const TEXT = /\.(?:[cm]?js|d\.[cm]?ts|ts|json|md|txt|html|css|ya?ml)$|(?:^|\/)(?:NOTICE|LICENSE|README|CHANGELOG)(?:\.[a-z]+)?$/i;
+
+/** The rules every package keeps, as it ships. `allow` is the package's ALLOWED_MARKS entries. Returns problems; empty
+ *  passes. */
+export async function boundaryProblems(root, { shipped, allow = [] } = {}) {
   const problems = [];
+  const all = (await filesUnder(root)).map((path) => relative(root, path).split('\\').join('/'));
+  const ships = shipped ? all.filter(shipped) : all;
+  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies', 'bundleDependencies']) {
+    for (const name of Object.keys(manifest[field] ?? {})) if (banned(name)) problems.push(`package.json ${field} names ${name}`);
+  }
+  let upstream;
+  if (ships.includes(UPSTREAM_FILE)) { try { upstream = JSON.parse(await readFile(join(root, UPSTREAM_FILE), 'utf8')); } catch {} }
+  const copied = copiedPaths(upstream);
+  const used = new Set();
+  for (const name of ships) {
+    if (IMAGE.test(name)) { problems.push(`${name}: an image ships`); continue; }
+    if (!TEXT.test(name)) continue;
+    const text = await readFile(join(root, name), 'utf8').catch(() => '');
+    if (/\.(?:[cm]?js|d\.[cm]?ts|ts)$/.test(name)) for (const specifier of specifiersOf(text)) if (banned(packageNameOf(specifier))) problems.push(`${name} imports ${specifier}`);
+    if (name === 'NOTICE' || name === UPSTREAM_FILE || name === 'LICENSE') continue;
+    text.split('\n').forEach((line, index) => {
+      const header = index < 4 && HEADER.test(line);
+      if (header && !copied.has(name)) problems.push(`${name}:${index + 1} has a copied-file header, and no UPSTREAM.json records the file`);
+      if (!MARKS.test(line) || header) return;
+      const allowed = allow.find(([file, literal]) => file === name && line.includes(literal) && !MARKS.test(line.replaceAll(literal, '')));
+      if (allowed) { used.add(`${allowed[0]} ${allowed[1]}`); return; }
+      problems.push(`${name}:${index + 1} names Vercel or one of its marks`);
+    });
+  }
+  for (const [file, literal] of allow) if (!used.has(`${file} ${literal}`)) problems.push(`allowed mark no longer found: ${file} ${literal}`);
+  return problems;
+}
+
+/** A copied source file ships as itself and compiled: src/x.ts as dist/x.js and dist/x.d.ts. */
+function copiedPaths(upstream) {
+  return new Set(Object.keys(upstream?.files ?? {}).flatMap((file) => [file, file.replace(/^src\//, 'dist/').replace(/\.ts$/, '.js'), file.replace(/^src\//, 'dist/').replace(/\.ts$/, '.d.ts')]));
+}
+
+/** Problems with one package directory that carries copied code, as it ships: `root` is the unpacked tarball's `package/`,
+ *  or a package's source tree with `shipped` listing what its `files` field ships. The boundary rules, then the
+ *  attribution. Returns a list of problems; empty passes. */
+export async function attributionProblems(root, { shipped } = {}) {
+  const problems = await boundaryProblems(root, { shipped });
   const all = (await filesUnder(root)).map((path) => relative(root, path).split('\\').join('/'));
   const ships = shipped ? all.filter(shipped) : all;
   const has = (name) => ships.includes(name);
@@ -68,26 +124,7 @@ export async function attributionProblems(root, { shipped } = {}) {
     }
   }
   for (const name of ships) if (name.startsWith(PRISTINE_DIR)) problems.push(`${name}: a pristine upstream copy ships`);
-  const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies', 'devDependencies', 'bundleDependencies']) {
-    for (const name of Object.keys(manifest[field] ?? {})) if (banned(name)) problems.push(`package.json ${field} names ${name}`);
-  }
-  // A copied source file ships compiled: src/x.ts as dist/x.js and dist/x.d.ts.
-  const copied = new Set(Object.keys(upstream?.files ?? {}).flatMap((file) => [file, file.replace(/^src\//, 'dist/').replace(/\.ts$/, '.js'), file.replace(/^src\//, 'dist/').replace(/\.ts$/, '.d.ts')]));
-  for (const name of ships) {
-    if (IMAGE.test(name)) { problems.push(`${name}: an image ships`); continue; }
-    const text = await readFile(join(root, name), 'utf8').catch(() => '');
-    if (/<svg[\s>]/i.test(text)) problems.push(`${name}: SVG markup`);
-    if (/\.(?:[cm]?js|d\.[cm]?ts|ts)$/.test(name)) for (const specifier of specifiersOf(text)) if (banned(packageNameOf(specifier))) problems.push(`${name} imports ${specifier}`);
-    if (name === 'NOTICE' || name === UPSTREAM_FILE || name === 'LICENSE') continue;
-    const lines = text.split('\n');
-    lines.forEach((line, index) => {
-      if (!MARKS.test(line)) return;
-      // A copied file's own header (its first lines) may name Vercel; nothing else may.
-      if (index < 4 && HEADER.test(line) && copied.has(name)) return;
-      problems.push(`${name}:${index + 1} names Vercel or one of its marks`);
-    });
-  }
+  for (const name of ships) if (TEXT.test(name) && /<svg[\s>]/i.test(await readFile(join(root, name), 'utf8').catch(() => ''))) problems.push(`${name}: SVG markup`);
   return problems;
 }
 

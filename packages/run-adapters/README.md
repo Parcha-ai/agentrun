@@ -13,6 +13,10 @@ harness adapter the way they run on Pi, durable in AgentRun's own store. It is h
 - `AgentAdapter` is the interface a harness implements: `check` refuses a session before anything is spent (a fork it
   cannot make), and `open` restores a session from its records.
 - `./testing` has `memorySessionStore` and `fauxAdapter`, a scripted harness with no model and no network.
+- `./kernel` is the durable kernel an adapter runs on (`openDrive` over a session store): an effect's intent, then at
+  most one outcome; after a crash a `safe` effect runs again and a `never` one is reported interrupted, never run again.
+  `./process` is the shared layer for harnesses that run as a child process: the native journal, the transcript, the
+  recovery note, the tool bridge, the built-ins' hook-pair calls and the inbox.
 
 The runner's own bounds (a turn limit, no progress, an unknown tool, a refused fork, the host's refusal) fail a node
 with `final: true`, so a recovery driver gives it no second attempt. Turns sent to a node are bounded by its turn limit,
