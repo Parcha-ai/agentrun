@@ -191,7 +191,7 @@ export class Accounts {
   constructor(private readonly db: DatabaseSync, readonly secret: string, private readonly token: string) {}
 
   /** Fixes the address every link and the cookie are built from, and the origins a write may come from: `baseUrl`'s,
-   *  and on the loopback default also http://localhost on the same port. Makes a fresh setup code when there is no
+   *  and on the loopback default also localhost on the same port. Makes a fresh setup code when there is no
    *  owner: its link, or null. */
   attach(baseUrl: string, port: number, loopbackDefault = false): string | null {
     const origin = new URL(baseUrl).origin;
