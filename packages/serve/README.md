@@ -82,6 +82,15 @@ run and `auth_failed` lines stay. A run whose process failed at its start says w
 ## In a container
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
+
+1. `docker run` it (below).
+2. Open the page and set your password.
+3. Sign in with it on any browser; the token in the log stays for scripts and the CLI.
+
+On a fresh server with no `AGENTRUN_PUBLIC_URL`, whoever reaches the page first sets the password, so set it right after
+`docker run`, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code the server
+prints still guards it.
+
 With no checkout:
 
 ```sh
@@ -273,6 +282,21 @@ token itself, and it lasts until the browser closes. Without it, `/` is a page t
 data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: for a `GET`, and for any other method
 only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
 `Authorization` header is checked on that header alone.
+
+## Your password
+
+AgentRun Server is for one person, who signs in to the page with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
+no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
+more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
+the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days;
+**Sign out everywhere** ends every session on every browser. Sign-in tries are limited per address. Forgot it: run
+`agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
+/opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
+browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.
+
+A browser's writes must come from the page's own origin. Serve the image on another address or port behind a proxy, and
+set `AGENTRUN_PUBLIC_URL` to the address people open.
 
 ## A run's life
 
