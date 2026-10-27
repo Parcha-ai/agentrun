@@ -1,0 +1,209 @@
+{
+  "answers": [
+    {
+      "route": "GET /status",
+      "status": 503,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "56",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5",
+        "retry-after": "1"
+      },
+      "body": "{\"error\":\"OPENING\",\"message\":\"the run is still opening\"}"
+    },
+    {
+      "route": "GET /status",
+      "status": 401,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "63",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5",
+        "www-authenticate": "Bearer"
+      },
+      "body": "{\"error\":\"UNAUTHORIZED\",\"message\":\"a bearer token is required\"}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 400,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "89",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"error\":\"BAD_REQUEST\",\"message\":\"requestId must be 1 to 200 printable ASCII characters\"}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 400,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "52",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"error\":\"BAD_REQUEST\",\"message\":\"body is not JSON\"}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 200,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "192",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"run\":\"door-exchange\",\"generation\":1,\"submission\":{\"conversationId\":1,\"requestId\":\"x1\",\"type\":\"input\",\"status\":\"done\",\"entry\":7,\"id\":8,\"answer\":11},\"answer\":{\"entry\":11,\"text\":\"echo: hello\"}}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 200,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "192",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"run\":\"door-exchange\",\"generation\":1,\"submission\":{\"conversationId\":1,\"requestId\":\"x1\",\"type\":\"input\",\"status\":\"done\",\"entry\":7,\"id\":8,\"answer\":11},\"answer\":{\"entry\":11,\"text\":\"echo: hello\"}}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 404,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "53",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no conversation 999\"}"
+    },
+    {
+      "route": "GET /status",
+      "status": 200,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "130",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"run\":\"door-exchange\",\"generation\":1,\"status\":\"running\",\"busy\":{\"kind\":\"idle\"},\"scheduling\":\"running\",\"tasks\":[],\"submissions\":0}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 200,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "197",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"run\":\"door-exchange\",\"generation\":1,\"submission\":{\"conversationId\":1,\"requestId\":\"e1\",\"type\":\"input\",\"status\":\"done\",\"entry\":12,\"id\":13,\"answer\":15},\"answer\":{\"entry\":15,\"text\":\"echo: streamed\"}}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 200,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "141",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"run\":\"door-exchange\",\"generation\":1,\"submission\":{\"conversationId\":1,\"requestId\":\"g1\",\"type\":\"input\",\"status\":\"placed\",\"entry\":16,\"id\":17}}"
+    },
+    {
+      "route": "GET /status",
+      "status": 200,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "225",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"run\":\"door-exchange\",\"generation\":1,\"status\":\"running\",\"busy\":{\"kind\":\"busy\"},\"scheduling\":\"running\",\"tasks\":[{\"id\":18,\"kind\":\"pi.generation\",\"state\":\"waiting\"},{\"id\":20,\"kind\":\"pi.tool\",\"state\":\"running\"}],\"submissions\":1}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 409,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "51",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"error\":\"BUSY\",\"message\":\"Conversation 1 is busy\"}"
+    },
+    {
+      "route": "POST /abort",
+      "status": 200,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "20",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"result\":\"aborted\"}"
+    },
+    {
+      "route": "POST /abort",
+      "status": 404,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "53",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no submission 12345\"}"
+    },
+    {
+      "route": "GET /nope",
+      "status": 404,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "52",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5"
+      },
+      "body": "{\"error\":\"NOT_FOUND\",\"message\":\"no route GET /nope\"}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 503,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "62",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5",
+        "retry-after": "1"
+      },
+      "body": "{\"error\":\"PARKING\",\"message\":\"the run is parking or draining\"}"
+    },
+    {
+      "route": "POST /submit",
+      "status": 503,
+      "headers": {
+        "connection": "keep-alive",
+        "content-length": "79",
+        "content-type": "application/json",
+        "keep-alive": "timeout=5",
+        "retry-after": "1"
+      },
+      "body": "{\"error\":\"RELEASED\",\"message\":\"the run is released or fenced on this instance\"}"
+    }
+  ],
+  "events": {
+    "route": "GET /events",
+    "headers": {
+      "cache-control": "no-cache",
+      "connection": "keep-alive",
+      "content-type": "text/event-stream",
+      "transfer-encoding": "chunked"
+    },
+    "frames": [
+      "event: snapshot\ndata: {\"type\":\"snapshot\",\"entries\":[{\"model\":[{\"role\":\"user\",\"content\":\"hello\",\"timestamp\":<ms>}],\"kind\":\"pi.user\",\"id\":7,\"conversationId\":1},{\"model\":[{\"role\":\"system\",\"content\":\"\",\"toolsAdded\":[{\"name\":\"safe_tool\",\"description\":\"A safe tool that waits\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"unsafe_tool\",\"description\":\"A unsafe tool that waits\",\"parameters\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"gate_tool\",\"description\":\"Waits for the test's gate\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}],\"timestamp\":<ms>}],\"kind\":\"pi.system\",\"id\":10,\"conversationId\":1,\"byTaskId\":9},{\"model\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"echo: hello\"}],\"api\":\"faux:<tag>\",\"provider\":\"faux\",\"model\":\"faux-1\",\"usage\":{\"input\":91,\"output\":3,\"cacheRead\":0,\"cacheWrite\":91,\"totalTokens\":185,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"stop\",\"timestamp\":<ms>,\"durationMs\":<ms>}],\"kind\":\"pi.assistant\",\"id\":11,\"conversationId\":1,\"byTaskId\":9}],\"tools\":[],\"compactions\":[],\"inbox\":[],\"agent\":{\"model\":{\"provider\":\"faux\",\"modelId\":\"faux-1\"}},\"usage\":{\"models\":{\"faux/faux-1\":{\"input\":91,\"output\":3,\"cacheRead\":0,\"cacheWrite\":91,\"totalTokens\":185,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}}},\"tools\":{}}}",
+      "event: events\ndata: [{\"type\":\"message_start\",\"message\":{\"role\":\"user\",\"content\":\"streamed\",\"timestamp\":<ms>}},{\"type\":\"message_end\",\"entry\":{\"model\":[{\"role\":\"user\",\"content\":\"streamed\",\"timestamp\":<ms>}],\"kind\":\"pi.user\",\"id\":12,\"conversationId\":1}},{\"type\":\"submission\",\"record\":{\"conversationId\":1,\"requestId\":\"e1\",\"type\":\"input\",\"status\":\"placed\",\"entry\":12,\"id\":13}},{\"type\":\"run_start\",\"inputs\":[13]},{\"type\":\"turn_start\"}]",
+      "event: events\ndata: [{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"echo: streamed\"}],\"api\":\"faux:<tag>\",\"provider\":\"faux\",\"model\":\"faux-1\",\"usage\":{\"input\":10,\"output\":4,\"cacheRead\":91,\"cacheWrite\":10,\"totalTokens\":115,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"stop\",\"timestamp\":<ms>,\"durationMs\":<ms>}},{\"type\":\"message_end\",\"entry\":{\"model\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"echo: streamed\"}],\"api\":\"faux:<tag>\",\"provider\":\"faux\",\"model\":\"faux-1\",\"usage\":{\"input\":10,\"output\":4,\"cacheRead\":91,\"cacheWrite\":10,\"totalTokens\":115,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"stop\",\"timestamp\":<ms>,\"durationMs\":<ms>}],\"kind\":\"pi.assistant\",\"id\":15,\"conversationId\":1,\"byTaskId\":14}},{\"type\":\"turn_end\"},{\"type\":\"run_end\",\"inputs\":[13]},{\"type\":\"submission\",\"record\":{\"conversationId\":1,\"requestId\":\"e1\",\"type\":\"input\",\"status\":\"done\",\"entry\":12,\"id\":13,\"answer\":15}},{\"type\":\"usage_changed\",\"usage\":{\"models\":{\"faux/faux-1\":{\"input\":101,\"output\":7,\"cacheRead\":91,\"cacheWrite\":101,\"totalTokens\":300,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}}},\"tools\":{}}}]"
+    ]
+  }
+}
