@@ -3,7 +3,7 @@
 // reports a `never` one interrupted, never running it again. Each "process" here is a drive opened on the same store.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EffectFailure, foldSession, INTERRUPTED_TEXT, openDrive, readBlobs, Restart } from '@parcha/agentrun-adapters/kernel';
+import { EffectFailure, Fatal, foldSession, INTERRUPTED_TEXT, KERNEL_RECORDS, openDrive, readBlobs, Restart } from '@parcha/agentrun-adapters/kernel';
 import { SessionFenced } from '@parcha/agentrun-adapters';
 import { NativeJournal, placeSubmissions, readJournal, recoveryNote, toolBridge, toolKey, transcriptOf } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
@@ -158,4 +158,56 @@ test("K2: an outcome is never applied to another drive's intent", async () => {
   const winners = [aOut, bOut].filter((o) => typeof o === 'string');
   assert.deepEqual(winners, [folded.output], `A returned ${String(aOut)}, B returned ${String(bOut)}, the log holds ${folded.output}`);
   assert.ok(aOut instanceof Restart, `the stale drive was told to rebuild: ${aOut}`);
+});
+
+/** A key's records, as a drive writes them: an intent (`attempt` from 0), a release, an outcome. */
+const start = (key, attempt, replay = 'never') => ({ kind: KERNEL_RECORDS.start, data: { key, stepId: `${key}#${attempt}`, name: 'tool.x', replay, input: {}, placed: [], attempt, startedAt: new Date(0).toISOString() } });
+const release = (key, attempt) => ({ kind: KERNEL_RECORDS.retry, data: { stepId: `${key}#${attempt}` } });
+const end = (key, attempt, output) => ({ kind: KERNEL_RECORDS.end, data: { stepId: `${key}#${attempt}`, status: 'completed', output } });
+
+test("a late outcome of a key's earlier attempt never lands on its later one: the effect stays the later attempt's", async () => {
+  // Attempt 0 was released (its process died) and attempt 1 started; then attempt 0's outcome arrives late.
+  const records = [start('k', 0, 'safe'), release('k', 0), start('k', 1, 'safe'), end('k', 0, 'from attempt 0')];
+  const effect = foldSession('s', records).effects.get('k');
+  assert.deepEqual([effect.status, effect.stepId, effect.attempt, effect.output], ['running', 'k#1', 1, undefined]);
+  // The next drive resolves the open intent as attempt 1's: released to run again, and the run is attempt 2.
+  const store = memorySessionStore();
+  await (await store.open('run-1')).append(records);
+  const next = await open(store);
+  assert.equal(next.state().effects.get('k').status, 'pending');
+  assert.equal(await next.effect('k', { name: 'tool.x', replay: 'safe' }, async () => 'from attempt 2'), 'from attempt 2');
+  const after = (await open(store)).state().effects.get('k');
+  assert.deepEqual([after.status, after.attempt, after.output], ['completed', 2, 'from attempt 2']);
+});
+
+test("a key's first intent wins: a later intent for a completed key changes nothing", () => {
+  const effect = foldSession('s', [start('k', 0), end('k', 0, 'kept'), start('k', 1)]).effects.get('k');
+  assert.deepEqual([effect.status, effect.stepId, effect.output], ['completed', 'k#0', 'kept']);
+});
+
+test('a second call of an effect while its first is running is refused (Fatal), and its function runs once', async () => {
+  const drive = await open(memorySessionStore());
+  let runs = 0;
+  let entered;
+  let finish;
+  const inside = new Promise((resolve) => { entered = resolve; });
+  const first = drive.effect('k', { name: 'tool.x', replay: 'never' }, () => { runs += 1; entered(); return new Promise((resolve) => { finish = resolve; }); });
+  await inside;
+  await assert.rejects(drive.effect('k', { name: 'tool.x', replay: 'never' }, async () => { runs += 1; return 'second'; }), Fatal);
+  finish('first');
+  assert.equal(await first, 'first');
+  assert.equal(runs, 1);
+});
+
+test('an effect whose function throws Restart or Fatal writes no outcome: the next drive resolves its intent', async () => {
+  for (const [Kind, replay, resolved] of [[Restart, 'safe', 'pending'], [Fatal, 'never', 'failed']]) {
+    const store = memorySessionStore();
+    const drive = await open(store);
+    await assert.rejects(drive.effect('k', { name: 'tool.x', replay }, async () => { throw new Kind('rebuild'); }), Kind);
+    const records = await store.read('run-1');
+    assert.equal(records.filter((r) => r.kind === KERNEL_RECORDS.end).length, 0, `${Kind.name}: no outcome was written`);
+    const effect = (await open(store)).state().effects.get('k');
+    assert.equal(effect.status, resolved, Kind.name);
+    if (resolved === 'failed') assert.equal(effect.error.interrupted, true);
+  }
 });
