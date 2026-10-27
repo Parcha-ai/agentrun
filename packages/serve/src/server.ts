@@ -270,7 +270,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
   /** The learning routes' view of this server; until accounts, the one principal is the server's token. */
-  const learningContext: LearningContext = { data, agents, review, secrets, runOf: (id) => needRun(id), bodyOf: (req) => bodyOf(req), principal: () => "token" };
+  const learningContext: LearningContext = {
+    data, agents, review, secrets, runOf: (id) => needRun(id), bodyOf: (req) => bodyOf(req), principal: options.learning?.principal ?? (() => ({ id: "token" })),
+    ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}),
+  };
 
   /** The host commit of an agent's current revision on its learning repository's main. The revision is written either
    *  way: a failed commit is said, and the agent's next run makes it before it starts. */

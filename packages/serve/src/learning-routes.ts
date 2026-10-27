@@ -62,9 +62,13 @@ export type LearningContext = {
   secrets: () => string[];
   runOf(id: string): Promise<{ id: string; agentId: string }>;
   bodyOf(req: IncomingMessage): Promise<Json>;
-  /** Who the request is, from its credential only. */
-  principal(req: IncomingMessage): string;
+  /** Who the request is, from its credential only. Only `id`, a stable opaque account id ("token" for the server's
+   *  token), is ever written into the learning repository; anything person-identifying stays in the log. */
+  principal(req: IncomingMessage): LearningPrincipal;
+  log?: (event: string, fields: Record<string, string | number>) => void;
 };
+
+export type LearningPrincipal = { readonly id: string; readonly email?: string };
 
 const FILE_CAP = 64 * 1024;
 const DIFF_TOTAL_CAP = 1024 * 1024;
@@ -149,7 +153,7 @@ async function answerRun(name: string, req: IncomingMessage, res: ServerResponse
       const body = await ctx.bodyOf(req);
       const reason = name === "refuseRunLearning" ? oneLine(body.reason, "reason") : undefined;
       if (state?.state !== "awaiting_approval") throw new ApiError("not_awaiting_approval", "this run's learning is not waiting for approval");
-      const principal = ctx.principal(req);
+      const { id: principal } = ctx.principal(req);
       const result = reason === undefined ? await ctx.review.approve(agentId, run.id, principal) : await ctx.review.refuse(agentId, run.id, principal, reason);
       return sendJson(res, 200, result, secrets);
     }
@@ -240,9 +244,10 @@ async function answerAgent(name: string, req: IncomingMessage, res: ServerRespon
       const mode = learningOf(entry.revision);
       if (!main) return sendJson(res, 200, { agent_id: agentId, mode, main: null, notes: [], skills: [], workflows: [] }, secrets);
       const paths = ((await git(bare, ["ls-tree", "-r", "-z", "--name-only", main, "--", "learnings", ".agents/skills", "workflows"])) ?? "").split("\0").filter(Boolean);
+      const notePaths = paths.filter((p) => /^learnings\/L-[0-9a-f]{12}\.md$/.test(p));
       const { parseLearning } = await import("@parcha/pi-agent-learn");
       const notes: Record<string, unknown>[] = [];
-      for (const path of paths.filter((p) => /^learnings\/L-[0-9a-f]{12}\.md$/.test(p)).slice(0, NOTES_CAP)) {
+      for (const path of notePaths.slice(0, NOTES_CAP)) {
         try {
           const note = parseLearning((await blobAt(bare, main, path)) ?? "");
           notes.push({ id: note.id, type: note.type, status: note.status, uses: note.uses, text: note.text });
@@ -252,7 +257,7 @@ async function answerAgent(name: string, req: IncomingMessage, res: ServerRespon
       }
       const skills = [...new Set(paths.map((p) => /^\.agents\/skills\/([^/]+)\/SKILL\.md$/.exec(p)?.[1]).filter((n): n is string => n !== undefined))].sort();
       const workflows = [...new Set(paths.map((p) => /^workflows\/([^/]+)\//.exec(p)?.[1]).filter((n): n is string => n !== undefined))].sort().map((n) => ({ name: n }));
-      return sendJson(res, 200, { agent_id: agentId, mode, main, notes, skills, workflows, ...(paths.length > NOTES_CAP ? { truncated: true } : {}) }, secrets);
+      return sendJson(res, 200, { agent_id: agentId, mode, main, notes, skills, workflows, ...(notePaths.length > NOTES_CAP ? { truncated: true } : {}) }, secrets);
     }
     case "readAgentLearningFile": {
       let path: string;
@@ -285,11 +290,10 @@ async function answerAgent(name: string, req: IncomingMessage, res: ServerRespon
       if (!Number.isInteger(offset) || offset < 0) throw invalid([{ field: "cursor", reason: "not_an_option", message: "cursor is a next_cursor this route gave" }]);
       if (!main) return sendJson(res, 200, { agent_id: agentId, merges: [], next_cursor: null }, secrets);
       const text = (await git(bare, ["log", "--first-parent", "-z", "--format=%H%x1f%cI%x1f%s%x1f%(trailers:key=Curated-Run,valueonly,separator=%x2C)", main])) ?? "";
+      // The run comes from the Curated-Run trailer; what was accepted and refused is the run's verdict, never read out of
+      // a commit's words.
       const merges = text.split("\0").filter(Boolean).map((line) => line.replace(/^\n/, "").split("\x1f")).filter(([, , , run]) => (run ?? "").trim() !== "")
-        .map(([sha, at, subject, run]) => {
-          const count = (word: string) => Number(new RegExp(`(\\d+) ${word}`).exec(subject ?? "")?.[1] ?? 0);
-          return { sha, at, run: (run ?? "").trim(), subject, accepted: count("accepted"), refused: count("refused") };
-        });
+        .map(([sha, at, subject, run]) => ({ sha, at, run: (run ?? "").trim(), subject }));
       const page = merges.slice(offset, offset + limit);
       return sendJson(res, 200, { agent_id: agentId, merges: page, next_cursor: offset + limit < merges.length ? String(offset + limit) : null }, secrets);
     }
@@ -299,10 +303,13 @@ async function answerAgent(name: string, req: IncomingMessage, res: ServerRespon
       if (typeof id !== "string" || !/^L-[0-9a-f]{12}$/.test(id)) throw invalid([{ field: "id", reason: id === undefined ? "missing" : "not_an_option", message: "id is a note's id, L- and 12 hex digits" }]);
       const reason = oneLine(body.reason, "reason");
       const { retireLearning } = await import("@parcha/pi-agent-learn");
+      // On main, the reason and the stable account id only: never a person's email or name.
+      const { id: principal } = ctx.principal(req);
       const result = await withAgentRepo(ctx.data, agentId, async () => {
         const repo = await openAgentRepo(ctx.data, agentId, join(ctx.data, "agents", agentId, "curator"));
-        return retireLearning({ repo, id, reason: `${reason} (${ctx.principal(req)})`, secrets: [...secrets] });
+        return retireLearning({ repo, id, reason: `${reason} (by ${principal})`, secrets: [...secrets] });
       });
+      ctx.log?.("learning_retired", { agent: agentId, note: id, by: principal, result: result.status });
       return sendJson(res, 200, result, secrets);
     }
   }

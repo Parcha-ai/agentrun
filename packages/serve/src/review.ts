@@ -15,7 +15,12 @@ import { learningOf, learningRunsDir, openAgentRepo, readRunState, type RunState
 
 /** What a host gives review: the injection screen (the browser lane's page judge and its threshold) and, in tests, the
  *  judge. Without `judge`, the judge is Jev's, on the server's TYPESAFE_API_KEY. */
-export type LearningOptions = { screen?: InjectionScreen; judge?: Judge };
+export type LearningOptions = {
+  screen?: InjectionScreen;
+  judge?: Judge;
+  /** For tests: who a learning route's request is. Without it, the server's token ("token"); with accounts, the credential's. */
+  principal?: () => { readonly id: string; readonly email?: string };
+};
 
 export const NO_SCREEN = "no injection screen on this server";
 export const NO_JUDGE = "no judge on this server";

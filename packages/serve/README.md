@@ -349,8 +349,11 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   - `POST /runs/{id}/learning/approve` and `POST /runs/{id}/learning/refuse` (`{reason}`, one line): a held plan;
     `409 not_awaiting_approval` when none waits. Who decided is the credential's, never the body's.
   - `GET /agents/{id}/learning` (its notes, skills and workflows at `main`), `GET /agents/{id}/learning/files/{path}`
-    (one file at `main`, a plain path under 64 KB), `GET /agents/{id}/learning/log` (the merges, newest first, `limit`
-    at most 100, then `cursor`), and `POST /agents/{id}/learning/retire` (`{id, reason}`).
+    (one file at `main`, a plain path under 64 KB), `GET /agents/{id}/learning/log` (the merges, newest first, by their
+    `Curated-Run` trailer; a run's counts are its verdict, never read out of a commit's words; `limit` at most 100, then
+    `cursor`), and `POST /agents/{id}/learning/retire` (`{id, reason}`).
+  Nothing person-identifying is written into the learning repository: approve, refuse and retire record the stable
+  account id (`token` for the server's token), and who did it by name stays in the log.
   Reads come from the bare repository with git's plumbing, which takes no lock. Every text passes through the host's
   secrets at read time, so a value made secret after a proposal reads `[redacted]`, and a file holding one shows its
   path and `withheld` only. The memo and a file answer with their own type, `nosniff`, and a `sandbox` policy.
