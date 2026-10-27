@@ -110,6 +110,7 @@ export function superviseOnce(id: string | null, flags: string[]): { code: numbe
 export function superviseLoop(id: string, flags: string[], every = "3s") {
   const child = spawn(process.execPath, superviseArgs(id, [...flags, "--every", every]), { env: supervisorEnv(), stdio: ["ignore", "pipe", "pipe"] });
   loops.add(child);
+  child.once("close", () => loops.delete(child));
   const lines: (Record<string, unknown> & { seenAt: number })[] = [];
   let buf = "";
   let stderr = "";
@@ -227,6 +228,27 @@ export async function stopInstance(h: HostHandle, how = "driver stop"): Promise<
 /** This run's own names: its units (pda-p5-<role>-p5-<stamp>-<test>-...) and mountpoints (<root>/runs/p5-<stamp>-<test>). */
 const ours = (name: string) => name.includes(`p5-${STAMP}-`);
 
+/** Whether `p` settles within `ms`; its timer is cleared either way. */
+async function within(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<boolean>((r) => (timer = setTimeout(r, ms, false)));
+  return Promise.race([p.then(() => true), late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * End a supervise loop and wait until it has exited and its output is read: on SIGTERM `supervise --every` finishes the
+ * tick it is in, which can still start an instance and print its handle. SIGKILL after 30 s.
+ */
+async function endLoop(l: ChildProcess): Promise<void> {
+  const closed = new Promise((r) => l.once("close", r));
+  l.kill("SIGTERM");
+  if (!(await within(closed, 30_000))) {
+    l.kill("SIGKILL");
+    await within(closed, 5_000);
+  }
+  loops.delete(l);
+}
+
 /**
  * After each test, whatever it left up on this host: daemons it froze, supervise loops, units and mounts of this run.
  * After a red, this keeps every later test from failing its own empty-mount-table check on the red one's leftovers. A
@@ -242,12 +264,11 @@ afterEach(async (t) => {
   const left: Record<string, unknown> = { test: t.name, passed, thawed: [...stopped], loops: loops.size, units: [], mounts: [] };
   for (const pid of stopped) sh("sudo", ["-n", "kill", "-CONT", String(pid)]);
   stopped.clear();
-  for (const l of [...loops]) {
-    l.kill("SIGTERM");
-    loops.delete(l);
-  }
-  if ((left.thawed as number[]).length || (left.loops as number)) await sleep(500);
-  for (const h of [...handles]) {
+  await Promise.all([...loops].map(endLoop));
+  if ((left.thawed as number[]).length) await sleep(500);
+  // This test's handles, those its loops' last ticks started included. They leave the shared list here, so a stop that
+  // fails is recorded on this test alone; the sweeps below (and `after`'s) remove what it left.
+  for (const h of handles.splice(0)) {
     const r = await stopInstance(h, "stopped after its test").then(() => "stopped", (e: unknown) => `stop failed: ${(e as Error).message}`);
     (left.units as unknown[]).push({ unit: h.unit, r });
   }
