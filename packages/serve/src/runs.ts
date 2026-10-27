@@ -32,6 +32,8 @@ const LEASE_MS = 90_000;
 const DRAIN = "30s";
 /** The run process's stderr, beside run.json: a file, so the process outlives a server that stops without stopping it. */
 const PROCESS_LOG = "process.log";
+/** How long a request waits for a run's door: its process coming up, or a settle in progress. */
+const READY_TIMEOUT_MS = 45_000;
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
@@ -191,8 +193,8 @@ export function statusOf(run: Run): { status: Status; state: State } {
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
- *  tried again; `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+ *  tried again; `readyTimeoutMs`: how long a request waits for a run's door; `log` takes a run's start and end (print.ts). */
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -502,7 +504,7 @@ export class Runs {
   }
 
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
-  private async ensureLive(run: Run, timeoutMs = 45_000): Promise<string> {
+  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     for (let launched = false; ; await sleep(100)) {
       if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
