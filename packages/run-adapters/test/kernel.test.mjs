@@ -3,7 +3,7 @@
 // reports a `never` one interrupted, never running it again. Each "process" here is a drive opened on the same store.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { EffectFailure, Fatal, foldSession, INTERRUPTED_TEXT, KERNEL_RECORDS, openDrive, readBlobs, Restart } from '@parcha/agentrun-adapters/kernel';
+import { EffectFailure, Fatal, foldSession, INTERRUPTED_TEXT, KERNEL_RECORDS, openDrive, readBlobs, Restart, sha256Hex, writeBlob } from '@parcha/agentrun-adapters/kernel';
 import { SessionFenced } from '@parcha/agentrun-adapters';
 import { NativeJournal, placeSubmissions, readJournal, recoveryNote, toolBridge, toolKey, transcriptOf } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
@@ -210,4 +210,86 @@ test('an effect whose function throws Restart or Fatal writes no outcome: the ne
     assert.equal(effect.status, resolved, Kind.name);
     if (resolved === 'failed') assert.equal(effect.error.interrupted, true);
   }
+});
+
+// K10 (the DSL TL's probe): the window K5 does not reach. Both calls are issued before either intent is durable, so
+// both would read the key as unknown and dispatch; a never effect runs once, and the second call is refused.
+test('K10: two overlapping calls of one never effect, issued before either intent is durable, run it once', async () => {
+  const drive = await open(memorySessionStore());
+  let ran = 0;
+  const fn = async () => { ran += 1; return 'paid'; };
+  const results = await Promise.allSettled([
+    drive.effect('pay', { name: 'pay', replay: 'never' }, fn),
+    drive.effect('pay', { name: 'pay', replay: 'never' }, fn),
+  ]);
+  assert.equal(ran, 1, `fn ran ${ran} times; results ${JSON.stringify(results.map((r) => r.status))}`);
+  assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'rejected']);
+  assert.ok(results[1].reason instanceof Fatal, String(results[1].reason));
+});
+
+test('K10, held: the second call is issued while the first intent write is held open; fn runs once and the second call is Fatal', async () => {
+  const inner = await memorySessionStore().open('run-1');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let holdNext = false;
+  let entered;
+  const holding = new Promise((resolve) => { entered = resolve; });
+  // The session's writer, with its next append held open until the test releases it.
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (holdNext) { holdNext = false; entered(); await gate; } return inner.append(records); } };
+  const drive = await openDrive({ writer, signal: new AbortController().signal });
+  let ran = 0;
+  const fn = async () => { ran += 1; return 'paid'; };
+  holdNext = true;
+  const first = drive.effect('pay', { name: 'pay', replay: 'never' }, fn);
+  await holding;
+  const second = drive.effect('pay', { name: 'pay', replay: 'never' }, fn);
+  release();
+  const results = await Promise.allSettled([first, second]);
+  assert.equal(ran, 1, `fn ran ${ran} times`);
+  assert.equal(results[0].value, 'paid');
+  assert.ok(results[1].reason instanceof Fatal, String(results[1].reason));
+});
+
+test('a withdraw that lands between pending() and placing: the placement places nothing and throws Restart, and the next drive sends the rest', async () => {
+  const store = memorySessionStore();
+  const drive = await open(store);
+  for (const id of ['a', 'b']) await drive.submit({ id, kind: 'prompt', text: id });
+  const stale = drive.pending();
+  await drive.submit({ id: 'w', kind: 'withdraw', target: 'b' });
+  let sent = 0;
+  await assert.rejects(drive.effect('place:a', { name: 'place', replay: 'safe', input: { ids: ['a', 'b'] }, placed: stale.map((s) => s.id) }, async () => { sent += 1; return true; }), Restart);
+  assert.equal(sent, 0, 'the placement did not go on to send');
+  assert.deepEqual([...drive.state().placed], [], 'a placement a withdraw beat places nothing, not even the rest');
+  // The library call over the same stale list refuses the same way.
+  await assert.rejects(placeSubmissions(await open(store), stale), Restart);
+  // The rebuilt drive goes on: its fresh pending() no longer names b, so placing it is no second Restart; a is placed
+  // and sent once, and b never placed.
+  const next = await open(store);
+  assert.deepEqual(next.pending().map((s) => s.id), ['a']);
+  let sends = 0;
+  const send = async (ctx) => { await placeSubmissions(ctx, ctx.pending()); for (const _ of ctx.state().effects.get('place:a').placed) sends += 1; };
+  await assert.doesNotReject(send(next));
+  assert.equal(sends, 1);
+  assert.deepEqual([[...next.state().placed], next.pending()], [['a'], []]);
+  // A drive after that has nothing left to place, and the log never placed b.
+  const after = await open(store);
+  assert.deepEqual([after.pending(), [...after.state().placed], after.state().effects.get('place:a').status], [[], ['a'], 'completed']);
+  // The fold only ever adds to placed, so b missing from it now means no record ever placed b.
+  assert.equal(after.state().placed.has('b'), false);
+});
+
+test('a blob written again with another piece size reads back whole and unmixed, and a reconstruction that does not hash to its name is not returned', async () => {
+  const store = memorySessionStore();
+  const drive = await open(store);
+  const text = 'abcdefghijkl';
+  const hash = await sha256Hex(text);
+  await writeBlob(drive.world, 'run-1', text, { pieceChars: 4 });
+  await writeBlob(drive.world, 'run-1', text, { pieceChars: 6 });
+  assert.equal((await readBlobs(drive.world, 'run-1')).get(hash), text);
+  // Pieces that join to other text under the hash's name (a corrupt or forged write) are not the blob.
+  await (await store.open('forged')).append([{ kind: 'kernel.blob', data: { hash, piece: 0, count: 1, text: 'not it' } }]);
+  const forged = await openDrive({ writer: await store.open('forged'), signal: new AbortController().signal });
+  assert.equal((await readBlobs(forged.world, 'forged')).has(hash), false);
+  // A blob is named by its own content: a hash that is not the text's is refused at the write.
+  await assert.rejects(writeBlob(drive.world, 'run-1', text, { hash: '0'.repeat(64) }), TypeError);
 });

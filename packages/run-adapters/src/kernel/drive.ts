@@ -6,7 +6,8 @@
 // session fences, so a stale drive's next write is refused and it gets a `Restart`, never a result. So when a drive
 // opens, an intent with no outcome was cut off by the process that wrote it: a `safe` one is released to run again (`kernel.retry`), a `never` one is recorded failed and interrupted
 // ("it may or may not have taken effect") and is never run again. Input is a `kernel.submission` record; an effect that
-// names submissions in `placed` takes them out of `pending()` at its intent, and a withdraw written before that wins.
+// names submissions in `placed` takes them out of `pending()` at its intent, and a withdraw written before that wins:
+// that placement places nothing and its effect throws `Restart`.
 import { SessionFenced } from "../errors.js";
 import type { SessionRecord, SessionWriter } from "../types.js";
 import { EffectFailure, EffectInterrupted, Fatal, Restart } from "./errors.js";
@@ -42,8 +43,9 @@ export function foldSession(runId: string, records: readonly SessionRecord[]): S
       const existing = state.effects.get(data.key);
       // A key's first intent wins; a later one is the same key run again after a release.
       if (existing && existing.status !== "pending") continue;
-      // A placement a withdraw beat places nothing.
-      const placed = data.placed.filter((id) => !state.withdrawn.has(id));
+      // A placement a withdraw beat places nothing, not even its other submissions: the effect that wrote it is
+      // refused (`Restart`), and the next drive places what is still pending.
+      const placed = data.placed.some((id) => state.withdrawn.has(id)) ? [] : data.placed;
       const effect: EffectRecord = { key: data.key, stepId: data.stepId, name: data.name, replay: data.replay, input: data.input, status: "running", attempt: data.attempt, startedAt: new Date(data.startedAt), placed };
       if (existing) Object.assign(existing, effect, { output: undefined, error: undefined });
       else { state.effects.set(data.key, effect); state.effectOrder.push(effect); }
@@ -117,6 +119,9 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
   const signal = AbortSignal.any([options.signal, controller.signal]);
   const hints = new Set<(hint: { eventType: "hook_received" | "reconnect" }) => void>();
 
+  // Keys this drive has begun and not finished, reserved before the first await: two calls issued together cannot both
+  // pass the checks below and dispatch one effect twice.
+  const inflight = new Set<string>();
   const drive: Drive = {
     runId: key,
     world: { store: writer },
@@ -152,24 +157,33 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       const known = state.effects.get(k);
       if (known?.status === "completed") return known.output as T;
       if (known?.status === "failed") throw new EffectFailure(known.error ?? { message: "failed" });
-      if (known?.status === "running") throw new Fatal(`agentrun-adapters: effect ${k} is already running in this drive`);
+      if (known?.status === "running" || inflight.has(k)) throw new Fatal(`agentrun-adapters: effect ${k} is already running in this drive`);
       if (signal.aborted) throw signal.reason;
-      const attempt = known ? known.attempt + 1 : 0;
-      const stepId = `${k}#${attempt}`;
-      await append([{ kind: KERNEL_RECORDS.start, data: { key: k, stepId, name: effectOptions.name, replay: effectOptions.replay, input: effectOptions.input as never, placed: effectOptions.placed ?? [], attempt, startedAt: new Date().toISOString() } }]);
-      const partial: unknown[] = [];
-      let output: T;
+      inflight.add(k);
       try {
-        output = await fn({ signal, stepId, progress: (chunk) => { partial.push(chunk); } });
-      } catch (error) {
-        // The drive is stopping, or must be rebuilt: no outcome is written; the next drive resolves the intent.
-        if (signal.aborted || error instanceof Restart || error instanceof Fatal) throw error;
-        const failed = { message: String((error as Error)?.message ?? error), ...(error instanceof EffectInterrupted ? { interrupted: true } : {}), ...(partial.length ? { partial } : {}) };
-        await append([{ kind: KERNEL_RECORDS.end, data: { stepId, status: "failed", error: failed as never } }]);
-        throw new EffectFailure(failed);
+        const attempt = known ? known.attempt + 1 : 0;
+        const stepId = `${k}#${attempt}`;
+        const placing = effectOptions.placed ?? [];
+        await append([{ kind: KERNEL_RECORDS.start, data: { key: k, stepId, name: effectOptions.name, replay: effectOptions.replay, input: effectOptions.input as never, placed: placing, attempt, startedAt: new Date().toISOString() } }]);
+        // A withdraw that landed first beat the placement (from a `pending()` read before it): what the caller would
+        // send next is not what the log placed, so it must rebuild instead of running.
+        if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-adapters: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
+        const partial: unknown[] = [];
+        let output: T;
+        try {
+          output = await fn({ signal, stepId, progress: (chunk) => { partial.push(chunk); } });
+        } catch (error) {
+          // The drive is stopping, or must be rebuilt: no outcome is written; the next drive resolves the intent.
+          if (signal.aborted || error instanceof Restart || error instanceof Fatal) throw error;
+          const failed = { message: String((error as Error)?.message ?? error), ...(error instanceof EffectInterrupted ? { interrupted: true } : {}), ...(partial.length ? { partial } : {}) };
+          await append([{ kind: KERNEL_RECORDS.end, data: { stepId, status: "failed", error: failed as never } }]);
+          throw new EffectFailure(failed);
+        }
+        await append([{ kind: KERNEL_RECORDS.end, data: { stepId, status: "completed", output: (output === undefined ? null : output) as never } }]);
+        return output;
+      } finally {
+        inflight.delete(k);
       }
-      await append([{ kind: KERNEL_RECORDS.end, data: { stepId, status: "completed", output: (output === undefined ? null : output) as never } }]);
-      return output;
     },
   };
   return drive;
