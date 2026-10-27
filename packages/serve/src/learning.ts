@@ -29,7 +29,9 @@ const HOST_CLONE = "host.git";
 const RUN_CLONE = "learning.git";
 const IDENTITY: GitIdentity = { name: "agentrun-serve", email: "serve@agentrun.invalid" };
 /** The tools whose calls bring nothing from outside the run into it. Any other tool (`fetch_page`, the browser's, or one
- *  this list does not know) is external, and a run that called one is untrusted. */
+ *  this list does not know) is external, and a run that called one is untrusted. `read` is here only because this
+ *  server takes no uploads (capabilities `files.upload: false`), so a run has no input file to read: the change that
+ *  turns uploads on must make a run that reads an input file untrusted. */
 const TRUSTED_TOOLS = new Set(["read", "write", "edit", "ask_person", LEARN_TOOL]);
 /** A skill the agent wrote, at `.agents/skills/<name>/SKILL.md` on main. */
 const LEARNED_SKILL = /^\.agents\/skills\/([a-z0-9][a-z0-9._-]{0,63})\/SKILL\.md$/;
@@ -74,14 +76,18 @@ export const outcomeOf = (state: RunRow["state"]): "completed" | "failed" | "sto
 /** Whether a tool brings content from outside the run into it. */
 export const isExternal = (tool: string): boolean => !TRUSTED_TOOLS.has(tool);
 
-/** Whether the run in `storeFile` called an external tool: every tool call its conversations hold, whatever it answered. */
+/** Whether the run in `storeFile` called an external tool: every tool call its conversations hold, whatever it answered.
+ *  pi-durable writes one message per entry (`model` is `[AssistantMessage]`), and every message of every entry is read
+ *  anyway, so an entry that ever carries more cannot hide a call. */
 export function externalUsed(storeFile: string): boolean {
   const db = new DatabaseSync(storeFile, { readOnly: true });
   try {
     for (const row of db.prepare("SELECT record FROM entries").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { content?: unknown }[] };
-      const content = entry.kind === "pi.assistant" ? entry.model?.[0]?.content : undefined;
-      if (Array.isArray(content) && content.some((block) => isObject(block) && block.type === "toolCall" && typeof block.name === "string" && isExternal(block.name))) return true;
+      const entry = JSON.parse(String((row as { record: string }).record)) as { model?: unknown };
+      for (const message of Array.isArray(entry.model) ? entry.model : []) {
+        const content = isObject(message) ? message.content : undefined;
+        if (Array.isArray(content) && content.some((block) => isObject(block) && block.type === "toolCall" && typeof block.name === "string" && isExternal(block.name))) return true;
+      }
     }
     return false;
   } finally {

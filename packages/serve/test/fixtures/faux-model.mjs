@@ -54,7 +54,10 @@ export default function reply(context, faux) {
     if (!learnThenWait) return faux.message(textOf(context.messages.at(-1)));
     return new Promise((resolve) => {
       faux.signal?.addEventListener("abort", () => resolve(faux.message("", { stopReason: "aborted" })), { once: true });
-      void untilExists(learnThenWait[1]).then(() => resolve(faux.message("Now.")));
+      void untilExists(learnThenWait[1]).then(async () => {
+        await (await import("node:fs/promises")).writeFile(`${learnThenWait[1]}.seen`, "");
+        resolve(faux.message("Now."));
+      });
     });
   }
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
