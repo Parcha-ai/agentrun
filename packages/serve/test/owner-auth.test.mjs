@@ -260,3 +260,11 @@ test("on Render the setup takes the code: with RENDER_EXTERNAL_URL and no AGENTR
   assert.match(both.out, /^Set up this server: https:\/\/agents\.example\.com\/setup#code=[A-Za-z0-9_-]{22}$/m);
   assert.match(both.out, /^AGENTRUN_BASE_URL=https:\/\/agents\.example\.com\/v2$/m);
 });
+
+test("a sign-in from a new address when the limit's table is full is a 429 at the route, with retry-after, and the log says sign_in_table_full", async (t) => {
+  const lines = [];
+  const server = await owned(t, { signInAddresses: 0, log: (line) => lines.push(line) });
+  const full = await signIn(server, PASSWORD);
+  assert.deepEqual([full.status, full.json.error?.code, full.headers["retry-after"], full.headers["set-cookie"]], [429, "rate_limited", "900", undefined], full.text);
+  assert.ok(lines.some((line) => / event=auth_failed route=\/v2\/auth\/sign-in reason=sign_in_table_full$/.test(line)), lines.join("\n"));
+});
