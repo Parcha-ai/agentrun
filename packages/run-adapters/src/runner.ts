@@ -16,7 +16,9 @@ export type HarnessRunner = (request: NodeRequest) => Promise<unknown>;
 /** The tool the runner injects; a host tool may not take its name. */
 export const SUBMIT_TOOL = "submit";
 /** The records the runner keeps beside the adapter's own, in each session. */
-export const RUNNER_RECORDS = { turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
+/** `request` is written before a paid request leaves, `turn` when it has answered with its usage: a request a crash cut off
+ *  keeps its `request` and has no `turn`. */
+export const RUNNER_RECORDS = { request: "runner.request", turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
 
 /** What the host is asked before each paid request. A `refuse` ends the node, final. */
 export type BeforeRequest = (request: {
@@ -93,9 +95,12 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const validator = Compile(request.schema as never);
     const parameters = submitParameters(request.schema);
     const envelope = Compile(parameters as never);
-    let turns = earlier.filter((r) => r.kind === RUNNER_RECORDS.turn).length;
+    // A turn is a paid request that left: counted from the records written before each one left, so a request a crash cut
+    // off still counts against the turn cap. What it cost is unknown, so the session's spend is too from then on.
+    let turns = earlier.filter((r) => r.kind === RUNNER_RECORDS.request).length;
     let submissions = earlier.filter((r) => r.kind === RUNNER_RECORDS.submit).length;
-    let spentUsd: number | null = earlier.filter((r) => r.kind === RUNNER_RECORDS.turn).reduce<number | null>((sum, r) => {
+    const answered = earlier.filter((r) => r.kind === RUNNER_RECORDS.turn);
+    let spentUsd: number | null = answered.length < turns ? null : answered.reduce<number | null>((sum, r) => {
       const usd = (r.data as { usd?: number | null }).usd;
       return sum === null || usd === null ? null : sum + (usd ?? 0);
     }, 0);
@@ -186,6 +191,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
           stop(failure("refused", verdict.refuse));
           throw stopped;
         }
+        // Durable before the request leaves: admitted, then sent.
+        await append([{ kind: RUNNER_RECORDS.request, data: { turn: turns + 1, model } }]);
         turns += 1;
         emit({ type: "request_start", turn: turns, model });
       },
@@ -197,11 +204,15 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     };
 
     let session: Awaited<ReturnType<AgentAdapter["open"]>> | undefined;
+    let opening: Promise<Awaited<ReturnType<AgentAdapter["open"]>>> | undefined;
     // Armed here, with nothing between them and the try whose finally releases them: a refusal above never leaves a timer.
     signals.forEach((s) => s.addEventListener("abort", onAbort, { once: true }));
+    // A stop that landed while the store was read: a listener added to an aborted signal never fires.
+    if (signals.some((s) => s.aborted)) onAbort();
     const timer = timeoutMs === null ? undefined : setTimeout(() => stop(failure("timeout")), timeoutMs);
     try {
-      session = await bounded(adapter.open(spec, {
+      if (stopped) throw stopped;
+      session = await bounded(opening = adapter.open(spec, {
         store,
         models,
         signal: controller.signal,
@@ -238,6 +249,13 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       if (session) {
         if (!accepted && stopped) await session.interrupt().catch(() => {});
         await session.close().catch(() => {});
+      } else if (opening) {
+        // The node stopped while its session was opening: a session that opens later is stopped and let go, so no harness
+        // process outlives the node.
+        void opening.then(async (late) => {
+          await late.interrupt().catch(() => {});
+          await late.close().catch(() => {});
+        }, () => {});
       }
     }
   };

@@ -197,3 +197,65 @@ test("the run's signal aborts the turn in flight, closes the session and rejects
   assert.ok(Date.now() - started < 1000, 'promptly');
   assert.deepEqual(adapter.closed.length, 1);
 });
+
+/** A node request under recovery, on step `s1`. */
+const stepRequest = (extra = {}) => ({ kind: 'agent', label: 'task', system: [], user: '{}', schema: SCHEMAS.Out, tools: [], step: { sessionId: 's1', attempt: 0, earlierSessionIds: [] }, ...extra });
+/** A first process whose paid request leaves and is cut off when the process dies; then the next process, on the same store. */
+async function cutThenResume(maxTurns) {
+  const store = memorySessionStore();
+  const asked = [];
+  const beforeRequest = (request) => { asked.push({ turn: request.turn, spentUsd: request.spentUsd }); };
+  const dying = fauxAdapter({ script: () => [{ cut: true }] });
+  const died = new AbortController();
+  const first = createHarnessRunner(dying, { store, beforeRequest, maxTurns, signal: died.signal })(stepRequest());
+  while (dying.requests < 1) await new Promise((resolve) => setImmediate(resolve));
+  died.abort(new Error('the process died'));
+  await assert.rejects(first);
+  const next = fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }] });
+  const outcome = await createHarnessRunner(next, { store, beforeRequest, maxTurns })(stepRequest()).then((value) => ({ value }), (error) => ({ error }));
+  return { asked, outcome, next };
+}
+
+test('a paid request a crash cut off is a turn: max_turns 1 holds across the crash, and nothing more is paid for', async () => {
+  const { asked, outcome, next } = await cutThenResume(1);
+  assert.equal(asked.length, 1, 'the host was asked for one paid request in all');
+  assert.equal(next.requests, 0);
+  assert.equal(outcome.error?.reason, 'turn_limit');
+  assert.equal(outcome.error?.final, true);
+});
+
+test("after a crash cut a paid request off, the host's beforeRequest sees it: the next request is turn 2, and what was spent is unknown", async () => {
+  const { asked, outcome } = await cutThenResume(8);
+  assert.deepEqual(asked, [{ turn: 1, spentUsd: 0 }, { turn: 2, spentUsd: null }]);
+  assert.deepEqual(outcome.value, { answer: 'ok' });
+});
+
+test('a session that opens after the run was stopped is interrupted and closed, so no harness outlives the node', async () => {
+  const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'late' } }], openDelayMs: 200 });
+  const stop = new AbortController();
+  const running = createHarnessRunner(adapter, { store: memorySessionStore() })(stepRequest({ signal: stop.signal }));
+  setTimeout(() => stop.abort(new Error('cancel')), 50);
+  await assert.rejects(running, (error) => error.reason === 'aborted');
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.deepEqual([adapter.opened.length, adapter.closed.length, adapter.requests], [1, 1, 0]);
+});
+
+test('a stop that lands while the session store is being read rejects aborted at once, and opens no session, on either signal', async () => {
+  for (const via of ['request', 'options']) {
+    const store = memorySessionStore();
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const slow = { ...store, read: async (key) => { await held; return store.read(key); } };
+    const adapter = fauxAdapter({ script: () => [{ hang: true }] });
+    const stop = new AbortController();
+    const runner = createHarnessRunner(adapter, { store: slow, ...(via === 'options' ? { signal: stop.signal } : {}) });
+    const running = runner(stepRequest(via === 'request' ? { signal: stop.signal } : {}));
+    await new Promise((resolve) => setImmediate(resolve));
+    stop.abort(new Error('cancel'));
+    const released = Date.now();
+    release();
+    await assert.rejects(running, (error) => error.reason === 'aborted', via);
+    assert.ok(Date.now() - released < 200, `${via}: promptly`);
+    assert.equal(adapter.opened.length, 0, `${via}: no session was opened`);
+  }
+});

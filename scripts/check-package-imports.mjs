@@ -49,7 +49,7 @@ export async function packageImportProblems(root) {
   return problems;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const problems = await packageImportProblems(join(fileURLToPath(new URL('.', import.meta.url)), '..'));
   for (const problem of problems) console.error(problem);
   if (problems.length) process.exit(1);

@@ -24,7 +24,9 @@ export type FauxAction =
   /** The request fails: the turn ends failed. */
   | { fail: string }
   /** The process stops here: nothing resolves until the session's signal aborts. */
-  | { hang: true };
+  | { hang: true }
+  /** A paid request leaves (its beforeRequest passes) and the process dies before it answers: nothing more resolves. */
+  | { cut: true };
 
 export const FAUX_RECORDS = { request: "faux.request", user: "faux.user", turn: "faux.turn", turnEnd: "faux.turn_end", call: "faux.call", result: "faux.result" } as const;
 
@@ -35,6 +37,8 @@ export interface FauxOptions {
   fork?: boolean;
   /** Problems `check` reports for a spec. */
   refuse?: (spec: SessionSpec) => string[];
+  /** How long `open` takes, ignoring the session's signal, as a slow harness start does (default 0). */
+  openDelayMs?: number;
 }
 
 export interface FauxAdapter extends AgentAdapter {
@@ -63,6 +67,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       ...(options.refuse?.(spec) ?? []),
     ],
     async open(spec, io) {
+      if (options.openDelayMs) await new Promise((resolve) => setTimeout(resolve, options.openDelayMs));
       const script = options.script(spec);
       const records = await io.store.read(spec.key);
       const append = (kind: string, data: JsonValue) => io.store.append(spec.key, [{ kind, data }]);
@@ -99,6 +104,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if (!action) return await end("completed");
             if ("hang" in action) return await hang(signal);
             await io.models.beforeRequest({ model: "faux" });
+            if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             stats.requests += 1;
             const index = cursor++;
             await append(FAUX_RECORDS.request, { index });
