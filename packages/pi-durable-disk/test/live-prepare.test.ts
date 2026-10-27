@@ -3,10 +3,12 @@
 // no key, no box.
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PACKAGE_INSTALL, packageTarball } from "./live/_p9.ts";
 
 it("the box's package install works in the directory the box gets, which has no lockfile", () => {
@@ -29,5 +31,31 @@ it("the box's package install works in the directory the box gets, which has no 
     assert.equal(r.status, 0, `${PACKAGE_INSTALL.join(" ")} in a directory without a lockfile: ${(r.stderr || r.stdout).trim().split("\n").slice(-3).join(" | ")}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Other tests write into the package directory while this suite runs (package.test.ts creates .tmp/ there), and tar fails
+// a directory whose entries change while it reads them. The writer here churns a file git ignores, at the package root,
+// until its stdin closes (two minutes at most).
+const CHURN = `const fs = require("node:fs"); const f = process.argv[1]; let n = 0;
+process.stdin.on("end", () => process.exit(0)); process.stdin.resume(); setTimeout(() => process.exit(0), 120000).unref();
+process.on("exit", () => fs.rmSync(f, { force: true }));
+(function churn() { fs.writeFileSync(f, "x"); fs.unlinkSync(f); if (++n === 1) process.stdout.write("churning\\n"); setImmediate(churn); })();`;
+
+it("packs the package's files while another process keeps adding and removing an entry in its directory", async () => {
+  const race = fileURLToPath(new URL(`../.pack-race-${process.pid}.tgz`, import.meta.url));
+  const writer = spawn(process.execPath, ["-e", CHURN, race], { stdio: ["pipe", "pipe", "inherit"] });
+  try {
+    await once(writer.stdout, "data");
+    for (let i = 0; i < 5; i++) {
+      const listed = spawnSync("tar", ["-tzf", "-"], { input: packageTarball(), encoding: "utf8", maxBuffer: 64 << 20 });
+      assert.equal(listed.status, 0, listed.stderr);
+      assert.ok(listed.stdout.split("\n").includes("./package.json"), "the box gets this package's working tree");
+      assert.ok(!listed.stdout.includes(".pack-race-"), "and not what git ignores");
+    }
+  } finally {
+    writer.stdin.end();
+    writer.kill();
+    rmSync(race, { force: true });
   }
 });
