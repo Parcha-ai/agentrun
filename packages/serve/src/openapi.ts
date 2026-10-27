@@ -19,6 +19,14 @@ const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
   Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 404: "NotFound", 409: "Conflict", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
+/** GET /health's answer (host.ts Health). */
+const HEALTH = {
+  type: "object", additionalProperties: false, required: ["status", "checks"],
+  properties: {
+    status: { enum: ["ok", "failing"] },
+    checks: { type: "object", additionalProperties: false, required: ["store", "disk"], properties: { store: { enum: ["ok", "does_not_open"] }, disk: { enum: ["ok", "below_floor", "cannot_check"] } } },
+  },
+};
 
 /** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
 const archiving = (collection: string, noun: string, id: Json, answer: string): Record<string, Record<string, Json>> =>
@@ -42,6 +50,17 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "getOpenapi", tags: ["capabilities"], summary: "This document", security: [{}],
       description: "Readable without a credential, as capabilities are.",
       responses: { "200": json({ type: "object" }, "The OpenAPI document: the contract, with this server's marks."), ...errors(429, 500) },
+    },
+  },
+  "/health": {
+    get: {
+      operationId: "getHealth", tags: ["capabilities"], summary: "Whether this server can serve", security: [{}],
+      description: "Readable without a credential: the store opens and the data directory's disk is above its floor. 503 with the same shape when either fails.",
+      responses: {
+        "200": json(HEALTH, "Healthy."),
+        "503": json(HEALTH, "Not healthy: which check failed."),
+        ...errors(429, 500),
+      },
     },
   },
   "/runs": {

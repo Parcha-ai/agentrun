@@ -93,7 +93,7 @@ export type Route = { method: string; pattern: RegExp; name: string; capability?
 export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/capabilities$/, name: "getCapabilities" },
   { method: "GET", pattern: /^\/openapi\.json$/, name: "getOpenapi" },
-  { method: "GET", pattern: /^\/health$/, name: "health" },
+  { method: "GET", pattern: /^\/health$/, name: "getHealth" },
   { method: "POST", pattern: /^\/agents$/, name: "createAgent" },
   { method: "GET", pattern: /^\/agents$/, name: "listAgents" },
   { method: "GET", pattern: /^\/agents\/([^/]+)$/, name: "getAgent" },
@@ -532,7 +532,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
     if (found.name === "getCapabilities") return send(res, 200, caps);
     if (found.name === "getOpenapi") return send(res, 200, openapi);
-    if (found.name === "health") {
+    if (found.name === "getHealth") {
       const health = await healthOf(data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
     }
