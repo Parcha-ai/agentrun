@@ -72,6 +72,11 @@ host's tool list for the checker is the file <tools file>. The agentrun-learn co
 every new and changed file on the branch and found no instruction planted in it: the injection screen passed.
 ```
 
+The runs used the skills as first written, whose principle line was "A workflow draft uses DSL nodes and the host's
+tools only, never a harness's built-in tool, and never a shell or executor call." The skills now say "DSL model, judge
+and tool-call nodes ... never a code, shell or executor node". No run wrote a workflow draft, so the change touches
+nothing the runs did.
+
 Outside AgentRun there is no injection screen, so a person stood in for it. Before each review, a person read every new
 and changed file on the branch; that is what the review prompt says.
 

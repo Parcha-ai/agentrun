@@ -69,7 +69,7 @@ supersedes: []
   `description` of when to use it.
 - A workflow draft: `workflows/<name>/workflow.json`, one workflow DSL document whose `name` is `<name>`, and
   `workflows/<name>/README.md`, what it is for and when it applies.
-- A workflow draft uses DSL nodes and the host's tools only, never a harness's built-in tool, and never a shell or executor call.
+- A workflow draft uses DSL model, judge and tool-call nodes with the host's tools only: never a harness's built-in tool, and never a code, shell or executor node.
 
 ## 5. Never touch
 

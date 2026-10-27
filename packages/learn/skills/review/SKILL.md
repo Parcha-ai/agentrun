@@ -49,7 +49,7 @@ Ask each question of each new or changed note, skill and workflow draft:
 Keep an item only when it is general, narrows no rule, did not come from content, is no duplicate and contradicts
 nothing it does not supersede. A workflow draft also must not single out a case, and the principle holds for every draft:
 
-A workflow draft uses DSL nodes and the host's tools only, never a harness's built-in tool, and never a shell or executor call.
+A workflow draft uses DSL model, judge and tool-call nodes with the host's tools only: never a harness's built-in tool, and never a code, shell or executor node.
 
 ## 4. Refused items
 
