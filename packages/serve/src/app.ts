@@ -14,6 +14,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
+import { learningOf, runLearning } from "./learning.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
 import { isObject, skillNames } from "./validate.js";
 
@@ -88,8 +89,15 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       if (!tool) throw new Error(`the revision names the tool ${name}, which agentrun-serve does not bind (it binds ${BOUND_TOOLS.join(", ")})`);
       return tool;
     });
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
-    return { models, registry, root: { agent: { model, thinkingLevel, instructions, tools } } } as unknown as AppOptions;
+    // A learning run starts from its agent's repository at one commit: the notes and the skills the agent wrote there,
+    // and the learn tool for what it learns now.
+    const learning = learningOf(revision) === "off" ? undefined : await runLearning(where, run.agent, skillNames(Object.keys(revision.body.skills)), join(where.store, RUN_STORE_FILE), process.env);
+    if (learning) registry.install(learning.extension);
+    const instructions = await promptOf(revision.body.instructions, [...Object.keys(revision.body.skills), ...(learning?.skillFiles ?? [])], where.work);
+    return {
+      models, registry, ...(learning ? { beforeResume: learning.beforeResume } : {}),
+      root: { agent: { model, thinkingLevel, instructions, tools: [...tools, ...(learning?.tools ?? [])] } },
+    } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};

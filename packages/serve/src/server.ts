@@ -12,6 +12,7 @@ import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agen
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
+import { hostCommit, readyToRun } from "./learning.js";
 import { answerPage } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -236,6 +237,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
+  /** The host commit of an agent's current revision on its learning repository's main. The revision is written either
+   *  way: a failed commit is said, and the agent's next run makes it before it starts. */
+  async function hostCommitted(entry: AgentEntry): Promise<void> {
+    await hostCommit(data, entry).catch((error: Error) => void process.stderr.write(`agentrun-serve: agent ${entry.agent.id}: the learning repository's host commit failed: ${error.message}\n`));
+  }
+
   async function bodyOf(req: IncomingMessage): Promise<Json> {
     const type = String(req.headers["content-type"] ?? "");
     if (!type.startsWith("application/json")) throw new ApiError("unsupported_media_type", "the body must be application/json");
@@ -352,6 +359,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
       await runnable(revision);
+      await readyToRun(data, entry, revision, version);
       const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
@@ -533,6 +541,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const answer = await idempotent(req, "/agents", body, async () => {
           let warnings: InputIssue[] = [];
           const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
+          await hostCommitted(entry);
           return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -558,6 +567,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), { check, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        await hostCommitted(edited);
         return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
@@ -577,6 +587,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = agents.setCurrent(entry, revision);
+        await hostCommitted(moved);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
       case "archiveAgent": {

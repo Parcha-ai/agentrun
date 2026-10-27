@@ -173,7 +173,7 @@ it is never off, and a model node that names its own thinking level keeps it.
 | Route | Here |
 | --- | --- |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model`, `thinking` and `learning` (agentic only; [learning](#learning)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -280,6 +280,34 @@ the answer is sent, so a retry after a restart gets the first answer.
 
 A completed agentic run's `result` is `{output: null, final_answer}`; a completed workflow run's is
 `{output: <the workflow's output>, final_answer: null}`.
+
+## Learning
+
+An agentic definition's `learning` is `off`, `auto` or `approve`. A new agentic agent gets `auto`, and an edit that
+leaves the field out keeps the current revision's value. A revision saved before the field existed is `off`. A workflow
+definition does not take it.
+
+- An agent that learns has one bare git repository, `DATA/agents/<id>/learning.git`, beside the store. The revision
+  holds what a person wrote, and the repository holds what the agent learned, in `@parcha/agentrun-learn`'s layout:
+  notes in `learnings/` with their `INDEX.md`, skills the agent wrote in `.agents/skills/`, workflow drafts, and memos.
+- Its `main` carries `AGENTS.md` (the current revision's instructions) and `agent.json` (its definition). The server
+  writes them as one commit, with a `Revision` trailer, whenever the current revision changes: a create, an edit, or
+  `POST .../current`. Nothing else writes those two files.
+- A run starts from `main` at one commit. Its process resolves `main` once and journals the commit in the run's own
+  store (`learn.seed`), and a process that opens the run again reads it back, so the run's base never moves. The
+  notes active at that commit are copied to `work/.agent/learnings/`, and their index is the `<learned>` section of
+  the prompt. The skills the agent wrote at that commit join the revision's own; a revision skill of the same name
+  wins. The run gets the `learn` tool, which notes a lesson, a fact or a correction in its store. The run's process
+  reads the repository through a clone of its own, `runs/<id>/learning.git`, outside `work/`, and it never pushes.
+- Once the run has ended, and before it is carried back, the server proposes what the run learned as the branch
+  `runs/<run id>` from that commit. The branch holds the memo `memos/<run id>.md`, a note for each lesson and the
+  index. The memo's front matter is the server's: `run`, `base`, `harness: pi`, `outcome` (`completed`, `failed`, or
+  `stopped` for a cancelled run), `untrusted` (true when the run called a tool other than `read`, `write`, `edit`,
+  `ask_person` and `learn`) and `cost_usd`. The commit carries a `Run-Id` trailer. If the server stops between the
+  proposal and the carry back, it proposes again at its next start and makes no second commit. A run that learned
+  nothing leaves no branch.
+- Nothing merges into `main` yet. A run's branch stays a proposal until review and merge exist, and those wait for an
+  injection screen on this server.
 
 ## Spend cap
 

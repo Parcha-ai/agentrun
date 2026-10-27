@@ -1,4 +1,5 @@
 // Structural checks of request bodies against the contract's schemas, as field issues (`422 input_invalid`).
+import { LEARNING_MODES } from "@parcha/pi-durable-agent";
 import { type InputIssue, invalid } from "./errors.js";
 import { THINKING_LEVELS } from "./model.js";
 
@@ -12,7 +13,7 @@ export const isObject = (value: unknown): value is Json => typeof value === "obj
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "skills", "tools"];
+const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "skills", "tools", "learning"];
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
@@ -61,6 +62,10 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.thinking !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.thinking`, "not_allowed", "A workflow revision keeps no thinking level: each model node carries its own.", `Remove ${at}.thinking.`));
     else if (!(THINKING_LEVELS as readonly unknown[]).includes(d.thinking)) out.push(issue(`${at}.thinking`, "not_an_option", `${at}.thinking is one of ${THINKING_LEVELS.join(", ")}: thinking is never off`));
+  }
+  if (d.learning !== undefined) {
+    if (d.workflow !== undefined) out.push(issue(`${at}.learning`, "not_allowed", "A workflow revision does not learn: learning is for agentic runs.", `Remove ${at}.learning.`));
+    else if (!(LEARNING_MODES as readonly unknown[]).includes(d.learning)) out.push(issue(`${at}.learning`, "not_an_option", `${at}.learning is one of ${LEARNING_MODES.join(", ")}`));
   }
   if (d.skills !== undefined) names(d.skills, `${at}.skills`, out);
   if (d.tools !== undefined) names(d.tools, `${at}.tools`, out);

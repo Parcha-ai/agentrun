@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
+import { type Agent, AgentHomeError, type AgentStore, type LearningMode, type NewRevision, openStore, type Revision, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
 
@@ -51,13 +51,17 @@ export class Agents {
     return out;
   }
 
-  /** The revision a checked definition makes; `files` are its skill files by path. */
-  private revisionOf(definition: Json, files: Record<string, string>, note: string | undefined): NewRevision {
+  /** The revision a checked definition makes; `files` are its skill files by path. An agentic definition without
+   *  `learning` takes `learning`. */
+  private revisionOf(definition: Json, files: Record<string, string>, note: string | undefined, learning: LearningMode): NewRevision {
     const issues = skillIssues(definition.skills, Object.keys(files));
     if (issues.length) throw invalid(issues);
     const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
-    return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common };
+    return {
+      kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
+      learning: (definition.learning as LearningMode | undefined) ?? learning, ...common,
+    };
   }
 
   /** `definition.version`, when given, is the number of the revision the request leaves current. */
@@ -77,7 +81,8 @@ export class Agents {
   async create({ definition, skills = {}, note }: DefinitionBody, check?: (revision: NewRevision) => Promise<void>): Promise<AgentEntry> {
     const given = typeof definition.id === "string" ? definition.id : undefined;
     if (given !== undefined && this.store.readAgent(given)) throw new ApiError("agent_exists", `an agent ${given} exists here`);
-    const revision = this.revisionOf(definition, skills, note);
+    // A new agent learns unless its definition says otherwise.
+    const revision = this.revisionOf(definition, skills, note, "auto");
     this.checkVersion(definition, 1);
     await this.checked(revision);
     await check?.(revision);
@@ -117,7 +122,8 @@ export class Agents {
       const texts = this.texts(held.map(([, sha]) => sha));
       files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
     }
-    const revision = this.revisionOf(definition, files, note);
+    // An edit that leaves learning out keeps the current revision's.
+    const revision = this.revisionOf(definition, files, note, entry.revision?.kind === "agentic" ? (entry.revision.body.learning ?? "off") : "off");
     await this.checked(revision);
     await check?.(revision);
     // The checks awaited: another request may have moved the current revision meanwhile, so read it again.
@@ -179,6 +185,8 @@ export class Agents {
 /** Whether `next` would be `current` again: the same kind and body, skills by their SHA-256. */
 function sameRevision(current: Revision, next: NewRevision): boolean {
   const { kind, note: _, skills = {}, ...rest } = next;
+  // Off is the field's absence in a stored body.
+  if ("learning" in rest && rest.learning === "off") delete rest.learning;
   const body = { ...rest, skills: Object.fromEntries(Object.entries(skills).map(([path, text]) => [path, createHash("sha256").update(text).digest("hex")])), tools: next.tools ?? [] };
   return current.kind === kind && stable(current.body) === stable(body);
 }
@@ -189,7 +197,7 @@ export const etagOf = (entry: AgentEntry) => `"${entry.revision?.id ?? "none"}"`
 /** A revision as a definition, as `POST /agents` takes one, numbered. */
 export function definitionOf(agent: Agent, revision: Revision, version: number): Json {
   const body = revision.kind === "agentic"
-    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}) }
+    ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}), learning: revision.body.learning ?? "off" }
     : { workflow: revision.body.workflow };
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
 }

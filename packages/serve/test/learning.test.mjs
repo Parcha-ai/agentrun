@@ -157,11 +157,12 @@ test("a run's base stays where it was seeded when its process dies, main moves, 
   const base = await onMain(t, data, "calc", note(lesson("L-0123456789ab", "Search both forms of the legal name.")));
   const gate = join(dir, "go");
   const { body: run } = await first.api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${gate} exists.` } });
-  const seeded = join(data, "runs", run.run_id, "work", ".agent", "learnings", "L-0123456789ab.md");
-  for (let i = 0; !existsSync(seeded); i++) {
-    assert.ok(i < 400, "the run is seeded");
+  // The learn call's result comes after the seed is journaled: the run is past its seed when its server dies.
+  for (let i = 0; !(await first.api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "learn"); i++) {
+    assert.ok(i < 400, "the run notes its lesson");
     await sleep(50);
   }
+  assert.ok(existsSync(join(data, "runs", run.run_id, "work", ".agent", "learnings", "L-0123456789ab.md")), "the run was seeded");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
   const record = JSON.parse(await readFile(join(data, "runs", run.run_id, "run.json"), "utf8"));

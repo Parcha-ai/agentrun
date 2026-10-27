@@ -10,7 +10,7 @@ test("PUT definition commits a new revision whose parent is the current one and 
   assert.equal(put.status, 200, JSON.stringify(put.body));
   assert.notEqual(put.body.revision, created.revision);
   assert.equal(put.headers.get("etag"), `"${put.body.revision}"`);
-  assert.deepEqual(put.body.definition, { id: "editor", version: 2, name: "editor", instructions: "Answer briefly.", skills: ["cite"], tools: ["read"] });
+  assert.deepEqual(put.body.definition, { id: "editor", version: 2, name: "editor", instructions: "Answer briefly.", learning: "auto", skills: ["cite"], tools: ["read"] });
   assert.deepEqual(put.body.skills.map((s) => s.path), ["cite/SKILL.md"], "the current revision's skill files carry over");
   assert.equal(put.body.revisions, 2);
   const list = (await api("GET", "/agents/editor/revisions")).body;
