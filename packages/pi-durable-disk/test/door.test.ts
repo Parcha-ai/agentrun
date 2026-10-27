@@ -199,6 +199,30 @@ describe("the door hook: admission", () => {
       disk.remove();
     }
   });
+  it("a lease lost between the admission and the call: the hook is not called and the record stays ADMITTED", async () => {
+    const disk = new LocalDisk("door-fence-after");
+    try {
+      const { hook, calls } = scripted();
+      const app = lifecycleApp(newCounters());
+      const server = await serveRun({ root: { agent: app.agent } });
+      const run = await openOn(disk, REF, app);
+      // The run as the door sees it: fenced from the moment the admission commits (the lease lost right after it).
+      let lost = false;
+      run.harness.subscribeCommits((publication) => {
+        if (publication.changes.some((c) => c.type === "entry" && c.value.kind === "door.input")) lost = true;
+      });
+      const seen = new Proxy(run, { get: (target, key) => (key === "fenced" ? lost : Reflect.get(target, key, target)) });
+      server.attach(seen, hook);
+      const r = await submit(server, "late-fence");
+      assert.deepEqual([r.status, r.body.error], [503, "RELEASED"]);
+      assert.equal(calls.submit.length, 0, "the hook was not called");
+      assert.deepEqual((await doorEntries(run)).map((e) => [e.kind, e.data.status]), [["door.input", "ADMITTED"]]);
+      await run.release();
+      await server.close();
+    } finally {
+      disk.remove();
+    }
+  });
 });
 
 describe("the door hook: outcomes", () => {
