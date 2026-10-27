@@ -37,6 +37,9 @@ export interface HarnessRunnerOptions {
   /** The most turns (paid model requests) a node gets per attempt (default 8; null for no limit). A node's own
    *  `max_turns` applies within it; one that asks for more is refused, final. */
   maxTurns?: number | null;
+  /** The most turns sent to a node per attempt when its turn limit is null (default 100). With a limit, sends are
+   *  bounded by it instead. */
+  maxSends?: number;
   /** The most `submit` calls a node gets per attempt (default 5; null for no limit). */
   maxSubmissions?: number | null;
   /** Each call's limit in milliseconds (default 120 s; null for none). */
@@ -55,10 +58,16 @@ const positive = (value: number, name: string): number => {
   return value;
 };
 
+/** Turns in a row that may end with no paid request and no accepted submission before a node ends `no_progress`. The
+ *  turn limit counts paid requests only, so without this bound a harness whose turns never reach its model (a cached or
+ *  refused answer, a misconfigured model) would be sent turns forever, on microtasks no timer can interrupt. */
+export const NO_PROGRESS_TURNS = 3;
+
 const NUDGE = "You finished without an accepted submission. Call submit with the complete result; plain text does not deliver it.";
 
 export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunnerOptions): HarnessRunner {
   const maxTurns = options.maxTurns === null ? null : positive(options.maxTurns ?? 8, "maxTurns");
+  const maxSends = positive(options.maxSends ?? 100, "maxSends");
   const maxSubmissions = options.maxSubmissions === null ? null : positive(options.maxSubmissions ?? 5, "maxSubmissions");
   const timeoutMs = options.timeoutMs === null ? null : positive(options.timeoutMs ?? 120_000, "timeoutMs");
   const registered = new Map<string, HostTool>();
@@ -226,14 +235,30 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         const end = await bounded(session!.turnEnd());
         if (end.status === "failed" && !accepted) stop(failure("model_error", end.error));
       };
+      // Sends have their own count, checked against the same limit (or maxSends when it is null), never added to the paid
+      // requests: one send may make several. They need no record: a crash restarts them, and the recorded requests still
+      // bound the money. Turns that make no paid request also end the node `no_progress` after a few in a row.
+      const sendLimit = limit ?? maxSends;
+      let sends = 0;
+      let idle = 0;
+      const progressed = (before: number) => {
+        idle = accepted || turns > before ? 0 : idle + 1;
+        if (idle >= NO_PROGRESS_TURNS && !accepted) stop(failure("no_progress", `harness node stopped: no_progress, ${idle} turns in a row made no paid request and delivered nothing`));
+      };
       if (session.state === "open_turn") {
+        const before = turns;
+        sends += 1;
         await bounded(session.recover());
         await turnOf();
+        progressed(before);
       }
       let prompt = session.state === "new" ? request.user : NUDGE;
-      while (!accepted && !stopped && (limit === null || turns < limit)) {
+      while (!accepted && !stopped && (limit === null || turns < limit) && sends < sendLimit) {
+        const before = turns;
+        sends += 1;
         await bounded(session.send(prompt));
         await turnOf();
+        progressed(before);
         prompt = NUDGE;
       }
       if (accepted) return submission;

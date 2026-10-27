@@ -134,6 +134,53 @@ test("beforeRequest gets the node's budget, its spend so far and the node; a ref
   assert.match(asked[0].key, /^call:/);
 });
 
+/** The adapter, recording each turn the runner sends. */
+function counted(adapter) {
+  const sends = [];
+  const open = adapter.open.bind(adapter);
+  adapter.open = async (spec, io) => {
+    const session = await open(spec, io);
+    const send = session.send.bind(session);
+    session.send = (text) => { sends.push(text); return send(text); };
+    return session;
+  };
+  return { adapter, sends };
+}
+const idleRun = async (options) => {
+  const { adapter, sends } = counted(fauxAdapter({ script: () => [] }));
+  const started = Date.now();
+  const error = await createHarnessRunner(adapter, { store: memorySessionStore(), ...options })(stepRequest()).then(() => undefined, (e) => e);
+  return { error, sends: sends.length, requests: adapter.requests, ms: Date.now() - started };
+};
+
+test('turns that make no paid request end the node no_progress, final, after three in a row, whatever its turn limit', async () => {
+  // Each turn ends at once with no request, so the paid-request count never moves: the runner's own bounds stop it.
+  for (const maxTurns of [8, null]) {
+    const run = await idleRun({ maxTurns });
+    assert.ok(run.error instanceof HarnessRunError && run.error.reason === 'no_progress' && run.error.final === true, `maxTurns ${maxTurns}: ${run.error}`);
+    assert.deepEqual([run.sends, run.requests, run.error.turns], [3, 0, 0], `maxTurns ${maxTurns}`);
+    assert.ok(run.ms < 1000, 'at once');
+  }
+  // A turn that pays resets the count: idle turns between paid ones never end the node.
+  const mixed = fauxAdapter({ script: () => [{ end: true }, { end: true }, { submit: { answer: 'ok' } }] });
+  assert.deepEqual(await createHarnessRunner(mixed, { store: memorySessionStore() })(stepRequest()), { answer: 'ok' });
+});
+
+test('sends have their own count against the turn limit, or maxSends when it is null: exhausted is turn_limit, final', async () => {
+  // A limit below the no-progress bound is reached first.
+  const capped = await idleRun({ maxTurns: 2 });
+  assert.ok(capped.error?.reason === 'turn_limit' && capped.error.final === true, String(capped.error));
+  assert.deepEqual([capped.sends, capped.requests], [2, 0]);
+  // With no turn limit, sends that each pay and never deliver stop at maxSends.
+  const { adapter, sends } = counted(fauxAdapter({ script: () => Array.from({ length: 10 }, () => ({ end: true })) }));
+  await assert.rejects(createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: null, maxSends: 4 })(stepRequest()), (error) => error.reason === 'turn_limit' && error.final === true);
+  assert.deepEqual([sends.length, adapter.requests], [4, 4]);
+  // Sends are never added to the paid requests: max_turns 1 with one send that pays once and submits succeeds.
+  const one = fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }] });
+  assert.deepEqual(await createHarnessRunner(one, { store: memorySessionStore(), maxTurns: 1 })(stepRequest()), { answer: 'ok' });
+  assert.equal(one.requests, 1);
+});
+
 test('maxSubmissions and timeoutMs default to the Pi runner\'s (5, 120 s) and end a node when reached', async () => {
   const rejecting = fauxAdapter({ script: () => Array.from({ length: 10 }, () => ({ submit: { answer: 7 } })) });
   await assert.rejects(runWorkflow(doc(agent()), {}, { runNode: createHarnessRunner(rejecting, { store: memorySessionStore() }) }), (error) => error.reason === 'submission_limit' && !error.final);
