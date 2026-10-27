@@ -383,6 +383,8 @@ export function serveUntilDone(
     // The app released the run: wait for its release to end (a second `release()` joins it) and leave.
     const leaveReleased = async (event: Record<string, unknown>) => {
       try {
+        // The door's harness children go before the instance does.
+        await life.server?.stopDoor().catch(() => undefined);
         await run.release();
         log("released", { ...event, record: run.record as unknown as Json });
         done(0);
@@ -456,7 +458,7 @@ export function serveUntilDone(
         if (releasing) return;
         const e = new AppError(`onOpen failed: ${(err as Error).message}`, { cause: err });
         log("app failed", { code: e.code, message: e.message });
-        done(exitCodeFor(e));
+        void (life.server?.stopDoor({ now: true }).catch(() => undefined) ?? Promise.resolve()).then(() => done(exitCodeFor(e)));
       });
   });
 }

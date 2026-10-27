@@ -87,13 +87,27 @@ export const startOf = (pid: number): number | undefined => {
   }
 };
 
+/** Whether a process group with id `pgid` still has a member. */
+const groupLives = (pgid: number): boolean => {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
 /**
  * SIGKILL an adopted child's process group, or the process when it leads none, while it is the process that was adopted
- * (its start tells it from a later one with its pid); then wait, bounded, until it is gone.
+ * (its start tells it from a later one with its pid); then wait, bounded, until it and its group are gone. A leader that
+ * exited first leaves its workers in its group: the group is killed all the same, since a pid is not handed out again
+ * while a group with that id has a member. A live process with another start is a later one: nothing is signalled.
  */
 export async function killGroup(pid: number, start: number | undefined): Promise<void> {
-  if (start === undefined || startOf(pid) !== start) return;
-  for (const target of [-pid, pid]) {
+  if (start === undefined) return;
+  const now = startOf(pid);
+  if (now !== undefined && now !== start) return;
+  for (const target of now === undefined ? [-pid] : [-pid, pid]) {
     try {
       process.kill(target, "SIGKILL");
       break;
@@ -103,7 +117,7 @@ export async function killGroup(pid: number, start: number | undefined): Promise
   }
   // The process table lists no zombie: a killed child of this process is gone before node reaps it.
   for (const deadline = Date.now() + 2_000; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 20))) {
-    if (startOf(pid) !== start) return;
+    if (startOf(pid) !== start && !groupLives(pid)) return;
   }
 }
 
@@ -133,7 +147,12 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
   const abortMs = timeouts.abortMs ?? 5_000;
   const listeners = new Set<(event: DoorRunEvent) => void>();
   const adopted = new Map<number, number | undefined>();
+  // The submits running now, by their signal: a stop aborts them all.
+  const running = new Set<AbortController>();
   let turnOpen = false;
+  let turnOwner: object | undefined;
+  let stopping = false;
+  let stopped: Promise<void> | undefined;
   let pending = 0;
   // The requestIds this process admitted and is still carrying to an outcome. ADMITTED means one of these: any other
   // ADMITTED record was admitted by an earlier instance, or before the lease was lost, and its outcome is unknown.
@@ -141,19 +160,29 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
   const send = (type: DoorRunEvent["type"]) => {
     for (const listener of listeners) listener({ type, inputs: [] });
   };
-  // run_end always pairs run_start: a second start ends the open turn first, an unpaired end is dropped.
-  const emit = (event: DoorEvent) => {
+  // run_end always pairs run_start: a second start ends the open turn first, an unpaired end is dropped. A turn belongs to
+  // the call that started it, so a call that fails ends only its own.
+  const emit = (event: DoorEvent, owner?: object) => {
     if (event.type === "run_start") {
       if (turnOpen) send("run_end");
       turnOpen = true;
+      turnOwner = owner;
       send("run_start");
     } else if (turnOpen) {
       turnOpen = false;
+      turnOwner = undefined;
       send("run_end");
     }
   };
   const closeTurn = () => emit({ type: "run_end" });
-  const contextOf = (signal: AbortSignal): DoorContext => ({ run, signal, emit, adopt: (pid) => void adopted.set(pid, startOf(pid)) });
+  // Adopted once the instance is stopping: killed at once, since the stop's kill may have passed it already.
+  const adopt = (pid: number) => {
+    const start = startOf(pid);
+    if (stopping) void killGroup(pid, start);
+    else adopted.set(pid, start);
+  };
+  const contextOf = (signal: AbortSignal, owner: object = {}): DoorContext => ({ run, signal, emit: (event) => emit(event, owner), adopt });
+  const killAdopted = () => Promise.all([...adopted].map(([pid, start]) => killGroup(pid, start))).then(() => undefined);
   const settle = (root: ConversationId, requestId: string, n: 1 | 2, record: DoorRecord) =>
     run.harness.commit((tx) => append(tx, root, requestId, n, "door.status", { requestId, ...record }), base);
   const abortHook = () => {
@@ -162,6 +191,12 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
       Promise.resolve().then(() => hook.abort(contextOf(stop.signal))),
       abortMs,
     ).finally(() => stop.abort());
+  };
+  /** The hook's abort, then the open turn ended when it left the hook idle: POST /abort and a submit's timeout alike. */
+  const abortTurn = async () => {
+    const result = await abortHook();
+    if (result !== TIMEOUT && !hook.busy()) closeTurn();
+    return result;
   };
 
   /** hook.submit for a record this process just admitted, bounded; its outcome settles the record. */
@@ -174,23 +209,28 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
     }
     pending++;
     const stop = new AbortController();
+    const owner = {};
+    running.add(stop);
     const taken = Promise.resolve()
-      .then(() => hook.submit(input, contextOf(stop.signal)))
+      .then(() => hook.submit(input, contextOf(stop.signal, owner)))
       .then(
         (r): DoorRecord => (r.accepted ? { status: "ACCEPTED" } : { status: "REJECTED_BUSY", message: "the harness is busy" }),
         (error: unknown): DoorRecord => {
-          closeTurn();
+          if (turnOpen && turnOwner === owner) closeTurn();
           return { status: "FAILED", message: messageOf(error) };
         },
       )
-      .finally(() => pending--);
+      .finally(() => {
+        pending--;
+        running.delete(stop);
+      });
     const first = await within(taken, submitMs);
     if (first !== TIMEOUT) {
       await settle(root, input.requestId, 1, first);
       return first;
     }
     stop.abort(new Error(`the hook did not take the input in ${submitMs} ms`));
-    await abortHook().catch(() => undefined);
+    await abortTurn().catch(() => undefined);
     const unknown: DoorRecord = { status: "UNKNOWN", message: `the hook did not take the input in ${submitMs} ms; its outcome is unknown` };
     const written = settle(root, input.requestId, 1, unknown);
     // A late outcome is never dropped: it settles the same record, unless the lease is gone (the fenced commit fails).
@@ -253,11 +293,7 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
         live.delete(requestId);
       }
     },
-    async abort() {
-      const result = await abortHook();
-      if (result !== TIMEOUT && !hook.busy()) closeTurn();
-      return result;
-    },
+    abort: () => abortTurn(),
     busy: () => hook.busy(),
     get working() {
       return pending > 0 || hook.busy();
@@ -269,10 +305,22 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
       listeners.add(listener);
       return () => void listeners.delete(listener);
     },
-    async stop({ now = false } = {}) {
-      if (!now && (pending > 0 || hook.busy())) await abortHook().catch(() => undefined);
-      closeTurn();
-      await Promise.all([...adopted].map(([pid, start]) => killGroup(pid, start)));
+    stop({ now = false } = {}) {
+      if (!stopping) {
+        stopping = true;
+        for (const call of running) call.abort(new Error("the instance is stopping"));
+      }
+      // A fence kills at once, also while a drain's stop still waits on the hook's abort.
+      if (now) {
+        closeTurn();
+        return killAdopted();
+      }
+      stopped ??= (async () => {
+        if (pending > 0 || hook.busy()) await abortHook().catch(() => undefined);
+        closeTurn();
+        await killAdopted();
+      })();
+      return stopped;
     },
   };
 }

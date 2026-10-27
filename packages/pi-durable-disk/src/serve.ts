@@ -341,8 +341,16 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     },
     attach(open, hook) {
       run = open;
-      if (hook) door = openDoor(hook, open, base, options.doorTimeouts);
-      open.harness.subscribeClose(() => void (closed = true));
+      if (hook) {
+        door = openDoor(hook, open, base, options.doorTimeouts);
+        // A turn can end with no request and no commit: the instance looks at parking again then.
+        door.watch((event) => event.type === "run_end" && active === 0 && options.onIdle?.());
+      }
+      // The run closed (released, by the app or a stop): the door's harness children go with it.
+      open.harness.subscribeClose(() => {
+        closed = true;
+        void door?.stop({ now: true }).catch(() => undefined);
+      });
     },
     pause() {
       pauses++;
