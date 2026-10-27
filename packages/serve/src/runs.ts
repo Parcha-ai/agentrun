@@ -33,6 +33,8 @@ const LEASE_MS = 90_000;
 const DRAIN = "30s";
 /** The run process's stderr, beside run.json: a file, so the process outlives a server that stops without stopping it. */
 const PROCESS_LOG = "process.log";
+/** How long a request waits for a run's door: its process coming up, or a settle in progress. */
+const READY_TIMEOUT_MS = 45_000;
 const QUIET = /:run:(start|end)$/;
 const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 /** How often one server opens a run again whose process went before the run ended, before it fails the run. */
@@ -125,6 +127,8 @@ export type Run = {
   relaunches: number;
   settled: boolean;
   settling?: Promise<void>;
+  /** Settles of this run not yet done: while any is, nothing starts its process again. */
+  settles: number;
   updatedAt: string;
 };
 
@@ -190,8 +194,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
 export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: string, attempt: number) => void };
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
- *  tried again; `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+ *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
+ *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -233,6 +238,8 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** Set once `close` is done: the store is closed, so nothing settles after it. */
+  private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
   private starting = 0;
   constructor(private readonly options: RunsOptions) {}
@@ -294,7 +301,7 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, updatedAt: meta.created_at,
+      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
     };
   }
 
@@ -501,7 +508,7 @@ export class Runs {
   }
 
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
-  private async ensureLive(run: Run, timeoutMs = 45_000): Promise<string> {
+  private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     for (let launched = false; ; await sleep(100)) {
       if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
@@ -509,6 +516,15 @@ export class Runs {
       const door = this.doorOf(record);
       if (door) return door;
       if (!this.live(run)) {
+        // A process that just went is being settled: its run may be over, so nothing starts it again before that.
+        if (run.settles > 0) {
+          // Within the time left: a settle waiting on a busy store must not hold this caller past its deadline.
+          let timer: NodeJS.Timeout | undefined;
+          await Promise.race([run.settling, new Promise((resolve) => (timer = setTimeout(resolve, Math.max(0, deadline - Date.now()))))]);
+          clearTimeout(timer);
+          if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
+          continue;
+        }
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
@@ -534,10 +550,10 @@ export class Runs {
     if (door) await fetch(new URL("/abort", door), { method: "POST", headers: this.headers(true), body: "{}", signal: AbortSignal.timeout(5_000) }).catch(() => undefined);
   }
 
-  private async toDoor(run: Run, path: string, body?: Json): Promise<{ status: number; body: Json | null }> {
+  private async toDoor(run: Run, path: string, body?: Json, readyMs?: number): Promise<{ status: number; body: Json | null }> {
     const deadline = Date.now() + 30_000;
     for (;;) {
-      const door = await this.ensureLive(run);
+      const door = await this.ensureLive(run, readyMs);
       const res = await fetch(new URL(path, door), {
         method: body === undefined ? "GET" : "POST",
         headers: this.headers(body !== undefined),
@@ -587,15 +603,18 @@ export class Runs {
     if (run.kind !== "agentic" || usersOf(run.rows) > 0 || typeof first !== "string") return;
     run.submitted = 1;
     this.refresh(run);
-    void this.submit(run, first, "followUp", `first-${run.id}`).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
+    void this.submit(run, first, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => warn(run.id, `its first message did not land again: ${error.message}`));
   }
 
   /** After the run's process exited, or was found gone: its rows from its released store, then, when it is over, its
    *  carry back. One at a time per run, and none once the run has its outcome. */
   private settle(run: Run, code: number | null, exited: boolean): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    run.settles++;
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
-      .catch((error: Error) => warn(run.id, `not settled: ${error.message}; the next start tries again`));
+      .catch((error: Error) => warn(run.id, `not settled: ${error.message}; the next start tries again`))
+      .finally(() => void run.settles--);
     return run.settling;
   }
 
@@ -767,7 +786,7 @@ export class Runs {
     this.refresh(run);
     this.launch(run);
     if (revision.kind === "workflow") return run;
-    void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`).catch((error: Error) => {
+    void this.submit(run, options.input.content as string, "followUp", `first-${run.id}`, READY_TIMEOUT_MS).catch((error: Error) => {
       run.submitted = 0;
       // The run ended before its first message reached it (a process that crashed at its start): how it ended stands.
       if (run.outcome || run.finishing || run.cancel) return;
@@ -778,8 +797,8 @@ export class Runs {
     return run;
   }
 
-  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string): Promise<void> {
-    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy });
+  private async submit(run: Run, content: string, whenBusy: "steer" | "followUp", requestId: string, readyMs?: number): Promise<void> {
+    const answer = await this.toDoor(run, "/submit", { requestId, content, whenBusy }, readyMs);
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
@@ -850,6 +869,7 @@ export class Runs {
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
     for (const run of this.runs.values()) run.feed?.abort();
+    this.closed = true;
   }
 
   // ---- views ------------------------------------------------------------------------------------------------------------
