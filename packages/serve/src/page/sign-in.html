@@ -21,7 +21,7 @@
 <div class="actions"><button class="btn" type="submit">Sign in</button></div>
 <p class="said" id="said" role="status"></p>
 </form>
-<p class="lede">Forgot it? Run <code>agentrun-serve reset-password</code> where the server's data directory is (in its container), then open this page again to set a new one.</p>
+<p class="lede">Forgot it? Run <code>agentrun-serve reset-password --data DIR</code> on the server, with the data directory it started with. In the image: <code>docker exec &lt;container&gt; node /opt/agentrun/packages/serve/dist/cli.js reset-password --data /data</code>. Then open this page again to set a new one.</p>
 </section>
 </main>
 <script src="/account.js"></script>
