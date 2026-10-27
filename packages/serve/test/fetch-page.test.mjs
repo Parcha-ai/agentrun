@@ -66,6 +66,15 @@ test("the tool refuses every private, local and non-http(s) target before it is 
   assert.match((await fetchPage("http://nowhere.example/", network())).error, /ENOTFOUND/);
 });
 
+test("a URL on a port other than 80 or 443 is refused before its host is looked up or dialled", async () => {
+  const net = network();
+  const looked = [];
+  const lookup = (host, ...rest) => (looked.push(host), net.lookup(host, ...rest));
+  const page = await fetchPage("http://public.example:8080/", { ...net, lookup });
+  assert.equal(page.refused, "refused: port 8080 is not 80 or 443");
+  assert.deepEqual(looked, [], "no lookup for a port it refuses");
+});
+
 /** What each fetch_page call of run `runId` was answered, parsed, from its released store. */
 function pagesOf(data, runId) {
   const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"), { readOnly: true });
@@ -73,7 +82,12 @@ function pagesOf(data, runId) {
     return db.prepare("SELECT record FROM entries ORDER BY id").all()
       .flatMap((row) => JSON.parse(row.record).model ?? [])
       .filter((message) => message.role === "toolResult" && message.toolName === "fetch_page")
-      .map((message) => JSON.parse((message.content ?? []).map((c) => c.text ?? "").join("")));
+      .map((message) => {
+        const text = (message.content ?? []).map((c) => c.text ?? "").join("");
+        // pi-durable 1.1 reads a result's `content`, 1.2 and later its `output`: a result missing either reads empty there.
+        assert.notEqual(text, "", "fetch_page's result reached the model empty");
+        return JSON.parse(text);
+      });
   } finally {
     db.close();
   }
