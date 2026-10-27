@@ -234,7 +234,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | undici-types | 5.26.5 | MIT | harness, pi-browser | no | 1 |
 | undici-types | 6.21.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | undici | 6.29.1 | MIT | harness, pi-browser | no | 1 |
-| undici | 8.10.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| undici | 8.10.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, serve | no | 1 |
 | unpdf | 1.8.1 | MIT | harness, pi-vision | no | 1 |
 | uuid | 11.1.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | web-streams-polyfill | 3.3.3 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
@@ -245,7 +245,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | ws | 8.21.3 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | xml-naming | 0.3.0 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | yaml | 2.9.0 | ISC | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
-| zod | 4.6.6 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
+| zod | 4.6.6 | MIT | harness, pi-browser, pi-durable-disk, serve | no | 1 |
 
 ## Vendored code
 
