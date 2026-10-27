@@ -124,10 +124,11 @@ every route but `GET /v2/capabilities` and `GET /v2/health` still needs the toke
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
-`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab. Set
-`AGENTRUN_PUBLIC_URL` there to `https://<service>.onrender.com` before the first deploy, so setup takes the code the start
-prints in the service's log; without it, whoever opens the address first sets the password. Set `AGENT_MODEL` and the
-provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
+`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab. With no
+`AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
+code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
+the address people open before the first start; without it, whoever opens the page first sets the password. Set
+`AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
 
 ## Upgrading from 0.1.0-beta.26

@@ -26,7 +26,7 @@ to AGENT_MODEL_FAST or AGENT_MODEL_STRONG, each falling back to AGENT_MODEL) is 
 keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Responses gateway (AGENT_MODEL_API_KEY when
 it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
-published port, or a proxy's URL), and the link printed uses it. stdout gets one line per request, per run start and
+published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is. stdout gets one line per request, per run start and
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
@@ -76,10 +76,13 @@ if (!Number.isInteger(port) || port < 0 || port > 65_535) {
   process.exit(2);
 }
 let publicUrl: string | undefined;
-if (process.env.AGENTRUN_PUBLIC_URL) {
-  const parsed = URL.canParse(process.env.AGENTRUN_PUBLIC_URL) ? new URL(process.env.AGENTRUN_PUBLIC_URL) : undefined;
+// Render sets RENDER_EXTERNAL_URL on every web service, so a deploy there is never an open setup.
+const publicName = process.env.AGENTRUN_PUBLIC_URL ? "AGENTRUN_PUBLIC_URL" : process.env.RENDER_EXTERNAL_URL ? "RENDER_EXTERNAL_URL" : undefined;
+if (publicName) {
+  const given = process.env[publicName]!;
+  const parsed = URL.canParse(given) ? new URL(given) : undefined;
   if (!parsed || !/^https?:$/.test(parsed.protocol)) {
-    console.error(`AGENTRUN_PUBLIC_URL takes an http(s) URL\n\n${USAGE}`);
+    console.error(`${publicName} takes an http(s) URL\n\n${USAGE}`);
     process.exit(2);
   }
   publicUrl = parsed.href.replace(/\/+$/, "");

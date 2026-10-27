@@ -181,7 +181,7 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
   const bin = async (env, done) => {
     const { spawn } = await import("node:child_process");
     const data = join(await scratch(t), "agents");
-    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
+    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "", RENDER_EXTERNAL_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
     t.after(() => child.kill("SIGTERM"));
     let out = "";
     for await (const chunk of child.stdout) {
@@ -234,4 +234,29 @@ test("the sign-in limit keeps a bounded table: expired addresses are swept, a fu
   mock.timers.tick(15 * 60_000);
   assert.equal(owner.allow("one-more"), "ok", "expired addresses are swept");
   assert.equal(owner.allow("held"), "ok");
+});
+
+test("on Render the setup takes the code: with RENDER_EXTERNAL_URL and no AGENTRUN_PUBLIC_URL, setup with no code is a 403 and with the printed code a 201; AGENTRUN_PUBLIC_URL wins when both are set", { timeout: 60_000 }, async (t) => {
+  const { spawn } = await import("node:child_process");
+  const start = async (env) => {
+    const data = join(await scratch(t), "agents");
+    const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--data", data, "--port", "0"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_PUBLIC_URL: "", AGENTRUN_ACCOUNTS: "", ...env } });
+    t.after(() => child.kill("SIGTERM"));
+    let out = "";
+    for await (const chunk of child.stdout) {
+      out += chunk;
+      if (/^Open .*\n/m.test(out)) break;
+    }
+    return { out, port: Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\//m.exec(out)?.[1]) };
+  };
+  const render = await start({ RENDER_EXTERNAL_URL: "https://agentrun-example.onrender.com" });
+  assert.doesNotMatch(render.out, /Set your password/, "a Render deploy is never an open setup");
+  const code = /^Set up this server: https:\/\/agentrun-example\.onrender\.com\/setup#code=([A-Za-z0-9_-]{22})$/m.exec(render.out)?.[1];
+  assert.ok(code && render.port, render.out);
+  assert.equal((await setup(render, { password: PASSWORD })).status, 403);
+  const made = await setup(render, { password: PASSWORD, code });
+  assert.equal(made.status, 201, made.text);
+  const both = await start({ RENDER_EXTERNAL_URL: "https://agentrun-example.onrender.com", AGENTRUN_PUBLIC_URL: "https://agents.example.com" });
+  assert.match(both.out, /^Set up this server: https:\/\/agents\.example\.com\/setup#code=[A-Za-z0-9_-]{22}$/m);
+  assert.match(both.out, /^AGENTRUN_BASE_URL=https:\/\/agents\.example\.com\/v2$/m);
 });
