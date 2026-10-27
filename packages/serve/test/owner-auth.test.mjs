@@ -6,10 +6,12 @@ import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "node:test";
-import { resetPassword } from "../dist/owner.js";
+import { mock, test } from "node:test";
+import * as owner from "../dist/owner.js";
 import { ROUTES } from "../dist/server.js";
 import { call, cookieOf, scratch, serve } from "./support.mjs";
+
+const { Owner, resetPassword, SIGN_IN_PEERS } = owner;
 
 const json = { "content-type": "application/json" };
 /** Test passwords, none a real one. */
@@ -189,7 +191,47 @@ test("the bin: accounts on with no AGENTRUN_ACCOUNTS, the first-visit line with 
     child.kill("SIGTERM");
     return out;
   };
-  assert.match(await bin({}, /Set your password: .*\n/), /^Set your password: http:\/\/127\.0\.0\.1:\d+\/setup \(/m);
+  const open = await bin({}, /Set your password: .*\n/);
+  assert.match(open, /^Set your password: http:\/\/127\.0\.0\.1:\d+\/setup \(/m);
+  assert.match(open, /^Open http:\/\/127\.0\.0\.1:\d+\/$/m, "with accounts on, the Open line holds no token");
   assert.match(await bin({ AGENTRUN_PUBLIC_URL: "http://127.0.0.1:8123" }, /Set up this server: .*\n/), /^Set up this server: http:\/\/127\.0\.0\.1:8123\/setup#code=[A-Za-z0-9_-]{22}$/m);
   assert.doesNotMatch(await bin({ AGENTRUN_ACCOUNTS: "0" }, /\?token=.*\n/), /Set your password|Set up this server/);
+});
+
+test("with accounts on, the token link signs no browser in: it sets no cookie, and a cookie made from the token is no credential, before or after signing out everywhere", async (t) => {
+  const server = await owned(t);
+  const link = await call(server.port, { path: `/?token=${encodeURIComponent(server.token)}` });
+  assert.deepEqual([link.status, link.headers.location, link.headers["set-cookie"]], [303, "/sign-in", undefined]);
+  const tokenCookie = `agentrun-${server.port}=${createHmac("sha256", server.token).update("agentrun-serve page").digest("base64url")}`;
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...page(server), cookie: server.cookie }, body: {} });
+  assert.equal(out.status, 200, out.text);
+  for (const cookie of [tokenCookie, `${tokenCookie}; ${server.cookie}`]) {
+    assert.equal((await agents(server, cookie)).status, 401, "the token's page cookie outlives no sign-out");
+    assert.equal((await call(server.port, { path: "/", headers: { cookie } })).headers.location, "/sign-in");
+  }
+  assert.equal((await call(server.port, { path: "/v2/agents", headers: { authorization: `Bearer ${server.token}` } })).status, 200, "the token stays for scripts");
+});
+
+test("a setup code is compared as bytes: one with characters outside ASCII is a wrong try, a 403 that counts toward the five", async (t) => {
+  const server = await serve(t, { accounts: true });
+  const code = new URL(server.setupUrl).hash.slice("#code=".length);
+  const odd = await setup(server, { password: PASSWORD, code: "\u00e9".repeat(code.length) });
+  assert.deepEqual([odd.status, odd.json.error?.code], [403, "forbidden"], odd.text);
+  for (let i = 0; i < 4; i++) assert.equal((await setup(server, { password: PASSWORD, code: "wrong" })).status, 403);
+  assert.equal((await setup(server, { password: PASSWORD, code })).status, 403, "the odd code was the first of the five");
+});
+
+test("the sign-in limit keeps a bounded table: expired addresses are swept, a full table refuses a new address, and a limited one stays limited", async (t) => {
+  mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  t.after(() => mock.timers.reset());
+  const owner = new Owner(await scratch(t), true);
+  for (let i = 0; i < 10; i++) assert.equal(owner.allow("held"), "ok");
+  assert.equal(owner.allow("held"), "limited");
+  for (let i = 1; i < SIGN_IN_PEERS; i++) assert.equal(owner.allow(`peer-${i}`), "ok");
+  assert.equal(owner.allow("one-more"), "full", "a full table refuses a new address");
+  assert.equal(owner.allow("held"), "limited", "a flood of new addresses never resets a limited one");
+  assert.equal(owner.allow("peer-1"), "ok", "an address already counted still counts");
+  mock.timers.tick(15 * 60_000);
+  assert.equal(owner.allow("one-more"), "ok", "expired addresses are swept");
+  assert.equal(owner.allow("held"), "ok");
 });
