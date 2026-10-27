@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFile, stat, writeFile } from "node:fs/promises";
+import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -108,6 +109,40 @@ test("the setup code is good for 30 minutes", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 31 * 60_000 });
   const late = await setup(server.port, { code: codeOf(server.setupUrl), ...OWNER }, { origin: `http://127.0.0.1:${server.port}` });
   assert.deepEqual([late.status, late.json.error.code], [403, "forbidden"]);
+});
+
+/** A POST /v2/setup whose headers go now and whose body goes at `send()`: its answer. */
+function heldSetup(port, body, headers) {
+  const text = JSON.stringify(body);
+  let send;
+  const answer = new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method: "POST", path: "/v2/setup", headers: { ...json, ...headers, "content-length": Buffer.byteLength(text) } }, (res) => {
+      let out = "";
+      res.on("data", (chunk) => (out += chunk)).on("end", () => resolve({ status: res.statusCode, text: out }));
+    });
+    req.once("error", reject);
+    req.flushHeaders();
+    send = () => req.end(text);
+  });
+  return { answer, send: () => send() };
+}
+
+test("setups at the same moment make exactly one owner, with the token or with the one code; the code is spent once taken", async (t) => {
+  const owners = (data) => authDb(t, data).prepare(`SELECT count(*) AS n FROM "user" WHERE owner = 1`).get().n;
+  for (const how of ["token", "code"]) {
+    const data = join(await scratch(t), "agents");
+    const server = await started(t, data);
+    const headers = how === "token" ? { authorization: `Bearer ${server.token}` } : { origin: `http://127.0.0.1:${server.port}` };
+    const code = codeOf(server.setupUrl);
+    // All three are in before any body: each has passed the server's first look at its headers when the bodies land.
+    const held = [0, 1, 2].map((i) => heldSetup(server.port, { ...(how === "code" ? { code } : {}), ...OWNER, email: `owner${i}@example.com` }, headers));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const request of held) request.send();
+    const answers = await Promise.all(held.map((request) => request.answer));
+    assert.deepEqual(answers.map((a) => a.status).sort(), [201, 403, 403], `${how}: ${answers.map((a) => a.text)}`);
+    assert.equal(owners(data), 1, `${how}: one owner`);
+    assert.equal(authDb(t, data).prepare(`SELECT count(*) AS n FROM "user"`).get().n, 1, `${how}: nobody else made`);
+  }
 });
 
 test("the server's token as the Bearer stands in for the code, for scripts: no Origin needed; a wrong Bearer is a 401", async (t) => {
