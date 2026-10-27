@@ -955,7 +955,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   // The memo lands as the run wrote it when the screen passed it, else as the host renders it: none of the run's text.
   const memo = runFiles[memoPath(runId)];
   const screenedMemo = screened.get(memoPath(runId));
-  const landed = typeof memo !== "string" ? undefined : screenedMemo === undefined ? memo : hostRenderedMemo(memo, screenedMemo);
+  const landed = typeof memo !== "string" ? undefined : screenedMemo === undefined ? memo : hostRenderedMemo(memo, screenedMemo, Object.keys(runFiles));
   if (landed !== undefined) files[memoPath(runId)] = landed;
   const index = renderIndex([...entries.values()].filter((l) => l.status === "active"));
   if (index !== undefined) files[LAYOUT.index] = index;
