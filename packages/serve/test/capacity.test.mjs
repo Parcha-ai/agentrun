@@ -110,8 +110,9 @@ test("a message that waits on a run's settle answers 503 at its deadline, not wh
   store.exec("BEGIN IMMEDIATE");
   t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
   const log = join(data, "runs", run.body.run_id, "process.log");
+  // A loaded machine is slow to start a process; the deadline under test starts at the message.
   for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes("has no default export"); i++) {
-    assert.ok(i < 200, "the run's process failed at its start");
+    if (i >= 1_200) assert.fail(`the run's process did not fail at its start within 60 s; its log:\n${await readFile(log, "utf8").catch((error) => String(error))}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const from = Date.now();
@@ -129,6 +130,15 @@ test("a message that waits on a run's settle answers 503 at its deadline, not wh
   // The store's write waits out its 5 s busy timeout without yielding, so the answer can trail the 2 s deadline by that;
   // it still comes before the settle's retry, 10 s away, and the store is still held.
   assert.ok(took < 9_000, `answered before the settle could end: ${took} ms`);
+});
+
+test("a run's first message waits for a process slower to come up than a request's deadline: the run starts, never failed", async (t) => {
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname, readyTimeoutMs: 1_000 });
+  assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify(last));
 });
 
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
