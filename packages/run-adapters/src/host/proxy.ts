@@ -196,7 +196,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const refusedStatus = policy.refusedStatus ?? 400;
   const inflight = new Set<AbortController>();
 
-  const refuse = (res: ServerResponse, status: number, message: string) => {
+  const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage) => {
+    // Every refusal is reported, so a client that calls something the table does not hold is seen, not silently refused.
+    options.log?.(`model proxy (${policy.id}): refused`, { status, method: String(req?.method ?? "").slice(0, 16), path: String(req?.url ?? "").slice(0, 200), reason: message.slice(0, 200) });
     res.writeHead(status, { "content-type": "application/json", connection: "close" });
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
   };
@@ -204,12 +206,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const serve = async (req: IncomingMessage, res: ServerResponse) => {
     // A request refused before its body is read is drained, so its client gets the answer instead of a reset.
     res.once("finish", () => { if (!req.complete) req.resume(); });
-    if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required");
+    if (!sameKey(policy.keyOf(req.headers), key)) return refuse(res, 401, "this session's key is required", req);
     let route: ProxyRoute;
     let query: string;
     try { ({ route, query } = matchRoute(policy.routes, req.method ?? "", req.url ?? "")); } catch (error) {
       const e = error as ProxyRefusal;
-      return refuse(res, e.status ?? 403, e.message);
+      return refuse(res, e.status ?? 403, e.message, req);
     }
     if (route.local !== undefined) {
       res.writeHead(route.local, { "content-length": "0" });
@@ -219,7 +221,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let size = 0;
     for await (const chunk of req) {
       size += (chunk as Buffer).length;
-      if (size > MAX_BODY) return refuse(res, 413, "the body is too large");
+      if (size > MAX_BODY) return refuse(res, 413, "the body is too large", req);
       chunks.push(chunk as Buffer);
     }
     let body: Record<string, unknown>;
@@ -234,16 +236,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
     } catch (error) {
       const e = error as ProxyRefusal;
-      return refuse(res, e instanceof ProxyRefusal ? e.status : 400, e instanceof ProxyRefusal ? e.message : "the body was refused");
+      return refuse(res, e instanceof ProxyRefusal ? e.status : 400, e instanceof ProxyRefusal ? e.message : "the body was refused", req);
     }
     try {
       if (!route.free) await hooks.beforeRequest({ model });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
-      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`);
+      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
     }
     const credential = await options.credential();
-    if (!credential) return refuse(res, 500, "the session has no provider credential");
+    if (!credential) return refuse(res, 500, "the session has no provider credential", req);
     Object.assign(headers, policy.authHeaders(credential));
     const controller = new AbortController();
     inflight.add(controller);
@@ -274,14 +276,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
     } catch (error) {
       options.log?.(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
-      if (!res.headersSent) refuse(res, 502, "the provider did not answer");
+      if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
       else res.destroy();
     } finally {
       inflight.delete(controller);
     }
   };
 
-  const server = createServer((req, res) => { void serve(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed"); else res.destroy(); }); });
+  const server = createServer((req, res) => { void serve(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed", req); else res.destroy(); }); });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => resolve());

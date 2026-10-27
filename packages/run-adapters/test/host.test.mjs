@@ -43,8 +43,9 @@ const sse = (usage = { in: 7, out: 2 }) => `data: {"delta":"hi"}\n\ndata: {"done
 /** A proxy with recorded hooks and a provider that records what reached it. */
 async function proxy(t, extra = {}) {
   const forwarded = [];
-  const hooks = { before: [], after: [] };
+  const hooks = { before: [], after: [], logged: [] };
   const p = await startModelProxy({
+    log: (message, detail) => hooks.logged.push({ message, ...detail }),
     policy: extra.policy ?? policy,
     model: 'session-model',
     origin: 'https://provider.invalid/ignored/path',
@@ -96,11 +97,17 @@ test('the proxy listens on loopback only and admits only the session key', async
 });
 
 test("only the policy's routes, by their exact text: an absolute URL, a foreign path, an escape or a query is refused", async (t) => {
-  const { p, forwarded } = await proxy(t);
+  const { p, forwarded, hooks } = await proxy(t);
   const refused = ['http://evil.example/v1/test', '//evil.example/v1/test', '/v1/test/../files', '/v1/%74est', '/v1/test?x=1', '/v1/files', '/v1/test/', '/v1//test', '/V1/test'];
   for (const path of refused) assert.equal((await send(p.url, { path })).status, 403, path);
   for (const method of ['GET', 'PUT']) assert.equal((await send(p.url, { method })).status, 403, method);
   assert.equal(forwarded.length, 0, 'nothing refused reached the provider');
+  // Every refusal is reported, with what was asked: a client calling a route the table lacks is seen.
+  const refusals = hooks.logged.filter((l) => /refused/.test(l.message));
+  assert.equal(refusals.length, refused.length + 2);
+  assert.deepEqual(refusals.at(-1), { message: 'model proxy (test): refused', status: 403, method: 'PUT', path: '/v1/test', reason: 'PUT /v1/test is not in the table' });
+  assert.ok(refusals.some((l) => l.path === '/v1/files' && l.method === 'POST'));
+  assert.ok(!JSON.stringify(hooks.logged).includes(KEY), 'a report never carries the session key');
   assert.throws(() => matchRoute(policy.routes, 'POST', 'v1/test'), /not one the table can match/);
   // A query the route lists exactly passes, and is forwarded as the table has it; any other is refused.
   for (const path of ['/v1/test?beta=false', '/v1/test?beta=true&x=1', '/v1/test?beta=true?', '/v1/count?beta=true']) assert.equal((await send(p.url, { path })).status, 403, path);
