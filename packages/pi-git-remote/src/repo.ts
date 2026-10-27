@@ -109,6 +109,9 @@ export type Repo = {
   /** One commit on `branch` with `files` applied, or none when the branch already holds a commit with the same
    *  `Run-Id` trailer, here or on the remote, or when nothing changes. Local only; `push` it after. */
   commitTo(branch: string, options: CommitOptions): Promise<Committed>;
+  /** A commit of `files` applied on `parent`, written here and named by no ref: the second parent of a merge whose own
+   *  branch is never merged. Pushing a branch that reaches it carries it. */
+  makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers }): Promise<string>;
   /** Sends a commit to `branch` on the remote: by sha, never forced, never running a hook on either side. A remote that
    *  moved is a `conflict`; a remote that refuses the ref is `refused`. */
   push(sha: string, branch: string): Promise<void>;
@@ -553,6 +556,18 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     return { sha, created: true };
   }
 
+  async function makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers }): Promise<string> {
+    if (!options || typeof options !== "object") throw refused("makeCommit needs { parent, files, message }");
+    checkCommitFiles(options.files, limits);
+    const message = formatMessage(options.message, options.trailers);
+    await fetchAll();
+    const parent = await commitOf(options.parent);
+    const baseTree = await treeOf(parent);
+    const tree = await buildTree(baseTree, options.files);
+    await checkIntroduced(baseTree, tree);
+    return commitTree(tree, [parent], message);
+  }
+
   async function push(sha: string, branchName: string): Promise<void> {
     const branch = checkBranch(branchName);
     if (typeof sha !== "string" || !SHA.test(sha)) throw refused("push takes a full commit sha");
@@ -658,6 +673,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     read: serial(read),
     list: serial(list),
     commitTo: serial(commitTo),
+    makeCommit: serial(makeCommit),
     push: serial(push),
     merge: serial(merge),
     revert: serial(revert),
