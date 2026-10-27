@@ -2,8 +2,9 @@
 // DIR/auth.sqlite. Serve keeps what the library does not: the setup code, the allowlist of its endpoints, the one write
 // gate (this server's Origin and a JSON body), the 30-day limit on a session, and the activity log. A session is made
 // only by the library's magic-link sign-in: a link a person asks for by email (POST /v2/auth/request-link), mailed when
-// SMTP is set, else printed to the server's log, and opened at GET /v2/auth/verify; or run server-side at setup, where the
-// token goes from the plugin's callback to the verify call in memory. None of the library's own endpoints is a client's.
+// SMTP is set, else printed to the server's log. The link opens the sign-in page with the token in its fragment, which
+// no server and no mail scanner's fetch sees; the page posts it to /v2/auth/verify. Or it runs server-side at setup, where
+// the token goes from the plugin's callback to the verify call in memory. None of the library's own endpoints is a client's.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -361,9 +362,8 @@ export class Accounts {
     const { auth, baseUrl } = this.ready();
     const path = raw.slice(BASE_PATH.length);
     if (path === "/request-link" || path === "/verify") {
-      const own = path === "/request-link" ? "POST" : "GET";
-      if (req.method !== own && !(own === "GET" && req.method === "HEAD")) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${raw}`, {}, { allow: own });
-      return path === "/request-link" ? this.requestLink(req, res) : this.verify(req, res, search);
+      if (req.method !== "POST") throw new ApiError("method_not_allowed", `${req.method} is not a method of ${raw}`, {}, { allow: "POST" });
+      return path === "/request-link" ? this.requestLink(req, res) : this.verify(req, res);
     }
     const method = Object.hasOwn(ENDPOINTS, path) ? ENDPOINTS[path] : undefined;
     if (!method) throw new ApiError("not_found", `no route ${raw}`);
@@ -427,45 +427,53 @@ export class Accounts {
     }
     const peer = String(req.headers[CLIENT_IP_HEADER] ?? "unknown");
     if (!this.take(`peer:${peer}`, LINKS_PER_PEER)) throw new ApiError("rate_limited", "too many sign-in links asked for from this address; try again later", { retry_after_ms: LINK_WINDOW_MS }, { "retry-after": String(LINK_WINDOW_MS / 1000) });
-    const person = this.db.prepare(`SELECT email, banned FROM "user" WHERE lower(email) = ?`).get(email) as { email: string; banned: number | null } | undefined;
-    if (person && !person.banned && this.take(`email:${email}`, LINKS_PER_EMAIL)) {
-      const nonce = randomBytes(16).toString("base64url");
-      let token: string | undefined;
-      this.pending.set(nonce, (given) => void (token = given));
-      try {
-        await auth.api.signInMagicLink({ body: { email: person.email, metadata: { nonce } }, headers: signInHeaders(req) });
-      } finally {
-        this.pending.delete(nonce);
-      }
-      if (token !== undefined) {
-        const link = `${baseUrl}${BASE_PATH}/verify?token=${encodeURIComponent(token)}`;
-        if (this.mail) {
-          await this.mail({ to: person.email, subject: "Sign in to AgentRun Server", text: `Open this link to sign in to AgentRun Server at ${baseUrl}. It works once, within 15 minutes.\n\n${link}\n\nIf you did not ask for it, ignore this email.\n` })
-            .catch((error: Error) => void process.stderr.write(`agentrun-serve: accounts: the sign-in link for ${person.email} was not sent: ${error.message}\n`));
-        } else {
-          process.stderr.write(`agentrun-serve: sign-in link for ${person.email} (once, within 15 minutes): ${link}\n`);
-        }
-      }
-    }
+    // Answered before anything is looked up: a known email takes no longer to answer than an unknown one.
     const answer = Buffer.from(JSON.stringify({ sent: true, message: "If that email has an account here, a sign-in link is on its way: check your email, or the server's log." }));
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-length": String(answer.length) });
     res.end(answer);
+    const headers = signInHeaders(req);
+    void this.sendLink(email, headers).catch((error: Error) => void process.stderr.write(`agentrun-serve: accounts: no sign-in link was made for a request: ${error.message}\n`));
   }
 
-  /** GET /v2/auth/verify?token=: the link's sign-in. The library checks the token (stored hashed, good once, 15 minutes)
-   *  and makes the session; the browser goes to the page signed in, or to the sign-in page told why. */
-  async verify(req: IncomingMessage, res: ServerResponse, search: string): Promise<void> {
+  /** The link for `email` when its person exists and is not disabled, within the per-email limit: mailed, or printed to
+   *  the server's log. */
+  private async sendLink(email: string, headers: Headers): Promise<void> {
+    const { auth, baseUrl } = this.ready();
+    const person = this.db.prepare(`SELECT email, banned FROM "user" WHERE lower(email) = ?`).get(email) as { email: string; banned: number | null } | undefined;
+    if (!person || person.banned || !this.take(`email:${email}`, LINKS_PER_EMAIL)) return;
+    const nonce = randomBytes(16).toString("base64url");
+    let token: string | undefined;
+    this.pending.set(nonce, (given) => void (token = given));
+    try {
+      await auth.api.signInMagicLink({ body: { email: person.email, metadata: { nonce } }, headers });
+    } finally {
+      this.pending.delete(nonce);
+    }
+    if (token === undefined) return;
+    // The token rides in the fragment: a scanner that fetches every link in a mail spends nothing and signs nobody in.
+    const link = `${baseUrl}/sign-in#token=${encodeURIComponent(token)}&email=${encodeURIComponent(person.email)}`;
+    if (!this.mail) return void process.stderr.write(`agentrun-serve: sign-in link for ${person.email} (once, within 15 minutes): ${link}\n`);
+    await this.mail({ to: person.email, subject: "Sign in to AgentRun Server", text: `Open this link to sign in to AgentRun Server at ${baseUrl}. It works once, within 15 minutes.\n\n${link}\n\nIf you did not ask for it, ignore this email.\n` })
+      .catch((error: Error) => void process.stderr.write(`agentrun-serve: accounts: the sign-in link for ${person.email} was not sent: ${error.message}\n`));
+  }
+
+  /** POST /v2/auth/verify {token}: the sign-in page posts a link's token (from its fragment). The library checks it
+   *  (stored hashed, good once, 15 minutes) and makes the session: its cookie on a 200; a used, expired or unknown token
+   *  is a 401 with no cookie. */
+  async verify(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const { auth } = this.ready();
-    const token = new URLSearchParams(search).get("token");
-    const go = (location: string, cookies: string[] = []) => {
-      res.writeHead(303, { location, "cache-control": "no-store", "referrer-policy": "no-referrer", ...(cookies.length ? { "set-cookie": cookies } : {}) });
-      res.end();
-    };
-    if (!token) return go("/sign-in#link=invalid");
-    const verified = await auth.api.magicLinkVerify({ query: { token }, headers: signInHeaders(req), returnHeaders: true }).catch(() => null);
+    this.checkWrite(req);
+    const body = await jsonBody(req);
+    const extra = Object.keys(body).filter((key) => key !== "token");
+    if (extra.length || typeof body.token !== "string" || !body.token || body.token.length > 512) {
+      throw invalid([...extra.map((key) => ({ field: key, reason: "not_allowed" as const, message: `The body keeps no field ${key}.` })), ...(typeof body.token !== "string" || !body.token || body.token.length > 512 ? [{ field: "token", reason: (body.token === undefined ? "missing" : "wrong_type") as "missing" | "wrong_type", message: "token is the one in the sign-in link" }] : [])]);
+    }
+    const verified = await auth.api.magicLinkVerify({ query: { token: body.token }, headers: signInHeaders(req), returnHeaders: true }).catch(() => null);
     const cookies = verified?.headers.getSetCookie() ?? [];
-    if (!cookies.length) return go("/sign-in#link=invalid");
-    go("/", cookies);
+    if (!cookies.length) throw new ApiError("unauthenticated", "this sign-in link was used already, is more than 15 minutes old, or is not one this server made: ask for a new one");
+    const answer = Buffer.from(JSON.stringify({ signed_in: true }));
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", "set-cookie": cookies, "content-length": String(answer.length) });
+    res.end(answer);
   }
 
   // ---- setup --------------------------------------------------------------------------------------------------------

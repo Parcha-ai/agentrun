@@ -280,7 +280,9 @@ Accounts are on unless `AGENTRUN_ACCOUNTS=0`. The first start prints `Set up thi
 it to make the owner, who is signed in at once. An admin adds people (`POST /v2/people {email, name?, role?}`, or the
 People routes), and each signs in on the sign-in page with a link sent to their email: through `AGENTRUN_SMTP_URL`
 (`smtps://<user>:<password>@<host>:465`) from `AGENTRUN_MAIL_FROM`, or, without SMTP, printed to the server's log for the
-operator to pass on. A link works once, within 15 minutes. People have a role (member or admin) and no password. The
+operator to pass on: until it is used, or for 15 minutes, that log line signs its person in, so keep the log as private as
+the token. A link works once, within 15 minutes: it opens the sign-in page, and only its Continue button spends it, so a
+mail scanner that fetches the link signs nobody in. People have a role (member or admin) and no password. The
 server's token keeps working for scripts and the CLI.
 
 On an address that is not loopback (a container), accounts need `AGENTRUN_PUBLIC_URL`, the address people open: every

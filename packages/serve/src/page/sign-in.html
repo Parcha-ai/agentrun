@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<!-- What a browser that is not signed in gets once this server has an owner: a sign-in link to the person's email. -->
+<!-- What a browser that is not signed in gets once this server has an owner: a sign-in link to the person's email. A link opens this page with its token in the fragment; the token is spent only by the Continue button's POST, never by a fetch of the link. -->
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -21,6 +21,11 @@
 <label class="field"><span class="word">Email</span><input type="email" name="email" autocomplete="email" required></label>
 <div class="actions"><button class="btn" type="submit">Send me a link</button></div>
 <p class="said" id="said" role="status"></p>
+</form>
+<form id="continue" hidden>
+<p class="lede">Your sign-in link: continue to sign in on this browser. It works once.</p>
+<div class="actions"><button class="btn" type="submit" id="continue-as">Continue</button></div>
+<p class="said" id="continued" role="status"></p>
 </form>
 </section>
 </main>
