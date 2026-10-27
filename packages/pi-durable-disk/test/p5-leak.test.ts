@@ -1,6 +1,7 @@
 // The supervise harness's per-test cleanup (test/live/_p5.ts) must not hide a leak. A test that passed but left a supervise
 // loop running fails the run, with what it left named; after a test that failed, the same cleanup is allowed and the run
-// fails only on that test. Offline: test/fixtures/p5-leak.ts with live off and a fake loop.
+// fails only on that test. The cleanup waits out a loop's last tick, and a stop that fails stays with the test that left
+// it. Offline: test/fixtures/p5-leak.ts with live off and fake loops and handles.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -34,4 +35,19 @@ test("after a test that failed, what it left is cleaned without a second failure
 test("a passing test that stopped its own loop passes", () => {
   const r = run("clean");
   assert.equal(r.code, 0, r.out);
+});
+
+test("a loop finishing its tick after SIGTERM is waited for, so the next test finds it gone", () => {
+  const r = run("slow-tick");
+  assert.equal(r.code, 1, r.out);
+  assert.ok(r.out.includes("this test failed"), r.out);
+  assert.ok(!r.out.includes("the loop outlived its test's cleanup"), r.out);
+  assert.ok(!r.out.includes(LEAK), r.out);
+});
+
+test("a handle whose stop failed stays with the test that left it: the next, clean test is not called a leak", () => {
+  const r = run("stale-handle");
+  assert.equal(r.code, 1, r.out);
+  assert.ok(r.out.includes("this test failed"), r.out);
+  assert.ok(!r.out.includes(LEAK), r.out);
 });
