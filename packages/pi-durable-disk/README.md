@@ -274,11 +274,18 @@ never resolves stays so across a restart; the next incarnation never submits it 
 `POST /abort` calls `hook.abort` (bounded) and answers `{ result: "aborted" | "idle" }`. `GET /status`'s `busy` is
 `hook.busy()`. `GET /events` keeps its contract (a snapshot, then batches of events, then `end`) on the root
 conversation: entries come from pi's `watchEvents`, the hook's `ctx.emit` run events (`{ type: "run_start" | "run_end",
-inputs: [] }`) are merged in order, `snapshot.run` is present while `hook.busy()`, and a `run_end` always pairs a
-`run_start` (the door sends it when the hook throws after `run_start`, when an abort leaves it idle, and before `end`).
-There is no `Last-Event-ID`: resume = a fresh snapshot, as today. A drain on SIGTERM aborts the hook, bounded, then kills
-the process group of every harness child the hook registered with `ctx.adopt(pid)` (start the child `detached`), so the
-instance never exits with one alive, and then releases the run.
+inputs: [] }`) are merged in order, and `snapshot.run` is present while `hook.busy()`. There is no `Last-Event-ID`:
+resume = a fresh snapshot, as today.
+
+A `run_end` pairs every `run_start`, and that is the hook's duty first: it emits `run_end` when its turn ends in any
+way, above all the ways the door cannot see (its harness child dies, its turn errors inside the harness). The door
+pairs a `run_start` itself only at the points it controls: when `hook.submit` throws after it, when a second
+`run_start` comes first, when an abort leaves the hook idle, when the door stops, and before a stream's `end`.
+
+The door stops when the instance ends: a drain on SIGTERM, a fence (the lease is lost, and another instance may take
+the run) and a park. It aborts the hook, bounded, kills the process group of every harness child the hook registered
+with `ctx.adopt(pid)` (start the child `detached`) and still alive, and pairs an open `run_start`, so the instance
+never exits with one of those children alive, and a fenced run's child never acts on without the lease.
 
 The admission is the journal of [`spec/receipts/Receipts.tla`](../../spec/receipts/Receipts.tla) for one effect per
 requestId, with the same invariants: Admit is the `door.input` commit (`I1_AdmitBeforeDispatch`), Dispatch is the one

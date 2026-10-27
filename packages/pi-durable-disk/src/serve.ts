@@ -59,7 +59,7 @@ export interface RunServer {
   attach(run: DurableRun, door?: DoorHook): void;
   /** Refuse new submissions with 503 PARKING; the returned function admits them again. */
   pause(): () => void;
-  /** A drain's step: abort the door hook's work (bounded) and kill the harness children it adopted. Nothing without a hook. */
+  /** Before the instance exits (a drain, a fence, a park): abort the door hook's work (bounded) and kill the harness children it adopted. Nothing without a hook. */
   stopDoor(): Promise<void>;
   close(): Promise<void>;
 }

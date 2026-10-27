@@ -28,6 +28,12 @@ export interface DoorContext {
   adopt(pid: number): void;
 }
 
+/**
+ * A harness behind the door. Its duty besides the three calls: emit `run_end` when its turn ends in any way, above all
+ * the ways the door cannot see (its child dies, its turn errors inside the harness). The door pairs a `run_start` itself
+ * only at the points it controls: `submit` throwing after it, a second `run_start`, an abort that leaves the hook idle,
+ * the door's stop (a drain, a fence, a park) and a stream's end.
+ */
 export interface DoorHook {
   /** Resolves when the input is TAKEN, not when the turn ends; the turn runs after, reported through `ctx.emit` and the conversation's entries. */
   submit(input: DoorInput, ctx: DoorContext): Promise<{ accepted: true } | { accepted: false; reason: "busy" }>;
@@ -111,7 +117,7 @@ export interface Door {
   readonly turnOpen: boolean;
   /** Receive the door's run events; returns the unsubscribe. */
   watch(listener: (event: DoorRunEvent) => void): () => void;
-  /** The drain: abort the hook (bounded), pair an open run_start, kill every adopted child's process group. */
+  /** When the instance ends (a drain, a fence, a park): abort the hook (bounded), pair an open run_start, kill every adopted child's process group. */
   stop(): Promise<void>;
 }
 
