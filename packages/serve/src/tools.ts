@@ -9,6 +9,7 @@ import { defineExtension, defineTool, type Extension, type Harness, type ToolReg
 import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
 import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
+import { forModel } from "./result.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
@@ -30,7 +31,7 @@ export const askPerson = defineTool({
   replay: "safe",
   execute: async (args) => {
     const { question } = args as { question: string };
-    return { content: [{ type: "text", text: asked(question) }], details: { question }, control: { terminate: true } };
+    return forModel(asked(question), { details: { question }, control: { terminate: true } });
   },
 });
 

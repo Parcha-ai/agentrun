@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
+import { forModel } from "./result.js";
 
 export type Page = { ok: boolean; url: string; status: number; title: string; text: string; links: string[]; refused?: string; error?: string };
 
@@ -61,6 +62,6 @@ export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "m
     replay: "safe",
     execute: async (args, _api, context) => {
       const page = await fetchPage((args as { url?: unknown }).url, { ...(await options()), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
-      return { content: [{ type: "text", text: JSON.stringify(page) }], details: page };
+      return forModel(JSON.stringify(page), { details: page });
     },
   });
