@@ -235,8 +235,10 @@ const ours = (name: string) => name.includes(`p5-${STAMP}-`);
  * `after`, which records their removal.
  */
 afterEach(async (t) => {
-  // node:test sets `passed` on a test's context (Node 20.12 and later); @types/node 22 does not declare it.
-  const { passed } = t as TestContext & { readonly passed: boolean };
+  // node:test sets `passed` on a test's context (Node 20.12 and later); @types/node 22 does not declare it. Without it a
+  // leak cannot be told from a red, so a Node that lacks it fails here, loud.
+  const { passed } = t as TestContext & { readonly passed: unknown };
+  assert.equal(typeof passed, "boolean", `node:test gave no verdict (t.passed) for "${t.name}" on Node ${process.version}: the leak check cannot run`);
   const left: Record<string, unknown> = { test: t.name, passed, thawed: [...stopped], loops: loops.size, units: [], mounts: [] };
   for (const pid of stopped) sh("sudo", ["-n", "kill", "-CONT", String(pid)]);
   stopped.clear();

@@ -20,7 +20,7 @@ test("a passing test that leaves a supervise loop running fails the run, and the
   const r = run("leak");
   assert.equal(r.code, 1, r.out);
   assert.ok(r.out.includes(LEAK), r.out);
-  assert.match(r.out, /"test":"a supervise test".*"loops":1/, r.out);
+  assert.match(r.out, /"test":"a supervise test","passed":true,.*"loops":1/, r.out);
 });
 
 test("after a test that failed, what it left is cleaned without a second failure", () => {
@@ -30,6 +30,7 @@ test("after a test that failed, what it left is cleaned without a second failure
   assert.ok(!r.out.includes(LEAK), r.out);
 });
 
+// Also the proof that this Node gives afterEach a verdict: without one, _p5's guard fails this run.
 test("a passing test that stopped its own loop passes", () => {
   const r = run("clean");
   assert.equal(r.code, 0, r.out);
