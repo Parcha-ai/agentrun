@@ -160,6 +160,29 @@ test("checkout copies regular files into an empty directory, never executable, a
   assert.deepEqual(await readdir(path.join(root, "w2")).catch(() => []), []);
 });
 
+test("commitTo with mergeParent makes a merge commit of exactly its files on the parent, and git revert -m 1 undoes it", async () => {
+  const root = await scratch();
+  const { dir, remote, main } = await seededRemote(root, { "keep.md": "keep\n" });
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  const run = await repo.commitTo("runs/r1", { files: { "run-only.md": "never lands\n", "kept.md": "lands\n" }, message: "r1" });
+  await repo.push(run.sha, "runs/r1");
+  const merged = await repo.commitTo(MAIN, { files: { "kept.md": "lands\n" }, message: "review: r1: merged", parent: main, mergeParent: run.sha });
+  assert.equal(merged.created, true);
+  const [head] = await repo.log({ max: 1 });
+  assert.deepEqual(head.parents, [main, run.sha], "two parents: main, then the run");
+  assert.equal(await repo.read("kept.md", merged.sha), "lands\n");
+  assert.equal(await repo.read("run-only.md", merged.sha), undefined, "the tree is the parent plus the given files, not the run's tree");
+  const empty = await repo.commitTo(MAIN, { files: {}, message: "review: r2: refused", parent: merged.sha, mergeParent: run.sha, allowEmpty: true });
+  assert.deepEqual((await repo.log({ max: 1 }))[0].parents, [merged.sha, run.sha]);
+  await repo.push(empty.sha, MAIN);
+  const work = path.join(root, "work");
+  await rawGit(["clone", "-q", dir, work]);
+  await rawGit(["revert", "--no-edit", "-m", "1", merged.sha], { cwd: work });
+  assert.equal(existsSync(path.join(work, "kept.md")), false, "reverting the merge with -m 1 takes its files back out");
+  assert.equal(existsSync(path.join(work, "keep.md")), true);
+  await assert.rejects(repo.commitTo(MAIN, { files: { "x.md": "x\n" }, message: "x", mergeParent: "f".repeat(40) }), { code: "missing" });
+});
+
 test("merge fast-forwards, makes a merge commit when both sides moved, and reports a conflict without moving anything", async () => {
   const root = await scratch();
   const { dir, remote, seeder } = await seededRemote(root, { "notes.md": "1\n2\n3\n4\n5\n6\n" });
