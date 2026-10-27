@@ -209,14 +209,18 @@ test('turns that make no paid request end the node no_progress, final, after thr
   assert.deepEqual([mixed.sends(), mixed.adapter.requests], [7, 3]);
 });
 
-test('sends have their own count against the turn limit, or maxSends when it is null: exhausted is turn_limit, final', async () => {
+test('sends have their own count against the turn limit, or maxSends when it is null: exhausted is turn_limit, final, and says so', async () => {
   // A limit below the no-progress bound is reached first.
   const capped = await idleRun({ maxTurns: 2 });
   assert.ok(capped.error?.reason === 'turn_limit' && capped.error.final === true, String(capped.error));
   assert.deepEqual([capped.sends, capped.requests], [2, 0]);
+  assert.equal(capped.error.message, 'harness node stopped: turn_limit, 2 turns sent (the cap on sends) made 0 paid requests and 0 submissions');
   // With no turn limit, sends that each pay and never deliver stop at maxSends.
   const { adapter, sends } = counted(fauxAdapter({ script: () => Array.from({ length: 10 }, () => ({ end: true })) }));
-  await assert.rejects(createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: null, maxSends: 4 })(stepRequest()), (error) => error.reason === 'turn_limit' && error.final === true);
+  await assert.rejects(createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: null, maxSends: 4 })(stepRequest()), (error) => error.reason === 'turn_limit' && error.final === true && /4 turns sent \(the cap on sends\) made 4 paid requests/.test(error.message));
+  // The paid requests reaching the limit first say nothing about sends.
+  const paying = fauxAdapter({ script: () => Array.from({ length: 10 }, () => ({ say: 'thinking' })) });
+  await assert.rejects(createHarnessRunner(paying, { store: memorySessionStore(), maxTurns: 2 })(stepRequest()), (error) => error.reason === 'turn_limit' && error.message === 'harness node stopped: turn_limit after 2 turns and 0 submissions');
   assert.deepEqual([sends.length, adapter.requests], [4, 4]);
   // Sends are never added to the paid requests: max_turns 1 with one send that pays once and submits succeeds.
   const one = fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }] });

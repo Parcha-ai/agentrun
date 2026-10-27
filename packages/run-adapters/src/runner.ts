@@ -263,7 +263,9 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       }
       if (accepted) return submission;
       if (stopped) throw stopped;
-      throw failure("turn_limit");
+      if (limit !== null && turns >= limit) throw failure("turn_limit");
+      // The sends ran out first: say so, since the turns reported are below the limit.
+      throw failure("turn_limit", `harness node stopped: turn_limit, ${sends} turns sent (the cap on sends) made ${turns} paid requests and ${submissions} submissions`);
     } catch (error) {
       if (accepted) return submission;
       if (stopped) throw stopped;
