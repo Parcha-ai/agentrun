@@ -67,20 +67,24 @@ export function cleanFiles() {
 /** The host's tool list in these tests. */
 export const HOST_TOOLS = ["fetch_page", "browser"];
 
-/** A draft with a code node, a call node on a host tool and a Jev judge node. */
-export const richWorkflow = ({ tool = "fetch_page", code = "s => ({ target: s.url + \"/policies/\" })" } = {}) => JSON.stringify({
+/** A draft with a model node, a call node on a host tool and a Jev judge node; with `code`, its first step is a code
+ *  node instead of the model node. */
+export const richWorkflow = ({ tool = "fetch_page", code } = {}) => JSON.stringify({
   v: 2,
   name: "find-policies",
   schemas: {
     Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+    Target: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
     Page: { type: "object" },
     Verdict: { type: "object", properties: { states_refunds: { type: "boolean", description: "Does the page state the store's refund policy?" } }, required: ["states_refunds"] },
   },
   input: { schemaId: "Store" },
   output: { schemaId: "Verdict", path: "verdict" },
   root: { node: "chain", steps: [
-    { node: "code", label: "prep", code },
-    { node: "call", label: "fetch", via: "tool", tool, args: { url: "{target}" }, out: "Page", as: "page", deadline_s: 30 },
+    code === undefined
+      ? { node: "extract", label: "prep", instructions: "Name the path where this store keeps its policies.", out: "Target", as: "target", tools: [] }
+      : { node: "code", label: "prep", code },
+    { node: "call", label: "fetch", via: "tool", tool, args: { url: "{url}" }, out: "Page", as: "page", deadline_s: 30 },
     { node: "judge", label: "refund", state: { page: "{page}" }, out: "Verdict", as: "verdict" },
   ] },
 }, null, 2);

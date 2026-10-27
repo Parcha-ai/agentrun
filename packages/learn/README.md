@@ -14,7 +14,8 @@ automatically; [SPEC.md](SPEC.md#the-merge-policy) sets the order. Whether a not
 
 Anything an agent learns on any harness must run on the workflow DSL, so a workflow draft must pass the DSL's own
 `validateWorkflow`, given the host's tool list as its `tools` option. With no list, a draft that names a tool is
-refused. A draft merges without a person, so a call node that runs a command (via shell or executor) is refused.
+refused. A draft merges without a person, so a node that runs code (a `code` node, or a call via shell or executor)
+is refused.
 
 It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
 tarball (`npm pack -w @parcha/agentrun-learn`).

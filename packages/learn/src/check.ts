@@ -8,7 +8,7 @@ export type Rule =
   | "branch" | "too_many_files" | "locked" | "git_file" | "file_mode" | "outside_layout" | "deleted" | "too_large"
   | "too_many_notes" | "encoding" | "lfs_pointer" | "invisible_unicode" | "secret_shape" | "secret_value" | "memo_missing"
   | "memo" | "memo_run" | "memo_base" | "memo_unlisted" | "other_memo" | "note" | "note_run" | "index" | "index_note" | "skill"
-  | "workflow" | "no_tool_list" | "executable_call";
+  | "workflow" | "no_tool_list" | "executable_node";
 
 /** One problem with a run's branch. `detail` never repeats a value that was refused. */
 export type Problem = { readonly rule: Rule; readonly path?: string; readonly detail: string };

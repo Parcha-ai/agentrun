@@ -286,7 +286,7 @@ test("a skill out of shape is refused", () => {
 
 // ---------------------------------------------------------------- workflow drafts
 
-test("a draft with a code node, a host-tool call node and a Jev node passes", () => {
+test("a draft with a model node, a host-tool call node and a Jev node passes", () => {
   assert.deepEqual(check(withFiles({ [DRAFT]: richWorkflow() })), []);
 });
 
@@ -344,14 +344,14 @@ const EXECUTOR = { node: "call", label: "fetch", via: "executor", code: "return 
 
 test("a draft with a shell call node is refused: a learned draft carries no way to run commands", () => {
   const problems = check(withFiles({ [DRAFT]: withCall(SHELL) }));
-  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["executable_call", DRAFT]]);
+  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["executable_node", DRAFT]]);
   assert.match(problems[0].detail, /\/root\/steps\/1.*via shell/);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: withCall(SHELL) }), { tools: undefined })), ["executable_call"]);
+  assert.deepEqual(rules(check(withFiles({ [DRAFT]: withCall(SHELL) }), { tools: undefined })), ["executable_node"]);
 });
 
 test("a draft with an executor call node is refused", () => {
   const problems = check(withFiles({ [DRAFT]: withCall(EXECUTOR) }));
-  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["executable_call", DRAFT]]);
+  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["executable_node", DRAFT]]);
   assert.match(problems[0].detail, /\/root\/steps\/1.*via executor/);
 });
 
@@ -359,14 +359,25 @@ test("a shell call inside a child workflow is refused too", () => {
   const draft = JSON.parse(richWorkflow());
   draft.root.steps[1] = { node: "workflow", label: "fetch", workflow: { v: 2, name: "inner", schemas: draft.schemas, input: { schemaId: "Store" }, output: { schemaId: "Page" }, root: { ...SHELL, label: "run" } }, input: { url: "{url}" }, out: "Page", as: "page" };
   const problems = check(withFiles({ [DRAFT]: JSON.stringify(draft) }));
-  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["executable_call", DRAFT]]);
+  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["executable_node", DRAFT]]);
   assert.match(problems[0].detail, /\/root\/steps\/1\/workflow\/root/);
 });
 
-test("a code node is syntax-checked, never run", () => {
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: richWorkflow({ code: "s => ({" }) }))), ["workflow"]);
+test("a draft with a code node is refused, at any depth: code runs in the host's process", () => {
+  const problems = check(withFiles({ [DRAFT]: richWorkflow({ code: "s => ({ target: s.url })" }) }));
+  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["executable_node", DRAFT]]);
+  assert.match(problems[0].detail, /\/root\/steps\/0.*code node/);
+  const nested = JSON.parse(richWorkflow());
+  nested.root.steps[0] = { node: "workflow", label: "prep", workflow: { v: 2, name: "inner", schemas: nested.schemas, input: { schemaId: "Store" }, output: { schemaId: "Store" }, root: { node: "code", label: "copy", code: "s => ({ url: s.url })" } }, input: { url: "{url}" }, out: "Store", as: "target" };
+  const deep = check(withFiles({ [DRAFT]: JSON.stringify(nested) }));
+  assert.deepEqual(deep.map((p) => [p.rule, p.path]), [["executable_node", DRAFT]]);
+  assert.match(deep[0].detail, /\/root\/steps\/0\/workflow\/root/);
+});
+
+test("a code node is syntax-checked, never run, and refused either way", () => {
+  assert.ok(rules(check(withFiles({ [DRAFT]: richWorkflow({ code: "s => ({" }) }))).includes("workflow"));
   const ran = "s => { throw new Error('ran') }";
-  assert.deepEqual(check(withFiles({ [DRAFT]: richWorkflow({ code: ran }) })), []);
+  assert.deepEqual(rules(check(withFiles({ [DRAFT]: richWorkflow({ code: ran }) }))), ["executable_node"]);
 });
 
 test("a workflow draft that does not parse, validate or match its folder is refused", () => {
