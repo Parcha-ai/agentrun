@@ -87,7 +87,9 @@ export type RemoteFile = { name: string; sizeBytes: number; modifiedAt: string |
 export type FetchRequest = { url: string; format: "markdown" | "raw"; proxies: boolean };
 export type FetchResult = { finalUrl: string | null; statusCode: number | null; contentType: string | null; content: string; usage?: ToolUsage };
 export type SearchRequest = { query: string; n: number };
-export type SearchResult = { results: Array<{ url: string; title: string | null; author?: string | null; published?: string | null }>; usage?: ToolUsage };
+/** `snippet`: an excerpt of the page the search provider chose, when it gives one; web_search bounds it before the model sees it. */
+export type SearchHit = { url: string; title: string | null; author?: string | null; published?: string | null; snippet?: string | null };
+export type SearchResult = { results: SearchHit[]; usage?: ToolUsage };
 
 /** What a session vault may keep of this provider's sessions. Absent: nothing (a browser the package cannot read, or one the host shares). */
 export type ProviderVault =
