@@ -12,8 +12,9 @@ import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
+import { capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
+import { nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
 
@@ -43,7 +44,12 @@ function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
 
 export default async function app(where: AppContext): Promise<AppOptions> {
   const { run, revision } = revisionOf(where);
-  const { models, model, byTier } = revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(revision.body.workflow));
+  const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
+  const chosen = revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(workflowNodeList));
+  const { model, byTier } = chosen;
+  // Read before the run opens its store: what it spent in earlier processes counts against its cap.
+  const cap = capOf(process.env);
+  const models = cap === undefined ? chosen.models : await capModels(chosen.models, cap, spentIn(join(where.store, RUN_STORE_FILE)));
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
@@ -91,7 +97,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     import("@parcha/pi-durable-agent/workflow"),
   ]);
   const nodeTools = new Map<string, ToolBinding>();
-  for (const name of workflowTools(revision.body.workflow).nodes) nodeTools.set(name, await bind(name, true));
+  for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. */
   const runEffect = async ({ node, input, signal }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal }) => {
     const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;

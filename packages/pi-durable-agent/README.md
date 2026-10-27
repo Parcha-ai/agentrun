@@ -504,7 +504,7 @@ with it. The agents are rows in `store.sqlite`, not one home each; the beta.24 h
 turns a home into an agent.
 
 ```
-my-agents/store.sqlite       agents, revisions, skills, runs
+my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes
 my-agents/runs/<run id>/     each run's own store and work directory
 ```
 
@@ -516,6 +516,8 @@ CREATE TABLE skills    (sha256 TEXT PRIMARY KEY, content TEXT NOT NULL);
 CREATE TABLE runs      (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), revision_id TEXT NOT NULL REFERENCES revisions(id),
                         state TEXT NOT NULL CHECK (state IN ('running', 'completed', 'failed', 'stopped', 'escalated')),
                         started_at TEXT NOT NULL, ended_at TEXT, cost_usd REAL, summary TEXT);
+CREATE TABLE archive_changes (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('agent', 'run')), id TEXT NOT NULL,
+                        archived INTEGER NOT NULL CHECK (archived IN (0, 1)), at TEXT NOT NULL);
 ```
 
 ```js
@@ -536,6 +538,13 @@ SELECT runs.id, agents.name, revisions.id AS revision, revisions.kind, runs.stat
 FROM runs JOIN revisions ON revisions.id = runs.revision_id JOIN agents ON agents.id = runs.agent_id ORDER BY runs.started_at DESC;
 ```
 
+An agent or a run is archived, never deleted: `store.setArchived("agent" | "run", id, archived)` appends one row to
+`archive_changes` when its state changes (none when it does not) and returns when it was archived, or null. The rows are written
+once, like revisions: the database refuses an `UPDATE` or a `DELETE`. An item's state is its newest row; the reads carry
+`archivedAt` while it is archived, and a run's is its own, else its agent's. The table came without a new store version: a store an
+earlier version wrote opens and reads with nothing archived, gets the table from the first `openStore`, and an earlier version still
+opens a store that has it and ignores it.
+
 A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
 
 ## Looking at a store
@@ -545,10 +554,10 @@ npx @parcha/pi-durable-agent serve ./my-agents
 # http://127.0.0.1:41297/
 ```
 
-On a folder holding a `store.sqlite`, the same command serves the store's page: its agents; each agent's revisions,
-newest first, an agentic one's prompt diffed line by line against its parent's and a workflow's graph with what changed;
-its runs across revisions, filtered by revision; and each run, an agentic run's timeline or a workflow run's path lit
-on its graph. It reads `store.sqlite` and the runs' own stores in place, read-only, and never copies them. A run that
+On a folder holding a `store.sqlite`, the same command serves the store's page: its agents (archived ones behind Show
+archived, and marked archived wherever they show); each agent's revisions, newest first, an agentic one's prompt diffed
+line by line against its parent's and a workflow's graph with what changed; its runs across revisions, filtered by
+revision; and each run, an agentic run's timeline or a workflow run's path lit on its graph. It reads `store.sqlite` and the runs' own stores in place, read-only, and never copies them. A run that
 has ended is read as an immutable file, so serving adds no file beside it or to `store.sqlite`; a running run's store
 is read the way SQLite reads a live file. From code, `serveStore({ dir }, { port?, signal? })` from
 `@parcha/pi-durable-agent/serve` does the same.
@@ -609,7 +618,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `sessionVault(home, { hostKey, maxSessionCookieAgeMs?, runId?, access?, now? })` | The session vault: `capture`, `restore`, `forget`, `forgetAll`, `list` and `handedOut` ([Saved browser sessions](#saved-browser-sessions-the-vault)) | `invalid`: a host key that is not `{ id, wrap, unwrap }`, a cap that is not above 0 and at most 24 hours, an empty `runId`; its calls: a bad session key, origin, captured state or `capturedAt`. `key`: a host key that does not open the vault. `busy`: with `runId`, another live run holds the session's save lease. `format`: a key file or a saved session that does not read or decrypt, or a saved session whose row's origins or `capturedAt` were changed. A refused call writes nothing |
 | `localHostKey(id, bytes)` | A `HostKey` held in this process: 32 bytes, AES-256-GCM | `invalid`: an id that is not letters, digits, `.`, `_`, `:` or `-`, or not 32 bytes |
 | `VAULT_KEYS_FILE`, `MAX_SESSION_COOKIE_AGE_MS` | `vault.keys`, and 24 hours | |
-| `openStore(dir)` | The agent store in `dir`, created if missing: `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
+| `openStore(dir)` | The agent store in `dir`, created if missing: `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
 | `openStoreReader(dir)` | The same reads on a read-only handle (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
 | `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
@@ -629,7 +638,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow` and `RunState`.
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState` and `ArchiveKind` (`"agent" | "run"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
@@ -668,7 +677,7 @@ Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `Ti
 | `serveHome(home, { port?, signal? })` | Serves `home.dir` ([Looking at a home](#looking-at-a-home)) on `127.0.0.1` and resolves to `{ url, close() }` once it is listening; `close()` stops it, and so does aborting `signal`. It takes no lock and opens the home's stores read-only. `home` is anything with a `dir`, an `AgentHome` included | `missing`: the directory is not a home. `invalid`: a `port` that is not an integer from 0 to 65535 |
 | `serveStore(store, { port?, signal? })` | Serves the agent store at `store.dir` ([Looking at a store](#looking-at-a-store)) as `serveHome` serves a home | `missing`: the directory has no `store.sqlite`. `invalid`: a `port` that is not an integer from 0 to 65535 |
 | `storeApi(store)` | The read-only JSON behind the store's page, for a server of another package to answer its `/api/*` paths: a function of a path and its query that resolves to `{ status, value }`, opening `store.dir`'s reader for each read. A read that fails resolves to its status and `{ error }` | |
-| `STORE_PAGE_FILES` | The store page's files by the path the page asks for each (`/`, `/page.css`, `/page.js`, `/graph.js`): `{ path, type }`, `path` absolute. A page that loads its own script before `page.js` can set `window.agentStoreHost(parts)`, which answers `{ name, route(hash, token), agent(agent, revisions), revision(agent, revision), cards(agent, revisions, filter), empty() }`: the page's name in the tab's title, the views it draws itself, what it adds to an agent's card and to a revision's head, the cards it puts between an agent's card and its runs, and what the picker shows when the store holds no agent | |
+| `STORE_PAGE_FILES` | The store page's files by the path the page asks for each (`/`, `/page.css`, `/page.js`, `/graph.js`): `{ path, type }`, `path` absolute. A page that loads its own script before `page.js` can set `window.agentStoreHost(parts)`, which answers `{ name, route(hash, token), agent(agent, revisions), revision(agent, revision), cards(agent, revisions, filter), empty(), run(run) }`: the page's name in the tab's title, the views it draws itself, what it adds to an agent's card, to a revision's head and to a stored run's head, the cards it puts between an agent's card and its runs, and what the picker shows when the store holds no agent | |
 
 Its types: `ServeOptions`, `ServeHandle`, `Api` (what `storeApi` returns) and `Answer` (`{ status, value }`). The package's bin,
 `pi-durable-agent serve <dir> [--port <n>]`, calls `serveStore` for a directory holding a `store.sqlite` and `serveHome`

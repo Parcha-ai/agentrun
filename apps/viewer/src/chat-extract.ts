@@ -3,7 +3,7 @@
 // nodes, LLM calls, tool calls, the model calls made inside a tool), what each look read, the run's cited answer and
 // the agent's artifact. The same code for every run; pure but for reading a blob's JSON, which the caller passes.
 import type { Json, Line, Manifest, Recording } from './format.ts';
-import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatThread } from './chat-model.ts';
+import type { ChatCall, ChatDecision, ChatItem, ChatModel, ChatRow, ChatSource, ChatSpan, ChatTable, ChatThread } from './chat-model.ts';
 
 type Obj = { [key: string]: Json };
 const chatObj = (value: Json | undefined): Obj | undefined => (value && typeof value === 'object' && !Array.isArray(value) ? value : undefined);
@@ -40,6 +40,17 @@ function chatPlain(value: Json | undefined): string {
   if (typeof value === 'boolean') return value ? 'yes' : 'no';
   if (Array.isArray(value) && value.every((each) => typeof each !== 'object' || each === null)) return value.map(String).join(', ');
   return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
+const chatScalar = (value: Json) => typeof value !== 'object' || value === null;
+
+/** A list of flat records (each field a scalar or a list of scalars) as a table: its columns in the order the records
+ *  first name them, each cell in plain form, a field a record lacks empty. Anything else is no table. */
+function chatTable(value: Json | undefined): ChatTable | undefined {
+  const records = Array.isArray(value) ? value.map(chatObj) : [];
+  if (!records.length || !records.every((record) => record && Object.values(record).every((field) => chatScalar(field) || (Array.isArray(field) && field.every(chatScalar))))) return undefined;
+  const columns = [...new Set(records.flatMap((record) => Object.keys(record!)))];
+  return columns.length ? { columns, rows: records.map((record) => columns.map((column) => (Object.hasOwn(record!, column) ? chatPlain(record![column]) : ''))) } : undefined;
 }
 
 /** A failed result's first line: a JSON error record's message, else the first line of its words. */
@@ -710,12 +721,16 @@ export async function extractChat(recording: Recording, readJson: (sha: string) 
       const record = chatObj(result.record) ?? result;
       const evidence = new Set(chatList(result.evidence).map((each) => chatStr(each)).filter((each): each is string => !!each));
       const isCites = (value: Json) => Array.isArray(value) && value.length > 0 && value.every((each) => typeof each === 'string' && evidence.has(each));
-      const rows: ChatRow[] = Object.entries(record).map(([name, value]) => (isCites(value)
-        ? { label: name, text: '', cites: (value as string[]).map((href) => {
-          const look = receiptLook.get(href);
-          return { href, ...(look && sources[look] ? { look } : {}), ...(look && lookItem.has(look) ? { item: lookItem.get(look)! } : {}) };
-        }) }
-        : { label: name, text: chatPlain(value), cites: [] }));
+      const rows: ChatRow[] = Object.entries(record).map(([name, value]): ChatRow => {
+        if (isCites(value)) {
+          return { label: name, text: '', cites: (value as string[]).map((href) => {
+            const look = receiptLook.get(href);
+            return { href, ...(look && sources[look] ? { look } : {}), ...(look && lookItem.has(look) ? { item: lookItem.get(look)! } : {}) };
+          }) };
+        }
+        const table = chatTable(value);
+        return { label: name, text: chatPlain(value), ...(table ? { table } : {}), cites: [] };
+      });
       if (rows.length) answer = { title: manifest.result.title ?? manifest.title, rows, from: 'record' };
     }
     if (result?.format === 'agentrun.cited/1' && Array.isArray(result.rows)) {

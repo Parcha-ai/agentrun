@@ -30,8 +30,12 @@ vi.mock("node:fs", async (importOriginal) => {
 	};
 });
 
+const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+
 const directories: string[] = [];
 afterEach(() => {
+	vi.mocked(fdatasyncSync).mockImplementation(actual.fdatasyncSync);
+	vi.mocked(fsyncSync).mockImplementation(actual.fsyncSync);
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 function place(): string {
@@ -44,7 +48,11 @@ const writes = (n: number): StorageWrite[] => [{ type: "submission", value: { id
 describe("a runner's outbox", () => {
 	// 3,000 commits, the host's acknowledgements 10 commits behind for writes and 5 for lines: entries are pending at every
 	// moment the file is cleared out, and the last of them stay.
+	// A long session checks what the file keeps, not what a power cut keeps: its syncs are counted but not made, since 12,001
+	// synced rows take minutes on a disk whose sync takes tens of milliseconds.
 	const longSession = (outbox: ReturnType<typeof openOutbox>, onAck: (ack: () => void) => void = (ack) => ack()) => {
+		vi.mocked(fdatasyncSync).mockImplementation(() => {});
+		vi.mocked(fsyncSync).mockImplementation(() => {});
 		for (let commit = 1; commit <= 3_000; commit += 1) {
 			outbox.entry(commit, writes(commit));
 			outbox.lines(commit, [`line of ${commit}`]);

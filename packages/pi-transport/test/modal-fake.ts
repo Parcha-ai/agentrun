@@ -15,6 +15,12 @@ class FakeSandbox implements ModalSandbox {
 	readonly execs: { command: string[]; params: ExecParams }[] = [];
 	readonly writes: number[] = [];
 	exitCode: number | null = null;
+	/** Makes every `stdin.close()` of this sandbox's programs fail, as a broken command-router call would. */
+	failClose = false;
+	/** The cards `nvidia-smi` names in this sandbox, one entry per card (none: a box with no GPU). */
+	served: string[] = [];
+	/** What the box's probe of its own disk, Yama setting and FUSE prints (the real script reads this host's /proc). */
+	probeOutput = "disk=104857600\nptrace=1\nfuse_dev=1\n";
 	#children = new Set<ChildProcess>();
 
 	constructor(sandboxId: string, params: ModalCreateParams) {
@@ -25,13 +31,20 @@ class FakeSandbox implements ModalSandbox {
 	async exec(command: string[], params: ExecParams): Promise<ModalProcess> {
 		if (this.exitCode !== null) throw new Error("the sandbox has been terminated");
 		this.execs.push({ command, params });
-		const child = spawn(command[0] ?? "", command.slice(1), {
+		const probed = command[0] === "sh" && command[2]?.includes("ptrace_scope");
+		const output =
+			command[6] === "gpu"
+				? this.probeOutput + this.served.map((name) => `gpu=${name}\n`).join("")
+				: this.probeOutput;
+		const [program, ...rest] = probed ? ["printf", "%s", output] : command;
+		const child = spawn(program ?? "", rest, {
 			cwd: params.workdir,
 			env: { PATH: process.env.PATH ?? "", ...this.params.env },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		this.#children.add(child);
 		child.stdin.on("error", () => {});
+		let inputClosed = false;
 		const exited = new Promise<number>((resolve, reject) => {
 			child.once("error", reject);
 			child.once("close", (code, signal) => {
@@ -44,15 +57,42 @@ class FakeSandbox implements ModalSandbox {
 			stdin: {
 				writeBytes: (bytes) =>
 					new Promise<void>((resolve, reject) => {
+						if (inputClosed)
+							return reject(
+								Object.assign(new TypeError("Invalid state: WritableStream is closed"), {
+									code: "ERR_INVALID_STATE",
+								}),
+							);
 						this.writes.push(bytes.length);
 						child.stdin.write(bytes, (error) => (error ? reject(error) : resolve()));
 					}),
-				close: () => new Promise<void>((resolve) => child.stdin.end(resolve)),
+				// As the SDK's WritableStream does: a second close() of a closed stream rejects (ERR_INVALID_STATE), and so does a write.
+				close: () => {
+					if (this.failClose) return Promise.reject(new Error("the input could not be closed"));
+					if (inputClosed)
+						return Promise.reject(
+							Object.assign(new TypeError("Invalid state: WritableStream is closed"), {
+								code: "ERR_INVALID_STATE",
+							}),
+						);
+					inputClosed = true;
+					return new Promise<void>((resolve) => child.stdin.end(resolve));
+				},
 			},
 			stdout: child.stdout,
 			stderr: child.stderr,
 			wait: () => exited,
 		};
+	}
+
+	async tunnels() {
+		const ports = [...(this.params.encryptedPorts ?? []), ...(this.params.unencryptedPorts ?? [])];
+		return Object.fromEntries(
+			ports.map((port) => [
+				port,
+				{ url: `https://fake-${port}.modal.test`, tcpSocket: [`fake-${port}.modal.test`, 40_000 + port] as const },
+			]),
+		);
 	}
 
 	async poll(): Promise<number | null> {
@@ -63,6 +103,10 @@ class FakeSandbox implements ModalSandbox {
 		for (const child of this.#children) child.kill("SIGKILL");
 		this.exitCode ??= 0;
 		return this.exitCode;
+	}
+
+	async setTags(tags: Record<string, string>): Promise<void> {
+		this.params.tags = { ...tags };
 	}
 
 	async getTags(): Promise<Record<string, string>> {
@@ -79,6 +123,10 @@ export class FakeModal implements ModalSdk {
 		fromId: async (id) => ({ id }),
 	};
 	readonly fail: { create?: Error; fromId?: Error } = {};
+	/** Overrides what each new sandbox's probe prints. */
+	probeOutput: string | undefined;
+	/** The cards a sandbox that asked for a GPU is served, as `nvidia-smi` names them (one entry per card). */
+	served: string[] = [];
 
 	readonly apps: ModalSdk["apps"] = {
 		fromName: async (name) => {
@@ -91,6 +139,8 @@ export class FakeModal implements ModalSdk {
 		create: async (_app, _image, params) => {
 			if (this.fail.create) throw this.fail.create;
 			const sandbox = new FakeSandbox(`sb-${this.sandboxList.length + 1}`, params);
+			if (this.probeOutput !== undefined) sandbox.probeOutput = this.probeOutput;
+			sandbox.served = this.served;
 			this.sandboxList.push(sandbox);
 			return sandbox;
 		},

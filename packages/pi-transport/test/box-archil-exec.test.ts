@@ -79,6 +79,9 @@ describe("archil exec boxes", () => {
 				bulk: "files",
 				maxLifetimeMs: 60_000,
 			});
+			for (const key of ["network", "ports", "diskGb", "fuse", "ptraceScope"])
+				expect(box.facts()).not.toHaveProperty(key);
+			expect(box.facts().startedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
 			expect(box.facts().workspace).toBe(`/mnt/archil/work/boxes/${box.id}`);
 			expect(existsSync(join(fake.root, "boxes", box.id))).toBe(true);
 		} finally {
@@ -810,6 +813,9 @@ describe("archil exec boxes", () => {
 				if (!made.ok) expect(made.error.code).toBe(code);
 			};
 			await refuse({ gpu: "T4" }, "unsupported");
+			await refuse({ network: "none" }, "unsupported");
+			await refuse({ ports: [80] }, "unsupported");
+			await refuse({ capabilities: ["fuse"] }, "unsupported");
 			await refuse({ snapshot: "s" }, "unsupported");
 			await refuse({ workspace: "/work" }, "unsupported");
 			await refuse({ isolation: "container" }, "unsupported");

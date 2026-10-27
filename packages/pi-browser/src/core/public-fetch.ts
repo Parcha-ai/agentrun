@@ -1,20 +1,40 @@
 // A page from a public host only, so a page-steered agent never reaches the owner's private network: every hop's name
 // is resolved once, each address it resolves to is checked, and the connection is dialled at the address checked.
-// http(s) only, no cookies or credentials, a byte cap on the body.
+// http(s) on ports 80 and 443 only, no cookies or credentials, a byte cap on the body, and the caller's signal bounds
+// every hop, its name lookup included.
 import dns from "node:dns/promises";
 import net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
 import { refusedError } from "./custody.js";
 
-const V4_PRIVATE: ReadonlyArray<readonly [number, number]> = [[0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12], [0xc0a80000, 16], [0x00000000, 8], [0xe0000000, 4]];
+/** 0.0.0.0/8 this network, 10/8, 100.64/10 carrier-grade, 127/8, 169.254/16 link-local, 172.16/12, 192.0.0.0/24
+ *  protocol assignments, 192.168/16, 198.18/15 benchmarking, 224/4 multicast and 240/4 reserved (the broadcast address
+ *  included). */
+const V4_PRIVATE: ReadonlyArray<readonly [number, number]> = [[0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8], [0xa9fe0000, 16], [0xac100000, 12], [0xc0000000, 24], [0xc0a80000, 16], [0xc6120000, 15], [0xe0000000, 4], [0xf0000000, 4]];
+/** ::/8 reserved by the IETF (the unspecified and loopback addresses, IPv4-compatible ones, and the NAT64 prefixes
+ *  64:ff9b::/96 and 64:ff9b:1::/48), fc00::/7 unique-local, fe80::/10 link-local, fec0::/10 site-local and ff00::/8
+ *  multicast. An IPv4-mapped address (::ffff:0:0/96) is checked as the IPv4 address it carries. */
+const V6_PRIVATE: ReadonlyArray<readonly [string, number]> = [["::", 8], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]];
 const v4 = (ip: string) => ip.split(".").reduce((n, octet) => n * 256 + Number(octet), 0);
-/** Loopback, private, link-local, carrier-grade and multicast addresses, v4 and v6, v4-mapped included. */
+/** An IPv6 address's eight 16-bit groups, read through the URL parser's canonical form; null when it does not parse
+ *  (a zone index among them). */
+function v6Groups(ip: string): number[] | null {
+  let canonical: string;
+  try { canonical = new URL(`http://[${ip}]/`).hostname.slice(1, -1); } catch { return null; }
+  const groups = (part: string) => (part ? part.split(":").map((group) => parseInt(group, 16)) : []);
+  if (!canonical.includes("::")) return groups(canonical);
+  const [head, tail] = canonical.split("::").map(groups) as [number[], number[]];
+  return [...head, ...new Array<number>(8 - head.length - tail.length).fill(0), ...tail];
+}
+const inV6 = (groups: number[], base: number[], bits: number) =>
+  groups.every((group, i) => { const span = Math.max(0, Math.min(16, bits - 16 * i)); const mask = (0xffff << (16 - span)) & 0xffff; return (group & mask) === (base[i]! & mask); });
+/** Any address but a public unicast one, v4 and v6 (see V4_PRIVATE and V6_PRIVATE); what does not parse as one too. */
 export function isPrivateAddress(ip: string): boolean {
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip)?.[1];
-  if (mapped) return isPrivateAddress(mapped);
   if (net.isIPv4(ip)) return V4_PRIVATE.some(([base, bits]) => Math.floor(v4(ip) / 2 ** (32 - bits)) === Math.floor(base / 2 ** (32 - bits)));
-  if (net.isIPv6(ip)) return /^(::1?|f[cd][0-9a-f]{2}:|fe[89ab][0-9a-f]:|ff[0-9a-f]{2}:)/i.test(ip) || ip === "::";
-  return true;
+  const groups = net.isIPv6(ip) ? v6Groups(ip) : null;
+  if (!groups) return true;
+  if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) return isPrivateAddress([groups[6]! >> 8, groups[6]! & 0xff, groups[7]! >> 8, groups[7]! & 0xff].join("."));
+  return V6_PRIVATE.some(([base, bits]) => inV6(groups, v6Groups(base)!, bits));
 }
 
 /** Answers `address` for any name: the address a request was checked against is the one it connects to. */
@@ -26,6 +46,19 @@ export const pinnedLookup = (address: string) => (_host: string, options: { all?
 
 export const PUBLIC_MAX_BYTES = 5 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
+const PORTS = new Set(["", "80", "443"]);
+
+/** `work()`'s answer, or the signal's reason as soon as it aborts: a resolver that never answers cannot outlast the
+ *  caller. A signal already aborted starts no work. */
+function untilAborted<T>(work: () => Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work();
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work().then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
 
 export type PublicFetchOptions = {
   /** Every address a name resolves to; default the system resolver. */
@@ -43,9 +76,10 @@ export type PublicAnswer = { url: string; status: number; contentType: string; b
 /**
  * Fetches `url` from a public host, following at most 5 redirects, each hop resolved, checked and dialled at the
  * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
- * body. Refused (`BrowserFailureError` `refused`): a scheme other than http(s), on the first hop or a redirect; a host
- * that is local by name or resolves to any private address; too many redirects; a 2xx body that is not text or is over
- * the cap.
+ * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s); a host
+ * that is local by name or resolves to any private address; a port other than 80 or 443; too many redirects; a 2xx body
+ * that is not text or is over the cap. `signal` ends the fetch at any point, a hop's name lookup included (it rejects
+ * with the signal's reason), and an aborted hop is never dialled.
  */
 export async function publicFetch(url: string, options: PublicFetchOptions = {}): Promise<PublicAnswer> {
   const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
@@ -56,8 +90,10 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
   for (let hop = 0; ; hop += 1) {
     const host = target.hostname.replace(/^\[|\]$/g, "");
     if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
-    const addresses = net.isIP(host) ? [host] : await lookup(host);
+    const addresses = net.isIP(host) ? [host] : await untilAborted(() => lookup(host), options.signal);
     if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
+    if (!PORTS.has(target.port)) throw refusedError(`refused: port ${target.port} is not 80 or 443`);
+    options.signal?.throwIfAborted();
     const dispatcher = new Agent({ connect: { lookup: pinnedLookup(addresses[0]!) } });
     let res: Response | undefined;
     try {

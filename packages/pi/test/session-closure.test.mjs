@@ -105,6 +105,9 @@ export default function(pi) {
   return { request, messages, waitMessage, stop, snapshots, events };
 }
 
+// --no-tools leaves the agentrun tool inactive, so each session start shows the inactive-tool notice. It is not run output.
+const inactiveNotice = message => message.customType === 'agentrun' && /agentrun tool is not active/.test(message.content);
+
 for (const closing of ['switch', 'shutdown']) {
   test(`native Pi ${closing} retains cancellation counts and unknown effects on the originating session only`, { timeout: 45_000 }, async t => {
     const app = await host(t);
@@ -117,7 +120,7 @@ for (const closing of ['switch', 'shutdown']) {
     assert.equal(start.report, undefined);
     if (closing === 'switch') {
       assert.equal((await app.request('new_session')).cancelled, false);
-      assert.deepEqual(await app.messages(), [], 'the destination session receives no old output or run receipt');
+      assert.deepEqual((await app.messages()).filter(message => !inactiveNotice(message)), [], 'the destination session receives no old output or run receipt');
     } else await app.stop();
     const receipts = await app.snapshots();
     const ended = receipts.at(-1).data;
@@ -136,7 +139,7 @@ for (const closing of ['switch', 'shutdown']) {
     assert.equal(app.events.some(event => event.type === 'agent_start'), false);
     if (closing === 'switch') {
       await app.request('prompt', { message: '/agentrun history' });
-      const history = await app.waitMessage(message => message.customType === 'agentrun');
+      const history = await app.waitMessage(message => message.customType === 'agentrun' && !inactiveNotice(message));
       assert.match(history.content, /No retained runs/);
       await app.stop();
       assert.equal((await app.snapshots()).length, receipts.length, 'closing the new session cannot append to the old branch');
@@ -150,7 +153,7 @@ test('native Pi model setup rejection creates no misleading run-start receipt', 
   await app.waitMessage(message => message.customType === 'fixture:prepared');
   const before = await app.snapshots();
   await app.request('prompt', { message: '/agentrun run' });
-  const failure = await app.waitMessage(message => message.customType === 'agentrun');
+  const failure = await app.waitMessage(message => message.customType === 'agentrun' && !inactiveNotice(message));
   assert.match(failure.content, /requires an active Pi model/);
   await app.stop();
   assert.deepEqual(await app.snapshots(), before);
