@@ -226,6 +226,14 @@ test("a memo out of shape is refused", () => {
   for (const [name, text] of Object.entries(cases)) assert.deepEqual(rules(check(withFiles({ [MEMO]: text }))), ["memo"], name);
 });
 
+test("the review may add a fifth section, ## Review, after Proposed changes, and nowhere else", () => {
+  const reviewed = `${memo()}\n## Review\nMerged. Refused learnings/L-0a93ff12c4e7.md: a duplicate of a note on main.\n`;
+  assert.deepEqual(check(withFiles({ [MEMO]: reviewed })), []);
+  const early = memo().replace("## What could be better", "## Review\nMerged.\n\n## What could be better");
+  assert.deepEqual(rules(check(withFiles({ [MEMO]: early }))), ["memo"]);
+  assert.deepEqual(rules(check(withFiles({ [MEMO]: `${reviewed}\n## Review\nAgain.\n` }))), ["memo"]);
+});
+
 test("a changed file the memo does not propose is refused", () => {
   const problems = check(withFiles({ [MEMO]: memo({ proposed: ["learnings/L-7c21e0a4b9d3.md (new)", "workflows/find-policies/ (new draft)"] }) }));
   assert.deepEqual(rules(problems), ["memo_unlisted"]);
