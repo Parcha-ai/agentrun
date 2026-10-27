@@ -206,7 +206,8 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
     const admitted = new Set<string>();
     const settled = new Set<string>();
     for (let cursor: Cursor | undefined; ; ) {
-      const page = await root.entries({ order: "ascending" }, 500, cursor, base);
+      // Order is no matter here, and the floor pi-durable takes no `order`: the scan only fills two sets.
+      const page = await root.entries({}, 500, cursor, base);
       for (const e of page.items) {
         const id = (e.data as { requestId?: string } | undefined)?.requestId;
         if (e.kind === "door.input" && id !== undefined) admitted.add(id);
