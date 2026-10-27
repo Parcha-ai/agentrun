@@ -1,5 +1,5 @@
-// The seam between AgentRun's hosts and an agent harness that is not Pi (Codex, OpenCode, the Claude Agent SDK, an ACP
-// agent). One interface serves both hosts: a DSL host's `runNode` (createHarnessRunner) and serve's runs. Nothing here
+// The seam between AgentRun's hosts and an agent harness that is not Pi, starting with Codex. It is harness-neutral.
+// One interface serves both hosts: a DSL host's `runNode` (createHarnessRunner) and serve's runs. Nothing here
 // imports a host.
 import type { WorkflowDeps } from "@parcha/agentrun-dsl";
 
