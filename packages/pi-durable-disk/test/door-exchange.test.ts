@@ -88,7 +88,13 @@ test("with no hook, the door answers a recorded exchange as it did before the ho
     if (process.env.PDA_RECORD_DOOR === "1") writeFileSync(FIXTURE, `${JSON.stringify(recorded, null, 2)}\n`);
     const expected = JSON.parse(readFileSync(FIXTURE, "utf8")) as typeof recorded;
     assert.deepEqual(answers, expected.answers);
-    assert.deepEqual(events, expected.events);
+    // The snapshot is pi-durable's own state, passed through: a later pi may add a field to it (1.2 adds nestedTools),
+    // but every field this door answered before must come back unchanged. Every other frame is compared whole.
+    const snapshotOf = (frame: string) => JSON.parse(frame.slice(frame.indexOf("data: ") + 6).replace(/<ms>/g, "0")) as Record<string, unknown>;
+    assert.deepEqual({ ...events, frames: events.frames.slice(1) }, { ...expected.events, frames: expected.events.frames.slice(1) });
+    assert.ok(events.frames[0]!.startsWith("event: snapshot\n") && expected.events.frames[0]!.startsWith("event: snapshot\n"));
+    const [now, before] = [snapshotOf(events.frames[0]!), snapshotOf(expected.events.frames[0]!)];
+    for (const key of Object.keys(before)) assert.deepEqual(now[key], before[key], `the snapshot's ${key}`);
   } finally {
     disk.remove();
   }
