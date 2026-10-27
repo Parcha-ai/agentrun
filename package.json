@@ -55,11 +55,6 @@
   "license": "Apache-2.0",
   "overrides": {
     "zod": "$zod",
-    "disk": {
-      "undici": "8.12.2"
-    },
-    "@earendil-works/pi-coding-agent": {
-      "undici": "8.12.2"
-    }
+    "undici@8.10.2": "8.12.2"
   }
 }
