@@ -117,6 +117,8 @@ tokens.
   `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` when it isolates the network). Running Codex without
   its sandbox was refused by the building session's permission policy. The Codex proof is blocked.
 
+Codex: unproven by decision; its proof lands with the per-run sandbox (step 5). Pi and Claude Code are proven above.
+
 ## What each harness wrote
 
 | | Pi | Claude Code |
