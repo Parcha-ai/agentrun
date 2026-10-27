@@ -129,6 +129,11 @@ test("a listed header's value is the policy's: unknown betas are dropped, and no
   await send(p.url, { headers: { 'x-beta': 'evil' } });
   assert.equal(forwarded[0].headers['x-beta'], 'b1,b2');
   assert.equal(forwarded[1].headers['x-beta'], undefined);
+  // A policy that refuses an unknown value refuses the request, before the runner is asked.
+  const strict = await proxy(t, { policy: { ...policy, header: (name, value) => { if (name === 'x-beta' && value !== 'b1') throw new ProxyRefusal(403, `the beta ${value} is not listed`); return value; } } });
+  const refused = await send(strict.p.url, { headers: { 'x-beta': 'evil' } });
+  assert.deepEqual([refused.status, strict.forwarded.length, strict.hooks.before.length], [403, 0, 0]);
+  assert.match(refused.text, /not listed/);
 });
 
 test("the provider gets the policy's body, its own credential, the route's path and only the route's listed headers", async (t) => {

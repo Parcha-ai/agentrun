@@ -46,8 +46,8 @@ export interface ProviderPolicy {
   keyOf(headers: IncomingHttpHeaders): string;
   /** The headers that carry the provider's credential. */
   authHeaders(credential: string): Record<string, string>;
-  /** A listed request header's value as forwarded, or undefined to drop it (a beta the policy does not know). Default:
-   *  as sent. */
+  /** A listed request header's value as forwarded, or undefined to drop it; a `ProxyRefusal` refuses the request before
+   *  the runner is asked (a beta the policy does not know). Default: as sent. */
   header?(name: string, value: string): string | undefined;
   /** The body the provider gets for a request on `route`: throw a `ProxyRefusal` to refuse it. */
   apply(body: unknown, route: ProxyRoute): Record<string, unknown>;
@@ -223,8 +223,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       chunks.push(chunk as Buffer);
     }
     let body: Record<string, unknown>;
+    const headers: Record<string, string> = { "content-type": "application/json" };
     try {
       body = policy.apply(parseStrict(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))), route);
+      // The listed headers, as the policy keeps them (or refuses them), before the runner is asked.
+      for (const name of route.headers ?? []) {
+        const value = req.headers[name.toLowerCase()];
+        const kept = typeof value === "string" ? (policy.header ? policy.header(name, value) : value) : undefined;
+        if (kept !== undefined) headers[name] = kept;
+      }
     } catch (error) {
       const e = error as ProxyRefusal;
       return refuse(res, e instanceof ProxyRefusal ? e.status : 400, e instanceof ProxyRefusal ? e.message : "the body was refused");
@@ -237,12 +244,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     const credential = await options.credential();
     if (!credential) return refuse(res, 500, "the session has no provider credential");
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    for (const name of route.headers ?? []) {
-      const value = req.headers[name.toLowerCase()];
-      const kept = typeof value === "string" ? (policy.header ? policy.header(name, value) : value) : undefined;
-      if (kept !== undefined) headers[name] = kept;
-    }
     Object.assign(headers, policy.authHeaders(credential));
     const controller = new AbortController();
     inflight.add(controller);
