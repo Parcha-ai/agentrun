@@ -387,7 +387,7 @@ test("a workflow folder holds both its files, and a README that is not empty", (
 // ---------------------------------------------------------------- secrets
 
 const SHAPED = {
-  "AWS access key id": "AKIAABCDEFGHIJKLMNOP",
+  "AWS access key id": ["AKIA", "ABCDEFGHIJKLMNOP"].join(""),
   "GitHub token": `ghp_${"a1B2".repeat(9)}`,
   "sk- key": `sk-ant-api03-${"Zx9".repeat(10)}`,
   "Slack token": "xoxb-1234567890-abcdefghij",
