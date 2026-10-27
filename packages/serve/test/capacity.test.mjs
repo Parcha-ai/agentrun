@@ -98,10 +98,10 @@ test("a run whose process fails at its start is never started again while its en
   assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
 });
 
-test("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", { timeout: 120_000 }, async (t) => {
+test("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", async (t) => {
   let busy = false;
-  // One retry, a minute away: the run's end waits longer than a message may.
-  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname, carryBackRetry: { delaysMs: [60_000], onBusy: () => void (busy = true) } });
+  // A deadline of 1 s, and one store retry 4 s away: the run's end waits longer than a message may.
+  const { api, data } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname, readyTimeoutMs: 1_000, carryBackRetry: { delaysMs: [4_000], onBusy: () => void (busy = true) } });
   assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
   const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -117,8 +117,8 @@ test("a message that waits on a run's settle answers 503 at its deadline, not wh
   const from = Date.now();
   const sent = await api("POST", `/runs/${run.body.run_id}/messages`, { content: "still there?" });
   const took = Date.now() - from;
-  assert.deepEqual([sent.status, sent.body.error?.code], [503, "unavailable"], JSON.stringify(sent.body));
-  assert.ok(took < 50_000, `answered at the 45 s deadline, not at the settle's end: ${took} ms`);
+  assert.deepEqual([sent.status, sent.body.error?.code, sent.headers.get("retry-after")], [503, "unavailable", "1"], JSON.stringify(sent.body));
+  assert.ok(took < 3_000, `answered at its 1 s deadline, not at the settle's end: ${took} ms`);
 });
 
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
