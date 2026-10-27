@@ -11,7 +11,7 @@ import { claimWriter, fileProfileStore, freeWriter, isWriter, noteWriter, type P
 import { accountKey, assertTag, browserbaseHoldings, defaultSleep, DEFAULT_CONFIRM, extensionArchive, nonEmpty, releaseAndConfirm, tagValue, untilAborted, uploadOnce } from "./shared.js";
 
 export { rewriteConnectUrl, browserbaseNoProxyHosts, applyBrowserbaseNoProxy } from "./browserbase-net.js";
-export { fileProfileStore, type ProfileStore } from "./profiles.js";
+export { fileProfileStore, memoryProfileStore, type ProfileStore } from "./profiles.js";
 
 export const SEARCH_QUERY_MAX = 200;
 export const SEARCH_RESULTS_MAX = 25;
@@ -137,6 +137,8 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
   const confirm = options.confirm ?? DEFAULT_CONFIRM;
   const prices = resolvePrices(options.prices);
   const profiles = options.profiles ?? fileProfileStore();
+  /** The context each live session of this provider runs on, by tag: what a session vault may keep. */
+  const contexts = new Map<string, string>();
 
   let sdk: Promise<BrowserbaseSdk> | null = null;
   const client = () => (sdk ??= options.client ? Promise.resolve(options.client) : (async () => {
@@ -187,13 +189,18 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
   return {
     name: "browserbase",
     caps: CAPS,
+    vault: { kind: "context", provider: "browserbase", contextIdsInClear: profiles.clear === true, contextOf: (ref) => contexts.get(ref.tag) ?? null },
 
     async create(spec, signal) {
       const projectId = nonEmpty(env.BROWSERBASE_PROJECT_ID);
       if (spec.profile?.save) await claimWriter(held(`profile:${spec.profile.name}`), spec.profile.name, spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal);
+      // A context given by id (a vault's kept one) is written back at the end like a profile's: one session at a time saves to it, and the next waits for the write. The id is a capability, so the refusal names no id.
+      else if (!spec.profile && spec.contextId) await claimWriter(held(`context:${spec.contextId}`), "the kept context", spec.tag, `${spec.metadata.run}|${spec.metadata.label}`, signal);
       let body: BrowserbaseSessionBody;
       try {
         const context = spec.profile ? { id: await contextFor(spec.profile.name, projectId, signal), persist: spec.profile.save } : undefined;
+        const usedContext = context?.id ?? spec.contextId;
+        if (usedContext) contexts.set(spec.tag, usedContext);
         // Behind the credential proxy the project is inferred from the injected key and must never be named; a direct key
         // must name it.
         body = sessionCreateBody(spec, { extensionId: await extension(), ...(projectId && !baseUrl && !connectBase ? { projectId } : {}), ...(context ? { context } : {}) });
@@ -250,6 +257,7 @@ export function browserbaseProvider(options: BrowserbaseOptions = {}): Browserba
     },
 
     async release(ref, signal) {
+      contexts.delete(ref.tag);
       await opening.get(held(ref.id));
       endSetting(held(ref.id));
       await releaseAndConfirm({

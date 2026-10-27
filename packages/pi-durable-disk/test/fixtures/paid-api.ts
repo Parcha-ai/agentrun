@@ -12,7 +12,6 @@
 import { appendFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
 export type RequestState = "answered" | "held" | "cut";
@@ -288,8 +287,7 @@ export async function dispatch(url: string, route: string, key: string, body: un
   return answer;
 }
 
-const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
-if (import.meta.url === invoked) {
+if (import.meta.main) {
   const { values } = parseArgs({ options: { port: { type: "string" }, host: { type: "string" }, log: { type: "string" } } });
   const api = await startPaidApi({ port: values.port ? Number(values.port) : 0, ...(values.host ? { host: values.host } : {}), ...(values.log ? { log: values.log } : {}) });
   process.stdout.write(`${JSON.stringify({ url: api.url })}\n`);

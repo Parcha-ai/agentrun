@@ -21,7 +21,7 @@ JS
 node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
-It prints where it listens and the token:
+It prints where it listens and, at the start that made it, the token:
 
 ```
 agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentrun/agents)
@@ -54,10 +54,30 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
+| `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
-place: a token from the environment stays out of the logs. `AGENTRUN_PUBLIC_URL`, when set, is the address people open (a
-container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL` use it.
+place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
+it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>` and `?token=<in DIR/.token>`, to read it there. The link
+encodes the token, and the page also takes one whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
+address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
+use it.
+
+## Logs
+
+stdout gets one line per event, `at=<time> event=<name> key=value ...` (a value with a space is quoted):
+
+```
+at=2026-10-25T21:04:05.120Z event=request method=POST path=/v2/agents/calc/runs status=202 ms=41
+at=2026-10-25T21:04:05.121Z event=run_started run=01a1... agent=calc kind=agentic
+at=2026-10-25T21:04:06.802Z event=run_ended run=01a1... agent=calc status=completed cost_usd=0.0012
+at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
+```
+
+A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
+`wrong_link_token`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
+run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 
 ## In a container
 
@@ -84,14 +104,19 @@ docker compose -f packages/serve/docker/compose.yaml up --build -d
 docker compose -f packages/serve/docker/compose.yaml logs agentrun
 ```
 
-The log ends with the `Open` line. Compose publishes the port on this machine's loopback only (`127.0.0.1:7340`, or
-`AGENTRUN_PORT`, which the printed link follows), and
+The banner's `Open` line is in the log of the start that made the token. On a stop the server gives a busy run 6 s
+(`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
+grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
+on this machine's loopback only (`127.0.0.1:7340`, or `AGENTRUN_PORT`, which the printed link follows), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
-every route but `GET /v2/capabilities` still needs the token.
+every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
+`render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
 `/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
-`https://<service>.onrender.com/?token=<the token>`. Set `AGENT_MODEL` and the provider's key there too.
+`https://<service>.onrender.com/?token=<the token>`, as it is or URL-encoded: a `+` in it works either way. Set
+`AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
+let a service with a disk change that.
 
 ## Upgrading from 0.1.0-beta.26
 
@@ -103,6 +128,33 @@ it as if it had no agents.
 To keep those agents and their runs, keep the earlier version on that data directory. To start this version, give it a
 new data directory (a new volume), or move the old homes out of the one you have. Then create the agents again, here or
 through `POST /v2/agents`. Their earlier runs stay readable where you moved them, with the earlier version.
+
+## Capacity and health
+
+Each run is a process of its own, about 67 MiB of private memory (measured with the faux model; an independent test of
+the image measured 20 runs at 1.22 GiB), beside the server's own 100 MiB or so. So the server caps the runs it holds at
+once (each run with a live process: working, or waiting for an answer), by default
+
+    max_concurrent_runs = max(1, floor((memory − 128 MiB) / 72 MiB))
+
+where memory is the container's limit when it has one (cgroup), else the machine's: 5 runs on a 512 MB instance, 12 on
+1 GB, 112 on 8 GB. `--max-runs N` or `AGENTRUN_MAX_RUNS` sets it instead; capabilities report it in
+`limits.max_concurrent_runs`. Over it, `POST /agents/{id}/runs` is `429 rate_limited` with `retry-after` and nothing
+starts: there is no queue, so the client tries again once a run ends. A message to a run already going is never
+refused. A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
+counts only its own runs, and a run could be relaunched twice).
+
+`GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
+when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
+and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`, or
+`disk: "cannot_check"` when the free space cannot be read) otherwise.
+It names no path, size or version. One route serves as both liveness and readiness: any answer says the server is up,
+and a 200 says it can work, and the platforms here take one path.
+
+A run whose end the agent store cannot take (a full disk) still ends: a cancel makes it `cancelled`, with its cost from
+its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
+run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
+of a process that is gone is not trusted.
 
 ## Models
 
@@ -149,6 +201,7 @@ it is never off, and a model node that names its own thinking level keeps it.
 
 | Route | Here |
 | --- | --- |
+| `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |

@@ -20,7 +20,6 @@ import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { agentHomeFor, curateNow, finishRun, learnExtension, prepareRun } from './host.mjs';
 
 const AGENT_DIR = join(import.meta.dirname, 'agent');
@@ -538,7 +537,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   return out;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (import.meta.main) {
   const args = process.argv.slice(2);
   const at = args.indexOf('--dir');
   const dir = at >= 0 ? args[at + 1] : undefined;

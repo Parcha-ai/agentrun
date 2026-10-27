@@ -175,7 +175,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   return { status: 'passed', tag, commit, license: workspace.license, registry: 'https://registry.npmjs.org/', distTag: 'beta', packages };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   assert.equal(process.argv.length, 4, 'Usage: node scripts/release-preflight.mjs --tag v0.1.0-beta.1');
   assert.equal(process.argv[2], '--tag');

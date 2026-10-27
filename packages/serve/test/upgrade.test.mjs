@@ -49,7 +49,7 @@ test("a healthy volume of this version starts again on its own data, its agents 
   assert.equal((await again("GET", `/runs/${runId}`)).body.status, "completed");
 });
 
-test("an old home under any name is refused: an agent named runs, and a symlinked home", async (t) => {
+test("an old home under any name is refused: an agent named runs, a symlinked home, and a symlinked agent.sqlite", async (t) => {
   const root = await scratch(t);
   const named = join(root, "named");
   await oldHome(named, "runs");
@@ -58,7 +58,11 @@ test("an old home under any name is refused: an agent named runs, and a symlinke
   await oldHome(join(root, "elsewhere"), "kept");
   await mkdir(linked, { recursive: true });
   await symlink(join(root, "elsewhere", "kept"), join(linked, "kept"));
-  assert.ok(await refusal({ data: linked, port: 0, faux: FAUX }), "a symlinked home is refused too");
+  assert.match((await refusal({ data: linked, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked home is refused too");
+  const file = join(root, "file");
+  await mkdir(join(file, "kept"), { recursive: true });
+  await symlink(join(root, "elsewhere", "kept", "agent.sqlite"), join(file, "kept", "agent.sqlite"));
+  assert.match((await refusal({ data: file, port: 0, faux: FAUX }))?.message ?? "started", /0\.1\.0-beta\.26 or earlier/, "a symlinked agent.sqlite is refused too");
 });
 
 test("this version's own runs/ and a directory with no agent.sqlite start as before", async (t) => {

@@ -1036,3 +1036,14 @@ test("a navigation policy the provider cannot enforce refuses the session, namin
   const [snap] = await agent.run(turn(["snapshot"]));
   assert.equal(snap.isError, false, snap.text);
 });
+
+test("browser_relaunch asking for a geolocation with proxies off is refused, as the durable adapter refuses it: nothing is released and the session goes on", async (t) => {
+  const backend = fake();
+  const agent = await startAgent(t, { extension: extensionOf(backend) });
+  const [, relaunched] = await agent.run(turn(["snapshot"]), turn(["browser_relaunch", { geolocation: { country: "gb" } }]));
+  assert.equal(relaunched.isError, true, relaunched.text);
+  const answer = failure(relaunched.text);
+  assert.equal(answer.code, "refused");
+  assert.match(answer.message, /geolocation needs a proxy/);
+  assert.deepEqual([backend.tally().creates, backend.tally().releases, backend.liveCount()], [1, 0, 1], "the session was neither released nor replaced");
+});
