@@ -204,9 +204,9 @@ Before every merge, in this order:
 
 1. The checker passes on the run's branch.
 2. The injection screen: every new or changed note, skill and workflow draft goes through the same page-injection screen
-   a page the agent reads goes through, the host's `classifyPage` judge scored against `INJECTION_THRESHOLD` (0.75, from
-   `@parcha/pi-browser`; the number here must always equal the browser lane's `INJECTION_THRESHOLD`). A score at or over
-   the threshold is refused. With no screen at all, every item is refused: "no injection screen". An item the screen could not judge (the judge is
+   a page the agent reads goes through: the host's page judge, scored against the host's page-injection threshold (in
+   AgentRun, `classifyPage` and `INJECTION_THRESHOLD` from `@parcha/pi-browser`, both passed by the host). A score at or
+   over the threshold is refused. With no screen at all, every item is refused: "no injection screen". An item the screen could not judge (the judge is
    down, or timed out) is refused for this merge too, never held: a later run may propose it again.
 3. The review skill reads what is left and merges what is general, new and consistent with `main`. It refuses
    duplicates, notes that contradict `main` without superseding the old note, and anything tied to one case.
@@ -214,7 +214,9 @@ Before every merge, in this order:
 Outside AgentRun, with no injection screen, nothing merges automatically: the checker alone never stands for the screen.
 
 A merge is a merge commit on `main` whose message holds the review's verdict and its reason. `main` is never force-pushed
-or rebased. Retiring a note on purpose is an operator's act outside the loop: a commit on `main` that sets its `status`
+or rebased. A host that lands only part of a run makes the merge's second parent a commit on the run's base holding
+exactly what lands, so nothing refused is reachable from `main`. A run's branch can still hold refused content: a host
+does not mirror `runs/*` to anyone who should see only `main`, and may delete a run's branch once it is curated. Retiring a note on purpose is an operator's act outside the loop: a commit on `main` that sets its `status`
 to `retired`, made by a person or their host, never by a run or the review.
 
 ## What the checker reports

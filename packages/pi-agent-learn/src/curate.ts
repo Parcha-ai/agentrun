@@ -91,15 +91,14 @@ export type CurateOptions = {
    *  `usesSettler()`; `null` turns it off, and then the uses are held. */
   readonly settleUses?: SettleUses | null;
   /**
-   * The injection screen: the host's page judge (pi-browser's `classifyPage`) scoring a note, skill or workflow draft the
-   * run proposes for instructions planted in it, as a probability. A score at or over `threshold` is refused, and so is a
-   * file the screen could not judge (it threw, timed out or answered out of shape). Without a screen, every candidate is
-   * refused: nothing merges unscreened. A host wires its judge: `screen: async ({ text }) => (await classifyPage({ url: "",
-   * status: 200, contentType: "text/markdown", text })).injection`.
+   * The injection screen, both halves the host's: `classify`, its page judge scoring a note, skill or workflow draft the
+   * run proposes for instructions planted in it as a probability, and `threshold`, its page-injection threshold. A score
+   * at or over `threshold` is refused, and so is a file the screen could not judge (it threw, timed out or answered out of
+   * shape). Without a screen, or with either half missing, every candidate is refused: nothing merges unscreened. A Pi
+   * host passes pi-browser's: `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
+   * contentType: "text/markdown", text })).injection, threshold: INJECTION_THRESHOLD }`.
    */
-  readonly screen?: (item: { readonly path: string; readonly text: string }) => Promise<unknown>;
-  /** The screen's threshold. Default 0.75, which must equal the browser lane's `INJECTION_THRESHOLD`. */
-  readonly threshold?: number;
+  readonly screen?: InjectionScreen;
   /** How long one screen call may take, in milliseconds, before the file counts as unjudged. Default 30000. */
   readonly screenTimeoutMs?: number;
   /** The host's tool list, the names a workflow can bind on any harness, for the step 1 checker: a draft that names a
@@ -108,8 +107,17 @@ export type CurateOptions = {
   readonly signal?: AbortSignal;
 };
 
-/** The screen's default threshold: the browser lane's `INJECTION_THRESHOLD`. */
-export const SCREEN_THRESHOLD = 0.75;
+export type InjectionScreen = {
+  readonly classify: (item: { readonly path: string; readonly text: string }) => Promise<unknown>;
+  readonly threshold: number;
+};
+
+/** The screen, when the host gave both its judge and a threshold in (0, 1]. */
+function screenOf(options: CurateOptions): InjectionScreen | undefined {
+  const screen: Partial<InjectionScreen> | undefined = typeof options.screen === "object" && options.screen !== null ? options.screen : undefined;
+  const { classify, threshold } = screen ?? {};
+  return typeof classify === "function" && typeof threshold === "number" && threshold > 0 && threshold <= 1 ? { classify, threshold } : undefined;
+}
 
 export type CurateItem = {
   /** The candidate's position in the run's memo, from 1. */
@@ -387,8 +395,7 @@ const SCREENED = /^(?:learnings\/L-[0-9a-f]{12}\.md|\.agents\/skills\/[^/]+\/SKI
 const kindOf = (path: string) => (path.startsWith("learnings/") ? "a note" : path.startsWith(".agents/") ? "a skill" : "a workflow draft");
 
 /** Each file the screen refuses, with why; empty when every one passes. */
-async function screenFiles(options: Resolved, files: Readonly<Record<string, string | null>>): Promise<Map<string, string>> {
-  const threshold = options.threshold ?? SCREEN_THRESHOLD;
+async function screenFiles(options: Resolved, { classify, threshold }: InjectionScreen, files: Readonly<Record<string, string | null>>): Promise<Map<string, string>> {
   const refused = new Map<string, string>();
   for (const [path, text] of Object.entries(files)) {
     if (text === null || !SCREENED.test(path)) continue;
@@ -397,7 +404,7 @@ async function screenFiles(options: Resolved, files: Readonly<Record<string, str
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), options.screenTimeoutMs ?? 30_000); });
       try {
-        score = await Promise.race([options.screen!({ path, text }), late]);
+        score = await Promise.race([classify({ path, text }), late]);
       } finally {
         clearTimeout(timer);
       }
@@ -482,8 +489,9 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   if (typeof branch === "string") return refuseRun(branch);
   const candidates: readonly BranchCandidate[] = branch.candidates;
   const seed: unknown = branch.seeded ? branch.base : undefined;
-  if (!options.screen) return refuseRun("no injection screen");
-  const screened = await screenFiles(options, runFiles);
+  const screen = screenOf(options);
+  if (!screen) return refuseRun("no injection screen");
+  const screened = await screenFiles(options, screen, runFiles);
   const runRefusals = guard({ role: "run", runId, files: runFiles, candidates, secrets: input.secrets });
   if (runRefusals.length) return refuseRun(`the run's files are refused: ${refusalReason(runRefusals)}`);
 

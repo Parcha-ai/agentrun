@@ -17,7 +17,7 @@ export { type Caps, createGuard, guard } from "./guard.js";
 export { type BranchCandidate, type Draft, indexEntry, readRunBranch, recordsOf, renderIndex, type RunBranch, runBranchFiles, type RunBranchInput } from "./branch.js";
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type Withheld, type WorkflowRecords } from "./propose.js";
 export {
-  curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions, type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type Judge,
+  curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions, type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type InjectionScreen, type Judge,
   type Question, QUESTIONS, type RetireOptions, type RetireResult, retireLearning, type RunReport, type RunsRepo, type Thresholds,
 } from "./curate.js";
 export {

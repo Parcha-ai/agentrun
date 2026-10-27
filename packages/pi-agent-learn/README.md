@@ -313,10 +313,12 @@ with nothing of it reaching the judge, when:
   formats, the caps, the locked and host-owned paths, secret-shaped text, and drafts on the DSL with only the host's tools
   and no code, shell or executor node;
 - the guard, as the `run` role with the host's secrets of now, refuses it;
-- there is no injection screen (`screen`).
+- there is no injection screen: `screen` is missing, or lacks its `classify` judge or its `threshold`.
 
-The screen scores every new or changed note, skill and draft; a score at or over `threshold` (0.75, which must equal the
-browser lane's `INJECTION_THRESHOLD`) refuses that item, and so does one the screen could not judge: it threw, took longer
+Both halves of the screen are the host's; this package holds no threshold. A Pi host passes pi-browser's page judge and
+its `INJECTION_THRESHOLD`: `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
+contentType: "text/markdown", text })).injection, threshold: INJECTION_THRESHOLD }`. The screen scores every new or
+changed note, skill and draft; a score at or over `threshold` refuses that item, and so does one the screen could not judge: it threw, took longer
 than `screenTimeoutMs` (30 s), or answered out of shape. Then curate judges each candidate and writes the result as a
 merge commit on `main`: its second parent is the run as it lands (a commit on the run's base holding exactly what curation
 took, `Landed-Run: <run id>`), so the run's own branch is never merged and nothing curation refused becomes reachable from
