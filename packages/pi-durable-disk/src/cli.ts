@@ -297,7 +297,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
       ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
       afterClaim: async (claim) => {
         app = await loadApp(str(values.app)!, { ref, root: claim.root, work: claim.work, store: claim.store });
-        const { onOpen: _onOpen, beforeResume, root: appRoot, wake: _wake, ...harness } = app;
+        const { onOpen: _onOpen, beforeResume, root: appRoot, wake: _wake, door: _door, ...harness } = app;
         Object.assign(rootOptions, appRoot ?? {});
         return { harness, ...(beforeResume ? { beforeResume } : {}) };
       },
@@ -314,7 +314,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
     await server?.close();
     return exitCodeFor(err);
   }
-  server?.attach(run);
+  server?.attach(run, app!.door);
   log("running", { generation: run.generation, steps, ...(server ? { serve: server.url } : {}) });
   const { onOpen, wake: appWake } = app!;
   return serveUntilDone(run, onOpen, onSigterm, log, process, {
@@ -343,7 +343,8 @@ export interface InstanceLife {
 /**
  * The instance's life after the run opened: the app's `onOpen` runs; the run parks when `life.park` allows (the wake
  * written, the run released, exit 0); SIGTERM or SIGINT drains and releases, and the drain's outcome is the exit code.
- * A drain stops new submissions and waits up to `life.drainMs` for running work; with `resume` it then writes the run
+ * A drain stops new submissions, stops a door hook's work (`RunServer.stopDoor`: its abort, then its harness children
+ * killed) and waits up to `life.drainMs` for running work; with `resume` it then writes the run
  * sleeping with its wake (the deadline its work waits for, null when idle and idle parking is on, otherwise now), so
  * the supervisor starts it again and a deploy never strands it; a wake hook that refuses falls back to a due wake.
  * `pause` seals it paused. An app that released the run itself (`run.release()`, in `onOpen` or after it) has nothing left to
@@ -394,6 +395,7 @@ export function serveUntilDone(
       try {
         if (await parking?.stop()) return done(0);
         life.server?.pause();
+        await life.server?.stopDoor();
         const state: BusyState = drainMs > 0 ? await drain(durable, { deadline: Date.now() + drainMs }) : { kind: "busy" };
         if (onSigterm === "resume") {
           const at = state.kind === "waiting" ? state.until : state.kind === "idle" && life.park?.idleMs !== undefined ? null : Date.now();

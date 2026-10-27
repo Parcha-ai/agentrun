@@ -12,9 +12,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isIP, type AddressInfo } from "node:net";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { ConversationBusy, watchEvents } from "@earendil-works/pi-durable";
+import { ConversationBusy, ROOT_CONVERSATION_ID, watchEvents } from "@earendil-works/pi-durable";
 import type { Conversation, ConversationId, EntryId, Harness, SubmissionId, SubmissionRecord, UserInput } from "@earendil-works/pi-durable";
 import type { RunRef } from "./claim.ts";
+import { DOOR_TIMEOUT, openDoor, type Door, type DoorHook, type DoorRecord, type DoorTimeouts } from "./door.ts";
 import { PdaError } from "./errors.ts";
 import { busyState } from "./park.ts";
 import type { DurableRun } from "./run.ts";
@@ -23,7 +24,7 @@ import { CONTROL_TIMEOUT_MS, ensureRunning, LEASE_EXPIRY_MS, readRunStatus, with
 
 /** 503 codes the client answers by asking the supervisor again and retrying. */
 export const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"] as const;
-export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHORIZED" | "NOT_FOUND" | "BUSY" | "FAILED";
+export type ServeCode = (typeof RETRY_CODES)[number] | "BAD_REQUEST" | "UNAUTHORIZED" | "NOT_FOUND" | "BUSY" | "FAILED" | "UNKNOWN";
 
 const MAX_BODY = 1 << 20;
 const REQUEST_ID = /^[\x21-\x7e]{1,200}$/;
@@ -44,18 +45,22 @@ export interface ServeOptions {
   readonly root?: Parameters<Harness["root"]>[1];
   /** Called each time the last open request ends (parking looks again). */
   readonly onIdle?: () => void;
+  /** The bounds of a door hook's calls (`attach`'s `door`). */
+  readonly doorTimeouts?: DoorTimeouts;
   readonly context?: Context;
 }
 
 export interface RunServer {
   /** `http://<host>:<port>`. */
   readonly url: string;
-  /** Open requests: submits waiting for their answer, event streams. */
+  /** Open requests: submits waiting for their answer, event streams; and a door hook's call in flight or busy turn. */
   readonly active: number;
-  /** Serve this run (until then every request is 503 OPENING). */
-  attach(run: DurableRun): void;
+  /** Serve this run (until then every request is 503 OPENING), through `door` when the app has one (`AppOptions.door`). */
+  attach(run: DurableRun, door?: DoorHook): void;
   /** Refuse new submissions with 503 PARKING; the returned function admits them again. */
   pause(): () => void;
+  /** A drain's step: abort the door hook's work (bounded) and kill the harness children it adopted. Nothing without a hook. */
+  stopDoor(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -109,10 +114,12 @@ const isWildcard = (host: string) => {
 class HttpError extends Error {
   readonly status: number;
   readonly code: ServeCode;
-  constructor(status: number, code: ServeCode, message: string) {
+  readonly extra: Record<string, unknown> | undefined;
+  constructor(status: number, code: ServeCode, message: string, extra?: Record<string, unknown>) {
     super(message);
     this.status = status;
     this.code = code;
+    this.extra = extra;
   }
 }
 
@@ -176,6 +183,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   const expected = options.token === undefined ? undefined : digest(`Bearer ${options.token}`);
   const authorized = (req: IncomingMessage) => expected === undefined || timingSafeEqual(digest(req.headers.authorization ?? ""), expected);
   let run: DurableRun | undefined;
+  let door: Door | undefined;
   let closed = false;
   let pauses = 0;
   let active = 0;
@@ -197,23 +205,44 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     return conversation;
   };
 
-  async function submit(body: Record<string, unknown>, context: Context): Promise<unknown> {
+  async function submit(body: Record<string, unknown>, context: Context): Promise<{ status: number; body: unknown }> {
     const { requestId, content, whenBusy, wait } = body;
     if (typeof requestId !== "string" || !REQUEST_ID.test(requestId)) throw new HttpError(400, "BAD_REQUEST", "requestId must be 1 to 200 printable ASCII characters");
     if (typeof content !== "string" && !Array.isArray(content)) throw new HttpError(400, "BAD_REQUEST", "content must be a string or an array of content blocks");
     if (whenBusy !== undefined && whenBusy !== "steer" && whenBusy !== "followUp" && whenBusy !== "reject") throw new HttpError(400, "BAD_REQUEST", "whenBusy is steer, followUp or reject");
     if (pauses > 0) throw unavailable("PARKING", "the run is parking or draining");
+    if (door) {
+      if (body.conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook takes its input in the root conversation: no conversationId");
+      const root = await conversationOf(undefined, context);
+      const input = { requestId, content: content as UserInput, whenBusy: whenBusy ?? "followUp" } as const;
+      return doorAnswer(requestId, await door.submit(root.id, input, context));
+    }
     const conversation = await conversationOf(optionalId(body.conversationId, "conversationId"), context);
     const submission = await conversation.submit({ type: "input", requestId, content: content as UserInput, ...(whenBusy === undefined ? {} : { whenBusy }) }, context);
     let record: SubmissionRecord = await submission.status(context);
     if (wait === true) record = await submission.wait(context);
     const answer = record.type === "input" && record.status === "done" ? await answerOf(conversation, record.answer, context) : undefined;
-    return { run: run!.ref.id, generation: run!.generation, submission: record, ...(answer ? { answer } : {}) };
+    return { status: 200, body: { run: run!.ref.id, generation: run!.generation, submission: record, ...(answer ? { answer } : {}) } };
+  }
+
+  /** A door record's answer: ADMITTED 202, ACCEPTED 200, and REJECTED_BUSY, FAILED and UNKNOWN as errors with the status. */
+  function doorAnswer(requestId: string, record: DoorRecord): { status: number; body: unknown } {
+    const { status, message } = record;
+    if (status === "ADMITTED" || status === "ACCEPTED") return { status: status === "ADMITTED" ? 202 : 200, body: { run: run!.ref.id, generation: run!.generation, requestId, status } };
+    if (status === "REJECTED_BUSY") throw new HttpError(409, "BUSY", message ?? "the harness is busy", { status });
+    throw new HttpError(status === "FAILED" ? 500 : 504, status === "FAILED" ? "FAILED" : "UNKNOWN", message ?? status, { status });
   }
 
   async function abort(body: Record<string, unknown>, context: Context): Promise<unknown> {
     const submissionId = optionalId(body.submissionId, "submissionId");
     const conversationId = optionalId(body.conversationId, "conversationId");
+    if (door) {
+      if (submissionId !== undefined || conversationId !== undefined) throw new HttpError(400, "BAD_REQUEST", "a door hook aborts its turn: no submissionId or conversationId");
+      harness();
+      const result = await door.abort();
+      if (result === DOOR_TIMEOUT) throw new HttpError(504, "UNKNOWN", "the hook's abort did not settle in time");
+      return { result };
+    }
     if (submissionId !== undefined) {
       const result = await harness().abortSubmission(submissionId as SubmissionId, context, conversationId as ConversationId | undefined);
       if (result === "not_found") throw new HttpError(404, "NOT_FOUND", `no submission ${submissionId}`);
@@ -229,7 +258,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
       run: run!.ref.id,
       generation: run!.generation,
       status: run!.record.status,
-      busy: busyState(inspection, Date.now(), 0),
+      busy: door ? { kind: door.busy() ? "busy" : "idle" } : busyState(inspection, Date.now(), 0),
       scheduling: inspection.scheduling,
       tasks: inspection.tasks.map((t) => ({ id: t.record.id, kind: t.record.kind, state: t.state.kind })),
       submissions: inspection.submissions.length,
@@ -243,10 +272,16 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     const write = (event: string, data: unknown) => void res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     hold();
-    write("snapshot", stream.snapshot);
+    // A door hook's turn is the root conversation's run: its run events go out as they are emitted. A batch is written
+    // in the microtasks after its commit, before the code that awaited the commit goes on, so the order holds.
+    const hook = door && conversation.id === ROOT_CONVERSATION_ID ? door : undefined;
+    write("snapshot", hook ? { ...stream.snapshot, run: hook.busy() ? { inputs: [] } : undefined } : stream.snapshot);
+    const unwatch = hook?.watch((event) => write("events", [event]));
     stream.start(async (batch) => write("events", batch));
     req.once("close", () => void stream.stop());
     void stream.closed.then((end) => {
+      unwatch?.();
+      if (hook?.turnOpen) write("events", [{ type: "run_end", inputs: [] }]);
       write("end", { reason: end.reason });
       res.end();
       letGo();
@@ -269,7 +304,8 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
           const body = await readJson(req);
           hold();
           try {
-            return send(res, 200, await submit(body, context));
+            const answered = await submit(body, context);
+            return send(res, answered.status, answered.body);
           } finally {
             letGo();
           }
@@ -286,7 +322,7 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
     };
     answer().catch((error: unknown) => {
       if (res.headersSent) return void res.end();
-      if (error instanceof HttpError) return send(res, error.status, { error: error.code, message: error.message });
+      if (error instanceof HttpError) return send(res, error.status, { error: error.code, message: error.message, ...error.extra });
       if (error instanceof ConversationBusy) return send(res, 409, { error: "BUSY", message: error.message });
       if (run && (closed || run.fenced)) return send(res, 503, { error: "RELEASED", message: (error as Error).message });
       send(res, 500, { error: "FAILED", message: (error as Error)?.message ?? String(error) });
@@ -301,10 +337,11 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
   return {
     url: options.url ?? `http://${host}:${address.port}`,
     get active() {
-      return active;
+      return active + (door?.working ? 1 : 0);
     },
-    attach(open) {
+    attach(open, hook) {
       run = open;
+      if (hook) door = openDoor(hook, open, base, options.doorTimeouts);
       open.harness.subscribeClose(() => void (closed = true));
     },
     pause() {
@@ -313,6 +350,9 @@ export async function serveRun(options: ServeOptions = {}): Promise<RunServer> {
       return () => {
         if (!undone) (undone = true), pauses--;
       };
+    },
+    stopDoor() {
+      return door?.stop() ?? Promise.resolve();
     },
     close() {
       closed = true;
