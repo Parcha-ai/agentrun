@@ -57,3 +57,13 @@ test("a refresh refused for an unlisted import writes nothing; a closed set is w
   assert.equal(fs.readFileSync(path.join(dir, "contract.ts"), "utf8"), "export const c = 1;\n");
   assert.deepEqual(checkVendored(dir).problems, [], "the written set passes the offline check");
 });
+
+test("run through a symlink to it, the script still runs: a check reports, and a call with no flag is refused", (t) => {
+  // Node resolves the module's URL but not argv[1], so a guard that compares the two does nothing, and exits 0, behind a symlink.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vendor-facade-link-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const link = path.join(dir, "vendor-facade.mjs");
+  fs.symlinkSync(SCRIPT, link);
+  assert.match(execFileSync(process.execPath, [link, "--check"], { encoding: "utf8" }), /4 files match [0-9a-f]{40}/);
+  assert.throws(() => execFileSync(process.execPath, [link], { encoding: "utf8", stdio: "pipe" }), (error) => error.status === 2 && /usage: vendor-facade\.mjs/.test(String(error.stderr)));
+});
