@@ -8,7 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { ACCOUNT_ROUTES, permits, ROUTE_ROLES, ROUTES } from "../dist/server.js";
-import { asPerson, call, client, FAUX, follow, OWNER, scratch, withOwner } from "./support.mjs";
+import { answerFlow, asPerson, call, client, FAUX, follow, OWNER, scratch, withOwner } from "./support.mjs";
 
 const BO = { email: "bo@example.com", name: "Bo" };
 
@@ -241,4 +241,16 @@ test("an open stream whose session ends any other way ends within the 5 s re-che
   db.prepare(`DELETE FROM session WHERE userId = ?`).run(server.bo);
   assert.ok(await endsWithin(watched, 6_500), "the re-check finds the session gone");
   await owner("POST", `/runs/${run_id}/cancel`, {});
+});
+
+test("nobody runs their own code in a run's process: a workflow with a code node is refused at save, for a member and for an admin", async (t) => {
+  const server = await withMember(t);
+  const flow = answerFlow();
+  flow.root.steps.unshift({ node: "code", label: "peek", code: "(s) => ({ seen: JSON.stringify(process.env) + require('node:fs').readdirSync('..').join() })" });
+  for (const cookie of [server.boCookie, server.cookie]) {
+    const saved = await asPerson(server, cookie)("POST", "/agents", { definition: { id: "peek", name: "peek", workflow: flow } });
+    assert.deepEqual([saved.status, saved.json?.error?.code], [422, "input_invalid"], JSON.stringify(saved.json));
+    assert.ok(saved.json.error.fields.some((f) => f.field === "definition.workflow" && /needs code/.test(f.message)), JSON.stringify(saved.json.error.fields));
+  }
+  assert.equal((await asPerson(server, server.cookie)("GET", "/agents/peek")).status, 404, "nothing was saved");
 });
