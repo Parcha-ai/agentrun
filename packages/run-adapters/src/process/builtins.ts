@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/builtins.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only.
 import { type DriveContext, EffectFailure, EffectInterrupted, type HostToolIO, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
 import { clip, failureText, toolKey, type ToolResult } from './tools.js';
 
@@ -8,12 +8,9 @@ import { clip, failureText, toolKey, type ToolResult } from './tools.js';
  * A harness's own (built-in) tools, in the log.
  *
  * With its built-in tools on, a harness runs tools the drive never sees run:
- * Claude Code's Bash and Edit run inside the CLI, Codex's shell and
- * `apply_patch` inside app-server, OpenCode's tools inside its server. The
- * drive sees them through the harness's own hooks: one before a call runs
- * (Claude Code's `PreToolUse`, a Codex approval request, OpenCode's
- * `tool.execute.before`), one after it (`PostToolUse`, `item/completed`,
- * `tool.execute.after`). `BuiltinCalls` makes that pair the kernel's effect
+ * Codex's shell and `apply_patch` run inside app-server. The drive sees
+ * them through the harness's own hooks: one before a call runs (a Codex
+ * approval request), one after it (`item/completed`). `BuiltinCalls` makes that pair the kernel's effect
  * sandwich for the call, keyed by the harness's own call id
  * (`tool:<callId>`, step name `tool.<name>`, like a bridged tool):
  *
@@ -31,7 +28,7 @@ import { clip, failureText, toolKey, type ToolResult } from './tools.js';
  *   have taken effect" (`never`) / "safe to repeat" (`safe`).
  * - Nothing reruns a built-in call by itself. The harness resumes its own
  *   session, which answers a call that was in flight "interrupted, outcome
- *   unknown" (Claude Code, OpenCode do it themselves; Codex gets it injected).
+ *   unknown" (Codex gets it injected).
  *   A harness that dispatches the same call id again gets the log's answer
  *   (`begin` returns it) and must not run it. For a built-in, `safe` only
  *   changes the note's wording: the model decides what to repeat.
@@ -69,9 +66,8 @@ export interface BuiltinCallsOptions {
    * result the harness reports (`end`), or rejects with its failure. What
    * the wrapper returns is the call's recorded outcome, and what it throws
    * its failure. For a harness whose built-ins work on files the drive
-   * keeps (OpenCode's, on a virtual workspace): sync the files in before
-   * `run`, and commit what the call changed with its outcome (`io.docs`;
-   * harness-world-hands' `DocWorkspace.run`). A wrapper that throws before
+   * keeps: sync the files in before `run`, and commit what the call changed
+   * with its outcome. A wrapper that throws before
    * calling `run` fails the call: `begin` answers with that failure, and the
    * call never runs. One that returns without calling `run` decides the
    * outcome itself: `begin` answers with it, and the call never runs either

@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/records.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only.
 import type { EffectRecord, SessionState } from '../kernel/index.js';
 
 /**
@@ -8,9 +8,8 @@ import type { EffectRecord, SessionState } from '../kernel/index.js';
  * readers for it. No Node imports: UIs (the demo's transcript, in a browser
  * tab) read sessions with this module.
  *
- * A process harness mirrors its native session state (Claude Code's JSONL
- * transcript, Codex's rollout, OpenCode's events) into the
- * log as **journal batches**: record-only effects named `journal`, keyed
+ * A process harness mirrors its native session state (Codex's rollout) into
+ * the log as **journal batches**: record-only effects named `journal`, keyed
  * `journal:<n>`, each carrying the records appended since the last batch,
  * grouped by stream. The kernel's rules make the batches linear: the first
  * committed step per key wins, a stale driver's step is fenced, and a batch

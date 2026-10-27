@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/recovery.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; comments name Codex only.
 import { type EffectRecord, pendingSubmissions, type ReplayPolicy, type SessionState, type Submission } from '../kernel/index.js';
 import { type OpenTurn, openTurn } from './records.js';
 
@@ -9,9 +9,8 @@ export { type OpenTurn, openTurn };
 /**
  * The recovery note: what a process harness tells its model when it resumes
  * a turn a crash cut off. A CLI harness resumes its own session natively,
- * but it never knows what happened to the calls that were in flight (Claude
- * Code and OpenCode answer a dangling call "interrupted, outcome unknown";
- * Codex and Cursor need one injected), and a resumed session needs a new
+ * but it never knows what happened to the calls that were in flight (Codex
+ * needs an output injected for a dangling call), and a resumed session needs a new
  * user message to move. The note is that message, built from the log: the
  * calls since the turn began, each with what the log knows about it.
  */

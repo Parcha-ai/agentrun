@@ -1,12 +1,11 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only.
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
- * harness's own tool mechanism (Claude Code's in-process MCP server, Codex's
- * dynamic tools, OpenCode's plugin tools).
+ * harness's own tool mechanism (Codex's dynamic tools).
  *
  * Each call runs the kernel's effect sandwich keyed by the harness's own
  * tool-call id, `tool:<callId>`, step name `tool.<name>`, with the tool's
@@ -35,8 +34,8 @@ export interface BridgedTool {
   inputSchema: Record<string, unknown>;
   replay: ReplayPolicy;
   /**
-   * Run the call. `callId` is the harness's id for this call (Claude Code's
-   * tool_use id, Codex's call_id, ...); it must be stable across a resume of
+   * Run the call. `callId` is the harness's id for this call (Codex's
+   * call_id); it must be stable across a resume of
    * the harness's session, since it is the memo key. `signal` is the
    * harness's own cancellation, if it has one; the drive's is always applied.
    */
