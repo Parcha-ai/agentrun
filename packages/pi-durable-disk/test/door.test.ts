@@ -351,6 +351,40 @@ describe("the door hook: outcomes", () => {
       disk.remove();
     }
   });
+  it("before the open's write lands, the read alone answers an earlier instance's ADMITTED as UNKNOWN", async () => {
+    const disk = new LocalDisk("door-read-unknown");
+    try {
+      const one = scripted({ submit: () => new Promise(() => {}) });
+      const a = await served(disk, one.hook, { submitMs: 60_000 });
+      const pending = submit(a.server, "held").catch(() => undefined);
+      await until("the hook's call", () => one.calls.submit.length === 1);
+      await a.run.release();
+      await a.server.close();
+      await pending;
+
+      // The next instance, whose open-time write never runs: the door's look for orphans never gets the conversation.
+      const two = scripted();
+      const app = lifecycleApp(newCounters());
+      const server = await serveRun({ root: { agent: app.agent } });
+      const run = await openOn(disk, REF, app);
+      const harness = new Proxy(run.harness, {
+        get: (target, key) => {
+          if (key === "conversation") return () => new Promise(() => {});
+          const value = Reflect.get(target, key, target) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      server.attach(new Proxy(run, { get: (target, key) => (key === "harness" ? harness : Reflect.get(target, key, target)) }), two.hook);
+      const r = await submit(server, "held");
+      assert.deepEqual([r.status, r.body.status], [504, "UNKNOWN"]);
+      assert.equal(two.calls.submit.length, 0);
+      assert.deepEqual((await doorEntries(run)).map((e) => e.data.status), ["ADMITTED"], "the store still says ADMITTED");
+      await run.release();
+      await server.close();
+    } finally {
+      disk.remove();
+    }
+  });
 });
 
 describe("the door hook: abort, status, events", () => {
