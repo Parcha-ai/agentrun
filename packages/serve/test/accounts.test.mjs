@@ -170,6 +170,8 @@ test("every link and the cookie come from the address fixed at start, never from
   assert.deepEqual(attributes.sort(), ["HttpOnly", "Max-Age=604800", "Path=/", "SameSite=Strict", "Secure"]);
   const signedIn = await signIn({ port: server.port, origin: `http://127.0.0.1:${server.port}` }, OWNER.email, OWNER.password);
   assert.equal(signedIn.res.status, 403, "the library trusts only the fixed origin");
+  const local = await signIn({ port: server.port, origin: `http://localhost:${server.port}` }, OWNER.email, OWNER.password);
+  assert.equal(local.res.status, 403, "with a public URL, localhost is not an origin either");
 });
 
 test("on plain http the cookie is agentrun-<port>-session: HttpOnly, SameSite=Strict, Path=/, no Domain; every sign-in makes a new session", async (t) => {
@@ -242,7 +244,8 @@ test("one write gate in front of every route, the library's included: a cookie's
       ["no Origin", json, 403, "forbidden"],
       ["another origin", { ...json, origin: "https://evil.example" }, 403, "forbidden"],
       ["the null origin", { ...json, origin: "null" }, 403, "forbidden"],
-      ["the same server under another loopback name", { ...json, origin: `http://localhost:${server.port}` }, 403, "forbidden"],
+      ["localhost on another port", { ...json, origin: `http://localhost:${server.port + 1}` }, 403, "forbidden"],
+      ["a third loopback name", { ...json, origin: `http://[::1]:${server.port}` }, 403, "forbidden"],
       ["a form's body", { "content-type": "application/x-www-form-urlencoded", origin: server.origin }, 415, "unsupported_media_type"],
       ["a text body", { "content-type": "text/plain", origin: server.origin }, 415, "unsupported_media_type"],
     ]) {
@@ -251,6 +254,8 @@ test("one write gate in front of every route, the library's included: a cookie's
     }
   }
   assert.equal((await write("/v2/agents", { ...json, origin: server.origin })).status, 201);
+  const local = await write("/v2/agents", { ...json, origin: `http://localhost:${server.port}` }, { definition: { id: "from-localhost", name: "from-localhost", instructions: "Answer.", tools: [] } });
+  assert.equal(local.status, 201, "on the loopback default, localhost on the same port is the other fixed origin");
   const bearer = await call(server.port, { method: "POST", path: "/v2/agents", headers: { ...json, authorization: `Bearer ${server.token}` }, body: { definition: { id: "by-token", name: "by-token", instructions: "Answer.", tools: [] } } });
   assert.equal(bearer.status, 201, "the Bearer is not ambient, so it needs no Origin");
   assert.equal((await call(server.port, { path: "/v2/me", headers: { cookie: server.cookie } })).status, 200, "nothing above signed the owner out");
@@ -266,8 +271,10 @@ test("the page's old cookie still works with accounts, and its writes must come 
   const cookie = cookieOf(opened);
   assert.equal((await call(server.port, { path: "/v2/agents", headers: { cookie } })).status, 200);
   const body = { definition: { id: "paged", name: "paged", instructions: "Answer.", tools: [] } };
-  const elsewhere = await call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie, ...json, host: `localhost:${server.port}`, origin: `http://localhost:${server.port}` }, body });
+  const elsewhere = await call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie, ...json, origin: `http://localhost:${server.port + 1}` }, body });
   assert.equal(elsewhere.status, 401);
+  const local = await call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie, ...json, host: `localhost:${server.port}`, origin: `http://localhost:${server.port}` }, body: { definition: { ...body.definition, id: "paged-local", name: "paged-local" } } });
+  assert.equal(local.status, 201, "localhost on the same port is the loopback default's other origin");
   assert.equal((await call(server.port, { method: "POST", path: "/v2/agents", headers: { cookie, ...json, origin: server.origin }, body })).status, 201);
 });
 
@@ -277,6 +284,7 @@ test("the library's rate limits count per client address, the socket's peer: a h
   const statuses = [];
   for (let i = 0; i < 5; i++) statuses.push((await wrong("127.0.0.1", i)).status);
   assert.ok(statuses.includes(429), `${statuses}`);
+  assert.equal(statuses[3], 429, `the fourth in 10 s, whatever X-Forwarded-For says: ${statuses}`);
   assert.equal(statuses.at(-1), 429);
   assert.equal((await wrong("127.0.0.2", 9)).status, 401, "another address has its own bucket");
   assert.ok(authDb(t, server.data).prepare(`SELECT count(*) AS n FROM "rateLimit"`).get().n > 0, "kept in the accounts database");
