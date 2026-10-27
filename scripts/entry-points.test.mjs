@@ -27,6 +27,14 @@ test('the argv[1] check is recognised in each form the repository has used', () 
   ]) assert.doesNotMatch(line, argvCheck, line);
 });
 
+const unreviewed = (sources) => sources.filter(([, source]) => source.split('\n').some((line) => argvCheck.test(line))).map(([file]) => file);
+
+test('a file not on the list is red, whatever shape its comparison takes', () => {
+  const split = "const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href : '';\nif (import.meta.url === invoked) main();";
+  assert.deepEqual(unreviewed([['examples/new-split.mjs', split]]), ['examples/new-split.mjs']);
+  assert.deepEqual(unreviewed([['examples/new-filename.mjs', 'if (realpathSync(process.argv[1]) === import.meta.filename) main();']]), ['examples/new-filename.mjs']);
+});
+
 test('no tracked script compares process.argv[1] with its own URL to decide it is the command', () => {
   const files = execFileSync('git', ['ls-files', '*.mjs', '*.js', '*.ts', '*.mts', '*.cjs'], { cwd: root, encoding: 'utf8' }).split('\n').filter(Boolean);
   const self = 'scripts/entry-points.test.mjs';
