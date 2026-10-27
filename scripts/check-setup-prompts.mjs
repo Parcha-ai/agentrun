@@ -29,7 +29,7 @@ export function checkDemo(dir) {
   ];
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const dirs = process.argv.length > 2 ? process.argv.slice(2) : demoDirs();
   let failed = 0;
   for (const dir of dirs) {

@@ -1,7 +1,7 @@
 import { runTypedWorkflow, inspectWorkflow } from '@parcha/agentrun-dsl';
 import { deepResearch } from './typed-research.ts';
 import { question, sourceSets, subquestions, researchFixtures } from './typed-research-fixtures.ts';
-import { ResearchExampleError, isMain, loadResearchAdapters, runCli, saveReport, withCancellation } from './research-runtime.mjs';
+import { ResearchExampleError, loadResearchAdapters, runCli, saveReport, withCancellation } from './research-runtime.mjs';
 
 // A tiny public, fictional corpus. Return all passages to avoid hiding relevant
 // evidence behind a keyword filter or requiring a second service/account.
@@ -54,7 +54,7 @@ export async function runResearch({ adapters = offlineResearchAdapters(), signal
   };
 }
 
-if (isMain(import.meta.url)) await runCli(async (signal, options) => {
+if (import.meta.main) await runCli(async (signal, options) => {
   if (options.cases) throw new ResearchExampleError('usage', '--cases is only supported by the research evaluator.');
   const adapters = options.live ? await loadResearchAdapters({ ...options, signal }) : offlineResearchAdapters();
   const report = await runResearch({ adapters, signal, mode: options.live ? 'live' : 'scripted' });
