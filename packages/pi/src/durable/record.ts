@@ -205,9 +205,22 @@ function itemsOf(schema: unknown, root: unknown): unknown {
 const NULL_SPELLINGS: ReadonlySet<string> = new Set(["null", "none", "n/a"]);
 const spellsNull = (value: unknown): value is string => typeof value === "string" && NULL_SPELLINGS.has(value.trim().toLowerCase());
 
-/** The path of every string that spells "no value" in a field whose schema admits JSON null. */
+/** Whether a field's schema lists the string itself as a value: its `const`, or a member of its `enum`, in any branch. */
+function listsValue(value: string, schema: unknown, root: unknown): boolean {
+  schema = deref(schema, root);
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+  const spec = schema as Record<string, unknown>;
+  if (spec.const === value || (Array.isArray(spec.enum) && spec.enum.includes(value))) return true;
+  return [spec.anyOf, spec.oneOf].some((branches) => Array.isArray(branches) && branches.some((branch) => listsValue(value, branch, root)));
+}
+
+/** A string that spells "no value" in a field that admits JSON null. A string the field's own enum or const lists
+ *  exactly is one of its values, never a spelling of null. */
+const spelledNull = (value: unknown, schema: unknown, root: unknown): boolean => spellsNull(value) && admitsNull(schema, root) && !listsValue(value, schema, root);
+
+/** The path of every string that spells "no value" in a field whose schema admits JSON null and does not list it. */
 export function nullSpellings(value: unknown, schema: unknown, root: unknown = schema, at = ""): string[] {
-  if (spellsNull(value) && admitsNull(schema, root)) return [at || "$"];
+  if (spelledNull(value, schema, root)) return [at || "$"];
   if (Array.isArray(value)) {
     const items = itemsOf(schema, root);
     return items ? value.flatMap((item, index) => nullSpellings(item, items, root, `${at}[${index}]`)) : [];
@@ -228,7 +241,7 @@ export function healNullSpellings<T>(record: T, schema: Record<string, unknown>,
   const validator = options.undo === false ? null : validatorOf(schema);
   const before = validator?.Check(record) ? structuredClone(record) : null;
   const heal = (value: unknown, spec: unknown): unknown => {
-    if (spellsNull(value) && admitsNull(spec, schema)) return null;
+    if (spelledNull(value, spec, schema)) return null;
     if (Array.isArray(value)) {
       const items = itemsOf(spec, schema);
       if (items) value.forEach((item, index) => { value[index] = heal(item, items); });

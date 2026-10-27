@@ -554,7 +554,9 @@ export function normalizeStringNullsForSchema(value: unknown, schema: Record<str
     const anyOf: any[] = Array.isArray(spec.anyOf) ? spec.anyOf : [];
     const nullable = types.includes("null") || anyOf.some((variant) => variant?.type === "null");
     const current = (value as Record<string, unknown>)[key];
-    if (nullable && typeof current === "string" && ["null", "none", "n/a"].includes(current.trim().toLowerCase())) {
+    // A string the field's own enum or const lists exactly is one of its values, never a spelling of null.
+    const listed = [spec, ...anyOf].some((variant) => variant?.const === current || (Array.isArray(variant?.enum) && variant.enum.includes(current)));
+    if (nullable && !listed && typeof current === "string" && ["null", "none", "n/a"].includes(current.trim().toLowerCase())) {
       (value as Record<string, unknown>)[key] = null;
       continue;
     }
