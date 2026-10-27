@@ -385,10 +385,20 @@ export class Accounts {
     if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) issues.push({ field: "email", reason: email === undefined ? "missing" : "wrong_type", message: "email is an email address" });
     if (issues.length) throw invalid(issues);
     // A refused form keeps the code; a matching code is spent here, before the owner is made.
+    const code = this.setupCode;
     if (!byToken) this.spendCode(body.code);
     const made = await this.make({ email: email as string, name: (name as string).trim(), role: "admin" }, auth, true);
+    let cookies: string[];
+    try {
+      cookies = await this.signIn(made.email, req);
+    } catch (error) {
+      // An owner nobody can sign in as would shut setup for good: undone, with the code good again.
+      await (await auth.$context).internalAdapter.deleteUser(made.id);
+      this.setupCode = code;
+      throw error;
+    }
     this.setupCode = null;
-    for (const cookie of await this.signIn(made.email, req)) res.appendHeader("set-cookie", cookie);
+    for (const cookie of cookies) res.appendHeader("set-cookie", cookie);
     return { status: 201, body: this.view(this.row(made.id)!) };
   }
 
