@@ -510,8 +510,9 @@ export class Runs {
   private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     for (let launched = false; ; await sleep(100)) {
-      if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
       const record = await this.record(run);
+      // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
+      if (run.outcome || run.finishing || run.cancel) throw this.finished(run);
       const door = this.doorOf(record);
       if (door) return door;
       if (!this.live(run)) {
@@ -567,7 +568,7 @@ export class Runs {
   }
 
   private launch(run: Run): void {
-    if (run.child || this.closing || run.cancel) return;
+    if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
     const env: NodeJS.ProcessEnv = { ...childEnv(process.env, this.options.token), ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
