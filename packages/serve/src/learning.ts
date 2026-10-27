@@ -75,7 +75,7 @@ export const outcomeOf = (state: RunRow["state"]): "completed" | "failed" | "sto
 export const isExternal = (tool: string): boolean => !TRUSTED_TOOLS.has(tool);
 
 /** Whether the run in `storeFile` called an external tool: every tool call its conversations hold, whatever it answered. */
-function externalUsed(storeFile: string): boolean {
+export function externalUsed(storeFile: string): boolean {
   const db = new DatabaseSync(storeFile, { readOnly: true });
   try {
     for (const row of db.prepare("SELECT record FROM entries").iterate()) {

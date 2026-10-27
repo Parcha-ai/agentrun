@@ -11,7 +11,7 @@ import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { catchUp, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
+import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
 import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 /** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
@@ -435,6 +435,24 @@ test("on a host without git 2.40 a new agent does not learn, one that asks to sa
   assert.equal(existsSync(join(data, "agents", "asked")), false);
   const ran = await api("POST", "/agents/plain/runs", { input: { content: "Hello." } });
   assert.equal(ran.status, 202, "an agent that does not learn runs as before");
+});
+
+test("a run is untrusted when any message of any entry in its store calls an external tool", async (t) => {
+  const file = join(await scratch(t), "run.sqlite");
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY, record TEXT NOT NULL)");
+  const put = (record) => db.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify(record));
+  const call = (name) => ({ role: "assistant", content: [{ type: "text", text: "Looking." }, { type: "toolCall", id: `c-${name}`, name, arguments: {} }] });
+  put({ kind: "pi.user", model: [{ role: "user", content: "Go." }] });
+  put({ kind: "pi.assistant", model: [call("read"), call("learn")] });
+  db.close();
+  assert.equal(externalUsed(file), false, "the file tools and learn bring nothing in");
+  const planted = new DatabaseSync(file);
+  // An external call in the entry's second message, not its first.
+  planted.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify({ kind: "pi.assistant", model: [call("read"), call("fetch_page")] }));
+  planted.close();
+  assert.equal(externalUsed(file), true, "a call in any message of the entry counts");
 });
 
 test("a run's outcome on its memo, and which tools bring outside content in", () => {
