@@ -48,7 +48,8 @@
     "@parcha/agentrun-pi": "0.1.0-beta.27",
     "@parcha/pi-durable-agent": "0.1.0-beta.27",
     "@parcha/pi-durable-disk": "0.1.0-beta.27",
-    "better-auth": "1.7.14"
+    "better-auth": "1.7.14",
+    "nodemailer": "10.1.0"
   },
   "peerDependencies": {
     "@earendil-works/chord": ">=1.1.0 <1.4.0",
@@ -58,7 +59,8 @@
   "devDependencies": {
     "@earendil-works/chord": "1.1.0",
     "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-durable": "1.1.0"
+    "@earendil-works/pi-durable": "1.1.0",
+    "@types/nodemailer": "8.0.2"
   },
   "repository": {
     "type": "git",

@@ -1,8 +1,9 @@
 // Accounts, behind AGENTRUN_ACCOUNTS=1: people with a role and no password, kept by Better Auth on node:sqlite in
 // DIR/auth.sqlite. Serve keeps what the library does not: the setup code, the allowlist of its endpoints, the one write
 // gate (this server's Origin and a JSON body), the 30-day limit on a session, and the activity log. A session is made
-// only by the library's magic-link sign-in, run server-side: its token goes from the plugin's callback to the verify
-// call in memory, and none of its endpoints is a client's.
+// only by the library's magic-link sign-in: a link a person asks for by email (POST /v2/auth/request-link), mailed when
+// SMTP is set, else printed to the server's log, and opened at GET /v2/auth/verify; or run server-side at setup, where the
+// token goes from the plugin's callback to the verify call in memory. None of the library's own endpoints is a client's.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -26,13 +27,17 @@ const MAX_SESSION_MS = 30 * DAY_S * 1000;
 const STREAM_RECHECK_MS = 5_000;
 const SETUP_TTL_MS = 30 * 60_000;
 const SETUP_TRIES = 5;
-/** How long a sign-in token lives between the plugin's callback and its verify call, which follows at once. */
-const LINK_TTL_S = 60;
+/** How long a sign-in link is good for: once, within 15 minutes. */
+const LINK_TTL_S = 15 * 60;
+/** Links one email may be sent, and links one address may ask for, in LINK_WINDOW_MS. */
+const LINKS_PER_EMAIL = 3;
+const LINKS_PER_PEER = 10;
+const LINK_WINDOW_MS = 15 * 60_000;
 const MAX_BODY = 1 << 16;
 
-/** The library's endpoints a client may call, each with its one method. Every other path under /v2/auth is a 404: no
- *  password endpoint, no magic-link one, no sign-up (the owner is made by serve). None that takes or lists a session's
- *  token: it lives in the HttpOnly cookie only. */
+/** The library's endpoints a client may call, each with its one method. Every other path under /v2/auth is a 404 but
+ *  serve's own request-link and verify: no password endpoint, none of the library's magic-link ones, no sign-up (an
+ *  admin adds people). None that takes or lists a session's token: it lives in the HttpOnly cookie only. */
 const ENDPOINTS: Record<string, string> = {
   "/sign-out": "POST",
   "/get-session": "GET",
@@ -53,7 +58,12 @@ export type AccountsOptions = {
   secret?: string;
   /** Made the owner at start when there is none. */
   owner?: { email: string };
+  /** Sends a sign-in link; without it the link is printed to the server's log. */
+  mail?: Mailer;
 };
+
+/** One message to one address: what a sign-in link is sent with. */
+export type Mailer = (message: { to: string; subject: string; text: string }) => Promise<void>;
 
 export type NewPerson = { email: string; name: string; role: Role };
 /** Takes the token of a sign-in serve asked for itself, by the nonce it passed as the link's metadata. */
@@ -186,7 +196,7 @@ export async function openAccounts(options: AccountsOptions): Promise<Accounts> 
       if (db.isTransaction) db.exec("ROLLBACK");
       throw error;
     }
-    const accounts = new Accounts(db, secret, options.token);
+    const accounts = new Accounts(db, secret, options.token, options.mail);
     if (options.owner) await accounts.makeOwner(options.owner.email);
     return accounts;
   } catch (error) {
@@ -207,7 +217,10 @@ export class Accounts {
   private readonly pending = new Map<string, (token: string) => void>();
 
   /** `secret` is the library's: never a run's. */
-  constructor(private readonly db: DatabaseSync, readonly secret: string, private readonly token: string) {}
+  /** Links sent or asked for in the last LINK_WINDOW_MS, by email and by the asking address. */
+  private readonly asked = new Map<string, number[]>();
+
+  constructor(private readonly db: DatabaseSync, readonly secret: string, private readonly token: string, private readonly mail?: Mailer) {}
 
   /** Fixes the address every link and the cookie are built from, and the origins a write may come from: `baseUrl`'s,
    *  and on the loopback default also localhost on the same port. Makes a fresh setup code when there is no
@@ -347,6 +360,11 @@ export class Accounts {
   async forward(req: IncomingMessage, res: ServerResponse, raw: string, search: string): Promise<void> {
     const { auth, baseUrl } = this.ready();
     const path = raw.slice(BASE_PATH.length);
+    if (path === "/request-link" || path === "/verify") {
+      const own = path === "/request-link" ? "POST" : "GET";
+      if (req.method !== own && !(own === "GET" && req.method === "HEAD")) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${raw}`, {}, { allow: own });
+      return path === "/request-link" ? this.requestLink(req, res) : this.verify(req, res, search);
+    }
     const method = Object.hasOwn(ENDPOINTS, path) ? ENDPOINTS[path] : undefined;
     if (!method) throw new ApiError("not_found", `no route ${raw}`);
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${raw}`, {}, { allow: method });
@@ -382,6 +400,72 @@ export class Accounts {
     delete headers["content-length"];
     res.writeHead(answer.status, { ...headers, "content-length": String(bytes.length) });
     res.end(req.method === "HEAD" ? undefined : bytes);
+  }
+
+  // ---- sign-in links -------------------------------------------------------------------------------------------------
+
+  /** Whether `key` may take one more link now; counts it when it may. */
+  private take(key: string, limit: number): boolean {
+    const now = Date.now();
+    const recent = (this.asked.get(key) ?? []).filter((at) => now - at < LINK_WINDOW_MS);
+    if (recent.length >= limit) return (this.asked.set(key, recent), false);
+    this.asked.set(key, [...recent, now]);
+    return true;
+  }
+
+  /** POST /v2/auth/request-link {email}: a sign-in link for a person who exists and is not disabled, good once for 15
+   *  minutes, mailed or printed to the server's log. Every email gets the same answer, so it tells nobody who has an
+   *  account here. */
+  async requestLink(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const { auth, baseUrl } = this.ready();
+    this.checkWrite(req);
+    const body = await jsonBody(req);
+    const extra = Object.keys(body).filter((key) => key !== "email");
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : undefined;
+    if (extra.length || email === undefined || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) {
+      throw invalid([...extra.map((key) => ({ field: key, reason: "not_allowed" as const, message: `The body keeps no field ${key}.` })), ...(email === undefined || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254 ? [{ field: "email", reason: (body.email === undefined ? "missing" : "wrong_type") as "missing" | "wrong_type", message: "email is an email address" }] : [])]);
+    }
+    const peer = String(req.headers[CLIENT_IP_HEADER] ?? "unknown");
+    if (!this.take(`peer:${peer}`, LINKS_PER_PEER)) throw new ApiError("rate_limited", "too many sign-in links asked for from this address; try again later", { retry_after_ms: LINK_WINDOW_MS }, { "retry-after": String(LINK_WINDOW_MS / 1000) });
+    const person = this.db.prepare(`SELECT email, banned FROM "user" WHERE lower(email) = ?`).get(email) as { email: string; banned: number | null } | undefined;
+    if (person && !person.banned && this.take(`email:${email}`, LINKS_PER_EMAIL)) {
+      const nonce = randomBytes(16).toString("base64url");
+      let token: string | undefined;
+      this.pending.set(nonce, (given) => void (token = given));
+      try {
+        await auth.api.signInMagicLink({ body: { email: person.email, metadata: { nonce } }, headers: signInHeaders(req) });
+      } finally {
+        this.pending.delete(nonce);
+      }
+      if (token !== undefined) {
+        const link = `${baseUrl}${BASE_PATH}/verify?token=${encodeURIComponent(token)}`;
+        if (this.mail) {
+          await this.mail({ to: person.email, subject: "Sign in to AgentRun Server", text: `Open this link to sign in to AgentRun Server at ${baseUrl}. It works once, within 15 minutes.\n\n${link}\n\nIf you did not ask for it, ignore this email.\n` })
+            .catch((error: Error) => void process.stderr.write(`agentrun-serve: accounts: the sign-in link for ${person.email} was not sent: ${error.message}\n`));
+        } else {
+          process.stderr.write(`agentrun-serve: sign-in link for ${person.email} (once, within 15 minutes): ${link}\n`);
+        }
+      }
+    }
+    const answer = Buffer.from(JSON.stringify({ sent: true, message: "If that email has an account here, a sign-in link is on its way: check your email, or the server's log." }));
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-length": String(answer.length) });
+    res.end(answer);
+  }
+
+  /** GET /v2/auth/verify?token=: the link's sign-in. The library checks the token (stored hashed, good once, 15 minutes)
+   *  and makes the session; the browser goes to the page signed in, or to the sign-in page told why. */
+  async verify(req: IncomingMessage, res: ServerResponse, search: string): Promise<void> {
+    const { auth } = this.ready();
+    const token = new URLSearchParams(search).get("token");
+    const go = (location: string, cookies: string[] = []) => {
+      res.writeHead(303, { location, "cache-control": "no-store", "referrer-policy": "no-referrer", ...(cookies.length ? { "set-cookie": cookies } : {}) });
+      res.end();
+    };
+    if (!token) return go("/sign-in#link=invalid");
+    const verified = await auth.api.magicLinkVerify({ query: { token }, headers: signInHeaders(req), returnHeaders: true }).catch(() => null);
+    const cookies = verified?.headers.getSetCookie() ?? [];
+    if (!cookies.length) return go("/sign-in#link=invalid");
+    go("/", cookies);
   }
 
   // ---- setup --------------------------------------------------------------------------------------------------------
@@ -458,6 +542,20 @@ export class Accounts {
   me(principal: Principal) {
     if (principal.kind === "token") return { kind: "token", id: null, name: null, email: null, role: principal.role, owner: false };
     return { kind: "person", ...this.view(this.row(principal.id)!) };
+  }
+
+  /** POST /v2/people {email, name?, role?}: an admin adds a person, who then signs in with a link. */
+  async createPerson(body: Record<string, unknown>) {
+    const issues: InputIssue[] = Object.keys(body).filter((key) => !["email", "name", "role"].includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : undefined;
+    if (email === undefined || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > 254) issues.push({ field: "email", reason: body.email === undefined ? "missing" : "wrong_type", message: "email is an email address" });
+    if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim() || body.name.length > 100)) issues.push({ field: "name", reason: "wrong_type", message: "name is 1 to 100 characters" });
+    if (body.role !== undefined && body.role !== "member" && body.role !== "admin") issues.push({ field: "role", reason: "not_an_option", message: "role is member or admin" });
+    if (issues.length) throw invalid(issues);
+    // The contract's error codes are a closed list: a taken email is the field's refusal.
+    if (this.db.prepare(`SELECT 1 FROM "user" WHERE lower(email) = ?`).get(email!) !== undefined) throw invalid([{ field: "email", reason: "not_an_option", message: `a person with the email ${email} is here already` }]);
+    const made = await this.addPerson({ email: email!, name: typeof body.name === "string" ? body.name.trim() : email!.split("@")[0]!, role: (body.role as Role | undefined) ?? "member" });
+    return this.view(this.row(made.id)!);
   }
 
   people() {

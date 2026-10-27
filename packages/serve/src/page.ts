@@ -22,11 +22,11 @@ const FILES: Record<string, { path: string; type: string }> = {
 };
 const PAGE = own("index.html", HTML);
 const LOCKED = own("locked.html", HTML);
-/** With accounts: the setup page's script and the account pages' styles, public like the page's files. The sign-in page
- *  has no script: nothing to fill in until sign-in links. */
+/** With accounts: the setup and sign-in pages' scripts and the account pages' styles, public like the page's files. */
 const ACCOUNT_FILES: Record<string, { path: string; type: string }> = {
   "/account.css": own("account.css", "text/css; charset=utf-8"),
   "/setup.js": own("setup.js", "text/javascript; charset=utf-8"),
+  "/sign-in.js": own("sign-in.js", "text/javascript; charset=utf-8"),
 };
 const SETUP = own("setup.html", HTML);
 const SIGN_IN = own("sign-in.html", HTML);

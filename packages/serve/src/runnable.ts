@@ -18,7 +18,8 @@ export type Blocker = InputIssue & { host: boolean; tool?: string; adapter?: str
 /** The reason a warning gives: the revision runs once this host has what it names. */
 export const NOT_SET_UP = "not_set_up_here";
 
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape): Promise<Blocker[]> {
+/** `code`: whether code may run here for this revision: an admin saves it, and a revision with code was saved by one. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, { code = false }: { code?: boolean } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
@@ -35,7 +36,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   for (const adapter of requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name))) {
     out.push({ field: "definition.workflow", reason: "not_an_option", message: `${runs}; this workflow also needs ${adapter}.`, host: false, adapter });
   }
-  if (requires.executableCode) out.push({ field: "definition.workflow", reason: "not_an_option", message: `${runs}; this workflow also needs code.`, host: false, code: true });
+  if (requires.executableCode && !code) out.push({ field: "definition.workflow", reason: "not_an_option", message: `${runs}; this workflow also needs code, which only an admin saves.`, host: false, code: true });
   for (const tool of requires.tools.filter((name) => !(NODE_TOOLS as readonly string[]).includes(name))) {
     out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's model nodes get the tools ${NODE_TOOLS.join(", ")} here; this workflow also names ${tool}.`, host: false, tool });
   }

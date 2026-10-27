@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<!-- What a browser that is not signed in gets once this server has an owner (AGENTRUN_ACCOUNTS=1). There is nothing to fill in yet: the owner is signed in at setup, and anyone with the server's token opens the link it printed. -->
+<!-- What a browser that is not signed in gets once this server has an owner: a sign-in link to the person's email. -->
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -16,8 +16,14 @@
 <section class="card account">
 <p class="kicker">AgentRun Server</p>
 <h1>Sign in</h1>
-<p class="lede">This browser is not signed in to this server. People sign in with a link sent to their email, which this server does not send yet. Until it does, open the link agentrun-serve printed when it started, the one that ends in <code>?token=</code> and the token.</p>
+<p class="lede">Get a sign-in link for your email. It works once, within 15 minutes. People are added by an admin of this server.</p>
+<form id="sign-in" novalidate>
+<label class="field"><span class="word">Email</span><input type="email" name="email" autocomplete="email" required></label>
+<div class="actions"><button class="btn" type="submit">Send me a link</button></div>
+<p class="said" id="said" role="status"></p>
+</form>
 </section>
 </main>
+<script src="/sign-in.js"></script>
 </body>
 </html>

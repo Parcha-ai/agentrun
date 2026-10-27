@@ -3,6 +3,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { smtpMailer } from "./mail.js";
 import { banner } from "./print.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
@@ -25,7 +26,12 @@ keys from the environment, or, with AGENT_MODEL_BASE_URL, by that one OpenAI Res
 it needs a key). AGENTRUN_TOKEN, when set, is the token in place of DIR/.token's, and is never printed; DIR/.token's is
 printed only by the start that made it. AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it. stdout gets one line per request, per run start and
-end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.`;
+end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
+
+Accounts are on unless AGENTRUN_ACCOUNTS=0: people sign in with an email link, and the token still works for scripts and
+the CLI. The first start prints a setup link for the owner; an admin adds people. A sign-in link is mailed through
+AGENTRUN_SMTP_URL (smtp:// or smtps://, with its login) from AGENTRUN_MAIL_FROM, else printed to stderr. On an address
+that is not loopback, accounts need AGENTRUN_PUBLIC_URL; without it the server runs on its token alone and says so.`;
 
 let values;
 try {
@@ -67,8 +73,21 @@ const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".
 const given = process.env.AGENTRUN_TOKEN || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
-// Accounts stay off unless AGENTRUN_ACCOUNTS=1; off, none of these settings is read.
-const accounts = process.env.AGENTRUN_ACCOUNTS === "1";
+// Accounts are on unless AGENTRUN_ACCOUNTS=0; off, none of these settings is read. On an address that is not loopback
+// they need AGENTRUN_PUBLIC_URL: without it, and unless AGENTRUN_ACCOUNTS=1 asked for them by name, the server starts on
+// its token alone and says why. The token works for scripts and the CLI either way.
+const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
+let accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
+if (accounts && process.env.AGENTRUN_ACCOUNTS !== "1" && !publicUrl && !isLoopback(values.listen ?? "127.0.0.1")) {
+  console.error(`agentrun-serve: accounts are off: on ${values.listen}, which is not loopback, set AGENTRUN_PUBLIC_URL to the address people open to turn them on`);
+  accounts = false;
+}
+const smtp = accounts ? process.env.AGENTRUN_SMTP_URL || undefined : undefined;
+if (smtp && !process.env.AGENTRUN_MAIL_FROM) {
+  console.error(`AGENTRUN_SMTP_URL needs AGENTRUN_MAIL_FROM, the address sign-in links come from\n\n${USAGE}`);
+  process.exit(2);
+}
+const mail = smtp ? await smtpMailer(smtp, process.env.AGENTRUN_MAIL_FROM!) : undefined;
 const owner = accounts && process.env.AGENTRUN_OWNER_EMAIL ? { email: process.env.AGENTRUN_OWNER_EMAIL } : undefined;
 const authSecret = process.env.AGENTRUN_AUTH_SECRET || undefined;
 let serve: Serve;
@@ -77,7 +96,7 @@ try {
     data, port, ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(values.faux ? { faux: values.faux } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
-    ...(accounts ? { accounts, ...(publicUrl ? { publicUrl } : {}), ...(authSecret ? { authSecret } : {}), ...(owner ? { owner } : {}) } : {}),
+    ...(accounts ? { accounts, ...(publicUrl ? { publicUrl } : {}), ...(authSecret ? { authSecret } : {}), ...(owner ? { owner } : {}), ...(mail ? { mail } : {}) } : {}),
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);

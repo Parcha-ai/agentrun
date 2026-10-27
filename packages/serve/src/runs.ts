@@ -201,7 +201,7 @@ export type RunsOptions = { agents: Agents; token: string; authSecret?: string; 
  *  BETTER_AUTH_ variable by name, and the token's and the accounts secret's values under any name. A list, not the
  *  AGENTRUN_ prefix: AGENTRUN_NO_BROWSER is the run's, and AGENTRUN_PUBLIC_URL is no secret. Model keys, the AGENT_MODEL
  *  variables and the rest of the environment pass; the door token goes by file. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_ACCOUNTS", "AGENTRUN_AUTH_SECRET", "AGENTRUN_OWNER_EMAIL"]);
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "AGENTRUN_ACCOUNTS", "AGENTRUN_AUTH_SECRET", "AGENTRUN_OWNER_EMAIL", "AGENTRUN_SMTP_URL", "AGENTRUN_MAIL_FROM"]);
 export const childEnv = (env: NodeJS.ProcessEnv, secrets: string[]): NodeJS.ProcessEnv =>
   Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && !name.startsWith("BETTER_AUTH_") && !secrets.includes(value!)));
 

@@ -274,6 +274,18 @@ data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: 
 only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
 `Authorization` header is checked on that header alone.
 
+## People and sign-in
+
+Accounts are on unless `AGENTRUN_ACCOUNTS=0`. The first start prints `Set up this server: <url>/setup#code=<code>`: open
+it to make the owner, who is signed in at once. An admin adds people (`POST /v2/people {email, name?, role?}`, or the
+People routes), and each signs in on the sign-in page with a link sent to their email: through `AGENTRUN_SMTP_URL`
+(`smtps://<user>:<password>@<host>:465`) from `AGENTRUN_MAIL_FROM`, or, without SMTP, printed to the server's log for the
+operator to pass on. A link works once, within 15 minutes. People have a role (member or admin) and no password. The
+server's token keeps working for scripts and the CLI.
+
+On an address that is not loopback (a container), accounts need `AGENTRUN_PUBLIC_URL`, the address people open: every
+link and the session cookie are built from it. Without it the server runs on its token alone and says so.
+
 ## A run's life
 
 1. `POST /agents/{id}/runs` starts the run in the store (`startRun`, which pins the revision and seeds

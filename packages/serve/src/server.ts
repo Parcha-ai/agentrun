@@ -10,7 +10,7 @@ import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
-import { type Accounts, CLIENT_IP_HEADER, type NewPerson, openAccounts, peerOf, type Principal, type Role, TOKEN_PRINCIPAL } from "./auth.js";
+import { type Accounts, CLIENT_IP_HEADER, type Mailer, type NewPerson, openAccounts, peerOf, type Principal, type Role, TOKEN_PRINCIPAL } from "./auth.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
@@ -76,6 +76,8 @@ export type ServeOptions = {
   authSecret?: string;
   /** With accounts: the owner made at start when there is none (AGENTRUN_OWNER_EMAIL). */
   owner?: { email: string };
+  /** With accounts: how a sign-in link is sent (SMTP, AGENTRUN_SMTP_URL); without it, the link is printed to the log. */
+  mail?: Mailer;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
 };
@@ -161,6 +163,7 @@ export const ACCOUNT_ROUTES: Route[] = [
   { method: "POST", pattern: /^\/setup$/, name: "setup" },
   { method: "GET", pattern: /^\/me$/, name: "me" },
   { method: "GET", pattern: /^\/people$/, name: "listPeople" },
+  { method: "POST", pattern: /^\/people$/, name: "createPerson" },
   { method: "PATCH", pattern: /^\/people\/([^/]+)$/, name: "updatePerson" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/activity$/, name: "runActivity" },
   { method: "GET", pattern: /^\/activity$/, name: "listActivity" },
@@ -175,7 +178,7 @@ export const ROUTE_ROLES: Record<string, Role | "none"> = {
   sendMessage: "member", stopRun: "member", cancelRun: "member", archiveRun: "member", unarchiveRun: "member", killRun: "member", listRunFiles: "member", readRunFile: "member",
   createFile: "member", uploadFile: "member", createQuote: "member", getUsage: "member",
   me: "member", runActivity: "member", listActivity: "member",
-  listPeople: "admin", updatePerson: "admin",
+  listPeople: "admin", createPerson: "admin", updatePerson: "admin",
 };
 
 /** Whether `principal` may call route `name`: deny by default. */
@@ -284,7 +287,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (options.accounts) {
     if (options.publicUrl !== undefined && !/^https?:\/\/[^/?#]+$/.test(options.publicUrl)) throw new Error("with accounts, AGENTRUN_PUBLIC_URL is an origin: http(s)://host[:port], no path");
     if (!isLoopback(host) && options.publicUrl === undefined) throw new Error(`with accounts on ${host}, which is not loopback, set AGENTRUN_PUBLIC_URL: every link and the session cookie are built from it, never from Host`);
-    accounts = await openAccounts({ data, token, ...(options.authSecret !== undefined ? { secret: options.authSecret } : {}), ...(options.owner ? { owner: options.owner } : {}) });
+    accounts = await openAccounts({ data, token, ...(options.authSecret !== undefined ? { secret: options.authSecret } : {}), ...(options.owner ? { owner: options.owner } : {}), ...(options.mail ? { mail: options.mail } : {}) });
   }
   const doorTokenFile = join(data, DOOR_TOKEN_FILE);
   const { token: doorToken } = await tokenIn(doorTokenFile);
@@ -392,7 +395,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
    *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
   async function runnable(revision: Revision): Promise<void> {
-    const blockers = await blockersOf(env, shapeOf(revision));
+    // A stored revision with code was saved by an admin: it runs.
+    const blockers = await blockersOf(env, shapeOf(revision), { code: true });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -402,8 +406,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
-  async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow });
+  async function saveable(revision: NewRevision, principal: Principal): Promise<InputIssue[]> {
+    // Code runs in the run's process on this machine: only an admin (the server's token, or a person with the role) saves it.
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow }, { code: principal.role === "admin" });
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -639,7 +644,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const body = await bodyOf(req);
         const answer = await idempotent(req, "/agents", body, async () => {
           let warnings: InputIssue[] = [];
-          const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
+          const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision, principal)));
           did("agent.create", { agent: entry.agent.id, revision: entry.revision?.id ?? null });
           return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
@@ -664,7 +669,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
         // the same revision exactly one lands.
         let warnings: InputIssue[] = [];
-        const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
+        const check = async (revision: NewRevision) => void (warnings = await saveable(revision, principal));
         const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), { check, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         if (edited.revision && edited.revision.id !== entry.revision?.id) did("agent.update", { agent: id, revision: edited.revision.id });
         return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
@@ -770,6 +775,11 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
           return send(res, 200, accounts.me(principal));
         case "listPeople":
           return send(res, 200, accounts.people());
+        case "createPerson": {
+          const made = await accounts.createPerson(await bodyOf(req));
+          did("person.add", {});
+          return send(res, 201, made, { location: `/v2/people/${made.id}` });
+        }
         case "updatePerson":
           return send(res, 200, await accounts.updatePerson(principal, id, await bodyOf(req)));
         case "runActivity": {
