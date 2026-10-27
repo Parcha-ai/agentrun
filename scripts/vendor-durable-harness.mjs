@@ -32,7 +32,7 @@ export async function provenanceProblems(dir) {
     if (sha !== record.sha256) problems.push(`${path}: the pristine copy's sha256 is ${sha}, not the recorded ${record.sha256}`);
     const ours = await readFile(join(dir, path), 'utf8').catch(() => undefined);
     if (ours === undefined) { problems.push(`${path}: our copy is missing`); continue; }
-    const head = ours.split('\n').slice(0, 3);
+    const { head } = headerOf(ours);
     if (!head[0]?.startsWith('// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0')) problems.push(`${path}: line 1 is not Vercel's copyright header`);
     if (!head[1]?.startsWith(`// From github.com/vercel-labs/durable-harness, ${record.upstream} at ${UPSTREAM.commit.slice(0, 10)}`)) problems.push(`${path}: line 2 does not name ${record.upstream} at ${UPSTREAM.commit.slice(0, 10)}`);
     if (!head[2]?.startsWith('// Changed by Parcha, ')) problems.push(`${path}: line 3 is not the "Changed by Parcha" line`);

@@ -1,0 +1,234 @@
+// Codex as an AgentRun harness adapter. Written for AgentRun.
+//
+// A session is the copied Codex harness (harness.ts) driven over the session's own records (the kernel's openDrive on
+// the store the host lends), on a local machine (host/machine.ts): Codex's app-server with its built-in tools off, its
+// model behind the session's loopback proxy (host/proxy.ts), and the host's tools, exactly those `spec.tools` names,
+// as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
+// `afterRequest`.
+import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
+import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
+import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
+import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
+import { CODEX_VERSION, codexBinary, codexTarget } from "./binary.js";
+import { codexHarness, type CodexHarnessOptions } from "./harness.js";
+import { localMachine } from "./host/machine.js";
+import type { ModelProxyOptions } from "./host/proxy.js";
+
+/** The pinned binary's sha256, per target, where it is recorded; any other target is checked by its version alone. */
+export const CODEX_DIGESTS: Readonly<Record<string, string>> = Object.freeze({
+  "x86_64-unknown-linux-musl": "b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306",
+});
+
+/** A name app-server accepts for a dynamic tool. */
+const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+export interface CodexProvider {
+  /** The provider's origin (`https://api.openai.com`): the proxy forwards to its `/v1/responses` only. */
+  origin: string;
+  /** The provider key, read per request in this process. It never reaches Codex's process. */
+  credential: () => Promise<string> | string;
+}
+
+export interface CodexAdapterOptions {
+  /** The provider's model id, or one per tier (`default` when a node names none). */
+  model: string | { default: string; fast?: string; strong?: string };
+  provider: CodexProvider;
+  /** The price of a response; null (or no function) records its cost as unknown. */
+  price?: ModelProxyOptions["price"];
+  /** The most output tokens one request may ask for. Default 32 000. */
+  maxOutputTokens?: number;
+  /** The model's context window. Default 272 000. */
+  contextWindow?: number;
+  /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
+  sessionsDir?: string;
+  /** Diagnostics. */
+  log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** For tests: a command that speaks app-server's protocol instead of Codex (needs AGENTRUN_CODEX_STANDIN=1 under a test runner). */
+  standIn?: { command: string; args?: string[]; env?: Record<string, string> };
+  /** For tests: the fetch the model proxy forwards with. */
+  fetch?: typeof fetch;
+}
+
+/** What the binary to run is, or why there is none to run. */
+export function checkBinary(path = codexBinary()): { path: string } | { problem: string } {
+  if (!path) return { problem: `no Codex binary: install @openai/codex@${CODEX_VERSION}, or set CODEX_BIN` };
+  const target = codexTarget()?.target;
+  const digest = target ? CODEX_DIGESTS[target] : undefined;
+  try {
+    if (digest) {
+      const found = createHash("sha256").update(readFileSync(path)).digest("hex");
+      if (found !== digest) return { problem: `the Codex binary at ${path} is not the pinned ${CODEX_VERSION} build (its sha256 differs)` };
+    }
+    const version = execFileSync(path, ["--version"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, encoding: "utf8", timeout: 10_000 }).trim();
+    if (version !== `codex-cli ${CODEX_VERSION}`) return { problem: `the Codex binary at ${path} is ${JSON.stringify(version.slice(0, 60))}, not codex-cli ${CODEX_VERSION}` };
+  } catch (error) {
+    return { problem: `the Codex binary at ${path} could not be checked: ${String((error as Error)?.message ?? error).slice(0, 200)}` };
+  }
+  return { path };
+}
+
+/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure. */
+function kernelTool(tool: HostTool): KernelTool {
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    replay: tool.replay,
+    async execute(input, io) {
+      // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
+      const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      const result = await tool.call(input, { callId, signal: io.signal });
+      if (result.isError) throw new Error(result.text);
+      return result.text;
+    },
+  };
+}
+
+/** The adapter's event for a harness live event, if it has one. */
+function adapterEvent(event: unknown): AdapterEvent | undefined {
+  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown };
+  if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
+  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
+  if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true };
+  return undefined;
+}
+
+const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
+
+export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
+  let binary: { path: string } | { problem: string } | undefined;
+  const binaryProblem = (): string | undefined => {
+    if (options.standIn) return undefined;
+    binary ??= checkBinary();
+    return "problem" in binary ? binary.problem : undefined;
+  };
+  const modelFor = (spec: SessionSpec): string => {
+    if (typeof options.model === "string") return options.model;
+    return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
+  };
+
+  return {
+    id: "codex",
+    version: CODEX_VERSION,
+    capabilities: () => ({ fork: false }),
+    check(spec) {
+      const problems: string[] = [];
+      if (spec.context === "fork") problems.push("Codex sessions cannot fork another session's transcript; declare context: \"fresh\"");
+      const seen = new Set<string>();
+      for (const tool of spec.tools) {
+        if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
+        if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
+        seen.add(tool.name);
+      }
+      const problem = binaryProblem();
+      if (problem) problems.push(problem);
+      return problems;
+    },
+    async open(spec, io) {
+      const problems = this.check(spec);
+      if (problems.length) throw new Error(`agentrun-codex: ${problems.join("; ")}`);
+      const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
+      if (!dir) throw new Error("agentrun-codex: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
+
+      const effort = spec.effort ?? spec.thinking;
+      const harnessOptions: CodexHarnessOptions = {
+        tools: spec.tools.map(kernelTool),
+        builtins: false,
+        model: modelFor(spec),
+        ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
+        ...(effort ? { effort } : {}),
+        credential: async () => options.provider.credential(),
+        gatewayUrl: options.provider.origin,
+        contextWindow: options.contextWindow ?? 272_000,
+        ...(options.log ? { log: options.log } : {}),
+        ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
+        machine: {
+          ...(options.standIn?.env ? { env: options.standIn.env } : {}),
+          acquire: localMachine({
+            dir,
+            proxy: {
+              hooks: io.models,
+              tools: spec.tools.map((t) => t.name),
+              ...(options.price ? { price: options.price } : {}),
+              ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+              ...(options.fetch ? { fetch: options.fetch } : {}),
+            },
+          }),
+        },
+      };
+      const harness = codexHarness(harnessOptions);
+
+      const live = (event: unknown) => {
+        const mapped = adapterEvent(event);
+        if (mapped) io.onEvent(mapped);
+      };
+      const open = () => openDrive({ store: io.store, key: spec.key, signal: io.signal, live });
+      let drive = await open();
+      const initial = drive.state();
+      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
+        ? "open_turn"
+        : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
+
+      let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
+      let closed = false;
+      const run = () => {
+        const before = turnsIn(drive).length;
+        const current = drive;
+        state = "idle";
+        running = (async () => {
+          let outcome: { status: TurnStatus; error?: string };
+          try {
+            await harness.drive(current);
+            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
+            outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
+          } catch (error) {
+            outcome = current.signal.aborted
+              ? { status: "interrupted" }
+              : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
+          }
+          io.onEvent({ type: "turn_end", status: outcome.status });
+          return outcome;
+        })();
+        return running;
+      };
+      // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one.
+      const ready = async () => {
+        if (closed) throw new Error("agentrun-codex: the session is closed");
+        if (running) await running;
+        if (drive.signal.aborted && !io.signal.aborted) drive = await open();
+      };
+
+      return {
+        get state() { return state; },
+        async send(text) {
+          await ready();
+          await drive.submit({ id: randomUUID(), kind: "prompt", text });
+          void run();
+        },
+        async recover() {
+          if (state !== "open_turn") throw new Error("agentrun-codex: there is no turn to recover");
+          await ready();
+          void run();
+        },
+        async turnEnd() {
+          if (!running) throw new Error("agentrun-codex: no turn is in flight");
+          return running;
+        },
+        async interrupt() {
+          drive.halt?.(new Error("interrupted"));
+          await running?.catch(() => {});
+        },
+        async close() {
+          if (closed) return;
+          closed = true;
+          drive.halt?.(new Error("closed"));
+          await running?.catch(() => {});
+        },
+      };
+    },
+  };
+}
