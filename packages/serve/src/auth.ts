@@ -174,7 +174,7 @@ export async function openAccounts(options: AccountsOptions): Promise<Accounts> 
       throw error;
     }
     const accounts = new Accounts(db, secret, options.token);
-    if (options.owner && !accounts.hasOwner()) await accounts.make({ email: options.owner.email, name: options.owner.email.split("@")[0]!, password: ownerPassword!, role: "admin" }, build(db, secret), true);
+    if (options.owner) await accounts.makeOwner(options.owner.email, ownerPassword!);
     return accounts;
   } catch (error) {
     db.close();
@@ -223,7 +223,12 @@ export class Accounts {
     return this.make(person, this.ready().auth, false);
   }
 
-  async make(person: NewPerson, auth: Auth, owner: boolean): Promise<{ id: string }> {
+  /** The owner from the environment, made at start when there is none, before the server has an address. */
+  async makeOwner(email: string, password: string): Promise<void> {
+    if (!this.hasOwner()) await this.make({ email, name: email.split("@")[0]!, password, role: "admin" }, build(this.db, this.secret), true);
+  }
+
+  private async make(person: NewPerson, auth: Auth, owner: boolean): Promise<{ id: string }> {
     const { user } = await auth.api.createUser({ body: { email: person.email, name: person.name, password: person.password, role: person.role } });
     if (owner) await (await auth.$context).internalAdapter.updateUser(user.id, { owner: true });
     return { id: user.id };
