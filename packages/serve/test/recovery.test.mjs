@@ -29,7 +29,8 @@ async function serverProcess(data) {
     await sleep(50);
   }
   const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
-  return { child, api: client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY")) };
+  // The banner prints the token only when this start made it; a later start on the same directory names its file.
+  return { child, api: client(value("AGENTRUN_BASE_URL"), (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
 
 /** Start a run of a new agent in a server process, wait until it is working, then kill the server with SIGKILL. */
