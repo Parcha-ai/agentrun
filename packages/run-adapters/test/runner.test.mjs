@@ -380,17 +380,42 @@ test("a stale runner's accepted submission is refused once a newer process opene
   assert.deepEqual(await createHarnessRunner(live, { store })(stepRequest()), { answer: 'live' });
 });
 
-test("a paid request that never reported its usage leaves the node's spend unknown, in the same process too", async () => {
-  // The harness's first request is answered with no usage (a stream cut short): the next one sees an unknown spend.
-  const adapter = fauxAdapter({ script: () => [{ say: 'one', usd: 0.25 }, { say: 'two', usd: 0.25 }, { submit: { answer: 'ok' } }] });
-  const open = adapter.open.bind(adapter);
-  adapter.open = async (spec, io) => {
-    let dropped = false;
-    const models = { ...io.models, afterRequest: async (usage) => { if (!dropped) { dropped = true; return; } return io.models.afterRequest(usage); } };
-    return open(spec, { ...io, models });
+/** An adapter whose one turn makes the paid requests `plan` says, in that order, then delivers through submit. */
+function plannedAdapter(plan) {
+  return {
+    id: 'planned', version: '0', capabilities: () => ({ fork: false }), check: () => [],
+    async open(spec, io) {
+      let ended;
+      const submit = spec.tools.find((t) => t.name === 'submit');
+      return {
+        state: 'new',
+        async send() {
+          ended = (async () => {
+            for (const step of plan) {
+              if (step.before) await io.models.beforeRequest({ model: 'm' });
+              if ('after' in step) await io.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: step.after });
+              if (step.both) await Promise.all([io.models.beforeRequest({ model: 'm' }), io.models.beforeRequest({ model: 'm' })]);
+            }
+            await submit.call({ value: { answer: 'ok' } }, { callId: 'c1', signal: io.signal });
+            return { status: 'completed' };
+          })();
+        },
+        async recover() {}, turnEnd: () => ended, async interrupt() {}, async close() {},
+      };
+    },
   };
+}
+
+test("two paid requests in flight at once, both answered: the next beforeRequest sees their sum, never an unknown spend", async () => {
   const asked = [];
-  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });
+  const runNode = createHarnessRunner(plannedAdapter([{ before: true }, { before: true }, { after: 0.25 }, { after: 0.5 }, { before: true }, { after: 0.125 }]), { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });
+  assert.deepEqual(await runNode(stepRequest()), { answer: 'ok' });
+  assert.deepEqual(asked, [0, 0, 0.75]);
+});
+
+test("a paid request booked at an unknown cost leaves the node's spend unknown from then on", async () => {
+  const asked = [];
+  const runNode = createHarnessRunner(plannedAdapter([{ before: true }, { after: null }, { before: true }, { after: 0.5 }, { before: true }]), { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });
   assert.deepEqual(await runNode(stepRequest()), { answer: 'ok' });
   assert.deepEqual(asked, [0, null, null]);
 });

@@ -235,14 +235,23 @@ test('a request the runner refuses is never forwarded, and answers a status the 
   assert.equal((await send(own.p.url)).status, 403);
 });
 
-test('usage comes back once a response completes; a cut stream reports nothing; an error answer costs nothing; no credential is a 500', async (t) => {
+test('every paid request forwarded is booked once: its usage when it says it; an unknown cost when cut short, silent or unreachable; nothing for an error answer; no credential is a 500', async (t) => {
   const done = await proxy(t);
   await send(done.p.url);
   assert.deepEqual(done.hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001 }]);
 
   const cut = await proxy(t, { fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); c.error(new Error('cut')); } }), { status: 200 }) });
   await send(cut.p.url).catch(() => {});
-  assert.deepEqual([cut.hooks.before.length, cut.hooks.after.length], [1, 0]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual([cut.hooks.before.length, cut.hooks.after], [1, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }]], 'a stream cut mid-body');
+
+  const silent = await proxy(t, { fetch: async () => new Response('data: {"delta":"hi"}\n\n', { status: 200 }) });
+  assert.equal((await send(silent.p.url)).status, 200);
+  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }], 'an answer that says no usage');
+
+  const unreachable = await proxy(t, { fetch: async () => { throw new Error('connection reset'); } });
+  assert.equal((await send(unreachable.p.url)).status, 502);
+  assert.deepEqual(unreachable.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }], 'a forward that failed may still have been paid');
 
   const failed = await proxy(t, { fetch: async () => new Response('{"error":"overloaded"}', { status: 529 }) });
   assert.equal((await send(failed.p.url)).status, 529);

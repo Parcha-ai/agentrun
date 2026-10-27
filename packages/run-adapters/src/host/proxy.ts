@@ -11,8 +11,8 @@
 //  - asks the runner before every paid request (`beforeRequest`, where a turn cap or the host's budget refuses it) and
 //    answers a refusal with a status the client does not retry, adds the provider's credential, forwards to the
 //    provider's origin and the route's own path (never text from the request), streams the answer back, and reports the
-//    response's usage once it completes (`afterRequest`). A response cut off before its usage arrived reports nothing:
-//    the runner counts it as a turn whose cost is unknown.
+//    response's usage once it completes (`afterRequest`). Every paid request forwarded is booked exactly once: a response
+//    cut short, or one that says no usage, is booked at an unknown cost.
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
@@ -268,6 +268,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     /** The provider's answer, once it reached the client whole. */
     let answered: { ok: boolean } | undefined;
     try {
+      // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
       // its booking.
@@ -297,13 +298,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } finally {
       inflight.delete(controller);
     }
-    // The client has the provider's whole answer: now it is booked. Nothing here can turn it into an error the client
-    // sees (and might pay again for): a policy or a price that fails books the request at an unknown cost, and a
-    // booking that fails is reported (the runner stops the node on it).
-    if (!answered || route.free) return;
+    // Every paid request the proxy forwarded is booked exactly once, after the client has its answer (or lost it):
+    // nothing here can turn an answer into an error the client sees and might pay again for. Its usage and price
+    // when the answer is whole and says them; nothing for a provider's error answer; an unknown cost for an answer
+    // cut short, one that said no usage, or a usage or a price that could not be read. A booking that fails is
+    // reported (the runner stops the node on it).
+    if (route.free) return;
     let usage: ProxyUsage | undefined;
     let usd: number | null = null;
-    if (!answered.ok) {
+    if (!answered) {
+      usage = { input: 0, output: 0, cacheRead: 0 };
+    } else if (!answered.ok) {
       // A provider's error answer was not a paid response: it costs nothing.
       usage = { input: 0, output: 0, cacheRead: 0 };
       usd = 0;
@@ -316,8 +321,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         usage = { input: 0, output: 0, cacheRead: 0 };
         unread = true;
       }
-      // A stream cut before its usage reports nothing: the runner counts the request at an unknown cost.
-      if (!usage) return;
+      if (!usage) {
+        usage = { input: 0, output: 0, cacheRead: 0 };
+        unread = true;
+      }
       try {
         usd = unread ? null : options.price?.(model, usage) ?? null;
       } catch (error) {
