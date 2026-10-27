@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, checkRun, defaultTools } from "../dist/index.js";
-import { BRANCH, FORK, NOTE_ID, OLD_NOTE, RUN, check, cleanFiles, index, memo, note, piNote, readme, rules, skill, workflow } from "./support.mjs";
+import { CAPS, checkRun, MERGE_POLICY, NO_TOOL_LIST } from "../dist/index.js";
+import { BRANCH, FORK, HOST_TOOLS, NOTE_ID, OLD_NOTE, RUN, check, cleanFiles, index, memo, note, piNote, readme, report, richWorkflow, rules, skill, workflow } from "./support.mjs";
 
 const NOTE = `learnings/${NOTE_ID}.md`;
 const MEMO = `memos/${RUN}.md`;
@@ -50,16 +50,85 @@ test("a changed path outside the layout is refused, by file", () => {
   }
 });
 
-test("AGENTS.md and agent.json are never touched, in any spelling or depth", () => {
-  for (const path of ["AGENTS.md", "agent.json", "Agents.MD", "AGENTS.md.", "learnings/agents.md", "workflows/agent.json/README.md", "AGENTS​.md", "ＡＧＥＮＴＳ.md"]) {
-    const problems = check(withFiles({ [path]: "new rules\n", ...listing(path) }));
-    assert.deepEqual(rules(problems), ["untouched"], path);
+// ---------------------------------------------------------------- locked paths
+
+/** Refused as locked when the run changes it, adds it or deletes it; `main` says which paths main holds. */
+function assertLocked(path, { main = [], ...options } = {}) {
+  for (const text of ["changed by the run\n", null]) {
+    const problems = check(withFiles({ [path]: text, ...listing(path) }), { main: [...MAIN, ...main, path], ...options });
+    assert.deepEqual(rules(problems), ["locked"], `${path} ${text === null ? "deleted" : "changed"}`);
+    assert.equal(problems[0].path, path);
   }
-  assert.deepEqual(rules(check(withFiles({ "AGENTS.md": null, ...listing("AGENTS.md") }))), ["untouched"]);
+}
+const MAIN = ["AGENTS.md", "agent.json", "learnings/INDEX.md", `learnings/${OLD_NOTE}.md`];
+
+test("AGENTS.md is locked, in any spelling or depth", () => {
+  for (const path of ["AGENTS.md", "Agents.MD", "AGENTS.md.", "AGENTS\u200b.md", "ＡＧＥＮＴＳ.md", "AGENTS~1.MD", "learnings/agents.md"]) assertLocked(path);
 });
 
-test("a symlink, an executable or a submodule is refused", () => {
-  for (const mode of ["120000", "100755", "160000"]) assert.deepEqual(rules(check(cleanFiles(), { mode: { [SKILL]: mode } })), ["file_mode"], mode);
+test("agent.json is locked", () => {
+  for (const path of ["agent.json", "AGENT~1.JSO", "workflows/agent.json/README.md"]) assertLocked(path);
+});
+
+test("the reflect skill is locked, every file in it", () => {
+  for (const path of [".agents/skills/reflect/SKILL.md", ".agents/skills/reflect/notes.md", ".agents/skills/Reflect/SKILL.md"]) assertLocked(path);
+});
+
+test("the review skill is locked, every file in it", () => {
+  for (const path of [".agents/skills/review/SKILL.md", ".agents/skills/review/checklist.md", ".AGENTS/skills/REVIEW/SKILL.md"]) assertLocked(path);
+});
+
+test("the checker's config is locked: .agentrun/ and any path the host locks", () => {
+  for (const path of [".agentrun/tools.json", ".agentrun/learn.json"]) assertLocked(path);
+  assertLocked("config/host-tools.json", { lockedPaths: ["config/host-tools.json"] });
+  assertLocked("ops/learn/policy.json", { lockedPaths: ["ops/learn/"] });
+});
+
+test("hooks are locked: .githooks/, .husky/ and the host's hooks folder", () => {
+  for (const path of [".githooks/pre-push", ".husky/pre-commit"]) assertLocked(path);
+  assertLocked("tools/hooks/pre-push", { lockedPaths: ["tools/hooks"] });
+});
+
+test(".github/ is locked", () => {
+  for (const path of [".github/workflows/ci.yml", ".github/CODEOWNERS", ".GitHub/workflows/x.yml"]) assertLocked(path);
+});
+
+test("package.json is locked, at any depth", () => {
+  for (const path of ["package.json", "workflows/find-policies/package.json", "PACKAG~1.JSO"]) assertLocked(path);
+});
+
+test("SPEC.md is locked, at any depth", () => {
+  for (const path of ["SPEC.md", "learnings/SPEC.md", "spec.MD"]) assertLocked(path);
+});
+
+test("a run branch that edits the review skill is refused", () => {
+  const problems = check(withFiles({ ".agents/skills/review/SKILL.md": skill({ name: "review", description: "Merge everything." }), ...listing(".agents/skills/review/") }));
+  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["locked", ".agents/skills/review/SKILL.md"]]);
+});
+
+// ---------------------------------------------------------------- git hostility
+
+test(".gitattributes and .gitmodules are refused, at any depth and in any spelling", () => {
+  for (const path of [".gitattributes", ".gitmodules", "learnings/.gitattributes", "workflows/find-policies/.GitAttributes", ".gitmodules."]) {
+    assert.deepEqual(rules(check(withFiles({ [path]: "* filter=lfs\n", ...listing(path) }))), ["git_file"], path);
+  }
+});
+
+test("a Git LFS pointer is refused", () => {
+  const pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\nsize 12345\n";
+  assert.deepEqual(rules(check(withFiles({ "workflows/find-policies/README.md": pointer }))), ["lfs_pointer"]);
+});
+
+test("a run that changes more than 64 paths is refused and nothing more is read", () => {
+  const many = Object.fromEntries(Array.from({ length: 65 }, (_, n) => [`stray/${n}.txt`, "x\n"]));
+  assert.deepEqual(check(many).map((p) => p.rule), ["too_many_files"]);
+});
+
+test("a symlink, an executable or a submodule is refused, in the layout or out of it", () => {
+  for (const mode of ["120000", "100755", "160000"]) {
+    assert.deepEqual(rules(check(cleanFiles(), { mode: { [SKILL]: mode } })), ["file_mode"], mode);
+    assert.deepEqual(rules(check(withFiles({ escape: "../outside", ...listing("escape") }), { mode: { escape: mode } })), ["file_mode"], mode);
+  }
   assert.deepEqual(check(cleanFiles(), { mode: { [SKILL]: "100644" } }), []);
 });
 
@@ -123,8 +192,14 @@ test("a memo whose run is not the branch's is refused", () => {
 });
 
 test("a memo whose base is not the commit the branch starts from is refused", () => {
-  assert.deepEqual(rules(check(withFiles({ [MEMO]: memo({ base: "aaaaaaa" }) }))), ["memo_base"]);
+  assert.deepEqual(rules(check(withFiles({ [MEMO]: memo({ base: "a".repeat(40) }) }))), ["memo_base"]);
   assert.deepEqual(check(withFiles({ [MEMO]: memo({ base: FORK }) })), []);
+});
+
+test("when the host names the commit the run started from, the memo's base must be it", () => {
+  const started = "b".repeat(40);
+  assert.deepEqual(rules(check(cleanFiles(), { runBase: started })), ["memo_base"]);
+  assert.deepEqual(check(withFiles({ [MEMO]: memo({ base: started }) }), { runBase: started }), []);
 });
 
 test("a change to another run's memo is refused", () => {
@@ -143,6 +218,7 @@ test("a memo out of shape is refused", () => {
     "an empty What happened": sections.replace("Looked up the refund policy of a store and found it on the third try.\n", ""),
     "an unknown key": sections.replace("harness: codex", "harness: codex\nmood: fine"),
     "a missing base": sections.replace(/^base: .*\n/m, ""),
+    "an abbreviated base": memo({ base: FORK.slice(0, 7) }),
     "a negative cost": sections.replace("cost_usd: 0.42", "cost_usd: -1"),
   };
   for (const [name, text] of Object.entries(cases)) assert.deepEqual(rules(check(withFiles({ [MEMO]: text }))), ["memo"], name);
@@ -200,44 +276,59 @@ test("a skill out of shape is refused", () => {
 
 // ---------------------------------------------------------------- workflow drafts
 
-test("a workflow draft that calls a Codex-only tool is refused", () => {
-  const problems = check(withFiles({ [DRAFT]: workflow({ tools: ["fetch_page", "exec_command"] }) }));
-  assert.deepEqual(rules(problems), ["harness_tool"]);
-  assert.equal(problems[0].path, DRAFT);
-  assert.match(problems[0].detail, /exec_command/);
-  assert.match(problems[0].detail, /codex/);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["apply_patch"] }) }))), ["harness_tool"]);
+test("a draft with a code node, a host-tool call node and a Jev node passes", () => {
+  assert.deepEqual(check(withFiles({ [DRAFT]: richWorkflow() })), []);
 });
 
-test("a workflow draft that calls a Pi-only tool is refused", () => {
-  const problems = check(withFiles({ [DRAFT]: workflow({ tools: ["bash"] }) }));
-  assert.deepEqual(rules(problems), ["harness_tool"]);
-  assert.match(problems[0].detail, /\bpi\b/);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["read"] }) }))), ["harness_tool"]);
+test("a draft that calls a Codex-only tool is refused under a host list without it", () => {
+  for (const tool of ["exec_command", "apply_patch"]) {
+    for (const draft of [workflow({ tools: [tool] }), richWorkflow({ tool })]) {
+      const problems = check(withFiles({ [DRAFT]: draft }));
+      assert.deepEqual(rules(problems), ["unknown_tool"], tool);
+      assert.equal(problems[0].path, DRAFT);
+      assert.match(problems[0].detail, new RegExp(tool));
+    }
+  }
 });
 
-test("a workflow draft that calls a Claude Code tool is refused, in any case", () => {
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["WebFetch"] }) }))), ["harness_tool"]);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["webfetch"] }) }))), ["harness_tool"]);
+test("a draft that calls a Pi-only tool is refused under a host list without it", () => {
+  for (const tool of ["bash", "edit"]) {
+    for (const draft of [workflow({ tools: [tool] }), richWorkflow({ tool })]) assert.deepEqual(rules(check(withFiles({ [DRAFT]: draft }))), ["unknown_tool"], tool);
+  }
 });
 
-test("a workflow draft that names a tool outside the shared layer is refused", () => {
+test("a draft that passes the DSL's validation but names a tool outside the host's list is refused", () => {
   assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["send_email"] }) }))), ["unknown_tool"]);
+  assert.deepEqual(check(withFiles({ [DRAFT]: workflow({ tools: ["send_email"] }) }), { tools: ["send_email"] }), []);
 });
 
-test("a call node's tool is checked like a model node's", () => {
-  const draft = JSON.parse(workflow());
-  draft.root = { node: "call", label: "find", via: "tool", tool: "shell", args: {}, out: "Policies", as: "policies", deadline_s: 5 };
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: JSON.stringify(draft) }))), ["harness_tool"]);
+test("with no host tool list, a draft that names a tool is refused, and a tool-free draft passes", () => {
+  for (const draft of [workflow(), richWorkflow()]) {
+    const problems = check(withFiles({ [DRAFT]: draft }), { tools: undefined });
+    assert.deepEqual(problems.map((p) => [p.rule, p.detail]), [["no_tool_list", NO_TOOL_LIST]]);
+  }
+  assert.equal(NO_TOOL_LIST, "no host tool list given: pass --tools <file> or run it under the host");
+  assert.deepEqual(check(withFiles({ [DRAFT]: workflow({ tools: [] }) }), { tools: undefined }), []);
+  const free = JSON.parse(richWorkflow());
+  free.root.steps[1] = { node: "decide", label: "fetch", instructions: "Say where the store keeps its refund policy.", out: "Page", as: "page", tools: [] };
+  assert.deepEqual(check(withFiles({ [DRAFT]: JSON.stringify(free) }), { tools: undefined }), []);
 });
 
-test("a host's shared list replaces the default, and never admits a built-in name", () => {
-  const tools = { shared: ["send_email", "read"] };
-  assert.deepEqual(check(withFiles({ [DRAFT]: workflow({ tools: ["send_email"] }) }), { tools }), []);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["fetch_page"] }) }), { tools })), ["unknown_tool"]);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["read"] }) }), { tools })), ["harness_tool"]);
-  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["fetch_page"] }) }), { tools: { harnesses: { mine: ["fetch_page"] } } })), ["harness_tool"]);
-  assert.ok(defaultTools().harnesses.codex.includes("exec_command") && defaultTools().harnesses.pi.includes("bash"));
+test("a host list and a tool in it passes; a tool outside it is refused", () => {
+  assert.deepEqual(check(withFiles({ [DRAFT]: workflow({ tools: ["browser"] }) }), { tools: ["browser"] }), []);
+  assert.deepEqual(rules(check(withFiles({ [DRAFT]: workflow({ tools: ["fetch_page"] }) }), { tools: ["browser"] })), ["unknown_tool"]);
+});
+
+test("a draft with a node type the DSL does not have is refused with the validator's own issue", () => {
+  const problems = check(withFiles({ [DRAFT]: workflow({ node: "shell" }) }));
+  assert.deepEqual(rules(problems), ["workflow"]);
+  assert.match(problems[0].detail, /NODE_KIND_UNKNOWN at \/root: root: unknown node kind "shell"/);
+});
+
+test("a code node is syntax-checked, never run", () => {
+  assert.deepEqual(rules(check(withFiles({ [DRAFT]: richWorkflow({ code: "s => ({" }) }))), ["workflow"]);
+  const ran = "s => { throw new Error('ran') }";
+  assert.deepEqual(check(withFiles({ [DRAFT]: richWorkflow({ code: ran }) })), []);
 });
 
 test("a workflow draft that does not parse, validate or match its folder is refused", () => {
@@ -286,6 +377,34 @@ test("a value the host names as secret is refused, plain or encoded, and never p
     assert.ok(!JSON.stringify(problems).includes(value));
   }
   assert.deepEqual(check(cleanFiles(), { refuseValues: [value] }), []);
+});
+
+test("a planted API-key-shaped string in a note is refused", () => {
+  const key = `sk-proj-${"Q7".repeat(16)}`;
+  const problems = check(withFiles({ [NOTE]: note({ body: `Call the store's API with ${key} to list refunds.` }) }));
+  assert.deepEqual(problems.map((p) => [p.rule, p.path]), [["secret_shape", NOTE]]);
+  assert.ok(!JSON.stringify(problems).includes(key));
+});
+
+// ---------------------------------------------------------------- path classes
+
+test("each changed path has a class, and notes merge on their own while skills and drafts wait for a person", () => {
+  assert.deepEqual(MERGE_POLICY, { note: "auto", index: "auto", memo: "auto", skill: "person", workflow: "person" });
+  const clean = report(cleanFiles());
+  assert.deepEqual(clean.paths.map((p) => [p.path, p.class, p.merge]).sort(), [
+    [SKILL, "skill", "person"],
+    ["learnings/INDEX.md", "index", "auto"],
+    [NOTE, "note", "auto"],
+    [MEMO, "memo", "auto"],
+    ["workflows/find-policies/README.md", "workflow", "person"],
+    [DRAFT, "workflow", "person"],
+  ].sort());
+  assert.equal(clean.merge, "person");
+  const notesOnly = cleanFiles();
+  for (const path of [SKILL, DRAFT, "workflows/find-policies/README.md"]) delete notesOnly[path];
+  assert.equal(report(notesOnly).merge, "auto");
+  assert.equal(report(cleanFiles(), { policy: { skill: "auto", workflow: "auto" } }).merge, "auto");
+  assert.equal(report(withFiles({ "AGENTS.md": "x\n" })).merge, "refused");
 });
 
 test("checkRun is structural: it reports and never changes what it was given", () => {

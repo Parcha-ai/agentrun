@@ -7,12 +7,13 @@ already edit files and run git, so the loop needs no integration with a harness:
 note format, in [SPEC.md](SPEC.md).
 
 This package is that contract plus the one piece of code it needs: a checker that validates a run's branch before any
-merge. The checker is structural. It checks the layout, the formats, the caps, the files the loop never touches, the
-run's memo and text shaped like a secret. Whether a note is any good is the review step's judgment, not the checker's.
+merge. The checker is structural. It checks the layout and the locked paths (the agent's rules, the loop's own review
+skill, hooks, CI, package scripts, the spec), the formats, the caps, the run's memo and text shaped like a secret, and
+it says how each changed path merges: notes on their own, skills and workflow drafts with a person by default. Whether a
+note is any good is the review's judgment, after an injection screen; [SPEC.md](SPEC.md#the-merge-policy) sets the order.
 
-Anything an agent learns on any harness must run on the workflow DSL, so the checker refuses a workflow draft that
-names a harness's built-in tool (Codex's `exec_command`, Pi's `bash`, Claude Code's `Bash`, and the rest in
-[tools.json](tools.json)) or a tool outside the shared tool layer.
+Anything an agent learns on any harness must run on the workflow DSL, so a workflow draft must pass the DSL's own
+`validateWorkflow` and name only tools in the host's tool list. With no list, a draft that names a tool is refused.
 
 It is held: it is built, tested and verified with the other packages and is not on npm yet. Install it from a packed
 tarball (`npm pack -w @parcha/agentrun-learn`).
@@ -22,23 +23,25 @@ tarball (`npm pack -w @parcha/agentrun-learn`).
 Node 22.19 or later and git. On the run's branch, in the agent's repository:
 
 ```sh
-agentrun-learn check --base main
+agentrun-learn check --base main --tools host-tools.json
 ```
 
-It prints `runs/<run id>: ok` and exits 0, or names each problem by rule and file and exits 1. A bad command line, or a
-ref that names no commit, exits 2.
+It prints `runs/<run id>: ok` with each changed path's class and how it merges, and exits 0; or it names each problem
+by rule and file and exits 1. A bad command line, or a ref that names no commit, exits 2.
 
 | Option | What it does |
 | --- | --- |
 | `--base <ref>` | the ref the run's branch merges into, such as `main` or `origin/main` |
 | `--head <ref>` | the run's commit; `HEAD` by default |
 | `--branch runs/<run id>` | the branch the run pushes; by default the branch `--head` names |
-| `--tools <file.json>` | `{"shared": [...], "harnesses": {...}}`: `shared` replaces the default shared tool layer, `harnesses` add built-in names (none can be removed) |
+| `--run-base <ref>` | the commit the host started the run from; the memo's `base` must be it (default: the branch's fork point from `--base`) |
+| `--tools <file.json>` | the host's tool list, a JSON array of names or `{"tools": [...]}`. Without it, a draft that names a tool is refused. A list kept inside the repository is locked against the run |
+| `--auto-merge skill,workflow` | the agent's policy: these classes merge without a person too |
 | `--refuse-values-from-env NAME,...` | refuse any file that holds the value of one of these variables; a value is never printed |
-| `--json` | print `{ok, run, branch, forkPoint, problems}` |
+| `--json` | print `{ok, merge, run, branch, forkPoint, problems, paths}` |
 
-The checker reads git objects only. It never touches the work tree, so no filter, hook or fsmonitor of the repository
-runs.
+The checker reads git objects with plumbing only. It never checks anything out, so no hook, filter, smudge or merge
+driver of the repository runs.
 
 ### As a pre-push hook
 
@@ -48,7 +51,7 @@ runs.
 #!/bin/sh
 while read -r local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
-    refs/heads/runs/*) agentrun-learn check --base origin/main --head "$local_sha" --branch "${remote_ref#refs/heads/}" || exit 1 ;;
+    refs/heads/runs/*) agentrun-learn check --base origin/main --head "$local_sha" --branch "${remote_ref#refs/heads/}" --tools "$HOME/.config/agentrun/tools.json" || exit 1 ;;
     refs/heads/main) echo "a run never pushes to main" >&2; exit 1 ;;
   esac
 done
@@ -58,7 +61,7 @@ done
 
 ```sh
 git fetch origin main
-agentrun-learn check --base origin/main --head "$GITHUB_SHA" --branch "$GITHUB_HEAD_REF" --refuse-values-from-env STORE_API_KEY
+agentrun-learn check --base origin/main --head "$GITHUB_SHA" --branch "$GITHUB_HEAD_REF" --tools host-tools.json --refuse-values-from-env STORE_API_KEY
 ```
 
 ## From code
@@ -67,14 +70,15 @@ agentrun-learn check --base origin/main --head "$GITHUB_SHA" --branch "$GITHUB_H
 import { checkBranch, checkRun } from "@parcha/agentrun-learn";
 
 // A git repository: the changes from where the branch starts on base to head.
-const { run, forkPoint, problems } = await checkBranch({ cwd: "agent-repo", base: "main" });
+const { problems, paths, merge } = await checkBranch({ cwd: "agent-repo", base: "main", tools: ["fetch_page", "browser"] });
 
 // Or changes you already hold: path, status, git mode and the file's bytes at the branch's head.
 const found = checkRun({
   branch: "runs/2026-10-27-0412-a1b2",
+  tools: ["fetch_page", "browser"],
   changes: [{ path: "learnings/L-7c21e0a4b9d3.md", status: "added", bytes: Buffer.from(noteText) }],
 });
 ```
 
-Each problem is `{ rule, path?, detail }`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.
-`defaultTools()` returns the tool lists in `tools.json`.
+Each problem is `{ rule, path?, detail }`, and each path `{ path, class, merge }`. `merge` is `refused`, `person` or
+`auto`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.

@@ -3,27 +3,29 @@
 An agent learns in its own git repository, with its own harness's tools. After a run it writes a memo, then commits the
 memo and any new notes, skills and workflow drafts to that run's own branch. A review step merges what passes into
 `main`, and the next run reads `main`. This page is the contract: a repository layout, a memo format, a note format, the
-rules and the caps. Any agent that can read, write and commit files can follow it, inside AgentRun or not.
+rules, the caps and the merge policy. Any agent that can read, write and commit files can follow it, inside AgentRun or
+not.
 
-`agentrun-learn check` validates a run's branch against this page before any merge. It is structural only: whether a
-note is any good is the review skill's judgment, never the checker's.
+The risk it is built against: an agent reads untrusted pages, writes its own rules, and those rules merge without a
+person. So a run's branch is checked twice before it merges. `agentrun-learn check` checks its structure, in code.
+The review checks what it says: an injection screen, then the review skill's judgment.
 
 ## The layout
 
 ```
-AGENTS.md                         the standing rules. Never touched by the loop.
-agent.json                        the agent's definition, when it has one. Never touched by the loop.
+AGENTS.md                         the standing rules. Locked.
+agent.json                        the agent's definition, when it has one. Locked.
 learnings/INDEX.md                one line per active note. The first thing a run reads.
-learnings/L-<12 hex>.md           one note: one general rule, never one case's data
+learnings/L-<12 hex>.md           one note: one general rule
 .agents/skills/<name>/SKILL.md    a skill the agent wrote (the shared skills convention)
+.agents/skills/reflect/           the loop's reflect skill. Locked.
+.agents/skills/review/            the loop's review skill. Locked.
 workflows/<name>/workflow.json    a drafted workflow, as the workflow DSL reads it
 workflows/<name>/README.md        what the draft is for, and when it applies
 memos/<run id>.md                 the memo of each run
 ```
 
-A run's branch may change only these paths. `AGENTS.md` and `agent.json` are never changed, at any depth and in any
-spelling (case, Unicode compatibility forms, ignorable characters, trailing dots or spaces). Every changed file is a
-regular file (git mode `100644`): no symlink, no executable, no submodule. Every file is UTF-8.
+A run's branch may change only the paths above that are not locked. Any other path is refused.
 
 - A run id is 1 to 128 letters, digits, dots, dashes or underscores, starting with a letter or digit, with no `..` and
   no trailing `.` or `.lock`, so `runs/<run id>` is always a valid branch name.
@@ -31,19 +33,29 @@ regular file (git mode `100644`): no symlink, no executable, no submodule. Every
 - A workflow name is 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit.
 - A skill name is 1 to 64 lowercase letters, digits and single dashes, starting and ending with a letter or digit.
 
-## The rules
+## Locked paths
 
-- One branch per run, `runs/<run id>`. A run never writes to `main`; `main` changes only by merge.
-- The branch carries its own memo, `memos/<run id>.md`, whose `run` is the branch's run id and whose `base` is the
-  commit of `main` the branch starts from. It changes no other run's memo.
-- A run never deletes a note, the index or a memo. A note leaves use by its `status` (`superseded` or `retired`).
-  A skill or a workflow draft may be deleted, as a whole: a workflow folder that still holds a file holds both of its
-  files.
-- Every changed path but the memo and `learnings/INDEX.md` is named under the memo's `## Proposed changes`.
-- Notes are general rules. They never hold a customer's data or a secret. No file holds text shaped like a secret
-  (well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys, JSON web tokens, URLs with a password, and
-  PEM private-key headers), and none holds a value the host names as secret.
-- A workflow draft names only what runs on the workflow DSL on any harness: see [Workflow drafts](#workflow-drafts).
+A run's branch never adds, changes or deletes these, at any depth and in any spelling (letter case, Unicode
+compatibility forms, ignorable characters, trailing dots or spaces, NTFS stream suffixes, 8.3 short names):
+
+- `AGENTS.md` and `agent.json`: the agent's rules and definition;
+- `.agents/skills/reflect/` and `.agents/skills/review/`: the loop cannot rewrite the review that merges it;
+- the checker's config: `.agentrun/`, the host's tool list when the repository keeps it, and any path the host locks;
+- hooks: `.githooks/`, `.husky/`, and the folder `core.hooksPath` names;
+- `.github/`;
+- `package.json`, whose scripts run;
+- `SPEC.md`.
+
+## Git
+
+The checker reads git objects with plumbing only (`rev-parse`, `merge-base`, `diff-tree`, `ls-tree`, `cat-file`). It
+never checks anything out, so no hook, filter, smudge or merge driver of the repository runs, and it turns off the
+fsmonitor, the hooks folder, replace refs and lazy fetches. A run's branch holds regular files only:
+
+- no `.gitattributes` and no `.gitmodules`, at any depth;
+- no symlink, no gitlink (submodule) and no executable bit: every file is git mode `100644`;
+- no Git LFS pointer;
+- UTF-8 text.
 
 ## The caps
 
@@ -56,13 +68,26 @@ Over a cap is refused, never cut.
 | `learnings/INDEX.md` | 4096 bytes |
 | One memo | 16384 bytes |
 | Any other file | 32768 bytes |
+| Changed paths in one run | 64; over it nothing else is read |
+
+## The rules
+
+- One branch per run, `runs/<run id>`. A run never writes to `main`.
+- The branch carries its own memo, `memos/<run id>.md`, and changes no other run's memo.
+- A run never deletes a note, the index or a memo. A note leaves use by its `status` (`superseded` or `retired`). A
+  skill or a workflow draft may be deleted as a whole: a workflow folder that still holds a file holds both of its files.
+- Every changed path but the memo and `learnings/INDEX.md` is named under the memo's `## Proposed changes`.
+- No file holds text shaped like a secret (well-known key prefixes such as AWS, Google, GitHub, Slack and `sk-` keys,
+  JSON web tokens, URLs with a password, and PEM private-key headers), or a value the host names as secret. Whether a
+  note holds one case's data is the review's judgment, not the checker's.
+- A workflow draft names only what runs on the workflow DSL on any harness: see [Workflow drafts](#workflow-drafts).
 
 ## The memo
 
 ```
 ---
 run: 2026-10-27-0412-a1b2
-base: 3f9c2e1
+base: 3f9c2e1a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e
 harness: codex
 outcome: completed
 cost_usd: 0.42
@@ -82,15 +107,19 @@ Two or three sentences.
 - workflows/find-policies/ (new draft)
 ```
 
-Front matter, one `key: value` per line; a `#` after a space starts a comment.
+The front matter holds facts, and the host writes it: the model writes only the four sections. One `key: value` per
+line; a `#` after a space starts a comment.
 
 | Key | Required | Value |
 | --- | --- | --- |
 | `run` | yes | the run id; the branch is `runs/<run>` |
-| `base` | yes | 7 to 64 lowercase hex digits: a prefix of the `main` commit the run read |
+| `base` | yes | the full id of the commit of `main` the run started from |
 | `outcome` | yes | `completed`, `failed` or `stopped` |
 | `harness` | no | a short lowercase name, for information only |
 | `cost_usd` | no | a number of dollars, 0 or more |
+
+The checker refuses a memo whose `run` is not the branch's, or whose `base` is not the commit the run started from: the
+commit the host names (`--run-base`), or else the branch's fork point from `main`.
 
 Then the four sections, each once, in this order and no other: `## What happened` (not empty), `## What I learned`,
 `## What could be better`, `## Proposed changes`. Under `## Proposed changes`, each line `- <path>` names one changed
@@ -137,40 +166,72 @@ start with `#` are allowed. Each note id appears once and names a note file on t
 
 ## Workflow drafts
 
-`workflows/<name>/workflow.json` is one workflow document, as the workflow DSL's `validateWorkflow` reads it, checked
-without running any code it holds. Its `name` is the folder's name. `workflows/<name>/README.md` says what it is for and
-when it applies, and is not empty.
+`workflows/<name>/workflow.json` is one workflow document. Its `name` is the folder's name.
+`workflows/<name>/README.md` says what it is for and when it applies, and is not empty.
 
-Anything an agent learns on any harness must run on the workflow DSL. So a draft names nothing harness-specific:
+Anything an agent learns on any harness must run on the workflow DSL. So:
 
-- only the DSL's node types (`validateWorkflow` refuses any other);
-- only tools from AgentRun's shared tool layer, the names a workflow can bind on any harness: by default the `shared`
-  list in [`tools.json`](tools.json), which a host may replace with its own;
-- never a harness's built-in tool name, in any case: the `harnesses` lists in `tools.json`, such as Codex's `shell`,
-  `exec_command` and `apply_patch`, Pi's `bash`, `read`, `write` and `edit`, and Claude Code's `Bash`, `Read`, `Edit`,
-  `Write` and `WebFetch`. A host may add names to these lists and never remove one; a built-in name is refused even when
-  a host's shared list holds it.
+- The DSL's own `validateWorkflow` judges the draft, with `executeCode: false`: a `code` node is syntax-checked and never
+  run. Only the DSL's node types pass. A refusal carries the validator's own issue (its code, path and message).
+- The tools a draft names (a `call` node's `tool`, a model node's `tools`, as the DSL's `inspectWorkflow` lists them)
+  must all be in the host's tool list: the one list of names a workflow can bind on any harness. Under AgentRun the
+  server passes its tool table's names. A harness's built-in tool names (Codex's `exec_command`, Pi's `bash`, Claude
+  Code's `Bash`) are not in it: a harness adapter maps its calls back to the shared names.
+- The checker fails closed. With no host tool list, a draft that names any tool is refused with "no host tool list
+  given: pass --tools <file> or run it under the host". A draft that names no tool checks without one.
+
+## The merge policy
+
+Each changed path has a class, and the class says how it merges. The checker reports both for every path.
+
+| Class | Paths | Merges |
+| --- | --- | --- |
+| `note` | `learnings/L-<id>.md` | on its own, once the checker and the screen pass |
+| `index` | `learnings/INDEX.md` | on its own, once the checker and the screen pass |
+| `memo` | `memos/<run id>.md` | on its own, once the checker passes |
+| `skill` | `.agents/skills/<name>/SKILL.md` | when a person approves |
+| `workflow` | `workflows/<name>/` | when a person approves |
+
+An agent's policy may let skills and workflow drafts merge on their own too (`--auto-merge skill,workflow`).
+
+Before a merge, in this order:
+
+1. The checker passes on the run's branch.
+2. The injection screen: every new or changed note, skill and workflow draft goes through the same page-injection screen
+   a page the agent reads goes through, the host's `classifyPage` judge scored against `INJECTION_THRESHOLD` (0.75, from
+   `@parcha/pi-browser`). A score at or over the threshold is refused. An item the screen could not judge is held for a
+   person.
+3. The review skill reads what is left and merges what is general, new and consistent with `main`. It refuses
+   duplicates, notes that contradict `main` without superseding the old note, and anything tied to one case.
+
+A merge is a merge commit on `main` whose message holds the review's verdict and its reason. `main` is never force-pushed
+or rebased.
 
 ## What the checker reports
 
-Each problem names a rule and, when there is one, the file. It never prints a value it refused.
+`{ problems, paths, merge }`. Each problem names a rule and, when there is one, the file; it never prints a value it
+refused. Each path has its class and how it merges. `merge` is `refused` on any problem, else `person` when any path
+waits for one, else `auto`.
 
 | Rule | Meaning |
 | --- | --- |
 | `branch` | the branch is not `runs/<run id>`, or shares no history with the base |
-| `untouched` | a change to `AGENTS.md` or `agent.json` |
+| `too_many_files` | more than 64 changed paths |
+| `locked` | a locked path |
+| `git_file` | a `.gitattributes` or `.gitmodules` |
+| `file_mode` | a symlink, a gitlink or an executable |
 | `outside_layout` | a changed path the layout does not hold |
-| `file_mode` | not a regular, non-executable file |
 | `deleted` | a note, the index or a memo deleted |
 | `too_large` | over a byte cap |
 | `too_many_notes` | more than 8 new notes |
 | `encoding` | not UTF-8 |
+| `lfs_pointer` | a Git LFS pointer |
 | `secret_shape` | text shaped like a secret, by kind |
 | `secret_value` | a value the host named as secret |
 | `memo_missing` | the branch carries no memo of its own |
 | `memo` | the memo's front matter or sections are out of shape |
 | `memo_run` | the memo's `run` is not the branch's |
-| `memo_base` | the memo's `base` is not the commit the branch starts from |
+| `memo_base` | the memo's `base` is not the commit the run started from |
 | `memo_unlisted` | a changed file the memo's `## Proposed changes` does not name |
 | `other_memo` | a change to another run's memo |
 | `note` | a note out of shape, or whose id is not its file name |
@@ -178,6 +239,6 @@ Each problem names a rule and, when there is one, the file. It never prints a va
 | `index` | an index line out of shape, or a note named twice |
 | `index_note` | an index line naming a note that is not on the branch |
 | `skill` | a skill out of shape |
-| `workflow` | a workflow draft that does not parse or validate, is not named for its folder, or is incomplete |
-| `harness_tool` | a workflow draft names a harness's built-in tool |
-| `unknown_tool` | a workflow draft names a tool outside the shared tool layer |
+| `workflow` | a draft the DSL refuses, not named for its folder, or incomplete |
+| `no_tool_list` | a draft names a tool and the host gave no tool list |
+| `unknown_tool` | a draft names a tool outside the host's tool list |

@@ -26,13 +26,11 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./tools.json": "./tools.json",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "SPEC.md",
-    "tools.json",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

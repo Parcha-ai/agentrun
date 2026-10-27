@@ -1,31 +1,15 @@
-import { readFileSync } from "node:fs";
+/** The refusal for a draft that names a tool when the host gave no tool list: the checker fails closed. */
+export const NO_TOOL_LIST = "no host tool list given: pass --tools <file> or run it under the host";
 
-/** `shared`: the tool names a workflow can bind on any harness. `harnesses`: each harness's built-in tool names, which a
- *  workflow draft never names. */
-export type ToolPolicy = { shared: readonly string[]; harnesses: Readonly<Record<string, readonly string[]>> };
+export type ToolCheck = (tools: readonly string[]) => { rule: "no_tool_list" | "unknown_tool"; detail: string }[];
 
-let defaults: ToolPolicy | undefined;
-
-/** The package's `tools.json`. */
-export function defaultTools(): ToolPolicy {
-  defaults ??= JSON.parse(readFileSync(new URL("../tools.json", import.meta.url), "utf8")) as ToolPolicy;
-  return { shared: [...defaults.shared], harnesses: Object.fromEntries(Object.entries(defaults.harnesses).map(([name, tools]) => [name, [...tools]])) };
-}
-
-export type ToolCheck = (tool: string) => { rule: "harness_tool"; harnesses: string[] } | { rule: "unknown_tool" } | undefined;
-
-/** A host's `shared` replaces the default; its `harnesses` only add names. A built-in name is refused in any case, even
- *  when `shared` holds it. */
-export function toolCheck(host: Partial<ToolPolicy> = {}): ToolCheck {
-  const base = defaultTools();
-  const shared = new Set(host.shared ?? base.shared);
-  const builtIn = new Map<string, Set<string>>();
-  for (const harnesses of [base.harnesses, host.harnesses ?? {}]) {
-    for (const [harness, tools] of Object.entries(harnesses)) for (const tool of tools) builtIn.set(tool.toLowerCase(), (builtIn.get(tool.toLowerCase()) ?? new Set()).add(harness));
-  }
-  return (tool) => {
-    const harnesses = builtIn.get(tool.toLowerCase());
-    if (harnesses) return { rule: "harness_tool", harnesses: [...harnesses].sort() };
-    return shared.has(tool) ? undefined : { rule: "unknown_tool" };
+/** Checks a draft's tool names against the host's one tool list, the names a workflow can bind on any harness. Without
+ *  a list, a draft that names any tool is refused. */
+export function toolCheck(hostTools?: readonly string[]): ToolCheck {
+  const allowed = hostTools === undefined ? undefined : new Set(hostTools);
+  return (tools) => {
+    if (!tools.length) return [];
+    if (!allowed) return [{ rule: "no_tool_list", detail: NO_TOOL_LIST }];
+    return tools.filter((tool) => !allowed.has(tool)).map((tool) => ({ rule: "unknown_tool", detail: `names ${tool}, which is not in the host's tool list` }));
   };
 }

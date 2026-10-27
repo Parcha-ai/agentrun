@@ -7,9 +7,9 @@ export const FORK = "3f9c2e1a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e";
 export const NOTE_ID = "L-7c21e0a4b9d3";
 export const OLD_NOTE = "L-0a93ff12c4e7";
 
-export const memo = ({ run = RUN, base = FORK.slice(0, 7), outcome = "completed", extra = "", proposed = ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/find-policies/ (new)", "workflows/find-policies/ (new draft)"] } = {}) => `---
+export const memo = ({ run = RUN, base = FORK, outcome = "completed", extra = "", proposed = ["learnings/L-7c21e0a4b9d3.md (new)", ".agents/skills/find-policies/ (new)", "workflows/find-policies/ (new draft)"] } = {}) => `---
 run: ${run}
-base: ${base}            # the commit of main the run read
+base: ${base}            # the commit of main the run read, written by the host
 harness: codex
 outcome: ${outcome}
 cost_usd: 0.42
@@ -64,12 +64,34 @@ export function cleanFiles() {
   };
 }
 
+/** The host's tool list in these tests. */
+export const HOST_TOOLS = ["fetch_page", "browser"];
+
+/** A draft with a code node, a call node on a host tool and a Jev judge node. */
+export const richWorkflow = ({ tool = "fetch_page", code = "s => ({ target: s.url + \"/policies/\" })" } = {}) => JSON.stringify({
+  v: 2,
+  name: "find-policies",
+  schemas: {
+    Store: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+    Page: { type: "object" },
+    Verdict: { type: "object", properties: { states_refunds: { type: "boolean", description: "Does the page state the store's refund policy?" } }, required: ["states_refunds"] },
+  },
+  input: { schemaId: "Store" },
+  output: { schemaId: "Verdict", path: "verdict" },
+  root: { node: "chain", steps: [
+    { node: "code", label: "prep", code },
+    { node: "call", label: "fetch", via: "tool", tool, args: { url: "{target}" }, out: "Page", as: "page", deadline_s: 30 },
+    { node: "judge", label: "refund", state: { page: "{page}" }, out: "Verdict", as: "verdict" },
+  ] },
+}, null, 2);
+
 /** The files on main the branch starts from. */
 export const MAIN_FILES = ["AGENTS.md", "agent.json", "learnings/INDEX.md", `learnings/${OLD_NOTE}.md`];
 
-/** Checks `files` (path to text, Buffer, or null for a deletion) as the run's changes on `branch`. A path on main is
- *  `modified`, any other `added`. `mode` gives a path's git mode. */
-export function check(files, { branch = BRANCH, forkPoint = FORK, main = MAIN_FILES, mode = {}, ...rest } = {}) {
+/** Checks `files` (path to text, Buffer, or null for a deletion) as the run's changes on `branch`, with the host's tool
+ *  list unless `tools` is given (undefined: none). A path on main is `modified`, any other `added`. `mode` gives a
+ *  path's git mode. Returns the whole report. */
+export function report(files, { branch = BRANCH, forkPoint = FORK, main = MAIN_FILES, mode = {}, ...rest } = {}) {
   const changes = Object.entries(files).map(([path, text]) => ({
     path,
     status: text === null ? "deleted" : main.includes(path) ? "modified" : "added",
@@ -78,8 +100,11 @@ export function check(files, { branch = BRANCH, forkPoint = FORK, main = MAIN_FI
   }));
   const head = new Set([...main, ...Object.keys(files)]);
   for (const [path, text] of Object.entries(files)) if (text === null) head.delete(path);
-  return checkRun({ branch, changes, forkPoint, headFiles: head, ...rest });
+  return checkRun({ branch, changes, forkPoint, headFiles: head, tools: HOST_TOOLS, ...rest });
 }
+
+/** The problems `report` finds. */
+export const check = (files, options) => report(files, options).problems;
 
 /** The rules a check reported, sorted, each once. */
 export const rules = (problems) => [...new Set(problems.map((p) => p.rule))].sort();

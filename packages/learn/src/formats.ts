@@ -120,7 +120,7 @@ export function parseMemo(text: string): Memo | string[] {
   const run = fields.get("run") ?? "";
   const base = fields.get("base") ?? "";
   if (run && !RUN_ID.test(run)) out.push("run is not a run id");
-  if (base && !/^[0-9a-f]{7,64}$/.test(base)) out.push("base is not 7 to 64 lowercase hex digits");
+  if (base && !COMMIT_SHA.test(base)) out.push("base is not a full commit id");
   if (fields.get("outcome") && !["completed", "failed", "stopped"].includes(fields.get("outcome")!)) out.push("outcome is not completed, failed or stopped");
   if (fields.has("harness") && !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(fields.get("harness")!)) out.push("harness is not a short lowercase name");
   if (fields.has("cost_usd") && !/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(fields.get("cost_usd")!)) out.push("cost_usd is not a number of dollars, 0 or more");
@@ -174,10 +174,11 @@ export function skillProblems(text: string, name: string): string[] {
   return out;
 }
 
-export type DraftProblem = { rule: "workflow" | "harness_tool" | "unknown_tool"; detail: string };
+export type DraftProblem = { rule: "workflow" | "no_tool_list" | "unknown_tool"; detail: string };
 
-/** Why `workflows/<name>/workflow.json` is not a draft every harness can run; empty when it is. Checked without running
- *  any code the draft holds. */
+/** Why `workflows/<name>/workflow.json` is not a draft every harness can run; empty when it is. The DSL's own
+ *  `validateWorkflow` judges it, with `executeCode: false` so no code the draft holds is run (a code node is
+ *  syntax-checked), and `inspectWorkflow` names its tools: a call node's `tool` and a model node's `tools`. */
 export function draftProblems(text: string, name: string, tools: ToolCheck): DraftProblem[] {
   let doc: unknown;
   try {
@@ -185,15 +186,9 @@ export function draftProblems(text: string, name: string, tools: ToolCheck): Dra
   } catch {
     return [{ rule: "workflow", detail: "it does not parse as JSON" }];
   }
-  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return [{ rule: "workflow", detail: "it is not a workflow document" }];
   const valid = validateWorkflow(doc as Workflow, { executeCode: false });
-  if (!valid.ok) return valid.errors.slice(0, 5).map((error) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${error.slice(0, 200)}` }));
+  if (!valid.ok) return valid.issues.slice(0, 5).map((issue) => ({ rule: "workflow", detail: `the workflow DSL refuses it: ${issue.code} at ${issue.path || "/"}: ${issue.message.slice(0, 200)}` }));
   const out: DraftProblem[] = [];
   if ((doc as { name?: unknown }).name !== name) out.push({ rule: "workflow", detail: `its name is not the folder's name, ${name}` });
-  for (const tool of inspectWorkflow(doc).requires.tools) {
-    const refused = tools(tool);
-    if (refused?.rule === "harness_tool") out.push({ rule: "harness_tool", detail: `names ${tool}, a built-in tool of ${refused.harnesses.join(" and ")}; a draft names only tools of the shared tool layer` });
-    else if (refused) out.push({ rule: "unknown_tool", detail: `names ${tool}, which is not in the shared tool layer` });
-  }
-  return out;
+  return [...out, ...tools(inspectWorkflow(doc).requires.tools)];
 }
