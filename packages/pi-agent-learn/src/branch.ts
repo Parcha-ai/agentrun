@@ -131,9 +131,12 @@ const PLAIN_PATH = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\/?$/;
 
 /** The memo as the host renders it when it cannot land as the run wrote it: the front matter's facts, each checked, a line
  *  saying why in "What happened", a host line in "What I learned" and "What could be better", and "Proposed changes" as
- *  the paths it named and nothing after them. No text of the run's lands, not even a Review it wrote. Undefined when the
- *  front matter does not hold a run, a base and an outcome. */
-export function hostRenderedMemo(memo: string, reason: string): string | undefined {
+ *  the paths it named that the run's branch `changed` (or a folder, ending in `/`, that holds one) and nothing after them.
+ *  No text of the run's lands, not even a Review it wrote or a token spelled as a path. Undefined when the front matter
+ *  does not hold a run, a base and an outcome. */
+export function hostRenderedMemo(memo: string, reason: string, changed: Iterable<string>): string | undefined {
+  const touched = [...changed];
+  const named = (path: string) => (path.endsWith("/") ? touched.some((file) => file.startsWith(path)) : touched.includes(path));
   const front = FRONT.exec(memo);
   if (!front) return undefined;
   const facts = new Map(front[1]!.split("\n").map((line) => /^([a-z_]+): (.*)$/.exec(line.replace(/\s+#.*$/, ""))).filter((m) => m !== null).map((m) => [m![1]!, m![2]!.trim()]));
@@ -146,7 +149,7 @@ export function hostRenderedMemo(memo: string, reason: string): string | undefin
   const cost = facts.get("cost_usd");
   const body = memo.slice(front[0].length);
   const proposed = /(?:^|\n)## Proposed changes\n([\s\S]*?)(?=\n## |$)/.exec(body)?.[1] ?? "";
-  const paths = [...new Set(proposed.split("\n").map((line) => /^- (\S+)/.exec(line)?.[1]).filter((p): p is string => p !== undefined && PLAIN_PATH.test(p) && !p.split("/").includes("..")))].slice(0, CAPS.files);
+  const paths = [...new Set(proposed.split("\n").map((line) => /^- (\S+)/.exec(line)?.[1]).filter((p): p is string => p !== undefined && PLAIN_PATH.test(p) && !p.split("/").includes("..") && named(p)))].slice(0, CAPS.files);
   return [
     "---",
     `run: ${run}`,
