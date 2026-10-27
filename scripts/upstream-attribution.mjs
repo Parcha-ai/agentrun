@@ -49,16 +49,57 @@ async function filesUnder(dir) {
   return out;
 }
 
-/** Mentions of a mark that are someone else's words, by package directory: [file, literal, why]. A listed literal that is
- *  no longer there fails too, so the list cannot go stale. */
+/** Mentions of a mark that are someone else's words, by package directory: [file, literal, count, why]. The file must hold
+ *  the literal exactly `count` times, on lines with no other mark: one more mention, or one fewer, fails. */
 export const ALLOWED_MARKS = {
-  // pi-browser's synced Stagehand facade names the AI SDK its upstream tested with; the file is a snapshot this repository
-  // does not edit (AGENTS.md).
+  // pi-browser's synced Stagehand facade names the AI SDK its upstream tested with (nominative use); the file is a snapshot
+  // this repository does not edit (AGENTS.md).
   'pi-browser': [
-    ['dist/vendor/stagehand-facade/contract.js', 'Vercel AI SDK', "upstream Stagehand's comment"],
-    ['dist/vendor/stagehand-facade/contract.d.ts', 'Vercel AI SDK', "upstream Stagehand's comment"],
+    ['dist/vendor/stagehand-facade/contract.js', 'Vercel AI SDK', 2, "upstream Stagehand's comments"],
+    ['dist/vendor/stagehand-facade/contract.d.ts', 'Vercel AI SDK', 1, "upstream Stagehand's comment"],
   ],
 };
+
+/** Each `<svg>...</svg>` block in a text. */
+const svgBlocks = (text) => [...text.matchAll(/<svg[\s>][\s\S]*?<\/svg>/gi)].map((m) => m[0]);
+
+/** Whether an SVG draws Vercel's mark: the name, or its logo, a lone equilateral triangle with its apex up (a path or a
+ *  polygon of exactly three points whose base is level and whose height is 0.866 of the base, within 10%). */
+export function svgHasMark(svg) {
+  if (MARKS.test(svg)) return true;
+  const shapes = [
+    ...[...svg.matchAll(/<polygon[^>]*\bpoints\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]),
+    ...[...svg.matchAll(/<path[^>]*\bd\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]),
+  ];
+  return shapes.some(isUpTriangle);
+}
+
+/** A polygon's points or a path's commands as absolute vertices: M/L/H/V/Z paths and point lists only; anything with
+ *  curves or relative steps is not the logo. */
+function isUpTriangle(spec) {
+  if (/[a-y]/.test(spec.replace(/e[-+]?\d/g, '')) || /[CQSTA]/i.test(spec)) return false;
+  const points = [];
+  let x = 0, y = 0;
+  const tokens = spec.match(/[MLHVZ]|-?\d*\.?\d+(?:e[-+]?\d+)?/gi) ?? [];
+  let command = 'L';
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (/^[MLHVZ]$/i.test(t)) { command = t.toUpperCase(); if (command === 'Z') continue; continue; }
+    if (command === 'H') x = Number(t);
+    else if (command === 'V') y = Number(t);
+    else { x = Number(t); y = Number(tokens[++i]); }
+    points.push([x, y]);
+  }
+  const unique = points.filter(([px, py], i) => !points.slice(0, i).some(([qx, qy]) => Math.abs(px - qx) < 1e-6 && Math.abs(py - qy) < 1e-6));
+  if (unique.length !== 3) return false;
+  const sorted = [...unique].sort((a, b) => a[1] - b[1]);
+  const [apex, b1, b2] = sorted;
+  const base = Math.abs(b1[0] - b2[0]);
+  if (base === 0 || Math.abs(b1[1] - b2[1]) > base * 0.02) return false;
+  const height = b1[1] - apex[1];
+  const centered = Math.abs(apex[0] - (b1[0] + b2[0]) / 2) <= base * 0.05;
+  return centered && height > 0 && Math.abs(height / base - 0.866) <= 0.0866;
+}
 
 const TEXT = /\.(?:[cm]?js|d\.[cm]?ts|ts|json|md|txt|html|css|ya?ml)$|(?:^|\/)(?:NOTICE|LICENSE|README|CHANGELOG)(?:\.[a-z]+)?$/i;
 
@@ -75,23 +116,28 @@ export async function boundaryProblems(root, { shipped, allow = [] } = {}) {
   let upstream;
   if (ships.includes(UPSTREAM_FILE)) { try { upstream = JSON.parse(await readFile(join(root, UPSTREAM_FILE), 'utf8')); } catch {} }
   const copied = copiedPaths(upstream);
-  const used = new Set();
+  const used = new Map();
   for (const name of ships) {
     if (IMAGE.test(name)) { problems.push(`${name}: an image ships`); continue; }
     if (!TEXT.test(name)) continue;
     const text = await readFile(join(root, name), 'utf8').catch(() => '');
     if (/\.(?:[cm]?js|d\.[cm]?ts|ts)$/.test(name)) for (const specifier of specifiersOf(text)) if (banned(packageNameOf(specifier))) problems.push(`${name} imports ${specifier}`);
+    // Any package may draw an SVG (a test kit's images); none may draw Vercel's mark in one.
+    for (const svg of svgBlocks(text)) if (svgHasMark(svg)) problems.push(`${name}: an SVG with a Vercel mark`);
     if (name === 'NOTICE' || name === UPSTREAM_FILE || name === 'LICENSE') continue;
     text.split('\n').forEach((line, index) => {
       const header = index < 4 && HEADER.test(line);
       if (header && !copied.has(name)) problems.push(`${name}:${index + 1} has a copied-file header, and no UPSTREAM.json records the file`);
       if (!MARKS.test(line) || header) return;
       const allowed = allow.find(([file, literal]) => file === name && line.includes(literal) && !MARKS.test(line.replaceAll(literal, '')));
-      if (allowed) { used.add(`${allowed[0]} ${allowed[1]}`); return; }
+      if (allowed) { const k = `${allowed[0]} ${allowed[1]}`; used.set(k, (used.get(k) ?? 0) + line.split(allowed[1]).length - 1); return; }
       problems.push(`${name}:${index + 1} names Vercel or one of its marks`);
     });
   }
-  for (const [file, literal] of allow) if (!used.has(`${file} ${literal}`)) problems.push(`allowed mark no longer found: ${file} ${literal}`);
+  for (const [file, literal, count] of allow) {
+    const seen = used.get(`${file} ${literal}`) ?? 0;
+    if (seen !== count) problems.push(`allowed mark ${file} "${literal}": ${seen} found, ${count} allowed`);
+  }
   return problems;
 }
 
