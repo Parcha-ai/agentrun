@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
+import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
@@ -177,6 +178,16 @@ function kernelTool(tool: HostTool, io: SessionIO): KernelTool {
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
+/** Root keywords the pinned CLI (2.1.286) drops a tool for, with no word to the model or the host: measured, a root
+ *  `{ "type": "object", "anyOf": [...] }` (or allOf, oneOf) never reaches the model while the session's other tools do. */
+const CLI_DROPS_ROOT = ["anyOf", "allOf", "oneOf"] as const;
+
+/** What the Claude path refuses in a tool's input schema beyond `toolSchemaProblems`, measured on the pinned CLI and
+ *  Anthropic's API (tuple `items`, the one shape the API rejects, is already invalid 2020-12). */
+function claudeSchemaProblems(tool: string, schema: Record<string, unknown>): string[] {
+  return CLI_DROPS_ROOT.filter((key) => key in schema).map((key) => `${tool}: /${key}: the Claude Agent CLI drops a tool whose root has ${key}; put the alternatives under a property`);
+}
+
 export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAdapter {
   const thinking = options.thinking ?? "medium";
   if (!THINKING.has(thinking)) throw new ClaudeAgentThinkingOff(thinking);
@@ -206,6 +217,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one the Claude Agent SDK takes (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
+        // What every harness refuses (the root, JSON Schema 2020-12, a remote $ref), then what this one measured.
+        const common = toolSchemaProblems(tool.name, tool.inputSchema);
+        problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(tool.name, tool.inputSchema)));
       }
       return problems;
     },
