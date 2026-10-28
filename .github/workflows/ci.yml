@@ -55,6 +55,9 @@ jobs:
       - name: Demo setup prompts match their specs
         if: matrix.shard == 'checks'
         run: node scripts/check-setup-prompts.mjs
+      - name: undici in this install is at or above its floor
+        if: matrix.shard == 'checks'
+        run: node scripts/check-undici.mjs
       - if: matrix.shard == 'checks'
         run: node scripts/generate-schema.mjs --check
       - if: matrix.shard == 'checks'
