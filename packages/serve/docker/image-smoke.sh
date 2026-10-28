@@ -1,8 +1,9 @@
 #!/bin/sh
 # The image serves: a container of <image>, published on a loopback port only, answers GET /v2/health with 200 and
 # status ok, and GET /v2/capabilities with the contract. Where capabilities list the harnesses, pi is available;
-# claude-agent, whose SDK the image does not carry (image-check.sh), is unavailable as not installed, with the one line
-# that installs it; and any other harness is available, or unavailable with a reason a person can act on, not an import
+# claude-agent, whose SDK the image does not carry (image-check.sh), is never available: it is unavailable as not
+# installed, with the one line that installs it, or as a harness this server does not run yet (a serve without its
+# Claude wiring); and any other harness is available, or unavailable with a reason a person can act on, not an import
 # error (a reason that says it is not installed gives the line that installs it). The container is stopped and removed
 # by its own name, its anonymous /data volume with it. Needs docker and node. Arguments after the image go to
 # `docker run` (`-e AGENT_MODEL=...`, say), so a model can be configured and each adapter's own install check is reached.
@@ -54,7 +55,7 @@ if (Array.isArray(caps.harnesses)) {
       const reason = String(h.reason ?? "");
       if (!reason) fail(`${h.id} is unavailable with no reason`);
       if (/ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)|ERR_PACKAGE_PATH|SyntaxError|TypeError/.test(reason)) fail(`${h.id}'s reason is an error, not words a person can act on: ${reason}`);
-      if (h.id === "claude-agent" && !/not installed/i.test(reason)) fail(`claude-agent is unavailable, but not as not installed: ${reason}`);
+      if (h.id === "claude-agent" && !/not installed/i.test(reason) && !/does not run claude-agent yet/.test(reason)) fail(`claude-agent is unavailable, but neither as not installed nor as a harness this server does not run yet: ${reason}`);
       if (/not installed/i.test(reason) && !/npm install (?:--?[A-Za-z][A-Za-z-]* )*@/.test(reason)) fail(`${h.id} says it is not installed but gives no install line: ${reason}`);
     } else if (h.id === "claude-agent") fail("claude-agent is available, but the image carries no Claude Agent SDK");
     lines.push(`${h.id}: ${h.available ? "available" : `unavailable (${h.reason})`}`);

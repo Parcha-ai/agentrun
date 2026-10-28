@@ -4,13 +4,14 @@
 // failure it shows the container's log with any key withheld, and it always removes the container it started.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { harnessesOf } from "../dist/harness.js";
 
 const SMOKE = fileURLToPath(new URL("../docker/image-smoke.sh", import.meta.url));
 /** The address the smoke publishes the container on (its `loopback=`), which the stand-in container answers on. */
@@ -55,6 +56,18 @@ test("the smoke publishes on loopback only", () => {
   assert.match(LOOPBACK ?? "", /^127\.\d+\.\d+\.\d+$/);
 });
 
+test("the smoke runs as documented, `docker/image-smoke.sh <image>`: it is executable", () => {
+  assert.ok(statSync(SMOKE).mode & 0o100, `docker/image-smoke.sh is mode ${(statSync(SMOKE).mode & 0o777).toString(8)}, not executable`);
+});
+
+test("an image of this serve passes, by the harnesses this serve really reports (claude-agent: a harness it does not run yet)", async (t) => {
+  const harnesses = harnessesOf({});
+  assert.ok(harnesses.some((h) => h.id === "claude-agent"), "this serve lists claude-agent");
+  const r = await smoke(t, serving(harnesses));
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /claude-agent: unavailable \(/);
+});
+
 const claude = { id: "claude-agent", available: false, reason: "The Claude Agent SDK 0.3.286 is not installed; npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286" };
 
 test("an image that serves passes: health 200 ok, pi available, claude-agent not installed with its install line, another harness available or set-up-able", async (t) => {
@@ -75,7 +88,7 @@ for (const [why, answer, said] of [
   ["a harness whose reason is an import error", serving([pi, { id: "claude-agent", available: false, reason: "Cannot find package '@anthropic-ai/claude-agent-sdk'" }]), /claude-agent's reason is an error/],
   ["a harness not installed with no install line", serving([pi, { id: "codex", available: false, reason: "Codex is not installed" }]), /codex says it is not installed but gives no install line/],
   ["claude-agent available, though the image carries no Claude Agent SDK", serving([pi, { id: "claude-agent", available: true }]), /claude-agent is available, but the image carries no Claude Agent SDK/],
-  ["claude-agent unavailable for another reason than not installed", serving([pi, { id: "claude-agent", available: false, reason: "No model key is set" }]), /claude-agent is unavailable, but not as not installed/],
+  ["claude-agent unavailable for another reason than not installed or not run yet", serving([pi, { id: "claude-agent", available: false, reason: "No model key is set" }]), /claude-agent is unavailable, but neither as not installed nor as a harness this server does not run yet/],
 ]) {
   test(`the smoke fails on ${why}, says so, shows the log with its keys withheld, and removes the container`, { timeout: 30_000 }, async (t) => {
     const r = await smoke(t, answer);
