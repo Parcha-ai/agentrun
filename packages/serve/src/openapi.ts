@@ -179,8 +179,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   "Features/timeline": { live_workflow_rows: { type: "boolean", description: "Whether a workflow run's rows arrive while it runs.", "x-agentrun-serve": "serve/1" } },
 };
 
-/** What a run refused `409 agent_not_runnable` holds in `error.details` here (server.ts, from runnable.ts's blockers). */
-const NOT_RUNNABLE_DETAILS = {
+/** What a run refused `409 agent_not_runnable` holds in `error.details` here: what keeps its revision from running
+ *  (server.ts, from runnable.ts's blockers), or, for an archived agent, when it was archived (server.ts, runs.ts). */
+const BLOCKED_DETAILS = {
   type: "object", additionalProperties: false, required: ["unbound", "missing"],
   properties: {
     unbound: { type: "array", items: { type: "string" }, description: "The tools the revision names that this server does not bind, or does not bind on its harness." },
@@ -191,6 +192,11 @@ const NOT_RUNNABLE_DETAILS = {
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },
   },
 };
+const ARCHIVED_DETAILS = {
+  type: "object", additionalProperties: false, required: ["archived_at"],
+  properties: { archived_at: { type: "string", format: "date-time", description: "When the agent was archived: unarchive it to run it." } },
+};
+const NOT_RUNNABLE_DETAILS = { oneOf: [BLOCKED_DETAILS, ARCHIVED_DETAILS] };
 
 /** The contract as vendored, read once. */
 function contract(): Json {

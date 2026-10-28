@@ -124,6 +124,13 @@ test("the served definition takes exactly the fields this server takes: a contra
   assert.ok(shape, "the document gives agent_not_runnable's details");
   assert.deepEqual(schemaProblems(doc, shape, run.body.error.details), [], JSON.stringify(run.body.error.details));
   assert.equal(run.body.error.details.harness, "claude-agent");
+  // An archived agent is refused the same way, with when it was archived.
+  assert.equal((await api("POST", "/agents", agent("put-away"))).status, 201);
+  assert.equal((await api("POST", "/agents/put-away/archive")).status, 200);
+  const archived = await api("POST", "/agents/put-away/runs", { input: { content: "hi" } });
+  assert.deepEqual([archived.status, archived.body.error.code], [409, "agent_not_runnable"]);
+  assert.deepEqual(schemaProblems(doc, shape, archived.body.error.details), [], JSON.stringify(archived.body.error.details));
+  assert.equal(typeof archived.body.error.details.archived_at, "string");
 });
 
 test("the document is OpenAPI 3.1 in shape: operations with responses, ids unique, path parameters declared, every reference whole", async (t) => {
