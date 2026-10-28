@@ -455,3 +455,27 @@ test("a reply that answers only once its turn is stopped leaves the run stopped,
   await follow(api, run_id, ["completed"]);
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
 });
+
+test("a stop saved before its abort reached the run is finished by the next server: the adopted turn is aborted, so a follow-up runs at once", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  const { run_id } = await startRun(first.api, "slow", "Take your time.");
+  await untilState(first.api, run_id, ["working", "working"]);
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", run_id, "run.json"), "utf8"));
+  assert.ok(alive(holder.pid), "the run's process outlived its server");
+  t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  // The server died after it saved the stop and before its abort reached the run: the turn still works.
+  const meta = join(data, "runs", run_id, "serve.json");
+  await writeFile(meta, `${JSON.stringify({ ...JSON.parse(await readFile(meta, "utf8")), stopped_after: 1 })}\n`);
+  const next = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(next.baseUrl, next.token);
+  await untilState(api, run_id, ["input_required", "idle"]);
+  // Behind a turn still running (60 s), the follow-up would wait past follow's 30 s.
+  assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
+  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 });
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+});
