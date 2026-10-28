@@ -20,15 +20,33 @@ const SCHEMA_ONE = new Set(["items", "additionalItems", "additionalProperties", 
 const SCHEMA_LISTS = new Set(["allOf", "anyOf", "oneOf", "prefixItems", "items"]);
 const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"]);
 
+/** The `$schema` dialects Anthropic's API takes (measured; with or without a trailing "#"). Any other value, or one that
+ *  is not a string, it rejects. A schema is checked as 2020-12 whichever of these it names, as the API does. */
+const DIALECTS = new Set([
+  "https://json-schema.org/draft/2020-12/schema", "https://json-schema.org/draft/2019-09/schema",
+  "http://json-schema.org/draft-07/schema", "http://json-schema.org/draft-06/schema", "http://json-schema.org/draft-04/schema",
+]);
+
 /** Where `schema`, the input schema of the tool `tool`, is refused on every harness, as `<tool>: <JSON pointer>: <why>`;
  *  empty when it may be used. */
 export function toolSchemaProblems(tool: string, schema: unknown): string[] {
   if (!isPlain(schema) || schema.type !== "object") {
-    return [`${tool}: /: the root must be {"type": "object"} (a tool's input is an object of arguments), not ${JSON.stringify(isPlain(schema) ? schema.type ?? null : schema).slice(0, 60)}`];
+    return [`${tool}: /: the root must be {"type": "object"} (a tool's input is an object of arguments), not ${String(JSON.stringify(isPlain(schema) ? schema.type ?? null : schema) ?? schema).slice(0, 60)}`];
   }
   const problems: string[] = [];
+  const { $schema: dialect, ...body } = schema;
+  if (dialect !== undefined && !(typeof dialect === "string" && DIALECTS.has(dialect.replace(/#$/, "")))) {
+    problems.push(`${tool}: /$schema: ${String(JSON.stringify(dialect)).slice(0, 80)} names no JSON Schema dialect (2020-12, 2019-09, draft-07, -06 or -04)`);
+  }
   metaschema ??= new Ajv2020({ strict: false, allErrors: true });
-  if (!metaschema.validateSchema(schema)) {
+  let valid: boolean;
+  try {
+    valid = metaschema.validateSchema(body) as boolean;
+  } catch (error) {
+    problems.push(`${tool}: /: ${String((error as Error)?.message ?? error).slice(0, 120)} (not valid JSON Schema 2020-12)`);
+    valid = true;
+  }
+  if (!valid) {
     // One problem per place: the metaschema's own anyOf wrappers repeat a place's failure.
     const seen = new Set<string>();
     for (const error of metaschema.errors ?? []) {
