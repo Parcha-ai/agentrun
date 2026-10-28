@@ -120,7 +120,9 @@ export class Agents {
       const texts = this.texts(held.map(([, sha]) => sha));
       files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
     }
-    const revision = this.revisionOf(definition, files, note);
+    // An edit that names no harness keeps the agent's, as it keeps its skill files: absent here is unchanged, not pi.
+    const current = entry.revision?.body.harness;
+    const revision = this.revisionOf(definition.harness === undefined && current ? { ...definition, harness: current } : definition, files, note);
     await this.checked(revision);
     await check?.(revision);
     // The checks awaited: another request may have moved the current revision meanwhile, so read it again.

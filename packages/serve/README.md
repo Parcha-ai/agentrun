@@ -227,7 +227,9 @@ above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap
 ## Harnesses
 
 A definition names the harness that runs it: `pi` (the default, and what a definition that names none gets),
-`claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it.
+`claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
+(`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
+back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
