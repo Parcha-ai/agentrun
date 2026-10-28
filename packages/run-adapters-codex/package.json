@@ -44,6 +44,14 @@
     "@parcha/agentrun-adapters": "0.1.0-beta.27",
     "@parcha/agentrun-dsl": "0.1.0-beta.27"
   },
+  "peerDependencies": {
+    "@openai/codex": "0.164.0"
+  },
+  "peerDependenciesMeta": {
+    "@openai/codex": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@openai/codex": "0.164.0"
   },

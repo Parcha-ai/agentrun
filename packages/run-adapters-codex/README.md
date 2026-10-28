@@ -33,8 +33,10 @@ const runNode = createHarnessRunner(
   call an effect recorded before it runs). A session a process died inside resumes from its records: a `safe` tool runs
   again, a `never` tool's cut-off call is reported to the model as interrupted and never repeated.
 
-The adapter is pinned to Codex 0.164.0 (`@openai/codex`, a dev dependency here): `check` refuses a session when the
-binary is missing or is not that build. `CODEX_BIN` names another path to the same build.
+The adapter is pinned to Codex 0.164.0. `@openai/codex` is the host's: an exact optional peer dependency, never shipped
+here (`npm install --save-exact @openai/codex@0.164.0`). `codexAdapter()` checks the binary against the pins when it is
+made and throws `CodexNotInstalled` or `CodexPinMismatch` before any run starts. `CODEX_BIN` names another path to the
+same build.
 
 Code this package copies from another project is listed in `vendor/durable-harness/UPSTREAM.json` and credited in
 `NOTICE`.
