@@ -11,7 +11,7 @@ import type { HeldPlan, InjectionScreen, Judge, LandHeldResult } from "@parcha/p
 import type { Repo } from "@parcha/pi-git-remote";
 import { type Agents, whenFree } from "./agents.js";
 import { NODE_TOOLS } from "./app.js";
-import { CATCH_UP_BUSY_MS, learningOf, learningRunsDir, openAgentRepo, readRunState, type RunState, withAgentRepo, writeRunState } from "./learning.js";
+import { CATCH_UP_BUSY_MS, learningOf, learningRunsDir, openAgentRepo, type RunState, readRunState, withAgentRepo, writeRunState } from "./learning.js";
 
 /** What a host gives review: the injection screen (the browser lane's page judge and its threshold) and, in tests, the
  *  judge. Without `judge`, the judge is Jev's, on the server's TYPESAFE_API_KEY. */
@@ -86,7 +86,10 @@ export class Review {
     const counted: Judge = (params) =>
       new Promise((resolve, reject) => {
         const stop = this.stopping.signal;
-        const quit = () => ((silent = true), reject(new Error(JUDGE_SILENT)));
+        const quit = () => {
+          silent = true;
+          reject(new Error(JUDGE_SILENT));
+        };
         if (stop.aborted) return quit();
         const timer = setTimeout(quit, JUDGE_TIMEOUT_MS);
         stop.addEventListener("abort", quit, { once: true });
@@ -98,7 +101,10 @@ export class Review {
             if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) spent += cost;
             resolve(answer);
           }, reject)
-          .finally(() => (clearTimeout(timer), stop.removeEventListener("abort", quit)));
+          .finally(() => {
+            clearTimeout(timer);
+            stop.removeEventListener("abort", quit);
+          });
       });
     const { curate } = await import("@parcha/pi-agent-learn");
     const repo = await this.curator(agentId);

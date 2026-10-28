@@ -5,16 +5,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { learningId, proposeLearning, recordsOf } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
-import { childEnv } from "../dist/runs.js";
 import { readRunState, writeRunState } from "../dist/learning.js";
+import { childEnv } from "../dist/runs.js";
 import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
@@ -88,6 +88,8 @@ test("no injection screen: nothing is curated, main stays, the branch waits; a r
   await first.close();
   const again = await serve(t, { data: first.data, learning: { screen: SCREEN, judge: j.run } });
   assert.equal((await stateOf(again.data, "calc", runId, (s) => s.state === "merged")).state, "merged", "the start-time pass curates it");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 test("no judge: with no TYPESAFE_API_KEY the server starts, and the run's state says so", async (t) => {
@@ -177,6 +179,8 @@ test("approve survives a restart: the start-time pass never curates a held run w
   assert.equal(tip(bareOf(again.data, "calc"), "main"), main, "the start-time pass landed nothing");
   assert.equal((await readRunState(again.data, "calc", runId)).state, "awaiting_approval");
   assert.equal((await again.learning.approve("calc", runId, "token")).status, "landed");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 test("a held run is never judged again when the next run is reviewed", async (t) => {
@@ -278,6 +282,8 @@ test("a merged branch the server could not delete is deleted at the next start; 
   await again.learning.settled();
   assert.ok(!branches(bare).includes(`runs/${one}`), "the merged branch at its tip is deleted");
   assert.ok(branches(bare).includes(`runs/${two}`), "the one that moved is kept");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 test("a run whose memo the screen refuses leaves no planted marker anywhere on main", async (t) => {
@@ -333,7 +339,10 @@ test("a judge that never answers cannot hold shutdown: close() ends within the d
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   let asked = false;
-  const hung = () => ((asked = true), new Promise(() => {}));
+  const hung = () => {
+    asked = true;
+    return new Promise(() => {});
+  };
   const server = await startServe({ data: join(dir, "agents"), port: 0, faux: FAUX, drainTimeout: "5s", learning: { screen: SCREEN, judge: hung } });
   const api = client(server.baseUrl, server.token);
   await api("POST", "/agents", agent("calc", { learning: "auto" }));
@@ -351,7 +360,11 @@ test("a judge that never answers cannot hold shutdown: close() ends within the d
 function holdStore(t, data) {
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
   store.exec("BEGIN EXCLUSIVE");
-  const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
+  const release = () => {
+    if (!store.isOpen) return;
+    if (store.isTransaction) store.exec("ROLLBACK");
+    store.close();
+  };
   t.after(release);
   return release;
 }
