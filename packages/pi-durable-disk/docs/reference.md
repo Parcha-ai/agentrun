@@ -441,7 +441,10 @@ unprivileged user and only the archil client runs as root:
    a Node under your home directory (nvm) is usually not readable by another user, so install Node system-wide.
 2. **The archil wrapper, root-owned**, because root executes it. It starts `archil mount` in its own systemd scope, outside
    the instance's unit, so a restart in place finds its mount and claim still held, and it takes the mount token as one
-   line on stdin:
+   line on stdin. Root runs archil through it only in the shapes the claim uses (`mount [--force] <disk>:/<path>
+   <mountRoot>/runs/<run> --region <region>`, `unmount`, `checkin` and `delegations --json` of a listed archil mount
+   there, and its cleanup verbs), each with exact arguments; it refuses anything else with exit 2, so the drop-in below
+   grants no other archil command:
    `sudo install -D -o root -g root -m 0755 bin/archil-scoped /usr/local/lib/pi-durable-disk/archil-scoped`
    (from an npm install the file is `node_modules/@parcha/pi-durable-disk/bin/archil-scoped`, and `ARCHIL_SCOPED`, exported by
    the package, is its path). Point the driver at it: `localHost({ archil: "/usr/local/lib/pi-durable-disk/archil-scoped",
@@ -453,6 +456,9 @@ unprivileged user and only the archil client runs as root:
    ```
    pda ALL=(root) NOPASSWD: /usr/local/lib/pi-durable-disk/archil-scoped, /usr/bin/fusermount -u /mnt/archil/runs/*
    ```
+
+   Never a bare `/usr/bin/fusermount`, and never `mkdir` or `rmdir`: the run user owns `<mountRoot>/runs` (point 1), so the
+   claim makes and removes its mountpoints without root.
 
 4. **The supervisor runs as root** (it creates units, stops them, and writes each start's token under
    `/run/pi-durable-disk`, root-only), with `--user pda`, so instances never run as root; `localHost` refuses to start

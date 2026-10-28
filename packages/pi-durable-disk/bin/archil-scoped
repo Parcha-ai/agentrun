@@ -2,8 +2,17 @@
 # archil, with `mount` started in its own transient scope (<unit>-fuse-<n>.scope) when the caller runs inside a system
 # service, so the FUSE daemon that `archil mount` forks lives outside the instance unit's control group: stopping or
 # restarting the instance (KillMode=control-group) kills every command it started but never its mount, and an
-# in-place restart finds its claim still held. Any other verb, and any caller outside a system service, runs
-# archil unchanged. Run through sudo; install it root-owned, since root executes it.
+# in-place restart finds its claim still held. A caller outside a system service mounts without a scope. Run through
+# sudo; install it root-owned, since root executes it.
+#
+# Root runs archil only in the shapes the claim uses, each with exact arguments, and refuses anything else (an unknown
+# verb, an extra, missing or reordered flag, any argument holding a newline) with exit 2:
+#   mount [--force] <disk>:/<path> <root>/runs/<run> --region <region>
+#   unmount <root>/runs/<run>        checkin <root>/runs/<run>        delegations --json <root>/runs/<run>
+# and the cleanup verbs below. <disk> and <region> are one safe token each, <path> a relative path of safe segments
+# (never "." or ".."). A mountpoint passes the same checks as the cleanup verbs' (a plain <root>/runs/<run>, no link in
+# <root> or <root>/runs); `mount`'s must be a real directory there, not a link, and the other three name a fuse.archil
+# mount the mount table lists at exactly that path.
 #
 # `mount` reads its token as one line on stdin and hands it to archil only in the environment of that exec. The token
 # is never an argument and never in an environment sudo sees: sudo logs every variable it preserves. An empty line or
@@ -144,7 +153,36 @@ stray() {
   echo "archil-scoped: moved stray $mp to $dest; entries=$entries total=$total"
 }
 
+refuse() { echo "archil-scoped: refused: $*" >&2; exit 2; }
+safe_token() { printf '%s\n' "$2" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9_-]{0,63}' || refuse "$1 $2 is not one safe token"; }
+
+# A fuse.archil mount the table lists at exactly $1, never through a link (the table lists none under a link's name; a
+# dead mount's root cannot be stat'ed, so it is no link here either).
+archil_mount() {
+  run_path "$1"
+  [ ! -L "$mp" ] || refuse "$mp is a link"
+  listed "$mp" fuse.archil || refuse "no fuse.archil mount is listed at $mp"
+}
+
+# Every check below matches one line at a time: an argument holding a newline could carry a second one past it.
+nl='
+'
+for a in "$@"; do
+  case "$a" in *"$nl"*) refuse "an argument holds a newline" ;; esac
+done
+
 case "${1:-}" in
+  unmount | checkin)
+    [ "$#" -eq 2 ] || refuse "usage: archil-scoped $1 <root>/runs/<run>"
+    archil_mount "$2"
+    exec "$ARCHIL" "$1" "$mp"
+    ;;
+  delegations)
+    [ "$#" -eq 3 ] && [ "$2" = --json ] || refuse "usage: archil-scoped delegations --json <root>/runs/<run>"
+    archil_mount "$3"
+    exec "$ARCHIL" delegations --json "$mp"
+    ;;
+  mount) ;;
   retire | stray)
     [ "$#" -eq 3 ] || { echo "usage: archil-scoped $1 <root>/runs/<run> <tag>" >&2; exit 2; }
     "$1" "$2" "$3"
@@ -155,8 +193,23 @@ case "${1:-}" in
     stale "$2"
     exit 0
     ;;
+  *) refuse "verb ${1:-<none>} is not one archil-scoped runs" ;;
 esac
-[ "${1:-}" = mount ] || exec "$ARCHIL" "$@"
+
+# mount [--force] <disk>:/<path> <root>/runs/<run> --region <region>, rebuilt from its checked parts.
+shift
+force=
+if [ "${1:-}" = --force ]; then force=--force; shift; fi
+[ "$#" -eq 4 ] && [ "$3" = --region ] || refuse "usage: archil-scoped mount [--force] <disk>:/<path> <root>/runs/<run> --region <region>"
+disk=${1%%:/*} path=${1#*:/}
+[ "$1" = "$disk:/$path" ] || refuse "$1 is not <disk>:/<path>"
+safe_token disk "$disk"
+safe_token region "$4"
+printf '%s\n' "$path" | grep -Eqx '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*' || refuse "$path is not a relative path of safe segments"
+case "/$path/" in */./* | */../*) refuse "$path has a . or .. segment" ;; esac
+run_path "$2"
+if [ -L "$mp" ] || [ ! -d "$mp" ] || [ "$(realpath -e "$mp")" != "$mp" ]; then refuse "$mp is not a real directory"; fi
+set -- mount ${force:+"$force"} "$disk:/$path" "$mp" --region "$4"
 token=
 IFS= read -r token || true
 [ -n "$token" ] || { echo "archil-scoped: no mount token on stdin" >&2; exit 2; }
