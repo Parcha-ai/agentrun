@@ -216,6 +216,9 @@ test("cost: a request marked as it left and cut before its first content counts,
   // was cut, not in flight.
   assert.deepEqual(timelineOf([started, a, started], { settled: true }).at(-1).usage, { usd: null, requests: 2 });
   assert.deepEqual(timelineOf([user("hi", 0), started], { settled: true }).map((r) => [r.kind, r.usage ?? null]), [["user_message", null], ["usage", { usd: null, requests: 1 }]], "its only request, cut");
+  // While it runs, one request in flight alone makes no usage row yet; its answer makes one.
+  assert.deepEqual(timelineOf([user("hi", 0), started]).map((r) => r.kind), ["user_message"], "in flight alone: no usage row");
+  assert.deepEqual(timelineOf([user("hi", 0), started, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "answered: its row");
   // A run written before requests were marked reads as it did.
   assert.deepEqual(timelineOf([a]).at(-1).usage, { usd: 0.01, requests: 1 });
 });
