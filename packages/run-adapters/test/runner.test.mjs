@@ -367,12 +367,26 @@ test('a session that opens after the run was stopped is interrupted and closed, 
   assert.deepEqual([adapter.opened.length, adapter.closed.length, adapter.requests], [1, 1, 0]);
 });
 
+test("a stale runner's accepted submission is refused once a newer process opened the session: it ends fenced, and the next ask is not answered with it", async () => {
+  const store = memorySessionStore();
+  // The stale process: its review is where a newer process takes the session, between its submit and its accept.
+  const stale = fauxAdapter({ script: () => [{ submit: { answer: 'stale' } }] });
+  const review = async () => { await store.open('step:s1'); return { accepted: true }; };
+  await assert.rejects(createHarnessRunner(stale, { store, timeoutMs: 5_000 })({ ...stepRequest(), review }), (error) => error instanceof HarnessRunError && error.reason === 'fenced' && error.final !== true);
+  assert.equal((await store.read('step:s1')).filter((r) => r.kind === RUNNER_RECORDS.accepted).length, 0, 'no runner.accepted was written');
+  // The live attempt delivers its own result. The faux harness resumes from the session's records, where the stale
+  // process's request is step 0 of the script, so the live one's reply is step 1.
+  const live = fauxAdapter({ script: () => [{ submit: { answer: 'stale' } }, { submit: { answer: 'live' } }] });
+  assert.deepEqual(await createHarnessRunner(live, { store })(stepRequest()), { answer: 'live' });
+});
+
 test('a stop that lands while the session store is being read rejects aborted at once, and opens no session, on either signal', async () => {
   for (const via of ['request', 'options']) {
     const store = memorySessionStore();
     let release;
     const held = new Promise((resolve) => { release = resolve; });
-    const slow = { ...store, read: async (key) => { await held; return store.read(key); } };
+    // The session's records are slow to come back: the stop lands while the runner reads them through its writer.
+    const slow = { ...store, open: async (key) => { const writer = await store.open(key); return { ...writer, key, append: writer.append, read: async () => { await held; return writer.read(); } }; } };
     const adapter = fauxAdapter({ script: () => [{ hang: true }] });
     const stop = new AbortController();
     const runner = createHarnessRunner(adapter, { store: slow, timeoutMs: 5_000, ...(via === 'options' ? { signal: stop.signal } : {}) });
