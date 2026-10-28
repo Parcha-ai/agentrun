@@ -156,7 +156,7 @@ export async function readyToRun(data: string, entry: AgentEntry, current: () =>
 }
 
 /** What the server recorded for a run of a learning agent: its proposal (`proposed`, `empty`, `refused` by the guard), then
- *  its review (review.ts): `merged`, `awaiting_approval`, or waiting on this server (`no_screen`, `no_judge`) or on the
+ *  its review (learning-review.ts): `merged`, `awaiting_approval`, or waiting on this server (`no_screen`, `no_judge`) or on the
  *  agent (`off`), with `reason` in words. */
 export type RunState = {
   state: "proposed" | "empty" | "refused" | "merged" | "awaiting_approval" | "no_screen" | "no_judge" | "off";

@@ -52,7 +52,7 @@ function storeRevision(data, id) {
 }
 /** The run's learning state once the server has proposed it after the carry back. */
 /** The run's state once review has taken up its proposal. These servers have no injection screen, so it ends as
- *  "no_screen" (review.test.mjs covers what review does with one). */
+ *  "no_screen" (learning-review.test.mjs covers what review does with one). */
 async function reviewedOf(data, agentId, runId, deadlineMs = 20_000) {
   for (const end = Date.now() + deadlineMs; ; await sleep(50)) {
     const state = await readRunState(data, agentId, runId);

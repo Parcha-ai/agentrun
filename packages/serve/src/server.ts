@@ -18,7 +18,7 @@ import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
-import { type LearningOptions, Review } from "./review.js";
+import { type LearningOptions, Review } from "./learning-review.js";
 import { answerLearning, LEARNING_ROUTES, type LearningContext } from "./learning-routes.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, hostSecrets, type Run, Runs, STATUSES, type Status } from "./runs.js";
