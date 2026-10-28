@@ -103,9 +103,9 @@ test("no judge: with no TYPESAFE_API_KEY the server starts, and the run's state 
 });
 
 test("TYPESAFE_API_KEY is the server's: a run's environment never has it", () => {
-  const env = childEnv({ PATH: "/bin", TYPESAFE_API_KEY: "ts-key-value-123456", OPENAI_API_KEY: "model-key" }, "server-token");
+  const env = childEnv({ PATH: "/bin", TYPESAFE_API_KEY: "fake-test-key", OPENAI_API_KEY: "test-key" }, "server-token");
   assert.equal(env.TYPESAFE_API_KEY, undefined);
-  assert.equal(env.OPENAI_API_KEY, "model-key", "a model key still passes");
+  assert.equal(env.OPENAI_API_KEY, "test-key", "a model key still passes");
 });
 
 test("the screen on the real merge path: at the threshold refused, just under merged, a screen that throws refused as unjudged", async (t) => {
