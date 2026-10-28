@@ -315,15 +315,21 @@ test("nothing person-identifying reaches main: approve, refuse and retire by an 
 test("under a held agent store the learning routes answer home_busy within about 3 s: not a 500, not a hang, not a wrong answer", async (t) => {
   const { api, data } = await serve(t, { learning: { screen: SCREEN, judge } });
   await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  await api("POST", "/agents", agent("plain"));
   const runId = await learned(api, data, "calc");
+  const { body: plainRun } = await api("POST", "/agents/plain/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, plainRun.run_id, ["completed"]);
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
   store.exec("BEGIN EXCLUSIVE");
   t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
-  for (const path of ["/agents/calc/learning", "/agents/calc/learning/log", `/runs/${runId}/learning`]) {
+  // A read that needs the store answers home_busy; a run whose learning state is on file needs no store, and answers.
+  for (const path of ["/agents/calc/learning", "/agents/calc/learning/log", `/runs/${plainRun.run_id}/learning`]) {
     const started = Date.now();
     const answer = await api("GET", path);
     const took = Date.now() - started;
     assert.deepEqual([answer.status, answer.body?.error?.code], [409, "home_busy"], `${path}: ${JSON.stringify(answer.body).slice(0, 200)}`);
     assert.ok(took < 3_500, `${path} took ${took} ms`);
   }
+  const fromFile = await api("GET", `/runs/${runId}/learning`);
+  assert.deepEqual([fromFile.status, fromFile.body.state], [200, "merged"], "the run's state is read from its file, not the store");
 });

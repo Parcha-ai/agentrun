@@ -4,6 +4,7 @@
 // own routes are added as operations marked `x-agentrun-serve: true`, listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
 import { HARNESSES } from "./harness.js";
+import { LEARNING_OPENAPI } from "./learning-routes.js";
 import { THINKING_LEVELS } from "./model.js";
 
 type Json = Record<string, unknown>;
@@ -201,7 +202,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     }
   }
   const extensions: string[] = [];
-  for (const [path, item] of Object.entries(EXTENSIONS)) {
+  for (const [path, item] of Object.entries({ ...EXTENSIONS, ...LEARNING_OPENAPI })) {
     for (const [method, op] of Object.entries(item)) {
       (doc.paths[path] ??= {})[method] = { ...op, "x-agentrun-serve": true };
       extensions.push(`${method.toUpperCase()} ${path}`);

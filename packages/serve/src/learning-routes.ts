@@ -134,7 +134,8 @@ async function answerRun(name: string, req: IncomingMessage, res: ServerResponse
   const run = await ctx.runOf(runId);
   const agentId = run.agentId;
   const state = await readRunState(ctx.data, agentId, run.id);
-  const learns = state !== undefined || learningOf(ctx.agents.get(agentId)?.revision) !== "off";
+  // A request's read of the agent store: a store busy past its wait is home_busy (server.ts), never a wrong answer.
+  const learns = state !== undefined || learningOf((await ctx.agents.get(agentId))?.revision) !== "off";
   const bare = repoOf(ctx.data, agentId);
   switch (name) {
     case "getRunLearning":
@@ -235,7 +236,7 @@ async function diffOf(bare: string, runId: string, state: RunState | undefined, 
 }
 
 async function answerAgent(name: string, req: IncomingMessage, res: ServerResponse, url: URL, agentId: string, second: string | undefined, ctx: LearningContext, secrets: readonly string[]): Promise<void> {
-  const entry = ctx.agents.get(agentId);
+  const entry = await ctx.agents.get(agentId);
   if (!entry) throw new ApiError("not_found", `no agent ${agentId}`);
   const bare = repoOf(ctx.data, agentId);
   const main = await commitOf(bare, "main");
