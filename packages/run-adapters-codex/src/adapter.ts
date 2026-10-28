@@ -13,6 +13,7 @@ import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION } from "./binary.js";
 import { readCodeModeModels } from "./code-mode.js";
+import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
@@ -63,7 +64,9 @@ export interface CodexAdapterOptions {
 function kernelTool(tool: HostTool): KernelTool {
   return {
     name: tool.name,
-    description: tool.description,
+    // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
+    // (the schema itself is the host's, and every call is checked against it).
+    description: describedDescription(tool.description, tool.inputSchema),
     inputSchema: tool.inputSchema,
     replay: tool.replay,
     async execute(input, io) {
@@ -118,6 +121,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
+        // What Codex would drop or retype in the tool's schema is refused here, by name, not found out mid-turn.
+        problems.push(...codexSchemaProblems(tool.name, tool.inputSchema));
       }
       if (checked !== undefined) {
         codeMode ??= (options.readCodeModeModels ?? readCodeModeModels)(checked);
