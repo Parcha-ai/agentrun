@@ -4,6 +4,7 @@
 // failure it shows the container's log with any key withheld, and it always removes the container it started.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -12,8 +13,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const SMOKE = fileURLToPath(new URL("../docker/image-smoke.sh", import.meta.url));
-/** The address the stand-in container answers on, as the smoke publishes it: loopback. */
-const LOOPBACK = "127.0.0.1";
+/** The address the smoke publishes the container on (its `loopback=`), which the stand-in container answers on. */
+const LOOPBACK = /^loopback=(\S+)$/m.exec(readFileSync(SMOKE, "utf8"))?.[1];
 
 /** Runs the smoke with a stand-in docker whose container is `answer` (a function of the path), on loopback. */
 async function smoke(t, answer, ...runArgs) {
@@ -49,6 +50,10 @@ const ok = { status: 200, body: { status: "ok", checks: { store: "ok", disk: "ok
 const caps = (harnesses) => ({ status: 200, body: { contract: "agentrun.v2/0", ...(harnesses ? { harnesses } : {}) } });
 const serving = (harnesses) => (path) => (path === "/v2/health" ? ok : path === "/v2/capabilities" ? caps(harnesses) : { status: 404, body: {} });
 const pi = { id: "pi", available: true };
+
+test("the smoke publishes on loopback only", () => {
+  assert.match(LOOPBACK ?? "", /^127\.\d+\.\d+\.\d+$/);
+});
 
 test("an image that serves passes: health 200 ok, capabilities with pi available and each other harness's install line", async (t) => {
   const r = await smoke(t, serving([pi, { id: "codex", available: false, reason: "Codex 0.164.0 is not installed; npm install --save-exact @openai/codex@0.164.0" }]), "-e", "AGENT_MODEL=m");
