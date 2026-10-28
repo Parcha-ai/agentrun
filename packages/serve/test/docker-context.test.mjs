@@ -1,6 +1,6 @@
 // What the image's build sees: the repository's .dockerignore over a context with a file of every kind, copied by
 // BuildKit as the Dockerfile's `COPY . .` copies it. A secret (.env, .env.*, .npmrc) stays out wherever it is, and so do
-// installed dependencies and build output. Skipped where Docker's buildx is missing.
+// installed dependencies, build output and the page's dev kit with its sample data. Skipped where Docker's buildx is missing.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
@@ -23,6 +23,7 @@ test("the image's build context holds the workspace and never a .env, an .npmrc,
     "scripts/.env", "examples/.env",
     "node_modules/zod/index.js", "packages/serve/node_modules/x/index.js", "packages/serve/dist/cli.js", "packages/serve/tsconfig.tsbuildinfo",
     ".git/config", "docs/releasing.md", "examples/starter/index.ts", "render.yaml", "changes/x.md",
+    "packages/serve/dev/seed.mjs", "packages/serve/dev/.data/store.sqlite",
   ];
   for (const path of [...kept, ...dropped]) {
     await mkdir(dirname(join(context, path)), { recursive: true });

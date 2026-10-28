@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<!-- The page's storyboard: every screen and component the page needs, the states each must handle, and each screen live
+     on the sample data at desktop and phone width. Served by the dev loop (dev/start.mjs) at /storyboard.html. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>AgentRun Server page: storyboard</title>
+<link rel="stylesheet" href="/page.css">
+<link rel="stylesheet" href="/storyboard.css">
+</head>
+<body>
+<header class="top">
+<a class="brand" href="/"><span class="mark" aria-hidden="true"></span><span>agentrun</span><span class="sub">storyboard</span></a>
+</header>
+<main class="board">
+<section class="intro">
+<h1>Storyboard</h1>
+<p>Every screen of AgentRun Server's page, the components on it, and the states each must handle. Each screen is the live
+page on the sample data (<code>npm run dev:seed</code>), framed at 1280 and 390 pixels. A state the sample data has links to
+a run in it; a state marked <b>needs data</b> has none yet: add it to <code>dev/seed.mjs</code>. <b>Missing</b> screens are
+ones the page does not have yet.</p>
+<p class="needs-cookie" id="cookie" hidden>Open the token link the dev loop printed first: the frames need the page's cookie.</p>
+</section>
+<div id="screens"><p class="loading">Reading the sample data…</p></div>
+</main>
+<script src="/storyboard.js"></script>
+</body>
+</html>
