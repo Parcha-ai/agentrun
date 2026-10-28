@@ -14,7 +14,7 @@ import { recordProblems } from './reference-record.mjs';
 import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from './consumer-pi.mjs';
 import { importsOf } from './package-imports.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
-import { attributionProblems, carriesUpstream } from './upstream-attribution.mjs';
+import { ALLOWED_MARKS, attributionProblems, boundaryProblems, carriesUpstream } from './upstream-attribution.mjs';
 
 const exec = promisify(execFile);
 // `--pi <x.y.z>`: install the clean consumer's pi family at that version instead of the one the repository's lockfile holds.
@@ -157,17 +157,20 @@ try {
     receipt.packages.push({ name: manifest.name, version: manifest.version, filename: packed.filename, sha256: fileHash, files: names, size: packed.size, unpackedSize: packed.unpackedSize, license: manifest.license });
     tarballs.push(tarball);
     for (const [file, literal] of allowedEndpoints[directory] ?? []) assert.ok(usedEndpoints.has(`${file} ${literal}`), `Allowed endpoint literal no longer in ${manifest.name}: ${file} ${literal}`);
-    // A package that carries vercel-labs/durable-harness code, as packed: NOTICE, LICENSE and UPSTREAM.json ship, NOTICE says
-    // upstream's copyright line verbatim, no pristine upstream copy ships, and nothing depends on or imports @workflow/*,
-    // @vercel/sandbox or @vercel/agent-runs or shows a Vercel name, mark or image beyond the attribution.
+    // Every package, as packed: no dependency on or import of @workflow/*, @vercel/sandbox or @vercel/agent-runs, no Vercel
+    // name or mark beyond the listed allowances, no image file, and a copied-file header only where UPSTREAM.json records it.
+    // A package that carries vercel-labs/durable-harness code also ships NOTICE (upstream's copyright line verbatim), LICENSE
+    // and UPSTREAM.json, no pristine upstream copy, and no SVG markup.
     if (await carriesUpstream(cwd)) {
       assert.deepEqual(await attributionProblems(join(extracted, 'package')), [], `${manifest.name}: the durable-harness attribution and boundary rules (scripts/upstream-attribution.mjs)`);
       attributed.push(manifest.name);
+    } else {
+      assert.deepEqual(await boundaryProblems(join(extracted, 'package'), { allow: ALLOWED_MARKS[directory] }), [], `${manifest.name}: the boundary rules every package keeps (scripts/upstream-attribution.mjs)`);
     }
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
   assert.ok(attributed.includes('@parcha/agentrun-adapters'), 'the harness seam is checked for its attribution');
-  receipt.checks.push(`Attribution and boundary rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
+  receipt.checks.push(`Boundary rules passed on every package; attribution rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
   await mkdir(consumer);
@@ -305,6 +308,8 @@ import * as agentLearn from '@parcha/pi-agent-learn';
 import * as learnCheck from '@parcha/agentrun-learn';
 import * as adapters from '@parcha/agentrun-adapters';
 import * as adaptersTesting from '@parcha/agentrun-adapters/testing';
+import * as adaptersKernel from '@parcha/agentrun-adapters/kernel';
+import * as adaptersProcess from '@parcha/agentrun-adapters/process';
 import { createRegistry, Harness, MemoryStorage } from '@earendil-works/pi-durable';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
@@ -366,6 +371,7 @@ assert.ok(loadAuthorReference('language').includes(authorContract()));
 for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
 { const draft={v:2,name:'w',schemas:{S:{type:'object'}},output:{schemaId:'S'},root:{node:'agent',label:'a',instructions:'Do it.',out:'S',as:'a',tools:['bash']}}; const changes=[{path:'workflows/w/workflow.json',status:'added',bytes:Buffer.from(JSON.stringify(draft))},{path:'AGENTS.md',status:'modified',bytes:Buffer.from('x')}]; assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes}).problems.map(p=>p.rule),['no_tool_list','locked','memo_missing']); assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes,tools:['fetch_page']}).problems.map(p=>p.rule),['workflow','locked','memo_missing']); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
+{ const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 console.log(JSON.stringify({core:true,jev:true,pi:true,archil:true,browser:true,vision:true,transport:true,agent:true,serve:true,git:true,learn:true,learnCheck:true,adapters:true,harness:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
@@ -462,6 +468,13 @@ const keep = async (store: WorkflowStore, workflow: Workflow): Promise<[StoredWo
 void keep;
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'workflows-consumer.ts'], consumer);
+  await writeFile(join(consumer, 'adapters-consumer.ts'), `import { openDrive, Restart, type Drive, type EffectRecord } from '@parcha/agentrun-adapters/kernel';
+import { NativeJournal, placeSubmissions } from '@parcha/agentrun-adapters/process';
+const place = async (drive: Drive): Promise<[EffectRecord | undefined, NativeJournal]> => { await placeSubmissions(drive, drive.pending()); return [drive.state().effects.get('k'), new NativeJournal(drive)]; };
+const kernel: [typeof openDrive, typeof Restart] = [openDrive, Restart];
+void [place, kernel];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'adapters-consumer.ts'], consumer);
   await writeFile(join(consumer, 'archil-consumer.ts'), `import { openDurableRun, type RunRef } from '@parcha/pi-durable-disk';
 import { openRunLease } from '@parcha/pi-durable-disk/lease';
 const durable: [typeof openDurableRun, typeof openRunLease, RunRef | undefined] = [openDurableRun, openRunLease, undefined];
