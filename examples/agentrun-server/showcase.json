@@ -1,0 +1,434 @@
+{
+  "agents": [
+    {
+      "revisions": [
+        {
+          "definition": {
+            "id": "mcc-classifier",
+            "name": "MCC classifier",
+            "description": "Names the card Merchant Category Code a merchant's website puts it under.",
+            "instructions": "You classify a merchant into its card Merchant Category Code (MCC, ISO 18245).\nRead the merchant's website with fetch_page.\nAnswer with the 4-digit MCC that fits the business, as JSON: {\"mcc\": \"NNNN\", \"mainLine\": \"what it sells\"}.",
+            "tools": [
+              "fetch_page"
+            ]
+          },
+          "note": "Prompt A: the plain instructions"
+        },
+        {
+          "definition": {
+            "id": "mcc-classifier",
+            "name": "MCC classifier",
+            "description": "Names the card Merchant Category Code a merchant's website puts it under.",
+            "instructions": "You assign a merchant the Merchant Category Code (MCC, ISO 18245) a card network would give its card sales.\nUse fetch_page on the merchant's home page, and on one more page if the home page does not make clear what is for sale.\nWork through the mcc-rubric skill, step by step, before you answer.\nAnswer as JSON: {\"mcc\": \"NNNN\", \"mainLine\": \"what cardholders pay for\", \"runnerUp\": \"NNNN or null\"}.",
+            "tools": [
+              "fetch_page"
+            ],
+            "skills": [
+              "mcc-rubric"
+            ]
+          },
+          "note": "Prompt B: a rubric from the card networks' published MCC rules",
+          "skills": {
+            "mcc-rubric/SKILL.md": "# MCC rubric\n\nCard networks assign a merchant the code that describes its primary business: the kind of goods or services that make up most of its card sales. Work through these steps in order.\n\n1. What do cardholders pay this merchant for? Name the goods or services that make up most of what it sells, as the site presents and prices them.\n2. How does it sell them? A store or online shop selling to the public, a restaurant, a service, a subscription. Codes for wholesalers and distributors are for sales to other businesses, not to the public.\n3. Find the code whose published title describes that business. Prefer the narrowest title that fits; codes that end in \"not elsewhere classified\" or \"miscellaneous\" are for merchants no narrower title covers.\n4. A merchant that sells many lines takes the code of the line that makes up most of its sales, not of what it sells least of.\n5. If two titles fit about equally, give the one you chose and name the other as the runner-up.\n"
+          }
+        },
+        {
+          "definition": {
+            "id": "mcc-classifier",
+            "name": "MCC classifier",
+            "description": "Names the card Merchant Category Code a merchant's website puts it under.",
+            "workflow": {
+              "v": 2,
+              "name": "mcc-from-home-page",
+              "schemas": {
+                "Input": {
+                  "type": "object",
+                  "required": [
+                    "name",
+                    "website"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "website": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "Page": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "url",
+                    "status",
+                    "title",
+                    "text",
+                    "links"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "links": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "refused": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "Answer": {
+                  "type": "object",
+                  "required": [
+                    "mcc",
+                    "sells",
+                    "confidence"
+                  ],
+                  "properties": {
+                    "mcc": {
+                      "type": "string",
+                      "pattern": "^[0-9]{4}$"
+                    },
+                    "sells": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    },
+                    "confidence": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "input": {
+                "schemaId": "Input"
+              },
+              "output": {
+                "schemaId": "Answer",
+                "path": "answer"
+              },
+              "root": {
+                "node": "chain",
+                "steps": [
+                  {
+                    "node": "call",
+                    "label": "Read the home page",
+                    "via": "tool",
+                    "tool": "fetch_page",
+                    "args": {
+                      "url": "{website}"
+                    },
+                    "out": "Page",
+                    "as": "home",
+                    "deadline_s": 60
+                  },
+                  {
+                    "node": "agent",
+                    "label": "Pick the MCC",
+                    "instructions": "Give the merchant its 4-digit MCC (ISO 18245), using only the merchant's name and its home page below. Apply this rubric:\n# MCC rubric\n\nCard networks assign a merchant the code that describes its primary business: the kind of goods or services that make up most of its card sales. Work through these steps in order.\n\n1. What do cardholders pay this merchant for? Name the goods or services that make up most of what it sells, as the site presents and prices them.\n2. How does it sell them? A store or online shop selling to the public, a restaurant, a service, a subscription. Codes for wholesalers and distributors are for sales to other businesses, not to the public.\n3. Find the code whose published title describes that business. Prefer the narrowest title that fits; codes that end in \"not elsewhere classified\" or \"miscellaneous\" are for merchants no narrower title covers.\n4. A merchant that sells many lines takes the code of the line that makes up most of its sales, not of what it sells least of.\n5. If two titles fit about equally, give the one you chose and name the other as the runner-up.\n\nReturn mcc, sells (one line: what cardholders pay for) and confidence (0 to 1).",
+                    "state": {
+                      "name": "{name}",
+                      "url": "{home.url}",
+                      "title": "{home.title}",
+                      "page": "{home.text}"
+                    },
+                    "tools": [],
+                    "out": "Answer",
+                    "as": "answer",
+                    "budget_usd": 0.05,
+                    "tier": "fast"
+                  }
+                ]
+              }
+            },
+            "tools": [
+              "fetch_page"
+            ]
+          },
+          "note": "The cheap one: read the home page, one fast model step"
+        }
+      ],
+      "runs": [
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: ALDI US. Website: https://www.aldi.us"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: Barnes & Noble. Website: https://www.barnesandnoble.com"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: Best Buy. Website: https://www.bestbuy.com"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: Petco. Website: https://www.petco.com"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: Publix Super Markets. Website: https://www.publix.com"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: Sephora. Website: https://www.sephora.com"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: Sofa.com. Website: https://www.sofa.com"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "Merchant: evo. Website: https://www.evo.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: ALDI US. Website: https://www.aldi.us"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: Barnes & Noble. Website: https://www.barnesandnoble.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: Best Buy. Website: https://www.bestbuy.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: Petco. Website: https://www.petco.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: Publix Super Markets. Website: https://www.publix.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: Sephora. Website: https://www.sephora.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: Sofa.com. Website: https://www.sofa.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Merchant: evo. Website: https://www.evo.com"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "ALDI US",
+            "website": "https://www.aldi.us"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "Barnes & Noble",
+            "website": "https://www.barnesandnoble.com"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "Best Buy",
+            "website": "https://www.bestbuy.com"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "Petco",
+            "website": "https://www.petco.com"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "Publix Super Markets",
+            "website": "https://www.publix.com"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "Sephora",
+            "website": "https://www.sephora.com"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "Sofa.com",
+            "website": "https://www.sofa.com"
+          }
+        },
+        {
+          "revision": 2,
+          "input": {
+            "name": "evo",
+            "website": "https://www.evo.com"
+          }
+        }
+      ]
+    },
+    {
+      "revisions": [
+        {
+          "definition": {
+            "id": "issue-triage",
+            "name": "Issue triage",
+            "description": "Labels a GitHub issue bug, feature, question or docs, with one line why.",
+            "instructions": "You triage one GitHub issue. Read it with fetch_page (the API URL given). Answer in one line: '<repo>#<number>: <label> - <why>', where label is one of bug, feature, question, docs.",
+            "tools": [
+              "fetch_page"
+            ]
+          },
+          "note": "Four labels"
+        }
+      ],
+      "runs": [
+        {
+          "revision": 0,
+          "input": {
+            "content": "https://api.github.com/repos/nodejs/node/issues/66950"
+          }
+        },
+        {
+          "revision": 0,
+          "input": {
+            "content": "https://api.github.com/repos/nodejs/node/issues/66951"
+          }
+        }
+      ]
+    },
+    {
+      "revisions": [
+        {
+          "definition": {
+            "id": "company-researcher",
+            "name": "Company researcher",
+            "description": "Reads a company's own site and writes a two-line brief.",
+            "instructions": "You research one company. Read its website with fetch_page and answer in two sentences: what it does and who buys from it.",
+            "tools": [
+              "fetch_page"
+            ]
+          },
+          "note": "First brief"
+        },
+        {
+          "definition": {
+            "id": "company-researcher",
+            "name": "Company researcher",
+            "description": "Reads a company's own site and writes a two-line brief.",
+            "instructions": "You research one company. Read its website with fetch_page, then one page about the company (about, investors or annual report). Answer in two sentences: what it does and who buys from it. Start the answer with the company's name and end with the page you read, in brackets.",
+            "tools": [
+              "fetch_page"
+            ]
+          },
+          "note": "Name it, and say which page"
+        }
+      ],
+      "runs": [
+        {
+          "revision": 0,
+          "input": {
+            "content": "Caterpillar, https://www.caterpillar.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Patagonia, https://www.patagonia.com"
+          }
+        },
+        {
+          "revision": 1,
+          "input": {
+            "content": "Habitat for Humanity International, https://www.habitat.org"
+          }
+        }
+      ]
+    },
+    {
+      "revisions": [
+        {
+          "definition": {
+            "id": "utility-bills",
+            "name": "Utility bills",
+            "description": "Signs in to a practice utility site in a real browser and lists the bills.",
+            "instructions": "You use a real browser to read a customer's bills.\nOpen https://parcha-ai.github.io/pi-browser-fixtures/utility/signin.html. It is Marrow Creek Utilities, a practice site: its sign-in page prints a practice account (an email and a password) that is public, not a real one. Sign in with it.\nThen open the bills page and read every monthly bill.\nAnswer with one line per bill, oldest first, as `YYYY-MM: $amount due`, then a last line `Total: $sum`. Say which page you read them on.",
+            "tools": [
+              "browser"
+            ]
+          },
+          "note": "Sign in and list the bills"
+        }
+      ],
+      "runs": [
+        {
+          "revision": 0,
+          "input": {
+            "content": "List the bills on the practice account."
+          }
+        }
+      ]
+    }
+  ]
+}

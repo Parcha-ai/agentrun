@@ -16,11 +16,11 @@ const buildx = spawnSync("docker", ["buildx", "version"], { stdio: "ignore" }).s
 test("the image's build context holds the workspace and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const context = join(dir, "context");
-  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-pi-demo.mjs", "examples/typed-research.ts", "examples/typed-research-fixtures.ts"];
+  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-pi-demo.mjs", "examples/typed-research.ts", "examples/typed-research-fixtures.ts", "examples/agentrun-server/showcase.mjs", "examples/agentrun-server/showcase.json"];
   const dropped = [
     ".env", ".env.local", ".env.production", ".npmrc",
     "packages/serve/.env", "packages/serve/.env.test", "packages/serve/.npmrc", "packages/serve/src/.env",
-    "scripts/.env", "examples/.env",
+    "scripts/.env", "examples/.env", "examples/agentrun-server/.env",
     "node_modules/zod/index.js", "packages/serve/node_modules/x/index.js", "packages/serve/dist/cli.js", "packages/serve/tsconfig.tsbuildinfo",
     ".git/config", "docs/releasing.md", "examples/starter/index.ts", "render.yaml", "changes/x.md",
   ];

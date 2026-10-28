@@ -43,6 +43,16 @@ your machine or your own server, or with us when hosted AgentRun opens.
 Then **New agent**, **Start a run**, and **All runs**. [AgentRun Server](packages/serve/README.md) has the API, the models, what
 a run may reach, and the container.
 
+For more to look at, seed the showcase: four agents, their revisions, and 30 runs (the browser agent's only when this
+server can bind the browser), among them one agent's three revisions side by side, from a plain prompt to a workflow
+that gives the same answers for far less:
+
+```sh
+docker exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs
+```
+
+[The showcase](examples/agentrun-server/README.md) has the agents.
+
 ## Building blocks
 
 The open packages underneath the platform, each usable on its own in your pi agent. Install the ones you need.
