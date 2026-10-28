@@ -3,9 +3,9 @@
 // and passes through the host's secrets at read time. The faux model; a faux screen and a scripted judge.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
@@ -301,7 +301,11 @@ test("under a held agent store the learning routes answer home_busy within about
   await follow(api, plainRun.run_id, ["completed"]);
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
   store.exec("BEGIN EXCLUSIVE");
-  t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
+  t.after(() => {
+    if (!store.isOpen) return;
+    if (store.isTransaction) store.exec("ROLLBACK");
+    store.close();
+  });
   // A read that needs the store answers home_busy; a run whose learning state is on file needs no store, and answers.
   for (const path of ["/agents/calc/learning", "/agents/calc/learning/log", `/runs/${plainRun.run_id}/learning`]) {
     const started = Date.now();

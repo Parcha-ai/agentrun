@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Agents } from "./agents.js";
 import { ApiError, invalid } from "./errors.js";
-import { learningOf, openAgentRepo, readRunState, repoOf, type RunState, withAgentRepo } from "./learning.js";
+import { learningOf, openAgentRepo, type RunState, readRunState, repoOf, withAgentRepo } from "./learning.js";
 import type { Review } from "./review.js";
 import type { Json } from "./validate.js";
 
@@ -186,7 +186,7 @@ async function diffOf(bare: string, runId: string, state: RunState | undefined, 
   const withheld = new Map<string, string>();
   if (of === "proposed") {
     const { checkBranch } = await import("@parcha/agentrun-learn");
-    const report = await checkBranch({ cwd: bare, base: "main", head: tip!, branch: `runs/${runId}`, refuseValues: [...secrets], tools: [] }).catch(() => undefined);
+    const report = await checkBranch({ cwd: bare, base: "main", head, branch: `runs/${runId}`, refuseValues: [...secrets], tools: [] }).catch(() => undefined);
     for (const p of report?.problems ?? []) if (p.path && SECRET_RULES.has(p.rule)) withheld.set(p.path, p.rule);
   }
   const listing = (await git(bare, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-status", "-z", base, head])) ?? "";
@@ -195,8 +195,8 @@ async function diffOf(bare: string, runId: string, state: RunState | undefined, 
   let total = 0;
   let truncated = false;
   for (let i = 0; i + 1 < parts.length; i += 2) {
-    const status = { A: "added", M: "modified", D: "deleted", T: "modified" }[parts[i]![0] as "A" | "M" | "D" | "T"] ?? "modified";
-    const path = parts[i + 1]!;
+    const status = { A: "added", M: "modified", D: "deleted", T: "modified" }[parts[i]?.[0] as "A" | "M" | "D" | "T"] ?? "modified";
+    const path = parts[i + 1] ?? "";
     if (files.length >= DIFF_FILES_CAP) {
       truncated = true;
       break;
