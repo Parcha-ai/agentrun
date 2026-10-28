@@ -114,6 +114,8 @@ export type Run = {
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
+  /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
+  users: Set<string>;
   stopped: boolean;
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
@@ -300,7 +302,7 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      working: false, submitted: 0, users: new Set(), stopped: false, cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
     };
   }
 
@@ -347,7 +349,11 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   private take(run: Run, rows: TimelineEvent[]): void {
     run.rows = withAsks(rows);
-    run.submitted = Math.max(0, run.submitted - (usersOf(run.rows) - (run.log.rows().filter((r) => r.kind === "user_message").length)));
+    // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
+    // messages waiting, so a count of rows would leave the run working forever.
+    const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
+    for (const row of arrived) run.users.add(row.id);
+    run.submitted = Math.max(0, run.submitted - arrived.length);
     if (run.log.sync(run.rows)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
