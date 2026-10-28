@@ -135,5 +135,5 @@ test('every package in this tree keeps the boundary rules as it ships, and only 
     if (await carriesUpstream(dir)) { carriers.push(entry.name); assert.deepEqual(await attributionProblems(dir, { shipped }), [], entry.name); }
     else assert.deepEqual(await boundaryProblems(dir, { shipped, allow: ALLOWED_MARKS[entry.name] }), [], entry.name);
   }
-  assert.deepEqual(carriers, ['run-adapters']);
+  assert.deepEqual(carriers, ['run-adapters', 'run-adapters-claude-agent']);
 });

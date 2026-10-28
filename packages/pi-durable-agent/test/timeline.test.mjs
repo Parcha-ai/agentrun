@@ -178,7 +178,8 @@ test("a failed model request is an error row; an aborted partial is nothing", ()
     assistant([], 0, { stopReason: "error", errorMessage: "529 overloaded\nretry later" }),
     assistant([{ type: "text", text: "cut off" }], 1, { stopReason: "aborted" }),
   ]);
-  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: $0.0200 over 2 model requests"]]);
+  // The cut request's partial usage is not what it cost, so the sum is unknown (the cost test below).
+  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: unknown over 2 model requests"]]);
 });
 
 test("a reset, a compaction and a changed prompt are phase rows; the first system entry is not", () => {
@@ -251,6 +252,23 @@ test("a request the host refused before it left (a cancelled run) is not a reque
   assert.ok(!rows.some((r) => r.kind === "error"));
   // A real failure after it still counts and shows.
   assert.equal(timelineOf([started, answer("error", "overloaded")]).filter((r) => r.kind === "error").length, 1);
+});
+
+test("cost: a request cut before its end makes the sum unknown, never $0, with or without the usage its stream had reported", () => {
+  const done = assistant([{ type: "text", text: "a" }], 0);
+  // The Responses API reports usage only at its end, so a cut stream leaves pi's zero usage, priced $0.
+  const cut = assistant([], 1, { stopReason: "aborted", usage: { input: 0, output: 0, cost: { total: 0 } } });
+  // Anthropic's message_start reports the input and the first output token; the rest never came.
+  const partial = assistant([{ type: "text", text: "Half an ans" }], 1, { stopReason: "aborted", usage: { input: 900, output: 1, cost: { total: 0.0027 } } });
+  for (const [name, aborted] of [["no usage", cut], ["partial usage", partial]]) {
+    const usage = timelineOf([done, aborted]).at(-1);
+    assert.equal(usage.summary, "Cost so far: unknown over 2 model requests", name);
+    assert.deepEqual(usage.usage, { usd: null, requests: 2 }, name);
+    // A later request that completes does not make it known again.
+    assert.equal(timelineOf([done, aborted, assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage.usd, null, name);
+  }
+  // Completed requests alone still sum to the cent.
+  assert.deepEqual(timelineOf([done, assistant([call("c1", "read")], 1), assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage, { usd: 0.03, requests: 3 });
 });
 
 test("an unknown entry kind and an unknown event are skipped, never thrown on", () => {
