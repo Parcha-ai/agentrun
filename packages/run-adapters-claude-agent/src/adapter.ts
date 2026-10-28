@@ -76,7 +76,7 @@ export function skillProblems(skills: readonly ClaudeAgentSkill[]): string[] {
     const front = typeof md === "string" ? /^---\n([\s\S]*?)\n---\n/.exec(md)?.[1] : undefined;
     if (front === undefined) problems.push(`the skill ${name} has no SKILL.md with front matter`);
     else {
-      if (!new RegExp(`^name:\\s*${name}\\s*$`, "m").test(front)) problems.push(`the skill ${name}'s SKILL.md names it otherwise`);
+      if (!new RegExp(`^name:\\s*(['"]?)${name}\\1\\s*$`, "m").test(front)) problems.push(`the skill ${name}'s SKILL.md names it otherwise`);
       if (!/^description:\s*\S/m.test(front)) problems.push(`the skill ${name}'s SKILL.md has no description`);
     }
     for (const [path, text] of Object.entries(files)) {

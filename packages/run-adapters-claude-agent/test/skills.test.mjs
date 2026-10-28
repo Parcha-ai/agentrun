@@ -158,6 +158,9 @@ test('the skills are checked when the adapter is made: a plain name, a SKILL.md 
   assert.match(wrong({ name: 'Bad Name', files: { 'SKILL.md': md('Bad Name') } }), /not lowercase letters, digits and dashes/);
   assert.match(wrong({ name: 'a', files: {} }), /no SKILL.md with front matter/);
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('b') } }), /names it otherwise/);
+  // YAML may quote the name, either way, as a generator writes it.
+  for (const quoted of ["'a'", '"a"']) assert.deepEqual(skillProblems([{ name: 'a', files: { 'SKILL.md': md(quoted) } }]), [], quoted);
+  for (const odd of ["'a\"", "'b'"]) assert.match(wrong({ name: 'a', files: { 'SKILL.md': md(odd) } }), /names it otherwise/, odd);
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a', 'other: x') } }), /no description/);
   for (const path of ['../escape.md', '/abs.md', 'a/../../b.md', 'a//b.md', '.hidden', 'a/./b']) assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), [path]: 'x' } }), /not a plain relative path/, path);
   assert.match(skillProblems([{ name: 'a', files: { 'SKILL.md': md('a') } }, { name: 'a', files: { 'SKILL.md': md('a') } }]).join(';'), /given twice/);
