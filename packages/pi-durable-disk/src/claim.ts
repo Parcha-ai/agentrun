@@ -53,6 +53,12 @@ export interface AcquireOptions {
   mountRoot?: string;
   /** `archil mount --force`: the takeover fallback when the control API cannot revoke. */
   force?: boolean;
+  /**
+   * A live mount of the run already at its mountpoint on this host is this caller's to reuse (default true): a restart
+   * in place finds the mount the failed incarnation left. False refuses it as held (HeldError): a caller that shares the
+   * run's mountpoint with another live holder (a second fork of one source) must not ride on a mount that holder releases.
+   */
+  reuse?: boolean;
   host?: ArchilHost;
 }
 
@@ -830,6 +836,7 @@ export async function acquire(opts: AcquireOptions): Promise<Claim> {
   if (existing) {
     if (!isOurs(existing, targetOf(ref))) throw new ClaimError("MOUNTPOINT_BUSY", `${root} already holds ${existing.fstype} ${existing.source}`);
     if (await isDead(host, root)) await cleanDead(host, root);
+    else if (opts.reuse === false) throw new HeldError("claim", `${path} is mounted at ${root} by another holder on this host`);
     else reused = true;
   }
   let stray: { to: string; entries: number } | null = null;

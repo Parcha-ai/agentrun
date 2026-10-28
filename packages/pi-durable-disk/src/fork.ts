@@ -116,7 +116,8 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
     const t = await mintMountToken(control, { nickname: `${options.tokenPrefix ?? "pda-"}fork-${side}-${run.id}`.slice(0, 200), ttl: "1h" });
     tokens.push(t.identifier);
     note("token", t.identifier, side);
-    const claim = await (options.acquire ?? acquire)({ ref: run, token: t.token, mountRoot: options.mountRoot, host: options.host });
+    // Never a live mount another holder of the run (another fork of the same source) may release under this one.
+    const claim = await (options.acquire ?? acquire)({ ref: run, token: t.token, mountRoot: options.mountRoot, reuse: false, host: options.host });
     claims.push(claim);
     note("mount", claim.root, `${run.disk}:/${runPath(run.id)}`);
     return claim;
