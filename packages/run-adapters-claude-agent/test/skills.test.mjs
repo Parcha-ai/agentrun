@@ -77,10 +77,25 @@ test("a name that is no skill of the session's is refused, and none of it reache
 });
 
 // The CLI answers Skill("<name>") itself for its own commands and bundled skills, before any hook sees the call, so a host
-// skill by one of those names would never load by its bare name. CLAUDE_AGENT_CLI_SKILL_NAMES lists them for the pinned
-// CLI: each one is the CLI's (none is "Unknown skill"), and every command and skill the CLI reports at its start is in it.
+// skill by one of those names never loads by its bare name. The names, as measured on the pinned CLI: some (help, status,
+// memory, ...) are answered by the CLI but not reported at its start, so the list is pinned here, each name called.
+const CLI_NAMES_MEASURED = [
+  '__remote-workflow', 'add-dir', 'agents', 'auto-mode-setup', 'autocompact', 'batch', 'btw', 'bug', 'claude-api',
+  'clear', 'code-review', 'color', 'compact', 'config', 'context', 'copy', 'cost', 'dataviz', 'debug', 'doctor',
+  'effort', 'exit', 'export', 'fast', 'feedback', 'fewer-permission-prompts', 'focus', 'goal', 'heapdump', 'help',
+  'hooks', 'ide', 'init', 'insights', 'keybindings-help', 'list-agents', 'login', 'logout', 'mcp', 'memory', 'model',
+  'output-style', 'permissions', 'plugin', 'plugin-authoring', 'plugin-types', 'plugins', 'quit', 'recap',
+  'release-notes', 'reload-plugins', 'reload-skills', 'rename', 'resume', 'review', 'rewind', 'run',
+  'run-skill-generator', 'sandbox', 'security-review', 'simplify', 'skills', 'stats', 'status', 'statusline',
+  'tasks', 'team-onboarding', 'terminal-setup', 'theme', 'update-config', 'usage', 'verify', 'workflow-launch-exec',
+];
+
+test('CLAUDE_AGENT_CLI_SKILL_NAMES is the measured list, name for name', () => {
+  assert.deepEqual([...CLAUDE_AGENT_CLI_SKILL_NAMES].sort(), [...CLI_NAMES_MEASURED].sort());
+});
+
 test("the CLI's own skill names, pinned: each is the CLI's, and every command and skill it reports at its start is listed", { skip, timeout: 240_000 }, async (t) => {
-  const names = [...CLAUDE_AGENT_CLI_SKILL_NAMES];
+  const names = [...CLI_NAMES_MEASURED];
   let step = 0;
   const provider = await fakeAnthropic({ reply: (r) => {
     if (r.model !== MODEL) return { text: 'ok' };
