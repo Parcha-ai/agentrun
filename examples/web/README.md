@@ -21,7 +21,7 @@ its skills, its saved sign-ins and the index of its runs in `agent.sqlite`, and 
 
 ## Run it
 
-You need Node 22.19 or later. The server itself needs no key and no network. A run needs a model endpoint and a
+You need Node 22.19 or later on 22, or 24.2 or later. The server itself needs no key and no network. A run needs a model endpoint and a
 browser, set in the server's environment, which it passes to every run it starts (all of it is in
 [agent/README.md](agent/README.md#run-one)). The agent's start command uses the built packages, so build the repository
 first.

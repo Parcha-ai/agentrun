@@ -17,7 +17,7 @@ import type { AgentStoreReader, LearningMode, Revision, RunRow } from "@parcha/p
 import type { AppContext, BeforeResume } from "@parcha/pi-durable-disk";
 import type { ProposeResult } from "@parcha/pi-agent-learn";
 import type { GitIdentity, Repo } from "@parcha/pi-git-remote";
-import { type AgentEntry, definitionOf } from "./agents.js";
+import { type AgentEntry, definitionOf, whenFree } from "./agents.js";
 import { readJson, RUN_META } from "./files.js";
 import { isObject } from "./validate.js";
 
@@ -130,10 +130,10 @@ export async function openAgentRepo(data: string, agentId: string, clone: string
 /** The host's commit on main of the agent's current revision, read by `current` when its turn in the queue comes:
  *  AGENTS.md (its instructions) and agent.json (its definition). Nothing for an agent that does not learn or on a host
  *  that cannot, and no commit when main holds both already. Main's other files stay. */
-export async function hostCommit(data: string, agentId: string, current: () => AgentEntry | null): Promise<{ sha: string; created: boolean } | undefined> {
+export async function hostCommit(data: string, agentId: string, current: () => AgentEntry | null | Promise<AgentEntry | null>): Promise<{ sha: string; created: boolean } | undefined> {
   if (await learningBlocker(process.env)) return undefined;
   return withAgentRepo(data, agentId, async () => {
-    const entry = current();
+    const entry = await current();
     const revision = entry?.revision;
     if (!entry || revision?.kind !== "agentic" || learningOf(revision) === "off") return undefined;
     const repo = await openAgentRepo(data, agentId, join(agentDir(data, agentId), HOST_CLONE));
@@ -146,7 +146,7 @@ export async function hostCommit(data: string, agentId: string, current: () => A
 
 /** Before a run of `revision` (number `version`) of `entry`'s agent starts: when it learns, main holds the current
  *  revision's host commit, or the run's own when the current one does not learn and main has none yet. */
-export async function readyToRun(data: string, entry: AgentEntry, current: () => AgentEntry | null, revision: Revision, version: number): Promise<void> {
+export async function readyToRun(data: string, entry: AgentEntry, current: () => AgentEntry | null | Promise<AgentEntry | null>, revision: Revision, version: number): Promise<void> {
   if (learningOf(revision) === "off") return;
   const id = entry.agent.id;
   if (learningOf(entry.revision) !== "off") return void (await hostCommit(data, id, current));
@@ -191,14 +191,16 @@ function releasedStore(file: string) {
   };
 }
 
-type Runs = Pick<AgentStoreReader, "readRun" | "readRevision">;
+/** The agent store and how a read of it waits for another writer: `Agents`, or a caller's own `request`. */
+export type StoreAccess = { readonly store: Pick<AgentStoreReader, "readRun" | "readRevision" | "listRuns">; request<T>(act: () => T | Promise<T>): Promise<T> };
 
 /** What the ended run `runId` learned, proposed as `runs/<run id>` from the commit it was seeded from, with the host's memo:
  *  its outcome and cost as the carry back wrote them, and `untrusted` when it called an external tool. Undefined while the
  *  run has not ended, and for a run whose revision does not learn. The `Run-Id` trailer makes a second call `already`. */
-export async function proposeFor(data: string, store: Runs, runId: string, secrets: () => string[]): Promise<ProposeResult | undefined> {
-  const row = store.readRun(runId);
-  if (!row || row.state === "running" || learningOf(store.readRevision(row.revision)) === "off") return undefined;
+export async function proposeFor(data: string, agents: StoreAccess, runId: string, secrets: () => string[]): Promise<ProposeResult | undefined> {
+  const { store } = agents;
+  const row = await agents.request(() => store.readRun(runId));
+  if (!row || row.state === "running" || learningOf(await agents.request(() => store.readRevision(row.revision))) === "off") return undefined;
   const dir = join(data, "runs", runId);
   const storeFile = join(dir, "store", "run.sqlite");
   if (!existsSync(storeFile)) {
@@ -221,19 +223,34 @@ export async function proposeFor(data: string, store: Runs, runId: string, secre
   });
 }
 
+/** How long the start-time catch-up waits for a busy agent store, step by step: it answers no request, so it waits
+ *  longer than one does, and past the last step leaves the rest to the next start. */
+export const CATCH_UP_BUSY_MS: readonly number[] = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000];
+
 /** At start: every ended run of a learning revision that has no recorded proposal is proposed, so a server that stopped
- *  between a carry back and its proposal loses nothing. Returns the runs it proposed. */
-export async function catchUp(data: string, store: Runs & Pick<AgentStoreReader, "listRuns">, log: (runId: string, error: Error) => void, secrets: () => string[]): Promise<string[]> {
+ *  between a carry back and its proposal loses nothing. The store is read when it is free (`CATCH_UP_BUSY_MS`); each
+ *  wait, and a store that stays busy, is said in `log`. Returns the runs it proposed. */
+export async function catchUp(data: string, agents: StoreAccess, log: (line: string) => void, secrets: () => string[], delaysMs: readonly number[] = CATCH_UP_BUSY_MS): Promise<string[]> {
+  const { store } = agents;
+  const free = <T>(act: () => T | Promise<T>) =>
+    whenFree(act, delaysMs, (attempt, delay) => delay !== undefined && log(`learning catch-up: the agent store is busy; trying again in ${delay} ms (${attempt + 1} of ${delaysMs.length})`));
   const learns = new Map<string, boolean>();
   const done: string[] = [];
-  for (const row of store.listRuns()) {
+  let rows: Awaited<ReturnType<typeof store.listRuns>>;
+  try {
+    rows = await free(() => store.listRuns());
+  } catch (error) {
+    log(`learning catch-up: the agent store stayed busy (${(error as Error).message}); the next start proposes what is left`);
+    return done;
+  }
+  for (const row of rows) {
     if (row.state === "running") continue;
-    if (!learns.has(row.revision)) learns.set(row.revision, learningOf(store.readRevision(row.revision)) !== "off");
-    if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
     try {
-      if (await proposeFor(data, store, row.id, secrets)) done.push(row.id);
+      if (!learns.has(row.revision)) learns.set(row.revision, learningOf(await free(() => store.readRevision(row.revision))) !== "off");
+      if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
+      if (await proposeFor(data, { store, request: free }, row.id, secrets)) done.push(row.id);
     } catch (error) {
-      log(row.id, error as Error);
+      log(`run ${row.id}: not proposed: ${(error as Error).message}`);
     }
   }
   return done;

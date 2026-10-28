@@ -9,9 +9,9 @@ import { readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HeldPlan, InjectionScreen, Judge, LandHeldResult } from "@parcha/pi-agent-learn";
 import type { Repo } from "@parcha/pi-git-remote";
-import type { Agents } from "./agents.js";
+import { type Agents, whenFree } from "./agents.js";
 import { NODE_TOOLS } from "./app.js";
-import { learningOf, learningRunsDir, openAgentRepo, readRunState, type RunState, withAgentRepo, writeRunState } from "./learning.js";
+import { CATCH_UP_BUSY_MS, learningOf, learningRunsDir, openAgentRepo, readRunState, type RunState, withAgentRepo, writeRunState } from "./learning.js";
 
 /** What a host gives review: the injection screen (the browser lane's page judge and its threshold) and, in tests, the
  *  judge. Without `judge`, the judge is Jev's, on the server's TYPESAFE_API_KEY. */
@@ -33,7 +33,7 @@ const PLAN = ".plan.json";
 
 type ReviewOptions = LearningOptions & {
   data: string;
-  agents: Pick<Agents, "get">;
+  agents: Pick<Agents, "store">;
   env: NodeJS.ProcessEnv;
   /** This server's secrets (runs.ts `serverSecrets`): no learning that holds one reaches main. */
   secrets: () => string[];
@@ -71,7 +71,11 @@ export class Review {
   private async reviewNow(agentId: string, runId: string, from?: RunState): Promise<RunState | undefined> {
     const state = from ?? (await readRunState(this.options.data, agentId, runId));
     if (!state || !REVIEWABLE.has(state.state)) return state;
-    const mode = learningOf(this.options.agents.get(agentId)?.revision);
+    // A review runs in the background: it waits out a busy store as the catch-up does, and says so.
+    const { store } = this.options.agents;
+    const current = await whenFree(() => store.readAgent(agentId)?.revisions.find((revision) => revision.current), CATCH_UP_BUSY_MS, (attempt, delayMs) =>
+      this.options.log?.("learning_review_busy", { agent: agentId, run: runId, attempt: attempt + 1, ...(delayMs === undefined ? { gave_up: "yes" } : { retry_ms: delayMs }) }));
+    const mode = learningOf(current);
     // Still waiting on the same thing: the state stands as it is, unwritten.
     const wait = async (next: RunState["state"], reason: string) => (state.state === next && state.reason === reason ? state : this.write(agentId, runId, { ...state, state: next, reason }));
     if (mode === "off") return wait("off", "learning is off for this agent");

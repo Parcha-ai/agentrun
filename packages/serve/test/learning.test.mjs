@@ -317,10 +317,11 @@ test("a proposal and the start-time catch-up of the same run at once make one co
   await close();
   await chmod(join(bare, "refs", "heads"), 0o755);
   assert.equal(await readRunState(data, "calc", run.run_id), undefined);
-  const reader = openStoreReader(data);
-  t.after(() => reader.close());
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  const reader = { store, request: async (act) => act() };
   const errors = [];
-  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id, () => secretsOf(process.env)), catchUp(data, reader, (id, error) => errors.push(`${id}: ${error.message}`), () => secretsOf(process.env))]);
+  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id, () => secretsOf(process.env)), catchUp(data, reader, (line) => errors.push(line), () => secretsOf(process.env))]);
   assert.deepEqual(errors, []);
   assert.deepEqual(caught, [run.run_id], "the catch-up read no record either, and proposed it too");
   const state = await readRunState(data, "calc", run.run_id);
@@ -328,6 +329,55 @@ test("a proposal and the start-time catch-up of the same run at once make one co
   // The queue ran the two one after the other: whichever came second found the Run-Id and answered already.
   assert.ok(["proposed", "already"].includes(direct.status), direct.status);
   assert.equal(direct.sha, state.sha);
+  assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
+});
+
+test("a writer holding the agent store makes the start-time catch-up and a proposal wait, and neither fails", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let closing;
+  const close = () => (closing ??= server.close());
+  t.after(close);
+  const api = client(server.baseUrl, server.token);
+  await api("POST", "/agents", agent("calc"));
+  const bare = bareOf(data, "calc");
+  // A run whose proposal failed: it ended, and nothing is recorded for it.
+  await chmod(join(bare, "refs", "heads"), 0o555);
+  t.after(() => chmod(join(bare, "refs", "heads"), 0o755).catch(() => undefined));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  await close();
+  await chmod(join(bare, "refs", "heads"), 0o755);
+  const [{ Agents, whenFree }, { DatabaseSync }] = await Promise.all([import("../dist/agents.js"), import("node:sqlite")]);
+  const agents = new Agents(data);
+  t.after(() => agents.close());
+  /** Another writer takes the store's write lock; `release` lets it go once. */
+  const hold = () => {
+    const lock = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+    lock.exec("BEGIN EXCLUSIVE");
+    let held = true;
+    const release = () => {
+      if (!held) return;
+      held = false;
+      lock.exec("COMMIT");
+      lock.close();
+    };
+    t.after(release);
+    return release;
+  };
+  // The catch-up meets the held store, says it is busy, and goes on once the writer lets go: here, when it says so.
+  let release = hold();
+  const lines = [];
+  const caught = await catchUp(data, agents, (line) => (lines.push(line), /busy/.test(line) && release()), () => secretsOf(process.env));
+  assert.deepEqual(caught, [run.run_id], "the catch-up proposed the run once the store was free");
+  assert.ok(lines.some((line) => /busy/.test(line)), `it waited for the writer: ${JSON.stringify(lines)}`);
+  assert.deepEqual(lines.filter((line) => !/busy/.test(line)), [], "and logged nothing else");
+  const state = await readRunState(data, "calc", run.run_id);
+  assert.equal(state.state, "proposed");
+  // A proposal reads the store through its caller's request, which waits for the writer the same way.
+  release = hold();
+  const waited = { request: (act) => whenFree(act, [10, 10, 10, 10, 10], () => release()) };
+  assert.deepEqual(await proposeFor(data, { store: agents.store, request: waited.request }, run.run_id, () => secretsOf(process.env)), { status: "already", sha: state.sha });
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
 });
 
@@ -360,9 +410,9 @@ test("the server proposes once the run's end is written, so the memo carries the
   const ended = storeRun(data, run.run_id);
   assert.equal(ended.state, "completed");
   assert.equal(Number(front(show(bare, branch, `memos/${run.run_id}.md`)).cost_usd), ended.costUsd, "the cost the carry back wrote");
-  const reader = openStoreReader(data);
-  t.after(() => reader.close());
-  assert.deepEqual(await proposeFor(data, reader, run.run_id, () => secretsOf(process.env)), { status: "already", sha });
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  assert.deepEqual(await proposeFor(data, { store, request: async (act) => act() }, run.run_id, () => secretsOf(process.env)), { status: "already", sha });
   assert.equal(tip(bare, branch), sha);
   assert.equal(git(bare, "log", "--format=%H", `main..${branch}`), sha, "one commit for the run");
 });

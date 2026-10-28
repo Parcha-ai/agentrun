@@ -47,7 +47,6 @@ function rig(init: { behave?: Record<string, unknown> } = {}) {
   const read = () => JSON.parse(readFileSync(statePath, "utf8")) as { holders: Record<string, string>; mounts: Record<string, { fenced: boolean }>; dirs?: string[]; calls: { tool: string; argv: string[] }[] };
   const host: ArchilHost = {
     archil: wrap("archil"),
-    fusermount: wrap("fusermount"),
     sudo: false,
     procMounts,
     proc,

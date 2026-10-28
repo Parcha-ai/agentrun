@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { stat as statAsync } from "node:fs/promises";
+import { statfs as statfsAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Delegation, Disk } from "disk";
@@ -17,7 +17,7 @@ import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, 
 import { ClaimError, exitCodeFor, FencedError, HeldError } from "../../src/errors.ts";
 
 const BASE = "/mnt/pda/p1";
-const A = `${BASE}/a`; // user-owned mount root
+const A = `${BASE}/a`; // host A's mount root
 const B = `${BASE}/b-root`; // root-owned mount root: mountpoints are created and removed through sudo
 const C = `${BASE}/c`; // a sibling run's holder
 const RESULTS = join(LEDGER, "..", "P1-live-results.json");
@@ -114,10 +114,8 @@ before(async () => {
   results.disk = disk.id;
   results.client = spawnSync("/usr/bin/archil", ["--version"], { encoding: "utf8" }).stdout.split("\n")[0];
   assert.deepEqual(archilMounts().filter((m) => m.startsWith(`${BASE}/`)), [], "no P1 mounts left from an earlier run");
-  spawnSync("sudo", ["mkdir", "-p", BASE, B]);
-  spawnSync("sudo", ["chown", `${process.getuid!()}:${process.getgid!()}`, BASE]);
-  mkdirSync(A, { recursive: true });
-  mkdirSync(C, { recursive: true });
+  // Every mount root and its runs/ are root's, 0755: the archil wrapper refuses any other (only root may name entries there).
+  spawnSync("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, ...[A, B, C].flatMap((r) => [r, `${r}/runs`])]);
 });
 
 /** Delete everything under `prefix`: files first, then directory markers deepest first (a directory with children
@@ -375,7 +373,7 @@ test("durability across a daemon kill: no barrier, syncfs, archil sync (3 rounds
 // daemon is SIGKILLed once the kernel counts the stat as waiting on the connection. Read as live, the dead mount was
 // UNMOUNT_FAILED; it must be cleaned. A rescue resumes and kills the daemon within 15 s whatever happens, so a stat left
 // waiting on a stopped daemon can never hold the suite.
-test("a dead daemon's connection torn down under the deciding stat (ECONNABORTED): unmountClaim cleans the dead mount", { skip: !LIVE }, async () => {
+test("a dead daemon's connection torn down under the deciding statfs (ECONNABORTED): unmountClaim cleans the dead mount", { skip: !LIVE }, async () => {
   const id = await newRun("abort-race");
   const a = await claimAt(id, A, "abort-race");
   const pid = daemonPid(a.root);
@@ -391,20 +389,21 @@ test("a dead daemon's connection torn down under the deciding stat (ECONNABORTED
     const baseline = waiting();
     const seen: string[] = [];
     let setup = "";
-    const stat = async (path: string) => {
-      const pending = statAsync(path);
+    // statfs decides (isDead asks it first, since a stat may be answered from cached attributes): it is held here.
+    const statfs = async (path: string) => {
+      const pending = statfsAsync(path);
       pending.then(() => seen.push("ok"), (e: NodeJS.ErrnoException) => seen.push(e.code ?? String(e)));
       const until = performance.now() + 5_000;
       while (waiting() <= baseline && performance.now() < until) await sleep(5);
-      if (waiting() <= baseline) setup = `the deciding stat never reached the kernel (waiting stayed ${baseline})`;
+      if (waiting() <= baseline) setup = `the deciding statfs never reached the kernel (waiting stayed ${baseline})`;
       if (!signal("KILL")) setup ||= "kill -9 of the stopped daemon failed";
       return pending;
     };
     claims.delete(a);
-    const via = await unmountClaim(a.root, { timeoutMs: { unmount: 3_000 }, fs: { stat } }).catch((e: Error) => `threw: ${e.message}`);
-    ledger.unmounted(a.root, `${via} (daemon SIGKILLed under the deciding stat)`);
+    const via = await unmountClaim(a.root, { timeoutMs: { unmount: 3_000 }, fs: { statfs } }).catch((e: Error) => `threw: ${e.message}`);
+    ledger.unmounted(a.root, `${via} (daemon SIGKILLed under the deciding statfs)`);
     assert.equal(setup, "", setup);
-    assert.deepEqual(seen, ["ECONNABORTED"], "the deciding stat was in flight at the abort");
+    assert.deepEqual(seen, ["ECONNABORTED"], "the deciding statfs was in flight at the abort");
     assert.equal(via, "fusermount");
     assert.ok(!archilMounts().includes(a.root), "the dead mount is gone");
   } finally {
@@ -463,9 +462,11 @@ test("a non-exclusive mount at the claim's mountpoint fails verification and is 
   for (const flag of ["--shared", "--conditional"]) {
     const id = await newRun(`mode${flag.replace(/-/g, "")}`);
     const mp = join(A, "runs", id);
-    mkdirSync(mp, { recursive: true });
+    // As the wrapper's prepare makes it; then archil itself, as root, since the wrapper refuses a non-exclusive mount.
+    // The token goes on stdin to the shell that execs archil, never in sudo's argv (nor an assignment sudo would log).
+    spawnSync("sudo", ["-n", "install", "-d", "-o", String(process.getuid!()), "-g", String(process.getgid!()), "-m", "0755", mp]);
     const tok = await token(`mode${flag}`);
-    const m = spawnSync("sudo", ["-n", ARCHIL_SCOPED, "mount", flag, `${scratchDiskId()}:/runs/${id}`, mp, "--region", REGION], {
+    const m = spawnSync("sudo", ["-n", "sh", "-c", 'IFS= read -r ARCHIL_MOUNT_TOKEN; export ARCHIL_MOUNT_TOKEN; exec /usr/bin/archil "$@"', "sh", "mount", flag, `${scratchDiskId()}:/runs/${id}`, mp, "--region", REGION], {
       env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME ?? "/" },
       input: `${tok}\n`,
       encoding: "utf8",
@@ -536,7 +537,8 @@ async function seededAcquire(id: string, mountRoot: string, seed: (mp: string) =
 test("P6's control as a test: archil refuses a mountpoint holding one unrelated file; acquire moves it to .stray, mounts, and the run stays clean", { skip: !LIVE }, async () => {
   const id = await newRun("stray-a");
   const mp = `${A}/runs/${id}`;
-  mkdirSync(mp, { recursive: true });
+  // As the wrapper's prepare makes it: root makes the run's mountpoint and hands it to the run user.
+  spawnSync("sudo", ["-n", "install", "-d", "-o", String(process.getuid!()), "-g", String(process.getgid!()), "-m", "0755", mp]);
   writeFileSync(join(mp, "unrelated.txt"), "x\n");
   // The control: archil itself over the seeded directory, through the wrapper as the claim calls it.
   const direct = spawnSync("sudo", ["-n", ARCHIL_SCOPED, "mount", `${scratchDiskId()}:/runs/${id}`, mp, "--region", REGION], { input: `${await token("stray-control")}\n`, encoding: "utf8", timeout: 120_000 });
@@ -555,7 +557,7 @@ test("P6's control as a test: archil refuses a mountpoint holding one unrelated 
   assert.equal(r.objects.some((k) => k.includes("unrelated")), false, "the run on the disk never got the file");
   assert.equal(r.logged.length, 1);
   assert.deepEqual([r.logged[0].run, r.logged[0].entries], [id, 1]);
-  results.stray = { control: { exit: direct.status, refusal: refusal.replace(mp, "<mp>").slice(0, 200) }, userOwnedRoot: { entries: r.claim.stray?.entries, mountMs: r2(r.claim.timings.mountMs), seen: r.seen, objects: r.objects } };
+  results.stray = { control: { exit: direct.status, refusal: refusal.replace(mp, "<mp>").slice(0, 200) }, rootA: { entries: r.claim.stray?.entries, mountMs: r2(r.claim.timings.mountMs), seen: r.seen, objects: r.objects } };
 });
 
 test("the same under a root-owned mount root: the mountpoint made through sudo, its leftovers moved aside as root", { skip: !LIVE }, async () => {

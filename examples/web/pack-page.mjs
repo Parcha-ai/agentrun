@@ -47,7 +47,7 @@ export async function packPage(outDir, { data = "./data/" } = {}) {
   return out;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const { positionals, values } = parseArgs({ allowPositionals: true, options: { data: { type: "string", default: "./data/" } } });
   if (positionals.length !== 1) {
     console.error("usage: pack-page.mjs <outDir> [--data ./data/]");

@@ -16,11 +16,11 @@ const exec = promisify(execFile);
 // packages after them that depend on none of them or, as pi-durable-agent's ./workflow subpath does, on dsl and pi alone, serve (@parcha/agentrun-serve), which uses dsl, pi, pi-durable-disk, pi-durable-agent, pi-git-remote and pi-agent-learn, and the reference host
 // (@parcha/agentrun-harness), which uses dsl, pi, pi-browser, pi-durable-disk and pi-vision, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', learn: '@parcha/agentrun-learn', 'pi-agent-learn': '@parcha/pi-agent-learn', serve: '@parcha/agentrun-serve', harness: '@parcha/agentrun-harness' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', pi: '@parcha/agentrun-pi', 'pi-durable-disk': '@parcha/pi-durable-disk', 'pi-browser': '@parcha/pi-browser', 'pi-vision': '@parcha/pi-vision', 'pi-transport': '@parcha/pi-transport', 'pi-durable-agent': '@parcha/pi-durable-agent', 'pi-git-remote': '@parcha/pi-git-remote', learn: '@parcha/agentrun-learn', 'pi-agent-learn': '@parcha/pi-agent-learn', serve: '@parcha/agentrun-serve', 'run-adapters': '@parcha/agentrun-adapters', harness: '@parcha/agentrun-harness' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
-export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, harness: true, network: 'prohibited' };
+export const runtimeSmokeChecks = { core: true, jev: true, pi: true, archil: true, browser: true, vision: true, transport: true, agent: true, serve: true, git: true, learn: true, learnCheck: true, adapters: true, harness: true, network: 'prohibited' };
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -175,7 +175,7 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
   return { status: 'passed', tag, commit, license: workspace.license, registry: 'https://registry.npmjs.org/', distTag: 'beta', packages };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   assert.equal(process.argv.length, 4, 'Usage: node scripts/release-preflight.mjs --tag v0.1.0-beta.1');
   assert.equal(process.argv[2], '--tag');

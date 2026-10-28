@@ -226,12 +226,86 @@ npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earen
 `@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `>=1.0.4 <1.4.0`: pi 1.4 is not supported yet; a
 later release widens the range. Node 22.19 or later; Linux, or macOS for development.
 
+The `disk` SDK and `@earendil-works/pi-coding-agent` pin undici 8.10.2 exactly. To install undici 8.12.2 under them, add this
+override to your own `package.json` (npm applies overrides only in the project that runs the install):
+
+```json
+"overrides": { "undici@8.10.2": "8.12.2" }
+```
+
 From a checkout (this package is `packages/pi-durable-disk` of the repository; the root build compiles `dist/`):
 
 ```sh
 git clone https://github.com/Parcha-ai/agentrun.git && cd agentrun && npm ci --ignore-scripts && npm run build
 cd packages/pi-durable-disk
 ```
+
+## The door hook (`AppOptions.door`)
+
+By default `serve`'s door (`POST /submit`, `POST /abort`, `GET /status`, `GET /events`) is pi's root conversation. An
+app with a harness of its own (a child process, another agent loop) hands the door to it with `door`, an `AppOptions`
+field. Without `door`, the door answers byte for byte as it did before the field existed
+([`test/door-exchange.test.ts`](test/door-exchange.test.ts) holds the recorded exchange).
+
+```ts
+interface DoorHook {
+  /** Resolves when the input is TAKEN, not when the turn ends; the turn runs after, reported through ctx.emit and the conversation's entries. */
+  submit(input: { requestId: string; content: UserInput; whenBusy: "steer" | "followUp" | "reject" }, ctx: DoorContext): Promise<{ accepted: true } | { accepted: false; reason: "busy" }>;
+  abort(ctx: DoorContext): Promise<"aborted" | "idle">;
+  busy(): boolean;
+}
+type DoorContext = { run: DurableRun; signal: AbortSignal; emit(event: { type: "run_start" } | { type: "run_end" }): void; adopt(pid: number): void };
+```
+
+With a hook, `POST /submit` (whose `whenBusy` defaults to `followUp`, as pi's) goes through, in this order: the bearer
+token (401); the lease (503 `OPENING`, `PARKING`, `RELEASED`), so nothing reaches the hook once the lease is lost; the
+admission, one `door.input` entry in the root conversation holding the requestId, the content and its status, written
+through the run's fenced commit (a lease lost before it lands fails it, and the hook is not called); then `hook.submit`,
+once per requestId, bounded at `doorTimeouts.submitMs` (30 s). Each status change is a `door.status` entry on the same
+requestId, and the last one is the record's status. A requestId already admitted answers its status and never calls the
+hook again, in this process or the next: the record is in the store, and a lookup is one indexed read.
+
+| Status | Means | A submit of that requestId answers |
+|---|---|---|
+| `ADMITTED` | only: the hook is running in this instance, on a record this instance admitted | 202 `{ status: "ADMITTED" }` |
+| `ACCEPTED` | the hook took the input | 200 `{ status: "ACCEPTED" }`; never submitted again |
+| `REJECTED_BUSY` | the hook refused it as busy | 409 `BUSY`, `status: "REJECTED_BUSY"`; terminal: send a new requestId |
+| `FAILED` | `hook.submit` threw, before taking the input | 500 `FAILED`, `status: "FAILED"` |
+| `UNKNOWN` | the bound passed: the door aborted `ctx.signal`, called `hook.abort` (bounded at `doorTimeouts.abortMs`, 5 s) and stopped waiting; or the record was admitted by an earlier instance, or before the lease was lost, and no call here carries it | 504 `UNKNOWN`, `status: "UNKNOWN"`; never submitted again |
+
+A late answer to an `UNKNOWN` submit is never dropped: the door writes the real outcome (`ACCEPTED`, `REJECTED_BUSY`, or
+`FAILED` if it threw) on the same requestId, unless the lease is gone by then (the fenced commit fails, and the record
+stays `UNKNOWN`). An abort that loses the race to delivery so ends `ACCEPTED`.
+
+A record whose instance died, or lost its lease, between the admission and the hook's outcome was dispatched or not,
+nobody knows: it is `UNKNOWN`, and final, since no later outcome can come from a dead or fenced instance. A retry
+answers it `UNKNOWN` ("admitted by an earlier instance, or before the lease was lost: whether the hook took it is
+unknown") as soon as no call in this instance carries it, and each open writes a `door.status` `UNKNOWN` for every such
+record through the fenced commit, so the store and the events say it too. A lease lost between the admission and the
+call writes it at once when the commit can still land. No incarnation submits an `ADMITTED` or `UNKNOWN` record again.
+
+`POST /abort` calls `hook.abort` (bounded) and answers `{ result: "aborted" | "idle" }`. `GET /status`'s `busy` is
+`hook.busy()`. `GET /events` keeps its contract (a snapshot, then batches of events, then `end`) on the root
+conversation: entries come from pi's `watchEvents`, the hook's `ctx.emit` run events (`{ type: "run_start" | "run_end",
+inputs: [] }`) are merged in order, and `snapshot.run` is present while `hook.busy()`. There is no `Last-Event-ID`:
+resume = a fresh snapshot, as today.
+
+A `run_end` pairs every `run_start`, and that is the hook's duty first: it emits `run_end` when its turn ends in any
+way, above all the ways the door cannot see (its harness child dies, its turn errors inside the harness). The door
+pairs a `run_start` itself only at the points it controls: when `hook.submit` throws after it, when a second
+`run_start` comes first, when an abort leaves the hook idle, when the door stops, and before a stream's `end`.
+
+The door stops when the instance ends: a drain on SIGTERM, a fence (the lease is lost, and another instance may take
+the run) and a park. It aborts the hook, bounded, kills the process group of every harness child the hook registered
+with `ctx.adopt(pid)` (start the child `detached`) and still alive, and pairs an open `run_start`, so the instance
+never exits with one of those children alive, and a fenced run's child never acts on without the lease.
+
+The admission is the journal of [`spec/receipts/Receipts.tla`](../../spec/receipts/Receipts.tla) for one effect per
+requestId, with the same invariants: Admit is the `door.input` commit (`I1_AdmitBeforeDispatch`), Dispatch is the one
+`hook.submit` per requestId (`I3_OneDispatchPerKey`), Settle is the outcome on the same record
+(`I7_ReceiptsNeverErased`), and `UNKNOWN` is an outcome nobody knows, never dispatched again.
+[`spec/receipts/Door.tla`](../../spec/receipts/Door.tla) checks the door's journal itself, across restarts, a lost
+lease and a late resolve.
 
 ## The low-level API
 

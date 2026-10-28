@@ -7,7 +7,7 @@ import type { EvidenceSink } from "../core/evidence.js";
 import type { FetchRequest, FetchResult, PriceTable, SearchRequest, SearchResult } from "../core/host.js";
 import { providerKeyValues } from "../core/session-control.js";
 import { toolUsage } from "../core/usage.js";
-import { createWebTools, type RenderedPage, type WebBackup, type WebOutcome, type WebToolsOptions } from "../core/web.js";
+import { createWebTools, type FetchSource, type RenderedPage, type SearchSource, type WebBackup, type WebOutcome, type WebToolsOptions } from "../core/web.js";
 import { forModel } from "./result.js";
 
 export type WebExtensionOptions = {
@@ -17,6 +17,10 @@ export type WebExtensionOptions = {
     fetch?: (request: FetchRequest, signal?: AbortSignal) => Promise<FetchResult>;
     search?: (request: SearchRequest, signal?: AbortSignal) => Promise<SearchResult>;
   };
+  /** Searches tried before `providers.search`, in order (see `SearchSource`). */
+  searchSources?: readonly SearchSource[];
+  /** Readers tried before `providers.fetch` for a markdown read, in order (see `FetchSource`). */
+  fetchSources?: readonly FetchSource[];
   evidence: EvidenceSink;
   /** Per use: evidence label and proxies. Default: label "web", proxies on. */
   scope?: (conversationId: ConversationId) => { label: string; proxies: boolean } | Promise<{ label: string; proxies: boolean }>;
@@ -27,6 +31,8 @@ export type WebExtensionOptions = {
   decisions?: Pick<Decisions, "classifyPage">;
   render?: { enabled: boolean; read(url: string, signal?: AbortSignal): Promise<RenderedPage> };
   pdf?: WebToolsOptions["pdf"];
+  /** How long the screening of a search answer's snippets may take in all (see `WebToolsOptions`). */
+  snippetScreenMs?: number;
   section?: { addendum?: string };
 };
 
@@ -35,6 +41,8 @@ export function createWebExtension(options: WebExtensionOptions): { extension: R
     name: options.providers.name ?? "provider",
     fetch: options.providers.fetch,
     search: options.providers.search,
+    searchSources: options.searchSources,
+    fetchSources: options.fetchSources,
     evidence: options.evidence,
     scope: options.scope ?? (() => ({ label: "web", proxies: true })),
     prices: options.prices,
@@ -43,11 +51,12 @@ export function createWebExtension(options: WebExtensionOptions): { extension: R
     classifyPage: options.decisions?.classifyPage,
     render: options.render,
     pdf: options.pdf,
+    snippetScreenMs: options.snippetScreenMs,
   });
   const run = { web_fetch: tools.fetch, web_search: tools.search } as const;
   const result = ({ text, isError, details, usd }: WebOutcome) => ({ ...forModel([{ type: "text" as const, text }]), isError, details: details as JsonValue, usage: toolUsage(usd).usage });
   const registrations = WEB_TOOLS
-    .filter((tool) => (tool.listedWhen === "fetch" ? options.providers.fetch || options.render?.enabled || options.backups?.length : options.providers.search))
+    .filter((tool) => (tool.listedWhen === "fetch" ? options.providers.fetch || options.render?.enabled || options.backups?.length || options.fetchSources?.length : options.providers.search || options.searchSources?.length))
     .map((tool) => defineTool({
       name: tool.name,
       description: tool.description,

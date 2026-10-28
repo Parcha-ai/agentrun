@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
@@ -37,10 +38,20 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   const row = storeRun(data, started.run_id);
   assert.deepEqual([row.state, row.summary, row.revision, row.kind], ["completed", "The answer is 42.", agent.body.revision, "agentic"]);
   assert.equal(typeof row.costUsd, "number");
+  // A completed run takes a follow-up (the contract's table): the same run opens again, answers, and completes again.
   const after = await api("POST", `/runs/${started.run_id}/messages`, { content: "again" });
-  assert.equal(after.status, 409);
-  assert.equal(after.body.error.code, "not_continuable");
-  assert.deepEqual(after.body.error.next_action, { type: "request", method: "POST", path: "/agents/calc/runs", caller_supplies: ["input", "Idempotency-Key"] });
+  assert.equal(after.status, 202, JSON.stringify(after.body));
+  assert.equal(after.body.mode, "follow_up");
+  const again = await follow(api, started.run_id, ["completed"]);
+  assert.equal(again.last.final, true);
+  const reread = (await api("GET", `/runs/${started.run_id}`)).body;
+  assert.ok(reread.ended_at >= run.ended_at, "it ended again");
+  // The same session goes on: the follow-up's row, then a new turn's answer after it.
+  const kinds = again.rows.map((r) => r.kind);
+  assert.deepEqual(again.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "again"]);
+  assert.ok(kinds.lastIndexOf("final_answer") > kinds.lastIndexOf("user_message"), `a new answer after the follow-up: ${kinds.join(", ")}`);
+  assert.deepEqual((await api("GET", "/agents/calc")).body.runs, { count: 1, live: 0 }, "one run, not a second");
+  assert.equal(storeRun(data, started.run_id).state, "completed");
 });
 
 test("the change cursor: a saved cursor resumes onto the rows held, 0 resets, and the final cursor answers unchanged", async (t) => {
@@ -60,7 +71,7 @@ test("the change cursor: a saved cursor resumes onto the rows held, 0 resets, an
 });
 
 test("ask_person makes the run input_required and waiting; a message answers it (mode answer) and the run completes", async (t) => {
-  const { api } = await serve(t);
+  const { api, data } = await serve(t);
   const { run_id } = await startRun(api, "regions", "Pick a region.", { tools: ["ask_person"] });
   const waiting = await follow(api, run_id, ["input_required"]);
   assert.equal(waiting.last.state, "waiting");
@@ -73,6 +84,15 @@ test("ask_person makes the run input_required and waiting; a message answers it 
   const done = await follow(api, run_id, ["completed"], { after: waiting.after });
   assert.equal(done.pages.filter((p) => p.reset).length, 0);
   assert.deepEqual((await api("GET", `/runs/${run_id}`)).body.result, { output: null, final_answer: '{"region":"EU"}' });
+  // What the model read back for its ask_person call, as the run's store holds it: never empty, on every pi-durable this
+  // package takes (1.1 reads a result's `content`, 1.2 and later its `output`).
+  const db = new DatabaseSync(join(data, "runs", run_id, "store", "run.sqlite"), { readOnly: true });
+  t.after(() => db.close());
+  const results = db.prepare("SELECT record FROM entries ORDER BY id").all()
+    .flatMap((row) => JSON.parse(row.record).model ?? [])
+    .filter((message) => message.role === "toolResult" && message.toolName === "ask_person")
+    .map((message) => (message.content ?? []).map((c) => c.text ?? "").join(""));
+  assert.deepEqual(results, ["Asked the person: Which region should I use?. Waiting for their answer."]);
 });
 
 test("stop ends the turn and leaves the run input_required and idle; a message then is a follow-up and the run goes on", async (t) => {
