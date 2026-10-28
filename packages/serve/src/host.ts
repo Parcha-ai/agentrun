@@ -4,6 +4,7 @@
 import { statfs } from "node:fs/promises";
 import { totalmem } from "node:os";
 import { openStoreReader } from "@parcha/pi-durable-agent";
+import { REQUEST_BUSY_MS, whenFree } from "./agents.js";
 
 const MiB = 2 ** 20;
 /** Memory the server keeps for itself, before any run. */
@@ -37,12 +38,14 @@ export type Health = { status: "ok" | "failing"; checks: { store: "ok" | "does_n
 export async function healthOf(data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
   let store: Health["checks"]["store"] = "ok";
   try {
-    const reader = openStoreReader(data);
-    try {
-      reader.listAgents();
-    } finally {
-      reader.close();
-    }
+    await whenFree(() => {
+      const reader = openStoreReader(data, { busyTimeoutMs: 0 });
+      try {
+        reader.listAgents();
+      } finally {
+        reader.close();
+      }
+    }, REQUEST_BUSY_MS);
   } catch {
     store = "does_not_open";
   }
