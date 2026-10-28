@@ -1,7 +1,9 @@
 // The change log behind the timeline cursor, on its own.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { timelineReducer } from "@parcha/pi-durable-agent/timeline";
 import { ChangeClock, RowLog } from "../dist/rows.js";
+import { keepCommitted } from "../dist/runs.js";
 
 const row = (id, summary = id, kind = "text_block") => ({ id, timestamp: "2026-10-16T00:00:00.000Z", created_at: "2026-10-16T00:00:00.000Z", kind, summary, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, text: null });
 
@@ -57,4 +59,23 @@ test("a row `keep` names stays served when the rows no longer hold it; any other
   // A snapshot of a compacted conversation: only the newest row, and the live one ended.
   log.sync([row("0:2", "two")], (id) => id !== "0:live");
   assert.deepEqual(log.rows().map((r) => r.id), ["0:1", "0:2"], "the committed row stays, in its place; the live one is gone");
+});
+
+test("a live row that ended while the run's door was away goes with the next connection's snapshot; a committed one stays", () => {
+  const log = new RowLog(new ChangeClock());
+  const live = new Set();
+  const user = (id, text) => ({ id, conversationId: 1, kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text }] }] });
+  /** One connection to the door: a reducer of its own, as follow() makes. */
+  const connect = (snapshot) => {
+    const reducer = timelineReducer();
+    reducer.apply([{ type: "snapshot", ...snapshot }]);
+    const rows = reducer.rows();
+    log.sync(rows, keepCommitted(live, rows, reducer.isLive));
+  };
+  connect({ entries: [user(2, "one"), user(5, "two")], generation: { retry: { at: Date.now() + 5_000, error: "rate limited" } } });
+  assert.ok(log.rows().some((r) => r.kind === "waiting"), "the retry's wait is shown");
+  // The connection drops, the retry ends while it is down, and the conversation compacts: the next snapshot holds
+  // neither the wait nor the first message.
+  connect({ entries: [user(5, "two")] });
+  assert.deepEqual(log.rows().map((r) => r.kind), ["user_message", "user_message"], "the ended wait is gone; both messages stay");
 });

@@ -120,6 +120,8 @@ export type Run = {
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
   users: Set<string>;
+  /** The rows the live path has shown as live, by id, over every connection to the run's door. */
+  live: Set<string>;
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
@@ -190,6 +192,13 @@ export function costView(rows: readonly TimelineEvent[], stored: number | undefi
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const stopped = (run: Run) => run.meta.stopped_after === usersOf(run.rows);
+
+/** The rows a snapshot that no longer holds them leaves served: those committed entries made. A row any connection
+ *  showed live is not one (`live` holds them for the run), so a live row that ended while the door was away goes. */
+export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[], isLive: (id: string) => boolean): (id: string) => boolean {
+  for (const row of rows) if (isLive(row.id)) live.add(row.id);
+  return (id) => !live.has(id) && !isLive(id);
+}
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -321,7 +330,7 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, users: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
     };
   }
 
@@ -535,7 +544,8 @@ export class Runs {
         reducer.apply(events as never);
         // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
         // already shown, which stay; only live rows go when they end.
-        this.take(run, reducer.rows(), (id) => !reducer.isLive(id));
+        const rows = reducer.rows();
+        this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
         if (event === "snapshot" && run.finishStop) {
           run.finishStop = false;
           if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
