@@ -68,6 +68,8 @@ function recordingHost() {
       },
       agent: (agent, revisions) => kit.el("p", { class: "host-agent" }, `${agent.id} has ${revisions.length}`),
       revision: (agent, revision) => (revision.current ? null : kit.el("span", { class: "host-revision" }, `${agent.id}:${kit.short(revision.id)}`)),
+      cards: (agent, revisions, filter) => kit.el("section", { class: "card host-card" }, `${agent.id}: ${revisions.length} revisions, filter ${filter ?? "none"}`),
+      empty: () => kit.el("p", { class: "host-empty" }, "Nothing here: make one"),
     };
   };
   return { seen, host };
@@ -91,6 +93,8 @@ test("a host takes the routes it draws itself, with this page's parts: page.js f
   assert.equal(seen.kits[0].live(seen.tokens[0]), false, "and not once another view is");
   assert.deepEqual(page.fetched, ["api/store"], "page.js drew the picker");
   assert.match(page.app.textContent, /0 agents/);
+  assert.equal(all(page.app).find((el) => classOf(el) === "host-empty").textContent, "Nothing here: make one", "an empty store says what the host says");
+  assert.ok(!page.app.textContent.includes("No agents in this store yet."));
   assert.equal(page.document.title, "My server", "page.js's own views take the host's name");
 });
 
@@ -108,8 +112,17 @@ test("a host adds to the agent card and to each revision's head, given the agent
   await plain.settle();
   assertInert(plain.app);
   assert.equal(all(plain.app).filter((el) => /^host-/.test(classOf(el))).length, 0);
-  assert.equal(plain.app.textContent, page.app.textContent.replace("calc has 2", "").replace("calc:aaaaaaaaaaaa", ""));
+  assert.equal(plain.app.textContent, page.app.textContent.replace("calc has 2", "").replace("calc:aaaaaaaaaaaa", "").replace("calc: 2 revisions, filter none", ""));
   assert.equal(plain.document.title, "Calc · agent store");
+});
+
+test("a host adds cards after the agent card, given the revision filter", async () => {
+  const { host } = recordingHost();
+  const page = mount({ ...API, [`api/runs?agent=calc&revision=${"a".repeat(64)}`]: [] }, `#/agents/calc?revision=${"a".repeat(64)}`, { serve: "store", window: { agentStoreHost: host } });
+  await page.settle();
+  const cards = all(page.app).filter((el) => el.tagName === "SECTION").map(classOf);
+  assert.deepEqual(cards, ["card agent", "card host-card", "card runs", "card revs"], "the host's cards sit between the agent card and its runs");
+  assert.equal(all(page.app).find((el) => classOf(el) === "card host-card").textContent, `calc: 2 revisions, filter ${"a".repeat(64)}`);
 });
 
 test("an agent home's page takes no host: the script is the store page's only", async () => {

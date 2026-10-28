@@ -136,7 +136,8 @@ a.run:hover .id{color:var(--accent)}
 .live-note{color:var(--accent)}
 .run-head .ran{margin-top:-4px}
 .run-head .ran .rev-id{font-weight:600}
-.run-head .summary{color:var(--ink);border:1px solid var(--line);padding:8px 12px;margin:10px 0 4px}
+.run-head .summary{color:var(--ink);border:1px solid var(--line);padding:8px 12px;margin:10px 0 4px;overflow-wrap:anywhere}
+.run-head .summary .md>:first-child{margin-top:0}.run-head .summary .md>:last-child{margin-bottom:0}
 .steps{position:relative;margin-left:6px;padding-left:20px;border-left:1px solid var(--line)}
 .steps>*{position:relative;margin:0 0 12px}
 .steps>*::after{content:"";position:absolute;left:-24px;top:14px;width:7px;height:7px;background:var(--line)}

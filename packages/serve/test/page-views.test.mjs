@@ -50,7 +50,7 @@ function stub(answers) {
         init.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
       });
     }
-    if (typeof answer === "function") answer = answer(body);
+    if (typeof answer === "function") answer = await answer(body);
     const [status, data] = answer === undefined ? [404, { error: { code: "not_found", message: `no route ${path}` } }] : Array.isArray(answer) && typeof answer[0] === "number" ? answer : [200, answer];
     return { ok: status < 300, status, text: async () => JSON.stringify(data) };
   };
@@ -244,7 +244,7 @@ test("an agent's page: Edit, a run form on its revisions, and Make current on ea
   all(heads[1]).find((el) => el.tagName === "BUTTON").click();
   await page.settle();
   assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/current", { revision: REV_A }]]);
-  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc"], "the page is read again");
+  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc", "v2/capabilities", "api/runs?agent=calc"], "the page is read again, with what this server can run and its comparison of revisions");
 });
 
 test("start a run: its input, on the revision the form shows picked (the current one unless another is), always named, POSTed to the agent's runs, a workflow's as a JSON object; then the run's page", async () => {
@@ -386,6 +386,55 @@ test("leaving a live run aborts its long poll; a run this server never ran, or a
   assert.deepEqual(final.api.calls.map((c) => c.path), ["v2/runs/run-9", "v2/runs/run-9/timeline", "api/store", "api/runs/run-9"]);
 });
 
+/** Revisions and runs shaped like the MCC classifier's A, B and C: two prompts and a workflow, eight runs each. */
+const MCC = (() => {
+  const rev = (letter, kind, note, current, createdAt, tools = ["read"]) => ({ ...revision(letter.repeat(64), current, note), kind, createdAt, body: { tools, skills: {}, ...(kind === "agentic" ? { instructions: "Pick the MCC." } : {}) }, ...(kind === "workflow" ? { graph: { nodes: [], edges: [] } } : {}) });
+  const revisions = [
+    rev("d", "agentic", "Prompt D: not run yet", false, "2026-10-23T16:53:00.000Z"),
+    rev("c", "workflow", "The cheap one: read the home page, one fast model step", true, "2026-10-23T16:52:00.000Z"),
+    rev("b", "agentic", "Prompt B: a rubric", false, "2026-10-23T16:51:00.000Z"),
+    rev("a", "agentic", "Prompt A: the plain instructions", false, "2026-10-23T16:50:00.000Z"),
+  ];
+  const runs = [];
+  const add = (letter, costs, seconds, states) =>
+    costs.forEach((cost, i) => {
+      const startedAt = new Date(Date.UTC(2026, 9, 23, 17, letter.charCodeAt(0) - 96, i * 2)).toISOString();
+      runs.push({ id: `${letter}${i}`, agent: "mcc", revision: letter.repeat(64), kind: letter === "c" ? "workflow" : "agentic", state: states[i] ?? "completed", startedAt, endedAt: new Date(Date.parse(startedAt) + seconds[i] * 1000).toISOString(), costUsd: cost, gone: false });
+    });
+  add("a", Array(8).fill(0.107 / 8), [60, 61, 59, 60, 62, 58, 60, 60], { 3: "failed" });
+  add("b", Array(8).fill(0.182 / 8), [90, 91, 89, 90, 92, 88, 90, 90], {});
+  add("c", Array(8).fill(0.0011 / 8), [2, 3, 2, 2, 1, 2, 2, 2], { 5: "escalated" });
+  return { agent: { id: "mcc", name: "MCC classifier", createdAt: "2026-10-23T16:50:00.000Z", current: "c".repeat(64) }, revisions, runs: runs.reverse() };
+})();
+
+test("compare revisions: one row per revision, newest first, with its runs, completed, failed or escalated, total cost, cost per completed run and median time; the cheapest per completed run is marked, and a row filters the runs", async () => {
+  const answers = { "api/agents/mcc": { agent: MCC.agent, revisions: MCC.revisions }, "api/runs?agent=mcc": MCC.runs, [`api/runs?agent=mcc&revision=${"b".repeat(64)}`]: MCC.runs.filter((r) => r.revision === "b".repeat(64)) };
+  const { page: shown, api } = open("#/agents/mcc", answers);
+  await shown.settle();
+  const sections = all(shown.app).filter((el) => el.tagName === "SECTION").map(classOf);
+  assert.deepEqual(sections, ["card agent", "card compare", "card runs", "card revs"]);
+  const card = all(shown.app).find((el) => classOf(el) === "card compare");
+  assertInert(card);
+  const rows = all(card).filter((el) => el.tagName === "A" && classOf(el).startsWith("cmp"));
+  assert.deepEqual(rows.map((el) => el.getAttribute("href")), ["d", "c", "b", "a"].map((l) => `#/agents/mcc?revision=${l.repeat(64)}`));
+  const cells = (el) => all(el).filter((c) => /^c /.test(classOf(c))).map((c) => c.textContent);
+  assert.deepEqual(rows.map(cells), [
+    ["dddddddddddd agentic Prompt D: not run yet", "no runs"],
+    ["cccccccccccc workflow current The cheap one: read the home page, one fast model step", "8", "7", "1", "$0.0011", "$0.00016 cheapest", "2s"],
+    ["bbbbbbbbbbbb agentic Prompt B: a rubric", "8", "8", "0", "$0.182", "$0.023", "1m 30s"],
+    ["aaaaaaaaaaaa agentic Prompt A: the plain instructions", "8", "7", "1", "$0.107", "$0.015", "1m 00s"],
+  ]);
+  assert.deepEqual(rows.map((el) => all(el).filter((c) => classOf(c) === "pill ok").map((c) => c.textContent)), [[], ["cheapest"], [], []], "the cheapest cost per completed run");
+  assert.deepEqual(rows.map(classOf), ["cmp", "cmp", "cmp", "cmp"]);
+
+  const filtered = open(`#/agents/mcc?revision=${"b".repeat(64)}`, answers);
+  await filtered.page.settle();
+  assert.ok(filtered.api.calls.some((c) => c.path === "api/runs?agent=mcc"), "the comparison reads every run of the agent, whatever the filter");
+  const on = all(filtered.page.app).filter((el) => el.tagName === "A" && classOf(el) === "cmp on");
+  assert.deepEqual(on.map((el) => [el.getAttribute("href"), el.getAttribute("aria-current")]), [[`#/agents/mcc?revision=${"b".repeat(64)}`, "true"]]);
+  assert.ok(api.calls.length > 0);
+});
+
 test("a tool this server's environment cannot bind is shown unbound in the form, naming the variables it needs", async () => {
   const capabilities = { ...CAPABILITIES, tools: [...CAPABILITIES.tools, { name: "browser", summary: "", nodes: true, available: false, missing: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"] }] };
   const { page } = open("#/new", { "v2/capabilities": capabilities });
@@ -394,6 +443,51 @@ test("a tool this server's environment cannot bind is shown unbound in the form,
   assert.equal(classOf(box.parentNode), "unbound");
   assert.equal(box.parentNode.getAttribute("title"), "This server's environment does not set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
   assert.equal(classOf(all(page.app).find((el) => el.getAttribute("type") === "checkbox" && el.value === "read").parentNode), "", "a tool it binds is plain");
+});
+
+test("an empty store says what to do: make a new agent, or seed the showcase with the exact command in a code block; a store with agents shows its agents", async () => {
+  const empty = open("#/", { "api/store": { agents: [] } });
+  await empty.page.settle();
+  assertInert(empty.page.app);
+  const block = all(empty.page.app).find((el) => classOf(el) === "empty-store");
+  assert.equal(block.textContent, "No agents yet. New agentor seed the showcase:docker compose -f packages/serve/docker/compose.yaml exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs");
+  assert.deepEqual(all(block).filter((el) => el.tagName === "A").map((el) => [el.textContent, el.getAttribute("href")]), [["New agent", "#/new"]]);
+  const code = all(block).find((el) => el.tagName === "CODE");
+  assert.equal(code.parentNode.tagName, "PRE");
+  assert.equal(code.textContent, "docker compose -f packages/serve/docker/compose.yaml exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs");
+  assert.ok(!empty.page.app.textContent.includes("No agents in this store yet."));
+
+  const full = open("#/", { "api/store": { agents: AGENTS } });
+  await full.page.settle();
+  assert.equal(all(full.page.app).filter((el) => classOf(el) === "empty-store").length, 0);
+  assert.equal(all(full.page.app).filter((el) => classOf(el) === "agent-tile").length, 2);
+});
+
+test("an agent whose current revision names a tool this server cannot bind says so above the run form, naming the variables it needs; Start run stays", async () => {
+  const browserRev = { ...revision(REV_B, true, "Reads the bills"), body: { instructions: "Fetch the bills.", tools: ["read", "browser", "vault"], skills: {} } };
+  const page = { agent: AGENT_PAGE.agent, revisions: [browserRev, revision(REV_A, false, "Files only")] };
+  const capabilities = {
+    ...CAPABILITIES,
+    tools: [
+      ...CAPABILITIES.tools,
+      { name: "browser", summary: "", nodes: true, available: false, missing: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"] },
+      { name: "vault", summary: "", nodes: false, available: false, missing: ["VAULT_KEY"] },
+      { name: "fetch_page", summary: "", nodes: true, available: false, missing: ["UNUSED_KEY"] },
+    ],
+  };
+  const { page: shown, api } = open("#/agents/calc", { "api/agents/calc": page, "api/runs?agent=calc": [], "v2/capabilities": capabilities });
+  await shown.settle();
+  assert.ok(api.calls.some((c) => c.path === "v2/capabilities"));
+  const card = all(shown.app).find((el) => classOf(el) === "card agent");
+  const notice = all(card).find((el) => classOf(el) === "cant-run");
+  assert.equal(notice.textContent, "This server can't run this agent's current revision: browser needs BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID; vault needs VAULT_KEY.");
+  const order = all(card).filter((el) => ["cant-run", "run-form"].includes(classOf(el))).map(classOf);
+  assert.deepEqual(order, ["cant-run", "run-form"], "above the run form");
+  assert.equal(buttonNamed(shown, "Start run").disabled, undefined, "Start run stays: another revision may run, and the 409 still explains");
+
+  const runnable = open("#/agents/calc", { "api/agents/calc": { ...page, revisions: [revision(REV_B, true, "Files only")] }, "api/runs?agent=calc": [], "v2/capabilities": capabilities });
+  await runnable.page.settle();
+  assert.equal(all(runnable.page.app).find((el) => classOf(el) === "cant-run")?.textContent ?? "", "", "a revision this server can run says nothing");
 });
 
 const ARCHIVED_AT = "2026-10-24T08:00:00.000Z";
@@ -406,8 +500,8 @@ test("an agent's page: Archive posts to .../archive and the page is read again; 
   buttonNamed(page, "Archive").click();
   await page.settle();
   assert.deepEqual(api.writes(), [["POST", "v2/agents/calc/archive", {}]]);
-  assert.equal(api.calls[api.calls.length - 3].headers["content-type"], "application/json", "a JSON body, as the page's writes need");
-  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc"], "the page is read again");
+  assert.equal(api.calls[before].headers["content-type"], "application/json", "a JSON body, as the page's writes need");
+  assert.deepEqual(api.calls.slice(before + 1).map((c) => c.path), ["api/agents/calc", "api/runs?agent=calc", "v2/capabilities", "api/runs?agent=calc"], "the page is read again, the can't-run notice and the compare card with it");
   const archived = open("#/agents/calc", { "api/agents/calc": { ...AGENT_PAGE, agent: { ...AGENT_PAGE.agent, archivedAt: ARCHIVED_AT } }, "api/runs?agent=calc": [], "POST v2/agents/calc/unarchive": { agent_id: "calc", archived_at: null } });
   await archived.page.settle();
   assert.equal(buttonNamed(archived.page, "Archive"), undefined);

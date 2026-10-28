@@ -671,7 +671,7 @@
                     el("span", { class: "facts" }, agent.currentKind ? null : el("span", null, "no revision yet"), el("span", null, plural(agent.runs || 0, "run")), el("span", { class: "id" }, agent.id))
                   );
                 }))
-              : el("p", { class: "none" }, archived ? "No archived agents." : "No agents in this store yet.")
+              : archived ? el("p", { class: "none" }, "No archived agents.") : host && host.empty ? host.empty() : el("p", { class: "none" }, "No agents in this store yet.")
           )
         );
       },
@@ -844,6 +844,7 @@
             agent.description ? el("p", { class: "lede" }, agent.description) : null,
             host && host.agent ? host.agent(agent, revisions) : null
           ),
+          host && host.cards ? host.cards(agent, revisions, filter) : null,
           runsCard(agentId, revisions, both[1], filter),
           el("section", { class: "card revs" }, kicker("Revisions"), el("h2", null, plural(revisions.length, "revision") + (revisions.length > 1 ? ", newest first" : "")), revisions.length ? revisions.map(function (r) { return revisionBlock(r, agent); }) : el("p", { class: "none" }, "No revisions yet.")),
         ]);
@@ -894,7 +895,7 @@
       el("h1", { class: "id" }, run.id),
       el("p", { class: "facts" }, runState(run.state), run.archivedAt ? pill("archived") : null, facts, run.state === "running" ? el("span", { class: "live-note" }, "refreshing every 2 s") : null),
       el("p", { class: "facts ran" }, el("span", { class: "word" }, "agent"), el("a", { href: agentHref(run.agent) }, data.agent), el("span", { class: "word" }, "revision"), el("span", { class: "rev-id" }, short(run.revision)), kindPill(run.kind), data.note ? el("span", null, data.note) : null),
-      run.summary ? el("p", { class: "lede summary" }, run.summary) : null,
+      run.summary ? el("div", { class: "lede summary" }, md(run.summary)) : null,
       data.gone ? el("p", { class: "note" }, "This run's directory is gone from the store's runs folder: only its row is left.") : null,
       host && host.run ? host.run(run) : null
     );
@@ -1019,7 +1020,8 @@
   // window.agentStoreHost. Given this page's parts (`route` among them, which draws the address's view again) it answers
   // { name: the page's name in the tab's title; route(hash, token): true when it drew that view itself;
   // agent(agent, revisions) and revision(agent, revision): what it adds to the agent card and to a revision's head;
-  // run(run): what it adds to a stored run's head }.
+  // cards(agent, revisions, filter): cards between the agent card and its runs; empty(): what the picker shows when the
+  // store holds no agent; run(run): what it adds to a stored run's head }.
   var host = STORE && typeof window.agentStoreHost === "function"
     ? window.agentStoreHost({
         el: el, show: show, crumb: crumb, get: get, failed: failed, later: later, live: function (token) { return token === view; },

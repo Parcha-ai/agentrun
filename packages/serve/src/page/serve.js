@@ -8,6 +8,8 @@
   var STATUSES = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
   var STATUS_CLASS = { queued: "live", working: "live", input_required: "escalated", completed: "ok", failed: "error", cancelled: "stopped" };
   var LONG_POLL_MS = 25000;
+  /** What seeds the showcase agents and their runs into the server the compose file starts. */
+  var SHOWCASE = "docker compose -f packages/serve/docker/compose.yaml exec agentrun node examples/agentrun-server/showcase.mjs --token-file /data/.token --runs";
   /** The run's own start and end rows, which only a live timeline has: the stored one, and the server, count them as quiet. */
   var QUIET = /:run:(start|end)(~\d+)?$/;
 
@@ -225,6 +227,22 @@
       return el("div", { class: "run-form" }, el("h3", null, "Start a run"), field("Input", input, "For a workflow revision, a JSON object its input schema takes."), el("div", { class: "actions" }, field("Revision", pick), start), out);
     }
 
+    /** What keeps the current revision from running here: each tool it names that capabilities marks unavailable, with
+     *  the variables that tool needs. Start run stays, since another revision may run and the 409 says why. */
+    function cantRun(current) {
+      var box = el("div");
+      var named = (current && current.body && current.body.tools) || [];
+      if (!named.length) return box;
+      v2("GET", "capabilities").then(
+        function (caps) {
+          var why = ((caps && caps.tools) || []).filter(function (tool) { return tool && tool.available === false && named.indexOf(tool.name) >= 0; }).map(function (tool) { return tool.name + " needs " + (tool.missing || []).join(" and "); });
+          if (why.length) box.appendChild(el("p", { class: "cant-run" }, "This server can't run this agent's current revision: " + why.join("; ") + "."));
+        },
+        function () {}
+      );
+      return box;
+    }
+
     /** Archive or Unarchive for `path` ("agents/<id>" or "runs/<id>"), then `done` with what /v2 answers. Archiving hides
      *  it from the lists and keeps it, with its history. */
     function archiveButton(path, archivedAt, done) {
@@ -244,6 +262,7 @@
     function agentActions(agent, revisions) {
       return [
         el("div", { class: "actions" }, el("a", { class: "btn quiet", href: "#/agents/" + enc(agent.id) + "/edit" }, revisions.length ? "Edit: commit a new revision" : "Write its first revision"), archiveButton("agents/" + enc(agent.id), agent.archivedAt, function () { kit.route(); })),
+        cantRun(revisions.filter(function (r) { return r.current; })[0]),
         revisions.length ? runForm(agent, revisions) : el("p", { class: "none" }, "It has no revision to run yet."),
       ];
     }
@@ -262,6 +281,87 @@
       });
       make.title = "Runs that name no revision run the current one";
       return make;
+    }
+
+    // ---- an agent's revisions, compared ------------------------------------------------------------------------------
+    function duration(ms) {
+      var s = Math.round(ms / 1000);
+      var two = function (n) { return (n < 10 ? "0" : "") + n; };
+      return s < 60 ? s + "s" : s < 3600 ? Math.floor(s / 60) + "m " + two(s % 60) + "s" : Math.floor(s / 3600) + "h " + two(Math.floor((s % 3600) / 60)) + "m";
+    }
+
+    /** One revision's runs in numbers: how many, how many completed, failed or escalated, what they cost in all and per
+     *  completed run (every run's cost over the completed ones), and the median time of those that ended. */
+    function revisionStats(runs) {
+      var costed = runs.filter(function (r) { return typeof r.costUsd === "number"; });
+      var completed = runs.filter(function (r) { return r.state === "completed"; }).length;
+      var total = costed.length ? costed.reduce(function (sum, r) { return sum + r.costUsd; }, 0) : null;
+      var times = runs.filter(function (r) { return r.endedAt; }).map(function (r) { return Date.parse(r.endedAt) - Date.parse(r.startedAt); }).filter(function (ms) { return ms >= 0; }).sort(function (a, b) { return a - b; });
+      var mid = Math.floor(times.length / 2);
+      return {
+        runs: runs.length,
+        completed: completed,
+        failed: runs.filter(function (r) { return r.state === "failed" || r.state === "escalated"; }).length,
+        total: total,
+        perCompleted: total !== null && completed ? total / completed : null,
+        median: times.length ? (times.length % 2 ? times[mid] : (times[mid - 1] + times[mid]) / 2) : null,
+      };
+    }
+
+    /** The agent's revisions side by side, read from every run of the agent whatever the filter; a row filters the runs
+     *  to its revision, as the revision chips do. */
+    function compareCard(agent, revisions, filter) {
+      var body = el("div", null, el("p", { class: "loading" }, "Reading the runs…"));
+      kit.get("api/runs?agent=" + enc(agent.id)).then(
+        function (runs) {
+          var stats = revisions.map(function (r) { return revisionStats((runs || []).filter(function (run) { return run.revision === r.id; })); });
+          var priced = stats.filter(function (s) { return s.perCompleted !== null; }).map(function (s) { return s.perCompleted; });
+          var cheapest = priced.length ? Math.min.apply(null, priced) : null;
+          var cell = function (kind, label, value) { return el("span", { class: "c " + kind, "data-label": label }, value); };
+          while (body.firstChild) body.removeChild(body.firstChild);
+          body.appendChild(el(
+            "div",
+            { class: "table compare", role: "table" },
+            el("div", { class: "cmp head", role: "row" }, ["Revision", "Runs", "Completed", "Failed or escalated", "Total", "Per completed", "Median time"].map(function (h) { return el("span", { class: "c" }, h); })),
+            revisions.map(function (r, i) {
+              var s = stats[i];
+              var on = filter === r.id;
+              var rev = el("span", { class: "c rev" }, el("span", { class: "rev-id" }, kit.short(r.id)), " ", el("span", { class: "word" }, r.kind), r.current ? [" ", kit.pill("current")] : null, r.note ? [" ", el("span", { class: "rev-note" }, kit.clip(r.note, 80))] : null);
+              return el(
+                "a",
+                { class: "cmp" + (on ? " on" : ""), href: kit.agentHref(agent.id) + "?revision=" + enc(r.id), "aria-current": on ? "true" : null },
+                rev,
+                s.runs
+                  ? [
+                      cell("n", "runs", String(s.runs)),
+                      cell("done", "completed", String(s.completed)),
+                      cell("bad", "failed or escalated", String(s.failed)),
+                      s.total === null ? el("span", { class: "c total unknown", "data-label": "total" }, "unknown") : cell("total", "total", kit.usd(s.total)),
+                      cell("per", "per completed", s.perCompleted === null ? "–" : [kit.usd(s.perCompleted), s.perCompleted === cheapest ? [" ", kit.pill("ok", "cheapest")] : null]),
+                      cell("time", "median", s.median === null ? "–" : duration(s.median)),
+                    ]
+                  : el("span", { class: "c empty" }, "no runs")
+              );
+            })
+          ));
+        },
+        function (error) {
+          while (body.firstChild) body.removeChild(body.firstChild);
+          body.appendChild(kit.failed(error));
+        }
+      );
+      return el("section", { class: "card compare" }, kit.kicker("Compare revisions"), el("h2", null, "Runs and cost by revision"), body);
+    }
+
+    /** The picker of a store with no agent: what to do next. */
+    function emptyStore() {
+      return el(
+        "div",
+        { class: "empty-store" },
+        el("p", null, "No agents yet. ", el("a", { class: "btn", href: "#/new" }, "New agent")),
+        el("p", { class: "none" }, "or seed the showcase:"),
+        el("pre", null, el("code", null, SHOWCASE))
+      );
     }
 
     /** A new agent, or a new revision of `agentId` prefilled from its current one. */
@@ -522,6 +622,6 @@
       return el("div", { class: "actions" }, archiveButton("runs/" + enc(run.id), run.archivedAt, function () { kit.route(); }));
     }
 
-    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, run: runActions };
+    return { name: "AgentRun Server", route: route, agent: agentActions, revision: revisionActions, cards: compareCard, empty: emptyStore, run: runActions };
   };
 })();

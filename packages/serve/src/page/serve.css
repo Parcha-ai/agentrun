@@ -32,6 +32,7 @@ input[type="checkbox"]:checked{background:var(--accent);border-color:var(--accen
 .agent-form h1{margin-bottom:16px}
 .agent-form .lede{margin:-8px 0 18px}
 .actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:16px 0 0}
+.cant-run{margin:16px 0 0;padding:8px 14px;border:1px solid var(--accent);background:var(--accent-soft);font-size:13.5px;overflow-wrap:anywhere}
 .run-form{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
 .run-form .field{margin-bottom:12px}
 .run-form .actions{margin-top:0;align-items:flex-end}
@@ -45,10 +46,30 @@ input[type="checkbox"]:checked{background:var(--accent);border-color:var(--accen
 .answer-box .question{font-size:15px;margin:0 0 12px;white-space:pre-wrap;overflow-wrap:anywhere}
 .more{margin:16px 0 0}
 .table.all .run{grid-template-columns:150px 140px minmax(0,1fr) 170px 72px 120px}
+.cmp{display:grid;grid-template-columns:minmax(0,1fr) 56px 88px 88px 84px 132px 92px;gap:12px;align-items:center;padding:11px 24px;border-bottom:1px solid var(--line);color:inherit;text-decoration:none}
+.cmp:last-child{border-bottom:0}
+a.cmp:hover{background:var(--panel2)}
+a.cmp.on{background:var(--accent-soft)}
+.cmp.head{font:500 11px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--muted);padding-top:9px;padding-bottom:9px}
+.cmp .c{min-width:0;font:13px var(--mono)}
+.cmp.head .c{font:inherit}
+.cmp .n,.cmp .done,.cmp .bad,.cmp .total,.cmp .per,.cmp .time{text-align:right;white-space:nowrap}
+.cmp .rev .rev-id{font-weight:600}
+.cmp .rev .rev-note{font-family:var(--sans);color:var(--muted);overflow-wrap:anywhere}
+.cmp .empty{grid-column:2/-1;color:var(--faint)}
+.empty-store{margin-top:18px}
+.empty-store>p:first-child{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;font-size:16px}
+.empty-store pre{margin-top:6px;user-select:all}
 .run .agent{font:13px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:860px){
   .table.all .run{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"when state" "agent cost" "rev rev" "id id"}
   .run .agent{grid-area:agent}
+  .cmp{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 12px;padding:12px 16px;align-items:end}
+  .cmp.head{display:none}
+  .cmp .rev{grid-column:1/-1}
+  .cmp .n,.cmp .done,.cmp .bad,.cmp .total,.cmp .per,.cmp .time{text-align:left;white-space:normal}
+  .cmp .c[data-label]::before{content:attr(data-label);display:block;font:500 10px/1.4 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--faint)}
+  .cmp .empty{grid-column:1/-1}
   .links{margin-left:0;order:3}
   .links+.theme{margin-left:auto;order:4}
 }
