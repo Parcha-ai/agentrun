@@ -334,13 +334,20 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
         // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
         // hear the call ended, with the text recorded.
         if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
           calls.end(e.callId);
           io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}) });
+        }
+        // A call the CLI refused itself (a tool the session doesn't have): shown as a call that failed, by the name the
+        // model gave. The CLI's transcript, mirrored to the store, keeps the refusal.
+        if (e?.type === "tool_refused" && typeof e.callId === "string" && typeof e.name === "string") {
+          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
+          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: true });
+          options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
         }
       };
       // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
