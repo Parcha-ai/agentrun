@@ -12,11 +12,15 @@ export class ClaudeAgentPinMismatch extends Error {
   }
 }
 
-/** The host has not installed the Agent SDK (it is an optional peer dependency the host brings), or its CLI. */
+/** This package's name on npm, as a message names it. */
+export const CLAUDE_AGENT_PACKAGE = "@parcha/agentrun-claude-agent";
+
+/** The host has not installed the Agent SDK (it is an optional peer dependency the host brings), or its CLI. The message
+ *  is one line: what is missing, and, where installing the pinned SDK is the fix, the line that does it (`install`). */
 export class ClaudeAgentNotInstalled extends Error {
   readonly code = "CLAUDE_AGENT_NOT_INSTALLED";
-  constructor(readonly detail?: string) {
-    super("Claude Agent SDK not installed");
+  constructor(readonly detail?: string, readonly install?: string) {
+    super(`Claude Agent SDK not installed${detail ? `: ${detail}` : ""}${install ? `; install it with: ${install}` : ""}`);
     this.name = "ClaudeAgentNotInstalled";
   }
 }
