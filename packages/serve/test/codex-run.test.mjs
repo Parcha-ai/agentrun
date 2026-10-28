@@ -66,9 +66,9 @@ async function codexServe(t, gw) {
     AGENT_MODEL_API_KEY: GATEWAY_KEY,
     AGENT_MODEL_PRICE: "1,2,0.5",
   });
-  const { api } = await serve(t, { faux: undefined });
+  const { api, data } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
-  return { api, standIn };
+  return { api, standIn, data };
 }
 
 test("a codex run whose cap is below one request's ceiling is refused before anything reaches the gateway: failed, spend_cap_reached, at $0", { timeout: 90_000 }, async (t) => {
@@ -106,4 +106,33 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   assert.equal(gw.seen[0].authorization, `Bearer ${GATEWAY_KEY}`, "the gateway's key, from serve, at the proxy");
   const usage = rows.findLast((r) => r.kind === "usage")?.usage;
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million");
+});
+
+const alive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test("a codex run whose process dies while its request is in flight leaves no Codex process behind", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const gw = await gateway(t);
+  const { api, standIn, data } = await codexServe(t, gw);
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  for (let i = 0; gw.seen.length === 0; i++) {
+    assert.ok(i < 300, "the turn's model request reaches the gateway");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const child = await processOf(standIn);
+  assert.ok(child, "Codex's process runs");
+  t.after(() => alive(child.pid) && process.kill(child.pid, "SIGKILL"));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
+  process.kill(holder.pid, "SIGKILL");
+  for (let i = 0; alive(child.pid); i++) {
+    assert.ok(i < 100, `the dead process's Codex (pid ${child.pid}) exits`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 });
