@@ -38,10 +38,18 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   const row = storeRun(data, started.run_id);
   assert.deepEqual([row.state, row.summary, row.revision, row.kind], ["completed", "The answer is 42.", agent.body.revision, "agentic"]);
   assert.equal(typeof row.costUsd, "number");
+  // A completed run takes a follow-up (the contract's table): the same run opens again, answers, and completes again.
   const after = await api("POST", `/runs/${started.run_id}/messages`, { content: "again" });
-  assert.equal(after.status, 409);
-  assert.equal(after.body.error.code, "not_continuable");
-  assert.deepEqual(after.body.error.next_action, { type: "request", method: "POST", path: "/agents/calc/runs", caller_supplies: ["input", "Idempotency-Key"] });
+  assert.equal(after.status, 202, JSON.stringify(after.body));
+  assert.equal(after.body.mode, "follow_up");
+  const again = await follow(api, started.run_id, ["completed"]);
+  assert.equal(again.last.final, true);
+  const reread = (await api("GET", `/runs/${started.run_id}`)).body;
+  assert.equal(reread.result.final_answer, "On again: done.");
+  assert.ok(reread.ended_at >= run.ended_at, "it ended again");
+  assert.deepEqual(again.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "again"]);
+  assert.deepEqual((await api("GET", "/agents/calc")).body.runs, { count: 1, live: 0 }, "one run, not a second");
+  assert.deepEqual([storeRun(data, started.run_id).state, storeRun(data, started.run_id).summary], ["completed", "On again: done."]);
 });
 
 test("the change cursor: a saved cursor resumes onto the rows held, 0 resets, and the final cursor answers unchanged", async (t) => {

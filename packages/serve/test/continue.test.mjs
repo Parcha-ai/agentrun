@@ -1,0 +1,60 @@
+// A completed run takes a follow-up: the same run opens again on its own store and session, answers, and completes
+// again, also after a restart, and under the server's run cap. A failed or cancelled run does not, and neither does an
+// archived run or a run of an archived agent: archiving closes it.
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { test } from "node:test";
+import { startServe } from "../dist/index.js";
+import { client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+
+test("after a restart, a completed run takes a follow-up on the next server and completes again, the same run", { timeout: 60_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const { run_id } = await startRun(client(one.baseUrl, one.token), "calc", "What is six times seven?");
+  await follow(client(one.baseUrl, one.token), run_id, ["completed"]);
+  await one.close();
+  const two = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => two.close());
+  const api = client(two.baseUrl, two.token);
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.status, "completed");
+  const next = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.equal(next.body.mode, "follow_up");
+  await follow(api, run_id, ["completed"]);
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+  assert.equal(storeRun(data, run_id).summary, "On go on: done.");
+});
+
+test("a failed or cancelled run takes no follow-up, and archiving closes a completed one: an archived run, or a run of an archived agent, is 409 not_continuable", async (t) => {
+  const { api, data } = await serve(t);
+  const failed = await startRun(api, "broken", "Fail now.");
+  await follow(api, failed.run_id, ["failed"]);
+  assert.equal((await api("POST", `/runs/${failed.run_id}/messages`, { content: "x" })).body.error.code, "not_continuable");
+  const archived = await startRun(api, "calc", "What is six times seven?");
+  await follow(api, archived.run_id, ["completed"]);
+  assert.equal((await api("POST", `/runs/${archived.run_id}/archive`)).status, 200);
+  const closed = await api("POST", `/runs/${archived.run_id}/messages`, { content: "x" });
+  assert.deepEqual([closed.status, closed.body.error.code], [409, "not_continuable"]);
+  assert.match(closed.body.error.message, /archived/);
+  const ofAgent = await startRun(api, "solo", "What is six times seven?");
+  await follow(api, ofAgent.run_id, ["completed"]);
+  assert.equal((await api("POST", "/agents/solo/archive")).status, 200);
+  assert.equal((await api("POST", `/runs/${ofAgent.run_id}/messages`, { content: "x" })).body.error.code, "not_continuable");
+  for (const id of [archived.run_id, ofAgent.run_id]) assert.equal(storeRun(data, id).state, "completed", "a refused follow-up opens nothing");
+});
+
+test("a completed run's follow-up takes a place under the run cap: with every place taken it is 429 rate_limited, and the run stays completed", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { maxRuns: 1 });
+  const done = await startRun(api, "calc", "What is six times seven?");
+  await follow(api, done.run_id, ["completed"]);
+  const busy = await startRun(api, "slow", "Take your time.");
+  await follow(api, busy.run_id, ["working"]);
+  const refused = await api("POST", `/runs/${done.run_id}/messages`, { content: "go on" });
+  assert.deepEqual([refused.status, refused.body.error.code], [429, "rate_limited"], JSON.stringify(refused.body));
+  assert.equal((await api("GET", `/runs/${done.run_id}`)).body.status, "completed");
+  assert.equal(storeRun(data, done.run_id).state, "completed");
+  assert.equal((await api("POST", `/runs/${busy.run_id}/cancel`)).status, 202);
+  await follow(api, busy.run_id, ["cancelled"]);
+  assert.equal((await api("POST", `/runs/${done.run_id}/messages`, { content: "go on" })).status, 202, "a place is free again");
+  await follow(api, done.run_id, ["completed"]);
+});
