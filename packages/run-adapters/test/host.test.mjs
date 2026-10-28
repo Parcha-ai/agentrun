@@ -478,3 +478,71 @@ test("close() while one request is in flight and another waits on the runner: ea
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(ends.sort((a, b) => a[0] - b[0]), [[1, null], [2, 0]], 'turn 1 cut by the close (unknown), turn 2 released at nothing: each once, under its own turn');
 });
+
+test("each booked request carries the ids its response headers gave (a gateway's call id, the provider's request id), recorded when the headers arrive: a request a crash cut after them keeps them, one cut before them has none, and nothing else of the response is kept", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const key = 'chat:ids';
+  const ends = [];
+  const onEvent = (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.providerIds ?? null, e.usage.cut ?? false]); };
+  const booking = await modelPortFor(await store.open(key), { key, onEvent });
+  // As a LiteLLM gateway answers: its own call id (what its spend log records), and the provider's request id passed on.
+  const ids = (n) => ({ 'x-litellm-call-id': `7a6d0296-8607-4ead-bddd-ac09e92c6c3${n}`, 'request-id': `req_011CUa${n}` });
+  // Headers that are not ids, or not id-shaped, and must never be kept.
+  const noise = { 'content-type': 'text/event-stream', 'set-cookie': 'session=provider-secret', 'anthropic-organization-id': 'org-1', 'x-request-id': 'has space, not an id' };
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const fetchStub = async (_url, init) => {
+    const { input } = JSON.parse(init.body);
+    if (input === 'answered') return new Response(sse(), { status: 200, headers: { ...noise, ...ids(1) } });
+    // Its headers arrive, and the answer never ends: the provider saw it, and may bill it.
+    if (input === 'cut-after-headers') return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); } }), { status: 200, headers: { ...noise, ...ids(2) } });
+    // No answer at all before the crash.
+    await held;
+    throw new Error('never answered');
+  };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(async () => { release(); await p.close(); });
+  await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'answered' } });
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut-after-headers' } }).catch(() => {});
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut-before-headers' } }).catch(() => {});
+  const read = () => store.read(key);
+  for (const end = Date.now() + 2_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 5))) {
+    const records = await read();
+    if (records.filter((r) => r.kind === RUNNER_RECORDS.request).length === 3 && records.some((r) => r.kind === RUNNER_RECORDS.response && r.data.turn === 2)) break;
+  }
+  // The crash: the next process books the two requests that never came back, once each.
+  await (await modelPortFor(await store.open(key), { key, onEvent })).bookCut();
+  const booked = (await read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => [r.data.turn, r.data.providerIds ?? null, r.data.cut ?? false]);
+  assert.deepEqual(booked, [[1, ids(1), false], [2, ids(2), true], [3, null, true]], 'answered with its ids; cut after the headers, with them (the provider saw it); cut before them, without');
+  assert.deepEqual(ends, booked, 'request_end says the same');
+  const text = JSON.stringify(await read());
+  for (const kept of ['provider-secret', 'session=', 'org-1', 'has space']) assert.ok(!text.includes(kept), `${kept} is not in the records`);
+});
+
+test("two requests in flight, answered in reverse: each is booked with its own response's ids, under its own turn, never another's", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const key = 'chat:ids-overlap';
+  const booking = await modelPortFor(await store.open(key), { key });
+  // The provider's own id for each request, from its response: the slow (first admitted) request's arrives last.
+  const slow = new Promise((resolve) => setTimeout(resolve, 150));
+  const fetchStub = async (_url, init) => {
+    const { input } = JSON.parse(init.body);
+    if (input === 'slow') await slow;
+    return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', 'request-id': `req_${input}`, 'x-litellm-call-id': `call-${input}` } });
+  };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
+  await Promise.all([first, second]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const records = await store.read(key);
+  const of = (kind) => records.filter((r) => r.kind === kind).map((r) => [r.data.turn, r.data.providerIds?.['request-id'], r.data.providerIds?.['x-litellm-call-id']]);
+  assert.deepEqual(of(RUNNER_RECORDS.turn), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']], 'each turn has the ids its own response gave');
+  assert.deepEqual(of(RUNNER_RECORDS.response), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']]);
+});

@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { FAUX_HARNESS_ENV } from "./harness.js";
-import { type AgentEntry, type Agents, sqliteBusy, storeError } from "./agents.js";
+import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_META, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
@@ -254,7 +254,7 @@ export class Runs {
   async get(id: string): Promise<Run | null> {
     const known = this.runs.get(id);
     if (known) return known;
-    const row = this.store.readRun(id);
+    const row = await this.options.agents.request(() => this.store.readRun(id));
     return row ? this.adopt(row) : null;
   }
 
@@ -282,7 +282,7 @@ export class Runs {
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
     };
-    const run = this.blank(row, dir, meta, this.options.agents.revisions(row.agent).find((r) => r.id === row.revision)?.version ?? 0);
+    const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
@@ -432,7 +432,7 @@ export class Runs {
   /** At start: every run the store says is running is read, supervised when its process lives, carried back when it
    *  already ended, and opened again when its process went before it ended. */
   async recover(): Promise<void> {
-    for (const row of this.store.listRuns()) {
+    for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (row.state !== "running") continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
       if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
@@ -610,7 +610,13 @@ export class Runs {
     run.settles++;
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
-      .catch((error: Error) => warn(run.id, `not settled: ${error.message}; the next start tries again`))
+      .catch((error: Error) => {
+        if (!storeBusy(error) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
+        // A store still held past the run end's retries: settled again later, not left until the next start.
+        const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
+        warn(run.id, `not settled: ${error.message}; trying again in ${every / 1000} s`);
+        setTimeout(() => void this.settle(run, code, exited), every).unref();
+      })
       .finally(() => void run.settles--);
     return run.settling;
   }
@@ -657,7 +663,8 @@ export class Runs {
   private async workflowEnd(run: Run, ending: WorkflowEnding | undefined): Promise<{ outcome: Status; state: Ended; summary: string } | undefined> {
     if (!ending) return undefined;
     const { readWorkflowRun, workflowCarry } = await import("@parcha/pi-durable-agent/workflow");
-    const revision = this.store.readRevision(run.revision) as Extract<Revision, { kind: "workflow" }>;
+    // A run's end waits for a busy store as long as its carry back does, not a request's 2 s.
+    const revision = (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store"))) as Extract<Revision, { kind: "workflow" }>;
     const at = { runId: run.id, storePath: this.storeFile(run), revision };
     const { state, summary } = await workflowCarry(at, ending);
     if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
@@ -676,15 +683,13 @@ export class Runs {
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
     const persist = async () => {
       await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
-      for (let attempt = 0; ; attempt++) {
+      await whenFree(() => {
         try {
           this.store.carryBack(run.id, ending);
-          return;
         } catch (error) {
-          if (error instanceof AgentHomeError && error.code === "exists") return;
-          if (!sqliteBusy(error) || !(await this.retryBusy(run.id, attempt, "the agent store"))) throw error;
+          if (!(error instanceof AgentHomeError && error.code === "exists")) throw error;
         }
-      }
+      }, this.busyDelays(), this.onBusy(run.id, "the agent store"));
     };
     try {
       await persist();
@@ -704,7 +709,7 @@ export class Runs {
       this.persistLater(run, persist);
       return;
     }
-    const row = this.store.readRun(run.id);
+    const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
     run.endedAt = row?.endedAt ?? run.endedAt ?? new Date().toISOString();
     if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
     this.options.log?.("run_ended", { run: run.id, agent: run.agentId, status: outcome, cost_usd: row?.costUsd ?? cost ?? "unknown" });
@@ -719,8 +724,8 @@ export class Runs {
   private persistLater(run: Run, persist: () => Promise<void>): void {
     const timer = setTimeout(() => {
       if (this.closing) return;
-      persist().then(() => {
-        const row = this.store.readRun(run.id);
+      persist().then(async () => {
+        const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
         if (row?.endedAt) run.endedAt = row.endedAt;
         if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
       }, () => this.persistLater(run, persist));
@@ -728,25 +733,22 @@ export class Runs {
     timer.unref();
   }
 
-  /** After refusal `attempt` because `what` is busy: waits out the next delay and says whether to try again. */
-  private async retryBusy(runId: string, attempt: number, what: string): Promise<boolean> {
-    const delays = this.options.carryBackRetry?.delaysMs ?? CARRY_BACK_RETRIES_MS;
-    this.options.carryBackRetry?.onBusy?.(runId, attempt);
-    if (attempt >= delays.length) return false;
-    warn(runId, `${what} is busy; trying again in ${delays[attempt]} ms (${attempt + 1} of ${delays.length})`);
-    await sleep(delays[attempt]!);
-    return true;
+  /** How long a run's end waits for a busy store, step by step. */
+  private busyDelays(): readonly number[] {
+    return this.options.carryBackRetry?.delaysMs ?? CARRY_BACK_RETRIES_MS;
+  }
+
+  /** Hears that `what` was busy for run `runId`, and says so when another try follows. */
+  private onBusy(runId: string, what: string) {
+    return (attempt: number, delay: number | undefined) => {
+      this.options.carryBackRetry?.onBusy?.(runId, attempt);
+      if (delay !== undefined) warn(runId, `${what} is busy; trying again in ${delay} ms (${attempt + 1} of ${this.busyDelays().length})`);
+    };
   }
 
   /** The run's store, read again while another connection holds it, within the same retries. */
-  private async storeWhenFree(run: Run): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        return await this.readStore(run);
-      } catch (error) {
-        if (!sqliteBusy(error) || !(await this.retryBusy(run.id, attempt, "its store"))) throw error;
-      }
-    }
+  private storeWhenFree(run: Run): Promise<void> {
+    return whenFree(() => this.readStore(run), this.busyDelays(), this.onBusy(run.id, "its store"));
   }
 
   // ---- acting ---------------------------------------------------------------------------------------------------------
@@ -773,7 +775,7 @@ export class Runs {
   }
 
   private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
-    const started = await this.store.startRun({ agent: entry.agent.id, revision: revision.id }).catch((error) => storeError(error, "revision"));
+    const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: new Date().toISOString(),
@@ -920,8 +922,10 @@ export class Runs {
 
   /** `Run`, as the contract shows it. */
   async view(run: Run) {
+    const stored = await this.options.agents.request(() => this.store.readRun(run.id));
+    // After the read: the run may have moved on while it waited, and every field below is of this one moment.
     const { status, state } = statusOf(run);
-    const row = TERMINAL.has(status) ? this.store.readRun(run.id) : undefined;
+    const row = TERMINAL.has(status) ? stored : undefined;
     const answer = answerOf(run.rows);
     const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
@@ -943,7 +947,7 @@ export class Runs {
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       cost: this.cost(run),
-      archived_at: this.store.readRun(run.id)?.archivedAt ?? null,
+      archived_at: stored?.archivedAt ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }

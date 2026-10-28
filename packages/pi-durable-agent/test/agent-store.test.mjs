@@ -139,6 +139,30 @@ test("the reader opens the file read-only, writes nothing, and gives a run's sto
   reader.close();
 });
 
+test("busyTimeoutMs 0: a store another connection holds throws SQLite's busy error at once, never 'exists'; an id taken is still 'exists'", async () => {
+  const dir = await scratch();
+  const store = openStore(dir, { busyTimeoutMs: 0 });
+  const reader = openStoreReader(dir, { busyTimeoutMs: 0 });
+  store.createAgent({ name: "Taken", id: "taken" });
+  const holder = new DatabaseSync(path.join(dir, "store.sqlite"), { timeout: 0 });
+  holder.exec("BEGIN EXCLUSIVE");
+  const busy = (error) => error?.code === "ERR_SQLITE_ERROR" && (error.errcode & 0xff) === 5;
+  const from = Date.now();
+  assert.throws(() => store.createAgent({ name: "B" }), busy);
+  assert.throws(() => reader.listAgents(), busy);
+  assert.ok(Date.now() - from < 1_000, `it threw at once: ${Date.now() - from} ms`);
+  holder.exec("ROLLBACK");
+  holder.close();
+  assert.equal(store.createAgent({ name: "B", id: "b" }).id, "b");
+  assert.throws(() => store.createAgent({ name: "Taken", id: "taken" }), refused("exists"));
+  for (const busyTimeoutMs of [-1, 1.5, "0"]) {
+    assert.throws(() => openStore(dir, { busyTimeoutMs }), refused("invalid"));
+    assert.throws(() => openStoreReader(dir, { busyTimeoutMs }), refused("invalid"));
+  }
+  reader.close();
+  store.close();
+});
+
 test("importHome turns a beta.24 home into one agent with one agentic revision, set as current; twice is the same revision", async () => {
   const dir = await scratch();
   const home = await createAgentHome(path.join(await scratch(), "home"), { definition: DEFINITION, skills: { "cite/SKILL.md": "Cite every claim." } });
