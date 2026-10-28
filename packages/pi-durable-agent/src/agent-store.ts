@@ -15,8 +15,9 @@ import { AgentHomeError } from "./store.js";
 
 export const STORE_FILE = "store.sqlite";
 export type RevisionKind = "agentic" | "workflow";
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant> };
-export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[] };
+/** `harness`: the harness that runs the revision, an id its host knows (absent: the host's default). */
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 /** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
@@ -38,8 +39,8 @@ export type RunRow = { id: string; agent: string; revision: string; kind: Revisi
 /** What can be archived. */
 export type ArchiveKind = "agent" | "run";
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; note?: string }
-  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; note?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; note?: string }
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; note?: string };
 export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision };
 
 const SCHEMA = `
@@ -92,6 +93,7 @@ BEGIN SELECT RAISE(ABORT, 'an archive change is written once'); END;`;
 // archive_changes came after version 1 without a new version: an earlier version opens the file and ignores the table.
 const STORE_VERSION = 1;
 const SQLITE_READONLY_ROLLBACK = 776;
+const SQLITE_CONSTRAINT = 19;
 /** Fail closed on a file a newer version wrote. */
 function checkVersion(db: DatabaseSync): void {
   if ((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version > STORE_VERSION) throw new AgentHomeError("format", "this store was written by a newer version");
@@ -113,6 +115,8 @@ function revisionOf(row: Record<string, unknown>): Revision {
   return revision;
 }
 
+const HARNESS_ID = /^[a-z][a-z0-9-]{0,63}$/;
+
 /** The body of a new revision and the text of each skill it names. Everything about the input is checked here, before any write. */
 function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: Map<string, string> } {
   if (!isObject(input)) throw invalid("the revision is not an object");
@@ -124,14 +128,16 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   }
   const tools = input.tools ?? [];
   if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && t !== "") || new Set(tools).size !== tools.length) throw invalid("the tools are not a list of distinct non-empty names");
+  if (input.harness !== undefined && (typeof input.harness !== "string" || !HARNESS_ID.test(input.harness))) throw invalid("the harness is not a harness id (lowercase letters, digits and dashes)");
+  const harness = input.harness !== undefined ? { harness: input.harness } : {};
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
-    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}) }, texts };
+    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...harness }, texts };
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
-  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools] }, texts };
+  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools], ...harness }, texts };
 }
 
 /** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` reads `store.sqlite` in place: it writes nothing and makes no copy, and a store with an unfinished write is named, not rolled back. */
@@ -211,7 +217,11 @@ export class AgentStore extends AgentStoreReader {
     if (input.description !== undefined && typeof input.description !== "string") throw invalid("the description is not text");
     const agent: Agent = { id: input.id === undefined ? uuidv7() : checkId(input.id, "agent"), name: input.name, ...(input.description !== undefined ? { description: input.description } : {}), createdAt: new Date().toISOString(), current: null };
     try { this.db.prepare("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)").run(agent.id, agent.name, agent.description ?? null, agent.createdAt); }
-    catch { throw new AgentHomeError("exists", "that agent already exists"); }
+    catch (error) {
+      // Only the id's constraint means it exists; a busy store is the caller's to wait out.
+      if ((Number((error as { errcode?: unknown }).errcode) & 0xff) === SQLITE_CONSTRAINT) throw new AgentHomeError("exists", "that agent already exists");
+      throw error;
+    }
     return agent;
   }
 
@@ -304,6 +314,15 @@ export class AgentStore extends AgentStoreReader {
     if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId) ? "exists" : "missing", "that run is unknown or has already ended");
   }
 
+  /** Opens a completed run again, for a follow-up: running, with no end; its cost and summary stay until the next
+   *  carryBack. Only a completed run opens again. */
+  reopenRun(runId: string): void {
+    const done = this.db.prepare("UPDATE runs SET state = 'running', ended_at = NULL WHERE id = ? AND state = 'completed'").run(checkId(runId, "run"));
+    if (done.changes > 0) return;
+    if (!this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId)) throw new AgentHomeError("missing", "that run is unknown");
+    throw invalid("only a completed run opens again");
+  }
+
   /** A beta.24 agent home becomes one agent with one agentic revision (its definition and skills). Its run directories are not copied. */
   async importHome(homeDir: string): Promise<Agent> {
     const state = await readAgentHome(await openAgentHome(homeDir));
@@ -329,8 +348,11 @@ async function loadCheck(body: unknown): Promise<unknown> {
   return ((await import("./workflow.js")) as { checkWorkflowBody(body: unknown): Promise<unknown> }).checkWorkflowBody(body);
 }
 
-/** Open (and create) the agent store in `dir`. */
-export function openStore(dir: string): AgentStore {
+/** Open (and create) the agent store in `dir`. `busyTimeoutMs` is how long a read or write waits, synchronously, for
+ *  another connection to let go of the store before it throws SQLite's busy error (default 5000). It applies once the
+ *  store is open: opening it always waits up to 5 s. */
+export function openStore(dir: string, { busyTimeoutMs = 5_000 }: { busyTimeoutMs?: number } = {}): AgentStore {
+  if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0) throw invalid("busyTimeoutMs is a whole number of milliseconds, 0 or more");
   const resolved = path.resolve(dir);
   mkdirSync(resolved, { recursive: true });
   const db = new DatabaseSync(path.join(resolved, STORE_FILE), { timeout: 5_000 });
@@ -342,6 +364,7 @@ export function openStore(dir: string): AgentStore {
     checkVersion(db);
     db.exec(SCHEMA);
     db.exec(`PRAGMA user_version = ${STORE_VERSION}`);
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
   } catch (error) {
     db.close();
     throw error;
@@ -349,12 +372,13 @@ export function openStore(dir: string): AgentStore {
   return new AgentStore(resolved, db, loadCheck);
 }
 
-/** Reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. */
-export function openStoreReader(dir: string): AgentStoreReader {
+/** Reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. `busyTimeoutMs` is as `openStore`'s. */
+export function openStoreReader(dir: string, { busyTimeoutMs = 5_000 }: { busyTimeoutMs?: number } = {}): AgentStoreReader {
+  if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0) throw invalid("busyTimeoutMs is a whole number of milliseconds, 0 or more");
   const resolved = path.resolve(dir);
   const file = path.join(resolved, STORE_FILE);
   if (!existsSync(file)) throw new AgentHomeError("missing", `there is no ${STORE_FILE} in that folder`);
-  const db = new DatabaseSync(file, { readOnly: true, timeout: 5_000 });
+  const db = new DatabaseSync(file, { readOnly: true, timeout: busyTimeoutMs });
   try { checkVersion(db); } catch (error) {
     db.close();
     // A writer killed mid-transaction leaves a hot journal, which a read-only open cannot roll back: SQLite says SQLITE_READONLY_ROLLBACK (by its result code, never its text).

@@ -5,7 +5,8 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { ROUTES } from "../dist/server.js";
-import { serve } from "./support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
+import { agent, flowAgent, serve } from "./support.mjs";
 
 const VENDORED = JSON.parse(await readFile(new URL("../src/openapi/agentrun-v2.openapi.json", import.meta.url), "utf8"));
 const METHODS = ["get", "put", "post", "delete", "patch", "head", "options", "trace"];
@@ -71,7 +72,24 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   assert.equal(vendored.size + own.length, operations(doc).length, "no contract operation is gone");
   assert.deepEqual(own.sort(), [...doc.info["x-agentrun-serve"].extensions].sort(), "info lists the server's own");
-  assert.ok(isDeepStrictEqual(doc.components, VENDORED.components), "the contract's components are unchanged");
+  // Every property this server adds is marked with the addition that made it, and listed; without them, the
+  // contract's components are as vendored.
+  const components = structuredClone(doc.components);
+  const marked = [];
+  const strip = (schema, at) => {
+    for (const [field, property] of Object.entries(schema.properties ?? {})) {
+      if (property["x-agentrun-serve"] === undefined) {
+        strip(property, `${at}.${field}`);
+        continue;
+      }
+      assert.match(property["x-agentrun-serve"], /^[a-z]+\/\d+$/, `${at}.${field} names its addition`);
+      delete schema.properties[field];
+      marked.push(`${at}.${field}`);
+    }
+  };
+  for (const [name, schema] of Object.entries(components.schemas)) strip(schema, name);
+  assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
+  assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
 });
 
 test("the document is OpenAPI 3.1 in shape: operations with responses, ids unique, path parameters declared, every reference whole", async (t) => {
@@ -104,4 +122,25 @@ test("the document is OpenAPI 3.1 in shape: operations with responses, ids uniqu
     Object.values(node).forEach(walk);
   };
   walk(doc);
+});
+
+test("live answers meet the served document: capabilities, and an agent made, read and edited on each harness, against the contract plus exactly its marked properties", async (t) => {
+  const { baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const { api } = await serve(t);
+  const check = (name, value) => assert.deepEqual(schemaProblems(doc, { $ref: `#/components/schemas/${name}` }, value), [], `${name}: ${JSON.stringify(value)}`);
+  check("Capabilities", (await api("GET", "/capabilities")).body);
+  for (const [id, body] of [["on-pi", agent("on-pi", { model: "faux/faux-1", thinking: "high" })], ["on-claude", agent("on-claude", { harness: "claude-agent" })], ["on-codex", flowAgent("on-codex", undefined, { harness: "codex" })]]) {
+    const { warnings: _, ...made } = (await api("POST", "/agents", body)).body;
+    const read = (await api("GET", `/agents/${id}`)).body;
+    if (id !== "on-codex") {
+      check("Agent", made);
+      check("Agent", read);
+      continue;
+    }
+    // A workflow definition keeps no instructions, which v2/0 requires of every definition: the one gap left, for v2/1.
+    for (const answer of [made, read]) assert.deepEqual([...new Set(schemaProblems(doc, { $ref: "#/components/schemas/Agent" }, answer))], ["$.definition.instructions: is required"]);
+  }
+  // The same check sees a field the document does not hold: the positive control.
+  assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
 });

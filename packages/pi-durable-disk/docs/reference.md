@@ -129,7 +129,7 @@ a scratch disk and an API key. It uses pi-ai's faux model, so it needs no model 
 ```sh
 # 1. The archil wrapper, root-owned (root executes it), and one mount root per host. Once per machine.
 sudo install -D -o root -g root -m 0755 bin/archil-scoped /usr/local/lib/pi-durable-disk/archil-scoped
-for root in /mnt/archil-a /mnt/archil-b; do sudo mkdir -p $root/runs && sudo chown "$USER" $root/runs; done
+for root in /mnt/archil-a /mnt/archil-b; do sudo install -d -o root -g root -m 0755 $root $root/runs; done
 
 # 2. Your disk and API key. The key stays in the supervisor's environment; no instance ever sees it.
 export ARCHIL_API_KEY=...        # from the Archil console
@@ -436,23 +436,33 @@ is being copied: fork a run after it is released, and open the forks with `local
 The Quickstart runs the supervisor as your own user. On a production host the instance and the agent's tools run as an
 unprivileged user and only the archil client runs as root:
 
-1. **A dedicated run user** (here `pda`) that owns `<mountRoot>/runs` (default `/mnt/archil/runs`), so mountpoints are
-   created and removed without root. The run user must be able to execute `node` and read the package and the app module:
-   a Node under your home directory (nvm) is usually not readable by another user, so install Node system-wide.
+1. **A dedicated run user** (here `pda`), and a mount root that root owns: `<mountRoot>` and `<mountRoot>/runs` (default
+   `/mnt/archil/runs`) owned by root, mode 0755, and no directory above them writable by others (unless sticky). The
+   wrapper (point 2) refuses any other, since root mounts at paths under it. Each run's mountpoint `<mountRoot>/runs/<run>`
+   is made by the wrapper's `prepare`, owned by the run user; an empty one stays after the run is released. The run user
+   must be able to execute `node` and read the package and the app module: a Node under your home directory (nvm) is
+   usually not readable by another user, so install Node system-wide.
 2. **The archil wrapper, root-owned**, because root executes it. It starts `archil mount` in its own systemd scope, outside
    the instance's unit, so a restart in place finds its mount and claim still held, and it takes the mount token as one
-   line on stdin:
+   line on stdin. Root runs archil through it only in the shapes the claim uses (`mount [--force] <disk>:/<path>
+   <mountRoot>/runs/<run> --region <region>`, `unmount`, `checkin`, `sync` and `delegations --json` of a listed archil
+   mount there, `prepare` of a run's mountpoint, and its cleanup verbs), each with exact arguments, under a mount root
+   that root owns (point 1); it refuses anything else with exit 2, so the drop-in below grants no other archil command:
    `sudo install -D -o root -g root -m 0755 bin/archil-scoped /usr/local/lib/pi-durable-disk/archil-scoped`
    (from an npm install the file is `node_modules/@parcha/pi-durable-disk/bin/archil-scoped`, and `ARCHIL_SCOPED`, exported by
    the package, is its path). Point the driver at it: `localHost({ archil: "/usr/local/lib/pi-durable-disk/archil-scoped",
    user: "pda" })`, or `supervise --archil /usr/local/lib/pi-durable-disk/archil-scoped --user pda`.
-3. **A sudoers drop-in for exactly that wrapper and `fusermount -u`.** It keeps no environment: the token travels on the
+3. **A sudoers drop-in for exactly that wrapper, and nothing else.** It keeps no environment: the token travels on the
    wrapper's stdin, and sudo logs every variable it preserves. Install it as `/etc/sudoers.d/pi-durable-disk`, mode 0440,
    after `visudo -cf` accepts it:
 
    ```
-   pda ALL=(root) NOPASSWD: /usr/local/lib/pi-durable-disk/archil-scoped, /usr/bin/fusermount -u /mnt/archil/runs/*
+   pda ALL=(root) NOPASSWD: /usr/local/lib/pi-durable-disk/archil-scoped
    ```
+
+   Never `fusermount`, `mkdir` or `rmdir` beside it: the wrapper's `release` cleans a dead mount (`fusermount -u` on the
+   checked mountpoint) and its `prepare` makes the run's mountpoint. A sudoers argument's `*` matches any characters, so
+   an entry such as `fusermount -u <mountRoot>/runs/*` grants far more than it says.
 
 4. **The supervisor runs as root** (it creates units, stops them, and writes each start's token under
    `/run/pi-durable-disk`, root-only), with `--user pda`, so instances never run as root; `localHost` refuses to start
