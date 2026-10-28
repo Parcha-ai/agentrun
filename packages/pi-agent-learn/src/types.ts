@@ -1,4 +1,5 @@
 import type { TreeEntry } from "@parcha/pi-git-remote";
+import type { UseOutcome } from "./trial.js";
 
 /** What a `learn` call can note. `used` marks an existing learning that helped; `workflow` says when to use a workflow
  *  the run saved; the other three propose a new learning. */
@@ -102,7 +103,7 @@ export type WorkflowUse = {
   /** The record the run used. */
   readonly sha256: string;
   /** `frozen`: the workflow finished the case itself; `escalated`: it handed the case back to the agent; `failed`. */
-  readonly outcome: "frozen" | "escalated" | "failed";
+  readonly outcome: UseOutcome;
   readonly at: string;
 };
 
