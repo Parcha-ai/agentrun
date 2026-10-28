@@ -7,6 +7,7 @@
 // `afterRequest`.
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
@@ -121,8 +122,12 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
-        // What Codex would drop or retype in the tool's schema is refused here, by name, not found out mid-turn.
-        problems.push(...codexSchemaProblems(tool.name, tool.inputSchema));
+        // What no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in
+        // the tool's schema: refused here, by name, not found out mid-turn. A place the first already refused is not
+        // refused again by the second.
+        const shared = toolSchemaProblems(tool.name, tool.inputSchema);
+        const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
+        problems.push(...shared, ...codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1])));
       }
       if (checked !== undefined) {
         codeMode ??= (options.readCodeModeModels ?? readCodeModeModels)(checked);

@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after } from 'node:test';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { toolSchemaProblems } from '@parcha/agentrun-adapters';
+import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-adapters/testing';
 import { codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
@@ -120,9 +121,12 @@ test('the recorded column: a schema the adapter does not refuse comes out of Cod
   assert.ok(rows.length >= 29);
   const outcomes = { forwarded: 0, described: 0, refused: 0 };
   for (const row of rows) {
-    const problems = codexSchemaProblems('probe', row.schema);
+    const shared = toolSchemaProblems('probe', row.schema);
+    const problems = [...shared, ...codexSchemaProblems('probe', row.schema)];
     if (problems.length) {
       outcomes.refused += 1;
+      // A shape only Codex mangles is refused because Codex mangles it; one the shared check refuses is refused on every harness, whatever Codex does.
+      if (shared.length) continue;
       assert.ok(row.forwarded === null || JSON.stringify(row.forwarded) !== JSON.stringify(stripDescribed(row.schema)), `${row.hash}: refused, yet Codex carried it`);
       continue;
     }
@@ -160,4 +164,51 @@ test("on the pinned binary, the constraints Codex strips reach the model in the 
   assert.ok(offered.description.startsWith('Rate a thing.'), offered.description);
   for (const line of ['- id: string, matches ^[a-z]+$, at least 1 characters', '- score: integer, at least 0, at most 4']) assert.ok(offered.description.includes(line), `${line} in ${JSON.stringify(offered.description)}`);
   assert.deepEqual(offered.parameters, stripDescribed(schema), 'Codex forwarded the original less exactly the described keywords');
+});
+
+test("Codex's check() runs the shared cases: every place the shared check refuses is refused, first, and nothing it allows is refused for a shared reason", () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (schema) => ({ key: 'step:cases', label: 'x', system: [], tools: [{ name: 't', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  // What Codex refuses on top of the shared check, in the one case the shared table allows that Codex does not carry.
+  const codexOnly = { 'a generated schema (titles, defaults, formats, bounds, a nullable union, prefixItems)': ['/properties/pair/prefixItems', '/properties/pair/items'] };
+  for (const { name, schema, refusedAt } of SCHEMA_CHECK_CASES) {
+    const problems = codex.check(spec(schema));
+    const where = (list) => list.map((p) => /^[^:]*: (\S+):/.exec(p)?.[1]);
+    const shared = toolSchemaProblems('t', schema);
+    assert.deepEqual([...new Set(where(shared))].sort(), [...refusedAt].sort(), `${name}: the shared check`);
+    assert.deepEqual(problems.slice(0, shared.length), shared, `${name}: the shared problems come first, as they are`);
+    const extra = where(problems.slice(shared.length));
+    assert.deepEqual(extra.sort(), (codexOnly[name] ?? []).sort(), `${name}: what Codex adds`);
+  }
+});
+
+test('on the pinned binary, a tool with a bad root, a schema that is not valid 2020-12, or a remote $ref is refused at check() and nothing reaches Codex or the provider', { skip, timeout: 60_000 }, async () => {
+  const bad = {
+    'a root with no type': [{ properties: { a: { type: 'string' } } }, /^bad: \/: the root must be \{"type": "object"\}/],
+    'a type of strng': [{ type: 'object', properties: { a: { type: 'strng' } } }, /^bad: \/properties\/a\/type: /],
+    'a remote $ref': [{ type: 'object', properties: { r: { $ref: 'https://example.com/schema.json' } } }, /^bad: \/properties\/r\/\$ref: a remote \$ref/],
+  };
+  for (const [name, [schema, message]] of Object.entries(bad)) {
+    const requests = [];
+    const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, `bad-${name.length}`), fetch: async (url) => { requests.push(url); throw new Error('no request should leave'); } });
+    const spec = { key: `step:bad-${name.length}`, label: 'x', system: [], tools: [{ name: 'bad', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' };
+    const problems = codex.check(spec);
+    assert.ok(problems.length >= 1 && message.test(problems[0]), `${name}: ${JSON.stringify(problems)}`);
+    await assert.rejects(codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} }), new RegExp(message.source.replace(/^\^/, '')), name);
+    assert.deepEqual(requests, [], `${name}: nothing reached the provider`);
+  }
+});
+
+test("the shared problems come before Codex's own, and a place both refuse is refused once", () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (schema) => ({ key: 'step:order', label: 'x', system: [], tools: [{ name: 't', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  // A remote $ref (shared) and a `not` (Codex's) in one tool: the shared one first.
+  const both = codex.check(spec({ type: 'object', properties: { a: { not: {} }, r: { $ref: 'https://example.com/x.json' } } }));
+  assert.equal(both.length, 2, JSON.stringify(both));
+  assert.match(both[0], /\/properties\/r\/\$ref: a remote \$ref/);
+  assert.match(both[1], /\/properties\/a\/not: not is not supported by Codex/);
+  // Tuple items: the metaschema refuses the place, and Codex's own row for it is not repeated.
+  const tuple = codex.check(spec({ type: 'object', properties: { t: { type: 'array', items: [{ type: 'string' }] } } }));
+  assert.equal(tuple.length, 1, JSON.stringify(tuple));
+  assert.match(tuple[0], /not valid JSON Schema 2020-12/);
 });
