@@ -77,3 +77,15 @@ test("an edit that names no harness keeps the agent's; one that names pi moves i
   current = moved.body;
   assert.equal((await edit({ instructions: "Answer at length." })).body.definition.harness, "pi", "and pi stays pi");
 });
+
+test("ask_person on a harness other than pi saves with a warning on the tool, and a run of it is 409 agent_not_runnable naming the tool", async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("asker", { harness: "codex", tools: ["read", "ask_person"] }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]).sort(), [["definition.harness", "not_set_up_here"], ["definition.tools[1]", "not_set_up_here"]]);
+  const run = await api("POST", "/agents/asker/runs", { input: { content: "hi" } });
+  assert.deepEqual([run.status, run.body.error.code], [409, "agent_not_runnable"]);
+  assert.deepEqual(run.body.error.details.unbound, ["ask_person"]);
+  const onPi = await api("POST", "/agents", agent("pi-asker", { tools: ["ask_person"] }));
+  assert.deepEqual(onPi.body.warnings, [], "on pi it is bound");
+});
