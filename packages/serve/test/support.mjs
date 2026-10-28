@@ -1,7 +1,7 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStoreReader } from "@parcha/pi-durable-agent";
@@ -28,7 +28,23 @@ export async function serve(t, options = {}) {
 }
 
 export function client(baseUrl, token) {
-  return async function api(method, path, body, headers = {}) {
+  /** A request on a connection of its own, which nothing reuses: a pooled socket the server closes is not its failure. */
+  const fresh = (method, path) =>
+    new Promise((resolve, reject) => {
+      const req = request(`${baseUrl}${path}`, { method, agent: false, headers: token ? { authorization: `Bearer ${token}` } : {} }, (res) => {
+        let text = "";
+        res.setEncoding("utf8").on("data", (chunk) => (text += chunk)).on("end", () => {
+          let json;
+          try {
+            json = JSON.parse(text);
+          } catch {}
+          resolve({ status: res.statusCode, headers: new Headers(Object.entries(res.headers).map(([name, value]) => [name, String(value)])), body: json ?? text });
+        });
+      });
+      req.once("error", reject).end();
+    });
+  return Object.assign(api, { fresh });
+  async function api(method, path, body, headers = {}) {
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
@@ -84,7 +100,8 @@ export async function follow(api, runId, until, { after = 0, deadlineMs = 30_000
   const pages = [];
   const end = Date.now() + deadlineMs;
   for (;;) {
-    const { status, body: page } = await api("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
+    // Each long poll on a connection of its own: a loaded machine's pooled socket closing under it is not the run's state.
+    const { status, body: page } = await (api.fresh ?? api)("GET", `/runs/${runId}/timeline?${new URLSearchParams({ ...(after ? { after: String(after) } : {}), wait_ms: "2000" })}`);
     assert.equal(status, 200, JSON.stringify(page));
     pages.push(page);
     if (page.reset) view.clear();
@@ -137,3 +154,27 @@ export function withEnv(t, vars, names = Object.keys(vars)) {
   for (const name of all) delete process.env[name];
   Object.assign(process.env, vars);
 }
+
+/** One raw request to the server on `port` (Host 127.0.0.1:port unless given): status, headers, text and parsed JSON. */
+export function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
+  const sent = Object.fromEntries(Object.entries({ host: `127.0.0.1:${port}`, ...headers }).filter(([, value]) => value !== undefined));
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method, path, headers: sent }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let json;
+        try {
+          json = JSON.parse(text);
+        } catch {}
+        resolve({ status: res.statusCode, headers: res.headers, text, json });
+      });
+    });
+    req.once("error", reject);
+    req.end(body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body));
+  });
+}
+
+/** The Cookie header for the cookies an answer set. */
+export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");

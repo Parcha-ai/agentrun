@@ -7,17 +7,19 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { BROWSER_TOOLS, WEB_TOOLS, browserSection, listedFor, type ToolContract } from "./core/contract.js";
 import {
-  BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
+  BrowserFailureError, closeDriver, custodyTools, FIXED_SESSION_RELAUNCH, fenced, HANDED_BACK, loadedNoPage, moveRecord, newSessionRecord, notices, NOTHING_TO_HOLD, navigationRefusal, profileRefusal, relaunchRefusal, sessionSpec, waitingForHuman, backoffMs, NO_HANDOFF,
   type AttachedSession, type CustodyPort, type DriverFactory, type FenceMark, type Overrides, type ToolOutput,
 } from "./core/custody.js";
 import { browserFailure, classifyBrowserError, type BrowserFailure } from "./core/failures.js";
 import { workspaceFiles } from "./core/files.js";
-import type { BrowserConfig, BrowserPolicy, BrowserProvider, HandoffOutcome, HandoffPort, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort, WorkspaceFiles } from "./core/host.js";
+import type { AttachTarget, BrowserConfig, BrowserPolicy, BrowserProvider, HandoffOutcome, HandoffPort, ReleaseReason, SessionRecord, SiteInfo, SiteRunPort, WorkspaceFiles } from "./core/host.js";
 import { leaseTag, type LeaseRef } from "./core/lease.js";
 import { createRedactor, hostLiveView, redactContent, redactDeep, scrubPageUrl, type Redact } from "./core/redact.js";
 import { useWebsite, useWebsiteContract } from "./core/sites.js";
 import { drivingGuarded } from "./core/driving-guard.js";
-import { drivingGates, keptReason, personOn, rearmWhenLeft } from "./core/driving.js";
+import { drivingGates, keptFor, keptReason, personOn, rearmWhenLeft } from "./core/driving.js";
+import { captureFor, planRestore, untilQuiet, vaultRuntime, type VaultOptions, type VaultRuntime } from "./vault-session.js";
+import type { VaultTarget } from "./core/vault.js";
 import type { DrivingGates } from "./live-view/protocol.js";
 import { pageTools, type PageDriver, type ToolCall, type ToolImpl } from "./core/tools.js";
 import { CREATE_DEADLINE_MS, DEFAULT_BROWSER_POLICY, idleTracker, keyedSerializer, oneAtATime, providerKeyValues, type IdleTracker } from "./core/session-control.js";
@@ -31,7 +33,9 @@ export const SESSION_ENTRY = "browser.session";
 
 const CONVERSATION = 1;
 
-export type CodingAgentOptions = {
+export type CodingAgentOptions = VaultOptions & {
+  /** The saved sign-in this extension's browser restores and captures, and the origins it may touch: the host's choice, never the model's. Needs `sessionVault`. */
+  vault?: VaultTarget;
   /** Default: chosen by the `--browser-*` flags and `PI_BROWSER_*` when the session starts. */
   provider?: BrowserProvider | (() => BrowserProvider | Promise<BrowserProvider>);
   /** Default: the Stagehand driver. */
@@ -62,7 +66,7 @@ const UNHELD_ACTIONS = browserFailure("browser_unavailable", "This run's action 
 const noBrowser = (message: string, code: BrowserFailure["code"] = "browser_unavailable"): BrowserFailureError =>
   new BrowserFailureError(browserFailure(code, message));
 
-type Live = { record: SessionRecord; ref: LeaseRef; driver: PageDriver | null; mark?: FenceMark };
+type Live = { record: SessionRecord; ref: LeaseRef; driver: PageDriver | null; mark?: FenceMark; capture?: () => Promise<void> };
 type Deps = {
   config: BrowserConfig;
   /** The live view's driving gates (default: the package's process-wide ones). */
@@ -73,6 +77,9 @@ type Deps = {
   redact: Redact;
   signal: AbortSignal;
   handoff?: HandoffPort;
+  /** The host's session vault and the sign-in it keeps for this session, when it gave them. */
+  vault?: VaultRuntime | null;
+  vaultTarget?: VaultTarget;
 };
 
 const now = () => new Date().toISOString();
@@ -144,11 +151,16 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     }
   }
 
-  private async attached(live: Live, bound?: AbortSignal): Promise<AttachedSession<PageDriver>> {
+  private async attached(live: Live, bound?: AbortSignal, afterAttach: ((target: AttachTarget) => Promise<void>) | null = null): Promise<AttachedSession<PageDriver>> {
     const provider = await this.d.provider();
     const signal = AbortSignal.any([this.d.signal, AbortSignal.timeout(CREATE_DEADLINE_MS), ...(bound ? [bound] : [])]);
     try {
-      live.driver ??= await this.d.driver(await provider.attach(live.ref, signal), signal, { batchTimeoutMs: this.d.config.policy.batchTimeoutMs });
+      if (!live.driver) {
+        const target = await provider.attach(live.ref, signal);
+        // A kept sign-in is put back before the driver, and so before any page, attaches.
+        if (afterAttach) await afterAttach(target);
+        live.driver = await this.d.driver(target, signal, { batchTimeoutMs: this.d.config.policy.batchTimeoutMs });
+      }
     } catch (error) { throw this.failure(error, signal); }
     const notice = this.notice;
     this.notice = null;
@@ -166,17 +178,21 @@ export class LocalCustody implements CustodyPort<PageDriver> {
     const spec = sessionSpec(this.d.config, tag, overrides);
     const unsupported = profileRefusal(spec, provider.caps) ?? navigationRefusal(spec, provider);
     if (unsupported) throw new BrowserFailureError(unsupported);
+    // The vault may name a context or profile for the provider; the record is made from the spec without it, so no context id is saved to the session file.
+    const plan = await planRestore(this.d.vault ?? null, this.d.vaultTarget, provider, spec);
     const record = newSessionRecord({ plane: "browser", tag, provider: provider.name, spec, at: now(), honours: provider.caps.settings });
     this.save(record);
     const signal = AbortSignal.any([this.d.signal, AbortSignal.timeout(CREATE_DEADLINE_MS)]);
     let live: Live | null = null;
     try {
-      const ref = await provider.create(spec, signal);
+      const ref = await provider.create(plan.spec, signal);
       Object.assign(record, { state: "live", resourceId: ref.id });
       this.save(record);
-      live = { record, ref, driver: null };
-      const attached = await this.attached(live);
+      live = { record, ref, driver: null, ...(this.d.vault && this.d.vaultTarget ? { capture: captureFor(this.d.vault, this.d.vaultTarget, provider, ref, { vaulted: plan.vaulted, ...(plan.holdBack ? { holdBack: plan.holdBack } : {}), gate: () => personOn(this.d.gates ?? drivingGates, tag) }) } : {}) };
+      const attached = await this.attached(live, undefined, plan.afterAttach);
       this.live = live;
+      // A context made for this session is given to the vault now, so a restart that loses the provider's memory of it still finds it.
+      if (plan.fresh) await live.capture?.();
       return attached;
     } catch (error) {
       // A session the host assigned is the task's only one: an attach that failed keeps it live, and the next call attaches it again.
@@ -202,11 +218,21 @@ export class LocalCustody implements CustodyPort<PageDriver> {
    *  release that says the browser is gone and only a directory is left (`profile_not_removed`): that session is over (it is never the live
    *  one again), its record stays open for the directory, which is released again by the next release, the shutdown or the next start; the
    *  caller is still told what is left. */
+  /** The vault capture of a session while its browser exists; skipped while a person is driving it. Never throws. */
+  private async captured(live: Live, wait = false): Promise<void> {
+    if (!live.capture) return;
+    const gate = personOn(this.d.gates ?? drivingGates, live.record.tag);
+    // At a handoff's end the person has just let go: their last input is within the driving window, so it is waited out (bounded) before the browser is read.
+    if (!(wait ? await untilQuiet(gate) : !gate || keptFor(gate) !== "person_driving")) return;
+    await live.capture();
+  }
+
   private async finish(live: Live, reason: ReleaseReason): Promise<void> {
     // A released session's poll (#1098) ends with it, whatever released it.
     this.leaving?.();
     this.leaving = null;
     if (reason !== "idle") this.replacedBy = null;
+    await this.captured(live);
     await this.sweepLeftovers();
     // A close that never comes back (Stagehand after a reconnect) never holds up the provider's release.
     if (live.driver) await closeDriver(live.driver);
@@ -263,6 +289,9 @@ export class LocalCustody implements CustodyPort<PageDriver> {
 
   relaunch(overrides: Overrides): Promise<AttachedSession<PageDriver>> {
     return this.serial(async () => {
+      // Checked first, as the durable adapter does: a geolocation with proxies off is refused, never dropped in a new session.
+      const refusal = relaunchRefusal(this.d.config.policy, overrides);
+      if (refusal) throw new BrowserFailureError(refusal);
       await this.refuseHeld();
       // A session the host assigned is the only one: refused before anything is released.
       if ((await this.d.provider()).caps.fixedSession) throw new BrowserFailureError(FIXED_SESSION_RELAUNCH);
@@ -365,7 +394,12 @@ export class LocalCustody implements CustodyPort<PageDriver> {
       if ("refused" in asked) return asked;
       for (let attempt = 0; ; attempt += 1) {
         const answer = await port.outcome(asked.interactionId, stop).catch((error) => { if (stop.aborted) throw error; return "pending" as const; });
-        if (answer !== "pending") return { outcome: answer };
+        if (answer !== "pending") {
+          // A sign-in just happened and the person has handed back: kept now, so a crash after it does not lose it.
+          await this.resume(null);
+          if (this.live) await this.captured(this.live, true);
+          return { outcome: answer };
+        }
         await sleep(backoffMs(attempt), undefined, { signal: stop });
       }
     } catch (error) {
@@ -437,8 +471,11 @@ async function chooseProvider(pi: ExtensionAPI, { options, env }: Settings, prof
 async function openRuntime(pi: ExtensionAPI, settings: Settings, ctx: ExtensionContext, reason: string, listSites: boolean): Promise<Runtime> {
   const { options, env, policy, impls } = settings;
   const closing = new AbortController();
-  const keyValues = () => providerKeyValues(env);
+  // Secrets the package itself comes to hold (a vault's provider context id): registered as they are seen, so no output can carry one.
+  const tracked = new Set<string>();
+  const keyValues = () => [...providerKeyValues(env), ...tracked];
   const redact = createRedactor(keyValues);
+  const vault = vaultRuntime(options, (secret) => { tracked.add(secret); }, (message) => process.emitWarning(`pi-browser: ${redact(message)}`, { code: "PI_BROWSER_VAULT" }));
   let root: Promise<string> | null = null;
   const profiles = { root: () => (root ??= mkdtemp(path.join(os.tmpdir(), "pi-browser-"))) };
   let chosen: Promise<BrowserProvider> | null = null;
@@ -447,7 +484,7 @@ async function openRuntime(pi: ExtensionAPI, settings: Settings, ctx: ExtensionC
   const sessionId = ctx.sessionManager.getSessionId?.() ?? randomUUID();
   const config: BrowserConfig = { label: "browser", run: sessionId, policy };
   const driver: DriverFactory<PageDriver> = options.driver ?? (async (target, signal, driverOptions) => (await import("./driver/stagehand.js")).stagehandDriver()(target, signal, driverOptions));
-  const custody = new LocalCustody({ config, gates: options.gates, provider, driver, redact, signal: closing.signal, keep: (type, data) => pi.appendEntry(type, data), handoff: options.handoff });
+  const custody = new LocalCustody({ config, gates: options.gates, provider, driver, redact, signal: closing.signal, keep: (type, data) => pi.appendEntry(type, data), handoff: options.handoff, vault, vaultTarget: options.vault });
   // A fork's branch holds its parent's entries: the parent released its own browser when it ended.
   if (reason !== "fork") await custody.releaseOrphans(ctx.sessionManager.getBranch() as never).catch(() => undefined);
   // With no provider (no Chrome) the web tools still run on the host's fetchers.

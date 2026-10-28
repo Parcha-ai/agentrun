@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { NPM_VERSION, resolvedFrom } from './pi-leg.mjs';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -87,6 +87,6 @@ function main() {
   process.exit(tests.status === 0 ? 0 : 1);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+if (import.meta.main) {
   try { main(); } catch (error) { console.error(`pi-cross-version: ${error.message}`); process.exit(2); }
 }

@@ -191,7 +191,17 @@ One session at a time may save to a profile in one process. A second saver is re
 | `browser_upload` | Choose one workspace file in a file input on the page, as a person picking it would. Nothing is submitted; `run` submits the form afterwards. The pi extension lists it unless `fileTools` is false; the durable adapter lists it only when the host supplies `files` or `workspace`. | Never reruns. An upload the page does not answer fails at 60 s as possibly applied, and the identical retry is refused until the agent has looked at the page. |
 | `use_website` | Hand a task to another agent that works one website the host granted, in its own browser, and get its report. Listed only when the host passes `sites`. | A `request_id` that already finished answers its result without running again. A task that failed runs again. |
 
-`web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices). Session
+`web_search` hits carry a `snippet` when the search has one: an excerpt of the page with its markdown links reduced to
+their text, whitespace collapsed and clipped to `WEB_SEARCH_SNIPPET_MAX` (500) characters, redacted with the rest of the
+answer. A host's `searchSources` (`createWebExtension`) are tried in order before the provider's own search; one that
+throws hands the call to the next, a cancelled call is never handed on, and the answer names the source in `via`. A
+source's optional `available()` is asked at each call; one that answers false is skipped without counting as a failure.
+`fetchSources` (`FetchSource`) are readers tried the same way before the provider's own fetch, for a markdown read: a
+page one answers is filed exactly as the provider's is, under `via: <name>_fetch`, and a reader's failure never becomes
+the call's own while the provider can still be tried.
+
+`web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices; a search
+source's answer at the usage it reports, else the list search price). Session
 minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
 time since the last charge, and each released session's record carries its total.
 
@@ -219,6 +229,8 @@ Every failure is one envelope: `ok: false`, a `code`, `retryable`, `effect` (`no
 | `waiting_for_human` | A person has the browser. |
 
 **Walls.** Naming a wall takes a judge. A host passes `decisions.classifyPage`, which gets the page's URL, status, content type and text, and answers one of eight classes: `captcha_or_bot_check`, `login_wall`, `paywall`, `region_or_geo_block`, `consent_interstitial`, `error_or_not_found`, `loading_or_js_required` or `empty_or_template`. A bot check or a region block files as `blocked`, and the others as `not_content`, each with a next step. With no judge, no page is classified. A fetch the site refuses with 401, 403, 451 or 999 still answers `blocked`. The pi extension passes no judge.
+
+A host with a typed-question judge (Jev's `createJevRunner`, or the DSL's `runJudge`) builds the method with `createPageClassifier({ judge, budget?, maxPages?, redact? })`. `judge` is read on each page and must return a `PageJudge`; the page takes one request, which asks for its wall and for the probability that it carries instructions addressed to an AI reader. Its `injection` decision is marked at `INJECTION_THRESHOLD`. A side counts at `PAGE_WALL_THRESHOLD` (0.6). The run's page budget (`pageBudget`, `PAGE_GUARD_MAX_PAGES` pages by default) bounds how many pages are judged. An aborted page, a spent budget, and a judge that throws or answers in the wrong shape (a probability outside 0 to 1 included) each leave the page `unjudged` with no score. An answer where neither side reaches 0.6 leaves it `unjudged` and keeps its injection score: a page at or over `INJECTION_THRESHOLD` is withheld from a search's snippets and marked as an injection on a read, whatever its wall. Each records the reason in its `guard` record. The method never rejects.
 
 ## Credentials
 
@@ -254,8 +266,10 @@ pi 1.0.4 or 1.1.x users: pin `@earendil-works/pi-codemode` to the same version a
 - `@parcha/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect and
   replay classes, the `browser` and `web` prompt sections), the typed failure envelope, the redactor, the screenshot
   budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and ranking a long page),
-  `browser_downloads`, the opt-in request observer, and the provider interface. Outside Node's builtins it loads only
-  node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan.
+  `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard under the coding
+  agent's HTTP backup is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })` and
+  `readPage(html, url)`, with `isPrivateAddress` and `pinnedLookup`. Outside Node's builtins and undici it loads only
+  node-html-parser and node-html-markdown, on demand, for `browser_read`'s page text and frame scan and for `readPage`.
 - `/durable`: the pi-durable adapter. `createBrowserExtension` is session custody in the run's own store (a create is
   committed before the provider is called, release is a durable task, reconcile runs at run open). `createWebExtension` is
   `web_fetch` and `web_search`.
@@ -312,6 +326,7 @@ What it does with your machine and your data:
   that a crashed pi left running is closed when that session is next started, never adopted.
 - Stagehand's trace export is pointed at a closed loopback port, so nothing you browse goes to a third party.
 - `browser_relaunch` with `verified` or `geolocation` changes nothing on a local Chrome or on Kernel; they are Browserbase features.
+  With proxies off (the default), a `geolocation` is refused and the session is left as it was, as in the pi-durable adapter.
 - A host that builds the extension with `policy: { actions: "deny" }` or `"ask"` asks for requests to be held, and the coding
   agent has no request observer to hold them. So under either it starts no browser: every browser tool answers
   `browser_unavailable`, naming the action policy, and `web_fetch` still works. Set `actions: "allow"` (or leave it out) to
@@ -319,8 +334,9 @@ What it does with your machine and your data:
 
 Providers and `web_fetch`:
 
-- Without a fetch service, `web_fetch` reads public hosts only. It refuses loopback, private and link-local addresses at every
-  redirect hop, anything over 5 MiB, and non-text, and it sends no cookies or credentials.
+- Without a fetch service, `web_fetch` reads public hosts only. It refuses loopback, private, link-local and other
+  special-purpose addresses and any port but 80 and 443 at every redirect hop, anything over 5 MiB, and non-text, and it
+  sends no cookies or credentials. The call's signal bounds every hop, its name lookup included.
 - A PDF the fetch service will not convert to markdown (Browserbase answers HTTP 400) is fetched once more as the raw file.
   The coding agent has no PDF text extractor, so `web_fetch` says the URL is a PDF and that `format: "raw"` returns its
   bytes, base64-encoded. A host with an extractor passes `pdf: { text(bytes, url, signal) }` to `createWebExtension`; the text

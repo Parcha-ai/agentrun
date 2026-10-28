@@ -95,9 +95,13 @@ test('a moderate or low package beside the accepted chain blocks nothing, and is
 });
 
 const undiciNodes = ['node_modules/@earendil-works/pi-coding-agent/node_modules/undici', 'node_modules/disk/node_modules/undici'];
-const undiciAdvisories = [advisory('GHSA-4qv8-2p9j-2685', 'moderate'), advisory('GHSA-f72v-6w45-q472', 'moderate'), advisory('GHSA-xjj6-f33q-929c', 'high')];
+// The three from 2026-10-24, then the five published by 2026-10-27, all fixed in 8.12.2.
+const undiciAdvisories = [advisory('GHSA-4qv8-2p9j-2685', 'moderate'), advisory('GHSA-f72v-6w45-q472', 'moderate'), advisory('GHSA-xjj6-f33q-929c', 'high'),
+  advisory('GHSA-4w7w-5xrc-9h26', 'high'), advisory('GHSA-2m5v-pch6-74hx', 'high'), advisory('GHSA-qrxm-fqhp-jwvm', 'high'), advisory('GHSA-9fm3-97px-rjf6', 'moderate'),
+  advisory('GHSA-55wc-3pg8-jfw6', 'moderate')];
+const undiciIds = undiciAdvisories.map(via => via.title);
 const moderatePackage = (name, via) => ({ ...dependent(name, via), severity: 'moderate' });
-// As the package check's consumer had it on 2026-10-24: both upstreams' own undici, next to Stagehand's own zod.
+// As the package check's consumer had it on 2026-10-27: both upstreams' own undici, next to Stagehand's own zod.
 const withUndici = (overrides = {}) => ({
   ...zodChain(),
   undici: { name: 'undici', severity: 'high', isDirect: false, effects: ['@earendil-works/pi-coding-agent', 'disk'], nodes: undiciNodes, via: undiciAdvisories },
@@ -114,7 +118,7 @@ test("the disk SDK's and pi-coding-agent's own undici are accepted, beside Stage
   const { accepted, blocking } = auditBlockers(audit(withUndici()), before);
   assert.deepEqual(blocking, []);
   assert.deepEqual(accepted.find(entry => entry.package === 'undici'),
-    { package: 'undici', severity: 'high', advisories: ['GHSA-4qv8-2p9j-2685', 'GHSA-f72v-6w45-q472', 'GHSA-xjj6-f33q-929c'], expires: '2026-11-06' });
+    { package: 'undici', severity: 'high', advisories: undiciIds, expires: '2026-11-06' });
   assert.deepEqual(accepted.map(entry => entry.package).sort(), [...chainNames, 'undici'].sort(), 'nothing else is accepted');
   assert.deepEqual(blocked(withUndici(), Date.parse('2026-11-06T00:00:00Z')), [...chainNames, 'undici'].sort(), 'an expired exception accepts neither');
 });
@@ -127,7 +131,7 @@ test('undici anywhere else, with another advisory, or under one parent only bloc
     ['another undici advisory', withUndici({ undici: { ...undici, via: [...undiciAdvisories, advisory('GHSA-pppp-qqqq-rrrr', 'high')] } })],
   ];
   for (const [label, vulnerabilities] of cases) assert.ok(blocked(vulnerabilities).includes('undici'), label);
-  // Narrowed to either parent alone, or without any one of the three advisories, the exception accepts nothing.
+  // Narrowed to either parent alone, or without any one of its advisories, the exception accepts nothing.
   const undiciException = AUDIT_EXCEPTIONS.find(exception => exception.package === 'undici');
   const narrowed = [
     ...undiciException.under.map(parent => ({ under: undiciException.under.filter(other => other !== parent) })),
@@ -144,6 +148,6 @@ test('if npm rates the disk SDK or pi-coding-agent high through undici, the chai
   const { accepted, blocking } = auditBlockers(audit(vulnerabilities), before);
   assert.deepEqual(blocking, []);
   for (const name of ['disk', '@earendil-works/pi-coding-agent']) {
-    assert.deepEqual(accepted.find(entry => entry.package === name), { package: name, severity: 'high', advisories: ['GHSA-4qv8-2p9j-2685', 'GHSA-f72v-6w45-q472', 'GHSA-xjj6-f33q-929c'], expires: '2026-11-06' });
+    assert.deepEqual(accepted.find(entry => entry.package === name), { package: name, severity: 'high', advisories: undiciIds, expires: '2026-11-06' });
   }
 });

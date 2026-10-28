@@ -4,8 +4,8 @@
 // labeled `pda-fleet=p9`: the organization may run other sandboxes, which the suite never touches. Identifiers only;
 // never a key or a token.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { statePath } from "./_paths.ts";
 import { daytonaRest, LABEL_FLEET, type DaytonaClient, type SandboxInfo } from "../../src/hosts/daytona.ts";
 
@@ -213,9 +213,19 @@ const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.10.0-179
 const ARCHIL_SHA256 = "7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba";
 const REPO = new URL("../../", import.meta.url).pathname;
 
-/** This checkout's working tree (no node_modules, .git or .tmp) as a gzipped tar. */
+/**
+ * This package's working tree as a gzipped tar: the files git tracks or would track (so no node_modules, .tmp or packed
+ * .tgz) and the built dist. tar packs that list, not a walk of the directory: tests write into it while others run
+ * (package.test.ts builds under .tmp/, creating it when it is absent), and tar fails a directory whose entries change
+ * while it reads them ("file changed as we read it").
+ */
 export function packageTarball(): Uint8Array {
-  const r = spawnSync("tar", ["-czf", "-", "--exclude=./node_modules", "--exclude=./.git", "--exclude=./.tmp", "-C", REPO, "."], { maxBuffer: 64 << 20 });
+  const git = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "."], { cwd: REPO, maxBuffer: 64 << 20 });
+  if (git.status !== 0) throw new Error(`git ls-files failed: ${git.stderr}`);
+  const dist = join(REPO, "dist");
+  const built = existsSync(dist) ? readdirSync(dist, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => relative(REPO, join(e.parentPath, e.name))) : [];
+  const files = [...git.stdout.toString().split("\0").filter(Boolean), ...built].filter((f) => existsSync(join(REPO, f)));
+  const r = spawnSync("tar", ["-czf", "-", "--null", "--no-recursion", "-C", REPO, "-T", "-"], { input: files.map((f) => `./${f}\0`).join(""), maxBuffer: 64 << 20 });
   if (r.status !== 0) throw new Error(`tar failed: ${r.stderr}`);
   return new Uint8Array(r.stdout);
 }
@@ -255,11 +265,12 @@ sudo -n chown -R root:root ${PACKAGE_DIR}
 sudo -n chmod -R a+rX,go-w ${PACKAGE_DIR}
 step package
 sudo -n install -o root -g root -m 0755 ${PACKAGE_DIR}/bin/archil-scoped ${ARCHIL_WRAPPER}
-printf '%s\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}, /usr/bin/fusermount -u ${MOUNT_ROOT}/runs/*' | sudo -n tee /etc/sudoers.d/pi-durable-disk >/dev/null
+printf '%s\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}' | sudo -n tee /etc/sudoers.d/pi-durable-disk >/dev/null
 sudo -n chmod 0440 /etc/sudoers.d/pi-durable-disk
 sudo -n visudo -cf /etc/sudoers.d/pi-durable-disk >/dev/null
 sudo -n install -d -m 0755 /mnt/pda ${MOUNT_ROOT}
-sudo -n install -d -o pda -g pda -m 0755 ${MOUNT_ROOT}/runs ${APP_OUT}
+sudo -n install -d -o root -g root -m 0755 ${MOUNT_ROOT}/runs
+sudo -n install -d -o pda -g pda -m 0755 ${APP_OUT}
 step setup
 printf 'archil\t%s\n' "$(archil --version 2>&1 | head -1)"
 printf 'node\t%s\n' "$(${NODE} --version)"
@@ -320,7 +331,7 @@ export function snapshotDockerfile(commit: string, options: { readonly demo?: bo
     `RUN groupadd --gid ${PDA_ID} pda && useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda`,
     `RUN set -eu; install -d -m 0755 ${PACKAGE_DIR}; curl -fsSLo ${PACKAGE_DIR}/package.json https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/package.json; curl -fsSLo ${ARCHIL_WRAPPER} https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/bin/archil-scoped; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR}; ${DEPS_HASH} ${PACKAGE_DIR}/package.json > ${DEPS_STAMP}; ${dropCache}chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`,
     ...(options.demo ? [demoClosureRun(commit)] : []),
-    `RUN set -eu; chown root:root ${ARCHIL_WRAPPER}; chmod 0755 ${ARCHIL_WRAPPER}; printf '%s\\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}, /usr/bin/fusermount -u ${MOUNT_ROOT}/runs/*' > /etc/sudoers.d/pi-durable-disk; chmod 0440 /etc/sudoers.d/pi-durable-disk; visudo -cf /etc/sudoers.d/pi-durable-disk; install -d -m 0755 /mnt/pda ${MOUNT_ROOT}; install -d -o pda -g pda -m 0755 ${MOUNT_ROOT}/runs ${APP_OUT}`,
+    `RUN set -eu; chown root:root ${ARCHIL_WRAPPER}; chmod 0755 ${ARCHIL_WRAPPER}; printf '%s\\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}' > /etc/sudoers.d/pi-durable-disk; chmod 0440 /etc/sudoers.d/pi-durable-disk; visudo -cf /etc/sudoers.d/pi-durable-disk; install -d -m 0755 /mnt/pda ${MOUNT_ROOT}; install -d -o root -g root -m 0755 ${MOUNT_ROOT}/runs; install -d -o pda -g pda -m 0755 ${APP_OUT}`,
     "USER daytona",
     "",
   ].join("\n");

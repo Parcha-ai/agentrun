@@ -442,6 +442,14 @@ async function withHashes(
 
 type Field = "kind" | "bytes" | "sha256" | "mode" | "target" | "mtime" | "mtimeExact";
 
+/**
+ * The whole seconds of a time as `find` prints it, the part a tar header keeps. Read from the text: as a number, a
+ * time a nanosecond short of the next second rounds up to it.
+ */
+function wholeSeconds(mtime: string): string {
+	return mtime.split(".")[0] ?? mtime;
+}
+
 /** The first path where two manifests differ, in path order, with what differs. */
 function firstDifference(
 	before: readonly Listed[],
@@ -464,8 +472,8 @@ function firstDifference(
 				if (a.kind !== "symlink" && a.mode !== b.mode)
 					return `${path} has mode ${b.mode.toString(8)}, not ${a.mode.toString(8)}`;
 			} else if (field === "mtime") {
-				if (a.kind === "file" && Math.floor(Number(a.mtime)) !== Math.floor(Number(b.mtime)))
-					return `${path} has another modification time`;
+				if (a.kind === "file" && wholeSeconds(a.mtime) !== wholeSeconds(b.mtime))
+					return `${path} has another modification time: ${b.mtime}, not ${a.mtime}`;
 			} else if (field === "mtimeExact") {
 				if (a.kind === "file" && a.mtime !== b.mtime) return `${path} has another modification time`;
 			} else if (a[field] !== b[field]) return `${path} has another ${field}`;

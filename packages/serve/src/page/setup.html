@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<!-- What a browser gets while this server has no password: set it, and be signed in. A server at a public address asks for the setup code it printed too; its link fills it in. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Set your password: AgentRun Server</title>
+<link rel="stylesheet" href="/page.css">
+<link rel="stylesheet" href="/serve.css">
+<link rel="stylesheet" href="/account.css">
+</head>
+<body>
+<main>
+<section class="card account">
+<p class="kicker">AgentRun Server</p>
+<h1>Set your password</h1>
+<p class="lede">This server is yours: set the password you sign in with, 12 characters or more. A server at a public address asks for the setup code too, from the line it printed that starts with <code>Set up this server</code>; that link fills it in.</p>
+<form id="setup" novalidate>
+<label class="field" id="code-field"><span class="word">Setup code</span><input type="text" name="code" autocomplete="off" spellcheck="false"></label>
+<label class="field"><span class="word">Password</span><input type="password" name="password" autocomplete="new-password" minlength="12" required></label>
+<label class="field"><span class="word">Again</span><input type="password" name="again" autocomplete="new-password" minlength="12" required></label>
+<div class="actions"><button class="btn" type="submit">Set it and sign in</button></div>
+<p class="said" id="said" role="status"></p>
+</form>
+</section>
+</main>
+<script src="/account.js"></script>
+</body>
+</html>

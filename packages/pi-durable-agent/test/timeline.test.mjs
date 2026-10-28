@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -178,7 +178,8 @@ test("a failed model request is an error row; an aborted partial is nothing", ()
     assistant([], 0, { stopReason: "error", errorMessage: "529 overloaded\nretry later" }),
     assistant([{ type: "text", text: "cut off" }], 1, { stopReason: "aborted" }),
   ]);
-  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: $0.0200 over 2 model requests"]]);
+  // The cut request's partial usage is not what it cost, so the sum is unknown (the cost test below).
+  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: unknown over 2 model requests"]]);
 });
 
 test("a reset, a compaction and a changed prompt are phase rows; the first system entry is not", () => {
@@ -199,6 +200,49 @@ test("cost: a sum, and unknown when any answer carries none, never $0", () => {
   const unknown = timelineOf([assistant([{ type: "text", text: "a" }], 0), assistant([{ type: "text", text: "b" }], 1, { usage: undefined })]).at(-1);
   assert.equal(unknown.summary, "Cost so far: unknown over 2 model requests");
   assert.equal(unknown.usage.usd, null);
+});
+
+test("cost: a request marked as it left and cut before its first content counts, at an unknown cost; one still in flight does not make it unknown", () => {
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const ended = { kind: REQUEST_ENDED, data: {} };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  assert.deepEqual(timelineOf([started, ended, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "marked, ended, answered: one priced request");
+  assert.deepEqual(timelineOf([started, a, ended]).at(-1).usage, { usd: 0.01, requests: 1 }, "in either order");
+  assert.deepEqual(timelineOf([started, ended, a, started]).at(-1).usage, { usd: 0.01, requests: 2 }, "the next request in flight: the sum so far");
+  const stopped = timelineOf([started, ended, a, started, ended]).at(-1);
+  assert.deepEqual(stopped.usage, { usd: null, requests: 2 }, "stopped before its first content: ended with no entry");
+  assert.equal(stopped.summary, "Cost so far: unknown over 2 model requests");
+  assert.deepEqual(timelineOf([started, ended, a, started, started]).at(-1).usage, { usd: null, requests: 3 }, "a crash cut one, and the next process's is in flight");
+  // A run settled with its last request unanswered (its process died mid-request, and it never resumed): that request
+  // was cut, not in flight.
+  assert.deepEqual(timelineOf([started, a, started], { settled: true }).at(-1).usage, { usd: null, requests: 2 });
+  assert.deepEqual(timelineOf([user("hi", 0), started], { settled: true }).map((r) => [r.kind, r.usage ?? null]), [["user_message", null], ["usage", { usd: null, requests: 1 }]], "its only request, cut");
+  // While it runs, one request in flight alone makes no usage row yet; its answer makes one.
+  assert.deepEqual(timelineOf([user("hi", 0), started]).map((r) => r.kind), ["user_message"], "in flight alone: no usage row");
+  assert.deepEqual(timelineOf([user("hi", 0), started, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "answered: its row");
+  // A run written before requests were marked reads as it did.
+  assert.deepEqual(timelineOf([a]).at(-1).usage, { usd: 0.01, requests: 1 });
+  // A run written before requests were marked, continued after: its earlier answers are not the marked requests' entries.
+  assert.deepEqual(timelineOf([a, started, ended]).at(-1).usage, { usd: null, requests: 2 }, "the new request was cut");
+  assert.deepEqual(timelineOf([a, started, assistant([{ type: "text", text: "b" }], 1)]).at(-1).usage, { usd: 0.02, requests: 2 }, "the new request answered");
+  assert.deepEqual(timelineOf([a, started], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "settled with the new one unanswered");
+});
+
+test("cost: a request cut before its end makes the sum unknown, never $0, with or without the usage its stream had reported", () => {
+  const done = assistant([{ type: "text", text: "a" }], 0);
+  // The Responses API reports usage only at its end, so a cut stream leaves pi's zero usage, priced $0.
+  const cut = assistant([], 1, { stopReason: "aborted", usage: { input: 0, output: 0, cost: { total: 0 } } });
+  // Anthropic's message_start reports the input and the first output token; the rest never came.
+  const partial = assistant([{ type: "text", text: "Half an ans" }], 1, { stopReason: "aborted", usage: { input: 900, output: 1, cost: { total: 0.0027 } } });
+  for (const [name, aborted] of [["no usage", cut], ["partial usage", partial]]) {
+    const usage = timelineOf([done, aborted]).at(-1);
+    assert.equal(usage.summary, "Cost so far: unknown over 2 model requests", name);
+    assert.deepEqual(usage.usage, { usd: null, requests: 2 }, name);
+    // A later request that completes does not make it known again.
+    assert.equal(timelineOf([done, aborted, assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage.usd, null, name);
+  }
+  // Completed requests alone still sum to the cent.
+  assert.deepEqual(timelineOf([done, assistant([call("c1", "read")], 1), assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage, { usd: 0.03, requests: 3 });
 });
 
 test("an unknown entry kind and an unknown event are skipped, never thrown on", () => {

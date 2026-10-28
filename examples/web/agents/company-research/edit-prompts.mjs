@@ -8,7 +8,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { checkPrompts, homeRefusal, normalizePrompts, readPromptsFile, readQuestion, ruleText, withQuestion } from "./prompts-lib.mjs";
 
@@ -123,4 +123,4 @@ export async function main(argv, { api, out = (line) => console.log(line), err =
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main(process.argv.slice(2));
+if (import.meta.main) process.exitCode = await main(process.argv.slice(2));

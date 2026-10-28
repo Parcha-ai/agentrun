@@ -40,7 +40,7 @@ const constructors = {
 const mutatingTools = new Set(['bash', 'edit', 'write']);
 /** The extension's own tool's name, which a host tool may not take. */
 const toolName = 'agentrun';
-const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Dry run: /agentrun dry-run · SOP text: /agentrun sop <file> · Setup: /agentrun status\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
+const help = 'Describe a task: /agentrun <what you want done>\nTry support triage: /agentrun triage (fictional, no model calls)\nInspect: /agentrun · Change input: /agentrun input\nSave: /agentrun save <name> · Load: /agentrun load <name>\nLibrary: /agentrun list · History: /agentrun history\nRun: /agentrun run · Dry run: /agentrun dry-run · SOP text: /agentrun sop <file> · Setup: /agentrun status · Limits: /agentrun limits\nStop: /agentrun stop (closing the inspector does not stop a run)\nOther examples: /agentrun demo | demo empty | demo live';
 /** What a result says when it ends no run, and the label on what the host says about a turn. */
 const NO_RUN = 'no workflow ran';
 const STAMP_LABEL = 'AgentRun host notice (not written by the model):';
@@ -65,8 +65,11 @@ function singleTextInput(workflow: unknown): string | undefined {
   return keys.length === 1 && schema.required?.length === 1 && schema.required[0] === keys[0]
     && schema.properties[keys[0]]?.type === 'string' ? keys[0] : undefined;
 }
+// nodeMaxTurns is the most turns any node gets per attempt, and the cap on a node's own max_turns.
 const nativeLimits = Object.freeze({ deadlineMs: 600_000, modelRequests: 50, judgeCalls: 100, toolAttempts: 100,
-  nodeMaxTurns: 8, nodeMaxSubmissions: 3, nodeTimeoutMs: 120_000 });
+  nodeMaxTurns: 40, nodeMaxSubmissions: 3, nodeTimeoutMs: 120_000 });
+/** The turns a node that names no max_turns gets, within nodeMaxTurns: more when it can only read. */
+const nodeTurnDefaults = Object.freeze({ readOnly: 20, other: 8 });
 export type AgentRunRuntimeLimits = { [Key in keyof typeof nativeLimits]: number | null };
 
 export interface AgentRunWorkflowEvent {
@@ -162,7 +165,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     }
     const tools = toolSet(ctx);
     current = { key, sessionFile: () => ctx.sessionManager.getSessionFile(), clearStatus: () => { if (ctx.hasUI) { ctx.ui.setStatus('agentrun', undefined); ctx.ui.setWidget('agentrun', undefined); } }, tools, toolNames: tools.map(t => t.name), input: {}, busy: false, closed: false,
-      service: new WorkflowExtensionService({ allowedTools: tools.map(t => t.name), limits: serviceLimits }) };
+      service: new WorkflowExtensionService({ allowedTools: tools.map(t => t.name), limits: serviceLimits, nodeTurnCap: limits.nodeMaxTurns }) };
     const restored = restoreWorkflowSession(ctx.sessionManager.getBranch());
     if (restored) {
       current.draft = restored.workflow; current.input = restored.input; current.demo = restored.demo;
@@ -215,7 +218,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     if (candidate === undefined) throw new OperatorError('No workflow yet. Describe a task with /agentrun <task>.');
     // Include active tools available only with operator trust, without granting that trust.
     // Execution rechecks the actual per-run permissions and captures implementations.
-    const checker = new WorkflowExtensionService({ allowedTools: toolSet(ctx, true).map(tool => tool.name), limits: serviceLimits });
+    const checker = new WorkflowExtensionService({ allowedTools: toolSet(ctx, true).map(tool => tool.name), limits: serviceLimits, nodeTurnCap: limits.nodeMaxTurns });
     const { inspection, tree } = inspectCandidate(checker, candidate, input);
     // Stage the definition and input together only after nonexecuting checks succeed.
     const nextDraft = workflow === undefined ? s.draft : structuredClone(workflow);
@@ -237,6 +240,44 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     });
     if (s.persistenceWarning) result.summary.push(s.persistenceWarning);
     return result;
+  };
+  // A node is read-only when the host supplies no tools of its own and the node can use none of bash, edit or write.
+  const readOnly = (tools: readonly string[]) => !configuration.hostTools && !tools.some(name => mutatingTools.has(name));
+  /** The turns a node that names no max_turns gets: the default for its tools within the cap, or none without a cap. */
+  const defaultTurns = (isReadOnly: boolean) => limits.nodeMaxTurns === null ? null
+    : Math.min(isReadOnly ? nodeTurnDefaults.readOnly : nodeTurnDefaults.other, limits.nodeMaxTurns);
+  /** A node's turn limit and where it comes from: its max_turns, else the default for its tools, within the cap. */
+  const nodeTurns = (maxTurns: number | undefined, tools: readonly string[]): { turns: number | null; source: string } => {
+    if (maxTurns !== undefined) return { turns: maxTurns, source: 'its max_turns' };
+    if (limits.nodeMaxTurns === null) return { turns: null, source: 'no host limit' };
+    return { turns: defaultTurns(readOnly(tools)), source: readOnly(tools) ? 'the read-only default' : 'the default' };
+  };
+  const formatLimits = (ctx: ExtensionContext, s: Session) => {
+    const count = (value: number | null, unit: string) => value === null ? `no ${unit} limit` : `${value} ${unit}`;
+    const readTurns = defaultTurns(true), otherTurns = defaultTurns(false);
+    const unnamed = otherTurns === null ? 'has no turn limit' : readTurns === otherTurns ? `gets ${otherTurns}`
+      : `gets ${readTurns} when it can only read (no bash, edit or write, and no host tools), else ${otherTurns}`;
+    const lines = ['AgentRun limits in force',
+      `Workflow: ${limits.deadlineMs === null ? 'no deadline' : `${limits.deadlineMs / 1000}-second deadline`} · ${count(limits.modelRequests, 'model requests')} · ${count(limits.judgeCalls, 'Jev calls')} · ${count(limits.toolAttempts, 'tool attempts')}`,
+      `Node turns: ${limits.nodeMaxTurns === null ? 'no host cap' : `up to ${limits.nodeMaxTurns} per attempt (this host's cap)`}; a node that names no max_turns ${unnamed}. A node's max_turns sets its own${limits.nodeMaxTurns === null ? '' : ', within the cap'}. A node that reaches its turn limit is not tried again.`,
+      `Node submissions: ${count(limits.nodeMaxSubmissions, 'submissions')} · node timeout: ${limits.nodeTimeoutMs === null ? 'none' : `${limits.nodeTimeoutMs / 1000} s`}`];
+    const agents = s.draft ? inspectWorkflow(s.draft).nodes.map(entry => entry.path.split('/').slice(1).reduce<any>((item, key) => item?.[key.replace(/~1/g, '/').replace(/~0/g, '~')], s.draft))
+      .filter(node => node && ['agent', 'decide', 'extract', 'report'].includes(node.node)) : [];
+    if (agents.length) {
+      // A node that names no tools is given the run's whole tool set, and a trusted run's set adds bash, edit and write.
+      const available = toolSet(ctx).map(tool => tool.name), trusted = toolSet(ctx, true).map(tool => tool.name);
+      const added = trusted.filter(name => !available.includes(name));
+      const shown = (turns: number | null) => turns === null ? 'no turn limit' : `${turns} turns`;
+      lines.push('', 'This workflow:', ...agents.map(node => {
+        const maxTurns = node.node === 'agent' && typeof node.max_turns === 'number' ? node.max_turns : undefined;
+        const { turns, source } = nodeTurns(maxTurns, Array.isArray(node.tools) ? node.tools : available);
+        const inTrusted = Array.isArray(node.tools) ? undefined : nodeTurns(maxTurns, trusted).turns;
+        const trustedNote = inTrusted !== undefined && inTrusted !== turns
+          ? `; ${inTrusted === null ? 'no turn limit' : inTrusted} in a trusted run, which adds ${added.length > 1 ? `${added.slice(0, -1).join(', ')} and ${added.at(-1)}` : added.join('')}` : '';
+        return `- ${node.label} [${node.node}]: ${shown(turns)} (${source}${trustedNote})`;
+      }));
+    }
+    return lines.join('\n');
   };
   const depsFor = (ctx: ExtensionContext, s: Session, signal: AbortSignal): WorkflowDeps => {
     let modelCalls = 0, toolCalls = 0;
@@ -284,7 +325,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
     return {
       runNode: request => {
         if (!runner) throw new OperatorError('Workflow agent adapter was not admitted');
-        return runner(request);
+        // A node that names no tools is given the run's own tool set, trusted or not.
+        const { turns } = nodeTurns(request.maxTurns, request.tools ?? s.toolNames);
+        return runner(turns === null ? request : { ...request, maxTurns: turns });
       },
       runJudge: request => {
         if (!judge) throw new OperatorError('Workflow Jev adapter was not admitted');
@@ -337,7 +380,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       const available = toolSet(ctx, options.trusted);
       if (available.map(t => t.name).join(',') !== s.toolNames.join(',')) {
         await s.service.dispose(); signal.throwIfAborted(); s.tools = available; s.toolNames = available.map(t => t.name);
-        s.service = new WorkflowExtensionService({ allowedTools: s.toolNames, limits: serviceLimits });
+        s.service = new WorkflowExtensionService({ allowedTools: s.toolNames, limits: serviceLimits, nodeTurnCap: limits.nodeMaxTurns });
       }
       // Resolve implementations from the execution context even if names are unchanged.
       s.tools = available;
@@ -487,7 +530,7 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
       }
       if (args.action === 'describe') {
         const details = { tools: describeTools(toolSet(ctx)),
-          limits: { ...limits }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: authoringReferences() };
+          limits: { ...limits }, nodeTurnDefaults: { ...nodeTurnDefaults }, structuralLimits: { ...extensionStructuralLimits }, ...readiness(ctx, s), authoring: authoringReferences() };
         return textResult(JSON.stringify(details, null, 2), details);
       }
       if (args.action === 'dry-run') {
@@ -531,9 +574,9 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           pi.sendUserMessage(`/skill:agentrun-author Edit the current procedure: ${request}. Inspect the candidate and explain the change. Do not run it yet.`, { expandPromptTemplates: true }); return;
         } else raw = action;
       }
-      const command = /^(help|status|stop|demo|triage|run|dry-run|inspect)(?:\s|$)/i.test(raw) ? raw.toLowerCase().replace(/\s+/g, ' ') : raw;
+      const command = /^(help|status|limits|stop|demo|triage|run|dry-run|inspect)(?:\s|$)/i.test(raw) ? raw.toLowerCase().replace(/\s+/g, ' ') : raw;
       const words = command.split(/\s+/);
-      const commandLike = /^(help|status|stop|demo|run|dry-run)(?:-|$)/i.test(words[0])
+      const commandLike = /^(help|status|limits|stop|demo|run|dry-run)(?:-|$)/i.test(words[0])
         && words.slice(1).every(word => word.startsWith('-') || ['live', 'empty'].includes(word));
         if (command === 'help' || command === '--help' || command === '-h') {
           show(s, help);
@@ -611,6 +654,8 @@ function registerExtension(pi: ExtensionAPI, configuration: AgentRunExtensionOpt
           inspect(ctx, s, supportTriageWorkflow, input); s.demo = live ? undefined : name === 'failure' ? 'triage-failure' : 'triage';
           show(s, `Fictional support triage · ${live ? 'real model calls' : 'scripted, no model calls'}. No customer actions.\n${formatWorkflowView(view(ctx, s))}`);
           const result = await execute(ctx, s, input); show(s, result.content[0].text, result.details);
+        } else if (command === 'limits') {
+          show(s, formatLimits(ctx, s), { limits: { ...limits }, nodeTurnDefaults: { ...nodeTurnDefaults } });
         } else if (command === 'status') {
           const ready = readiness(ctx, s);
           show(s, `agent.run() · ${s.busy ? 'running' : 'idle'}\nDemo: ready — /agentrun demo (no keys or model calls)\nWorkflow: ${s.draft ? `${modelJson(inspectWorkflow(s.draft).name)} · ${s.demo ? 'scripted' : 'live adapters'}` : 'none — load a saved procedure, run the demo, or describe a task'}\n\nFor your own workflows:\n${piHostLine(PI_VERSION)}\nSkill: ${ready.skill ? 'loaded — /agentrun <task>' : 'missing — enable package skills, then /reload'}\nPi: ${ready.pi ? 'selected model available (connection not tested)' : 'no usable active model — /login to connect a provider, then /model to select it'}\nJev: ${!ready.jev ? 'not configured — only needed for system one decisions; set TYPESAFE_API_KEY, or OPENROUTER_API_KEY for Jev through OpenRouter, before starting Pi' : configuration.createJudge ? 'host-configured judge (connection not tested)' : `configuration present, via ${jevProviderFromEnv(process.env) === 'openrouter' ? 'OpenRouter' : 'TypeSafe'} (connection not tested)`}`, ready);

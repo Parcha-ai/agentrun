@@ -19,7 +19,7 @@ export type {
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
-  AskPredicate, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue,
+  AskPredicate, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
 export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";
@@ -46,6 +46,7 @@ export {
 } from "./workflow.js";
 export { compileTransform, compileTransformSyntax, deniedGlobalReferences } from "./code-exec.js";
 export { resolveSchemaForWorkflow } from "./schema-references.js";
+export { submitParameters } from "./submit-envelope.js";
 export { getPath, predicateMatches } from "./predicates.js";
 export type { StopPredicate, AcceptPredicate } from "./predicates.js";
 

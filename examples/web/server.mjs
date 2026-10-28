@@ -17,7 +17,7 @@ import { connect } from "node:net";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pipeline } from "node:stream/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { AGENT_STORE_FILE, carryBack, readAgentHome, startRun } from "@parcha/pi-durable-agent";
 import { browserbaseProvider } from "@parcha/pi-browser/providers/browserbase";
@@ -786,4 +786,4 @@ async function main() {
   process.once("SIGTERM", stop);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
+if (import.meta.main) await main();

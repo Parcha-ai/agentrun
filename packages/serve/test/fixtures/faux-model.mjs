@@ -34,12 +34,16 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
+  if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });
   }
-  if (first.includes("Take your time") && users.length === 1) return slow(faux, 60_000, "Done slowly.");
+  if (last.includes("Take your time")) return slow(faux, 60_000, "Done slowly.");
+  // Answers only once it is stopped: the answer lands after the stop, the race the server must not read as an answer.
+  if (first.includes("Answer when stopped") && users.length === 1) return new Promise((resolve) => faux.signal?.addEventListener("abort", () => resolve(faux.message("Stopped, but here is the answer.")), { once: true }));
   if (first.includes("Answer soon") && users.length === 1) return slow(faux, 1_500, "Soon.");
   // "Answer once <file> exists.": the test says when, by making the file.
   const once = /^Answer once (\S+) exists\.$/.exec(first);

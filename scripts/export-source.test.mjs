@@ -20,7 +20,7 @@ async function fixture(t) {
   await write('scripts/export-source.mjs', exporter);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/harness': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi': {}, 'packages/pi-durable-disk': {}, 'packages/pi-browser': {}, 'packages/pi-vision': {}, 'packages/pi-transport': {}, 'packages/pi-durable-agent': {}, 'packages/serve': {}, 'packages/pi-git-remote': {}, 'packages/pi-agent-learn': {}, 'packages/learn': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/harness': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -74,6 +74,23 @@ test('a *.local.* file is excluded and a source file named local.ts is archived'
   for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
   const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
   assert.ok(receipt.exclusions.includes('*.local.*'));
+});
+
+test('a review file (*.review.*) is excluded and source named review is archived', async t => {
+  const f = await fixture(t);
+  // A review file is a file named `<name>.review.<ext>`, like the author's `<n>.review.json` beside each candidate; it and the
+  // `.review`/`.reviews` directories are review state. A module named review.ts, its test, a skill directory named `review`
+  // and a file inside a directory whose name looks like a review file are source.
+  const archived = ['packages/serve/src/review.ts', 'packages/serve/test/review.test.mjs', 'packages/learn/skills/review/SKILL.md', 'docs/x.review.y/notes.md'];
+  const excluded = ['examples/out/candidate-1/001.review.json', 'docs/candidate.review.json', 'docs/notes.review.md', 'docs/.review/findings.json', 'examples/.reviews/notes.md'];
+  for (const path of archived) await f.write(path, 'export const review = 1;\n');
+  for (const path of excluded) await f.write(path, 'PRIVATE_REVIEW_FIXTURE\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of archived) assert.ok(listing.includes(`agentrun-dsl-source/${path}`), `${path} is archived`);
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(receipt.exclusions.includes('*.review.*'));
 });
 
 test('an audit finding blocks the source archive without exposing its content', async t => {
@@ -159,6 +176,21 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('a recorded event stream (.sse) is archived and scanned as text: a machine path planted in one stops the export', async t => {
+  const f = await fixture(t);
+  const path = 'packages/x/test/fixtures/answer.sse';
+  await f.write(path, 'event: message_start\ndata: {"type":"message_start"}\n\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`));
+  assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text');
+  const machinePath = ['', 'home', 'someone', 'secret.txt'].join('/');
+  await f.write(path, `event: message_start\ndata: {"path":"${machinePath}"}\n\n`);
+  await assert.rejects(f.run(), /Source export blocked/);
+  const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(blocked.findings.some(finding => finding.path === path));
+});
+
 test('a PDF is archived only when one line of ASSETS.md names it with its SHA-256', async t => {
   const f = await fixture(t);
   const pdf = '%PDF-1.4\n% fixture\n%%EOF\n';
@@ -199,7 +231,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'harness'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'run-adapters', 'run-adapters-claude-agent', 'harness'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -217,6 +249,44 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
   const withRuntime = await inventory(lock({ dev: '1.0.0', runtime: '2.0.0' }));
   assert.notDeepEqual(withRuntime, first, 'a runtime dependency changes the inventory');
   assert.match(withRuntime.toString('utf8'), /runtime-lib/);
+});
+
+// An auth library names a test runner as an optional peer; the lock records the runner because the repository develops with it,
+// and the runner pulls a bundler whose CSS engine is MPL-2.0. No consumer of the library installs any of them. A workspace
+// package names the host it runs in as an optional peer, which the inventory keeps.
+const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
+  '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
+  ...Object.fromEntries(['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'run-adapters', 'run-adapters-claude-agent', 'harness'].map(name => [`packages/${name}`, {}])),
+  'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
+  'packages/pi-vision': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
+  'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
+  ...(requiredBy ? { [`packages/${requiredBy}`]: { dependencies: { 'test-runner': '1.0.0' } } } : {}),
+  'node_modules/auth-lib': { version: '1.0.0', license: 'MIT', peerDependencies: { 'test-runner': '*', 'absent-peer': '*' }, peerDependenciesMeta: { 'test-runner': { optional: true }, 'absent-peer': { optional: true } } },
+  'node_modules/test-runner': { version: '1.0.0', license: 'MIT', dev: true, dependencies: { bundler: '1.0.0' } },
+  'node_modules/bundler': { version: '1.0.0', license: 'MIT', dev: true, dependencies: { 'css-engine': '1.0.0' } },
+  'node_modules/css-engine': { version: '1.0.0', license: 'MPL-2.0', dev: true },
+} });
+
+test('the dependency inventory leaves out an optional peer nothing requires at runtime, and everything under it', async t => {
+  const f = await fixture(t);
+  await f.write('package-lock.json', optionalPeerLock());
+  await f.run('--inventory-only');
+  const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  assert.match(inventory, /\| auth-lib \| 1\.0\.0 \| MIT \| serve \| no \| 1 \|/);
+  for (const name of ['test-runner', 'bundler', 'css-engine']) assert.doesNotMatch(inventory, new RegExp(`\\| ${name} \\|`), `${name} is not shipped`);
+  assert.match(inventory, /\| host-agent \| 1\.0\.0 \| MIT \| pi-vision \| no \| 1 \|/, 'a workspace package\'s own optional peer is followed');
+  assert.match(inventory, /No missing, restrictive, reciprocal, or unrecognized license identifiers/);
+  assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: [^\n]*`absent-host`/, 'a workspace package\'s optional peer the lock does not record is named, not an error');
+  assert.match(inventory, /Optional peer\/dependency names absent from this lockfile: [^\n]*`absent-peer`/, 'an optional peer the lock does not record is still named');
+});
+
+test('the dependency inventory keeps an optional peer that a runtime dependency requires, for the package that requires it', async t => {
+  const f = await fixture(t);
+  await f.write('package-lock.json', optionalPeerLock({ requiredBy: 'pi' }));
+  await f.run('--inventory-only');
+  const inventory = await readFile(join(f.root, 'docs/dependencies.md'), 'utf8');
+  for (const name of ['test-runner', 'bundler', 'css-engine']) assert.match(inventory, new RegExp(`\\| ${name} \\| 1\\.0\\.0 \\| [^|]+ \\| pi \\| no \\| 1 \\|`), `${name} ships with pi`);
+  assert.match(inventory, /\*\*css-engine@1\.0\.0:\*\* MPL-2\.0 — License expression needs release-owner review\./);
 });
 
 test('a run-state directory under a package is never exported, and a long one-line journal does not stall the scan', async t => {
