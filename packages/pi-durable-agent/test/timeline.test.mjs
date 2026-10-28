@@ -178,7 +178,8 @@ test("a failed model request is an error row; an aborted partial is nothing", ()
     assistant([], 0, { stopReason: "error", errorMessage: "529 overloaded\nretry later" }),
     assistant([{ type: "text", text: "cut off" }], 1, { stopReason: "aborted" }),
   ]);
-  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: $0.0200 over 2 model requests"]]);
+  // The cut request's partial usage is not what it cost, so the sum is unknown (the cost test below).
+  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: unknown over 2 model requests"]]);
 });
 
 test("a reset, a compaction and a changed prompt are phase rows; the first system entry is not", () => {
