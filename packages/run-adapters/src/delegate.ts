@@ -64,7 +64,7 @@ export interface DelegateOptions {
   onEvent?: (event: DelegateEvent) => void;
   /** The lead's deadline (epoch ms), if it has one: a child's is this, or its agent's share of the time left. */
   deadlineAt?: () => number | undefined;
-  /** A child's limit when the lead has no deadline (default 120 s; null for none). */
+  /** A child's limit when the lead has no deadline (absent: the runner's own default, 120 s; null for none). */
   timeoutMs?: number | null;
   /** The most paid requests a child makes per attempt (the runner's default when absent). */
   maxTurns?: number | null;
@@ -78,6 +78,7 @@ export function delegateProblems(options: Pick<DelegateOptions, "agents" | "tool
   const lead = new Set(options.tools.map((t) => t.name));
   const names = Object.keys(options.agents);
   if (names.length === 0) problems.push("no agents to delegate to");
+  if (lead.has(DELEGATE_TOOL)) problems.push(`the lead already has a tool named ${DELEGATE_TOOL}`);
   for (const name of names) {
     const agent = options.agents[name]!;
     if (!AGENT_NAME.test(name)) problems.push(`the agent name ${JSON.stringify(name.slice(0, 80))} is not lowercase letters, digits and dashes`);
@@ -147,6 +148,10 @@ export function delegateTool(options: DelegateOptions): HostTool {
         });
         return { text: JSON.stringify(answer) };
       } catch (error) {
+        // Stopped (the lead paused, the process is draining): not an answer. Rethrown, the lead's harness records the call
+        // as interrupted and runs the same call id again on resume, which resumes this child. A child that failed on its
+        // own is an answer the lead reads.
+        if (signal?.aborted) throw signal.reason ?? error;
         return { text: `The delegate ${name as string} stopped without an answer: ${String((error as Error)?.message ?? error).slice(0, 400)}`, isError: true };
       }
     }),
