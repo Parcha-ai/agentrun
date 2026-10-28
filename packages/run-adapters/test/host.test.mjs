@@ -257,12 +257,68 @@ test('every paid request forwarded is booked once: its usage when it says it; an
   assert.equal((await send(failed.p.url)).status, 529);
   assert.deepEqual(failed.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }]);
 
-  // Admitted and never sent (no credential, or one that could not be read): a 500, and booked once at nothing.
-  for (const credential of [() => '', () => { throw new Error('vault down'); }]) {
-    const none = await proxy(t, { credential });
-    assert.equal((await send(none.p.url)).status, 500);
-    assert.deepEqual([none.forwarded.length, none.hooks.before.length, none.hooks.after], [0, 1, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }]]);
+  // A request that could not be sent (no credential, one that could not be read, or headers the policy could not build)
+  // is refused before the runner is asked: never admitted, never booked, no turn spent.
+  for (const extra of [{ credential: () => '' }, { credential: () => { throw new Error('vault down'); } }, { policy: { ...policy, authHeaders: () => { throw new Error('policy bug'); } } }]) {
+    const none = await proxy(t, extra);
+    assert.equal((await send(none.p.url, { path: '/v1/test?beta=true' })).status, 500);
+    assert.deepEqual([none.forwarded.length, none.hooks.before.length, none.hooks.after.length], [0, 0, 0]);
   }
+});
+
+test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {
+  let admit;
+  const waiting = new Promise((resolve) => { admit = resolve; });
+  const forwarded = [];
+  const after = [];
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: () => waiting, afterRequest: async (u) => { after.push(u); } }, fetch: async (url, init) => { forwarded.push(url); return new Response(sse()); } }, KEY);
+  const answer = send(p.url, { path: '/v1/test?beta=true' }).catch((error) => ({ error }));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const closing = p.close();
+  admit();
+  await closing;
+  await answer;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(forwarded, [], 'nothing is sent after close()');
+  assert.deepEqual(after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }], 'the admitted request is released once');
+});
+
+test('a "__proto__" key in a body is an own field: the parsed object keeps its prototype, and no other object is touched', () => {
+  const parsed = parseStrict('{"__proto__":{"polluted":true},"a":1}');
+  assert.equal(Object.getPrototypeOf(parsed), Object.prototype);
+  assert.ok(Object.hasOwn(parsed, '__proto__'));
+  assert.deepEqual(parsed.__proto__, { polluted: true });
+  assert.equal(parsed.polluted, undefined);
+  assert.equal({}.polluted, undefined);
+  assert.equal(JSON.stringify(parsed), '{"__proto__":{"polluted":true},"a":1}');
+});
+
+test("a client that reads slowly holds the provider back: the proxy reads no more of the answer until what it wrote drains", async (t) => {
+  const CHUNK = 64 * 1024;
+  const TOTAL = 1000;
+  let pulled = 0;
+  const body = new ReadableStream({ pull(controller) { if (pulled >= TOTAL) return controller.close(); pulled += 1; controller.enqueue(new Uint8Array(CHUNK).fill(120)); } }, { highWaterMark: 0 });
+  const { p, hooks } = await proxy(t, { fetch: async () => new Response(body, { headers: { 'content-type': 'text/event-stream' } }) });
+  const { hostname, port } = new URL(p.url);
+  let received = 0;
+  const done = new Promise((resolve, reject) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/test?beta=true', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      res.pause();
+      setTimeout(() => {
+        // Paused: the proxy has read only what the socket's buffers hold, not the whole answer.
+        assert.ok(pulled < TOTAL / 2, `the proxy read ${pulled} of ${TOTAL} chunks for a client that read nothing`);
+        res.on('data', (c) => { received += c.length; });
+        res.on('end', resolve);
+        res.resume();
+      }, 300);
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ model: 'x', input: 'hi' }));
+  });
+  await done;
+  assert.equal(received, CHUNK * TOTAL, 'the whole answer reaches the client once it reads');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(hooks.after.length, 1, 'booked once');
 });
 
 test("a long answer's usage is read from both ends: input reported as it starts, output as it ends", async (t) => {

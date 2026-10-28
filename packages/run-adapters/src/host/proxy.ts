@@ -156,7 +156,8 @@ export function parseStrict(text: string): unknown {
         ws();
         if (text[i] !== ":") fail("a colon");
         i++;
-        out[key] = value(depth + 1);
+        // Defined, never assigned: a "__proto__" key is an own field like any other, and the prototype stays put.
+        Object.defineProperty(out, key, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });
         ws();
         if (text[i] === ",") { i++; continue; }
         if (text[i] === "}") { i++; return out; }
@@ -203,6 +204,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   const origin = new URL(options.origin).origin;
   const refusedStatus = policy.refusedStatus ?? 400;
   const inflight = new Set<AbortController>();
+  /** Set by close(): nothing is admitted or sent after it. */
+  let closing = false;
 
   /** The host's log, which must never break a request (a throw from it is dropped). */
   const say = (message: string, detail?: Record<string, unknown>) => {
@@ -263,22 +266,31 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
-    try {
-      if (!route.free) await hooks.beforeRequest({ model: asked });
-    } catch (error) {
-      // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
-      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
-    }
+    // The provider's credential and its headers come before the runner is asked: a request that could not be sent is
+    // refused without being admitted, so it is never booked and spends no turn.
     let credential = "";
     try {
       credential = await options.credential();
     } catch (error) {
       say(`model proxy (${policy.id}): the provider credential could not be read`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
-    if (!credential) {
-      // Admitted and never sent: booked at nothing, so a reload (which counts an admitted request with no booking at an
-      // unknown cost) agrees with this process.
-      refuse(res, 500, "the session has no provider credential", req);
+    if (!credential) return refuse(res, 500, "the session has no provider credential", req);
+    try {
+      Object.assign(headers, policy.authHeaders(credential));
+    } catch (error) {
+      say(`model proxy (${policy.id}): the policy could not build the provider's credential headers`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      return refuse(res, 500, "the provider's credential headers could not be built", req);
+    }
+    if (closing) return refuse(res, 503, "the model proxy is closing", req);
+    try {
+      if (!route.free) await hooks.beforeRequest({ model: asked });
+    } catch (error) {
+      // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
+      return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
+    }
+    if (closing) {
+      // Admitted while the proxy was closing, and never sent: released, booked at nothing, so the runner's count agrees.
+      refuse(res, 503, "the model proxy is closing", req);
       if (!route.free) {
         try {
           await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 });
@@ -288,7 +300,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       return;
     }
-    Object.assign(headers, policy.authHeaders(credential));
     const controller = new AbortController();
     inflight.add(controller);
     res.on("close", () => controller.abort());
@@ -311,7 +322,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const decoder = new TextDecoder();
       if (upstream.body) {
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
-          res.write(chunk);
+          // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
+          if (!res.write(chunk)) await new Promise<void>((resolve) => { res.once("drain", resolve); res.once("close", resolve); });
           // The usage is at the start, the end, or both: keep those, not the whole answer.
           const text = decoder.decode(chunk, { stream: true });
           length += text.length;
@@ -380,6 +392,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     url: `http://127.0.0.1:${address.port}`,
     key,
     close: async () => {
+      closing = true;
       for (const c of inflight) c.abort();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
