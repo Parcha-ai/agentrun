@@ -226,6 +226,13 @@ npm install @parcha/pi-durable-disk@beta @earendil-works/pi-durable@1.3.0 @earen
 `@earendil-works/pi-durable` and `@earendil-works/chord` are peer dependencies, `>=1.0.4 <1.4.0`: pi 1.4 is not supported yet; a
 later release widens the range. Node 22.19 or later; Linux, or macOS for development.
 
+The `disk` SDK and `@earendil-works/pi-coding-agent` pin undici 8.10.2 exactly. To install undici 8.12.2 under them, add this
+override to your own `package.json` (npm applies overrides only in the project that runs the install):
+
+```json
+"overrides": { "undici@8.10.2": "8.12.2" }
+```
+
 From a checkout (this package is `packages/pi-durable-disk` of the repository; the root build compiles `dist/`):
 
 ```sh
