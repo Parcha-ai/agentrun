@@ -43,6 +43,7 @@ export type { CreateSandboxBody, DaytonaClient, DaytonaHostErrorCode, DaytonaHos
 // Serve: one HTTP request runs one turn.
 export { requestRun, ServeConfigError, ServeError, serveRun } from "./serve.ts";
 export type { RequestOptions, RunResponse, RunServer, ServeConfigErrorCode, ServeErrorCode, ServeOptions } from "./serve.ts";
+export type { DoorContext, DoorEvent, DoorHook, DoorInput, DoorStatus, DoorTimeouts } from "./door.ts";
 
 // Places: where a run lives for a supervisor that kills it and brings it back (agentrun's reference place seam).
 export { archilPlace, localPlace, PlaceError } from "./place.ts";

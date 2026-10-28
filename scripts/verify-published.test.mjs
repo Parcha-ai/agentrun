@@ -231,7 +231,7 @@ async function familyRegistry(work) {
   return { registry: `${base}/`, close: () => new Promise(done => server.close(done)) };
 }
 const familyLock = { [`node_modules/${FAMILY}pi-coding-agent`]: { version: '1.1.0', dependencies: { [`${FAMILY}pi-codemode`]: '^1.1.0' } }, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.1.0' } };
-async function inRegistryFixture(fn) {
+async function inRegistryFixture(fn, extraEnv = {}) {
   const work = await mkdtemp(join(tmpdir(), 'agentrun-family-registry-'));
   const registry = await familyRegistry(work);
   try {
@@ -239,6 +239,7 @@ async function inRegistryFixture(fn) {
     await mkdir(root); await mkdir(consumer);
     await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: familyLock }));
     const env = { ...process.env, npm_config_cache: join(work, 'cache'), npm_config_userconfig: join(work, 'npmrc'), npm_config_update_notifier: 'false' };
+    Object.assign(env, extraEnv);
     await fn({ root, consumer, registry: registry.registry, run: (command, args, options) => exec(command, args, { ...options, env }), load: () => exec(process.execPath, ['-e', "import('@earendil-works/pi-coding-agent').then(m => console.log(m.preamble))"], { cwd: consumer, env }) });
   } finally { await registry.close(); await rm(work, { recursive: true, force: true }); }
 }
@@ -288,6 +289,11 @@ test('the registry consumer fails when the pins cannot be met', () => inRegistry
   await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { ...familyLock, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.0.9' } } }));
   await rejectsWithNpmError(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), consumer, /ETARGET|No matching version/);
 }));
+// `npm run -s` hands its children npm_config_loglevel=silent, which empties npm's stderr: the refusal must still say why.
+test('the registry consumer\'s refusal names npm\'s reason when the caller silenced npm', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
+  await writeFile(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { ...familyLock, [`node_modules/${FAMILY}pi-codemode`]: { version: '1.0.9' } } }));
+  await rejectsWithNpmError(installRegistryConsumer(consumer, { requested: [`${FAMILY}pi-coding-agent@1.1.0`], root, registry, run }), consumer, /ETARGET|No matching version/);
+}, { npm_config_loglevel: 'silent' }));
 test('the installed tree is checked against the lockfile: an install that succeeds on a version the lockfile does not hold fails', () => inRegistryFixture(async ({ root, consumer, registry, run }) => {
   // The install is honest, then the consumer's lockfile is rewritten as if npm had resolved the edge to the newer minor.
   const drifting = async (command, args, options) => {

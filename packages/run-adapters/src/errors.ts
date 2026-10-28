@@ -6,7 +6,19 @@ export type HarnessRunReason =
   | "no_progress"
   /** The runner or the host refused the node before or while it ran: an unknown tool, a fork, a turn limit above the
    *  host's cap, a session the adapter refused, or the host's `beforeRequest` (a budget). */
-  | "refused";
+  | "refused"
+  /** A newer process opened this node's session, so this attempt may no longer write it: it stops and delivers nothing.
+   *  Not final: whether the step is delivered is the newer attempt's to say. */
+  | "fenced";
+
+/** An append through a writer that a newer `open` of its session has fenced. Nothing of the append was written. */
+export class SessionFenced extends Error {
+  readonly code = "SESSION_FENCED";
+  constructor(readonly key: string) {
+    super(`session ${key}: a newer writer holds it; this append was refused`);
+    this.name = "SessionFenced";
+  }
+}
 
 /** A node that delivered no record. `final` says a second attempt would end the same way, so a recovery driver gives
  *  it none: the runner's own bounds (the turn cap, no progress, a refusal) are final; an abort, a timeout or a model

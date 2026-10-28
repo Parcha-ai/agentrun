@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
-import { HarnessRunError } from "./errors.js";
+import { HarnessRunError, SessionFenced } from "./errors.js";
 import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore } from "./types.js";
 
 export type HarnessRunner = (request: NodeRequest) => Promise<unknown>;
@@ -96,8 +96,11 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const requested = request.tools ?? [...registered.keys()];
     for (const name of requested) if (!registered.has(name)) throw refuse(`Node "${request.label}" names the tool ${name}, which this host does not give ${adapter.id} nodes`);
 
+    // This attempt takes the session before it reads it: from here a process that held it earlier (one whose lease
+    // lapsed while it was still alive) can write nothing more into it, a runner.accepted included.
+    const writer = await store.open(key);
     // A session that already delivered: its record, and nothing runs.
-    const earlier = request.step ? await store.read(key) : [];
+    const earlier = request.step ? await writer.read() : [];
     const delivered = earlier.findLast((r) => r.kind === RUNNER_RECORDS.accepted);
     if (delivered) return structuredClone((delivered.data as { value: unknown }).value);
 
@@ -131,7 +134,15 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       controller.abort(stopped);
     };
     const onAbort = () => stop(failure("aborted"));
-    const append = (records: SessionRecord[]) => store.append(key, records);
+    const append = async (records: SessionRecord[]) => {
+      try {
+        await writer.append(records);
+      } catch (error) {
+        // A newer process holds the session: this attempt stops, and what it was writing never counts.
+        if (error instanceof SessionFenced) { stop(failure("fenced")); throw stopped; }
+        throw error;
+      }
+    };
 
     const submit: HostTool = {
       name: SUBMIT_TOOL,
@@ -222,7 +233,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     try {
       if (stopped) throw stopped;
       session = await bounded(opening = adapter.open(spec, {
-        store,
+        writer,
         models,
         signal: controller.signal,
         ...(options.sessionDir ? { dir: options.sessionDir(key) } : {}),
