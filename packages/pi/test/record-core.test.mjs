@@ -106,6 +106,27 @@ test('a string that spells "no value" becomes JSON null where the field admits n
   }
 });
 
+test('a string the field\'s own enum or const lists exactly is a value, never a spelling of null', () => {
+  // A nullable field whose enum lists "None" keeps "None"; a spelling it does not list exactly still becomes null.
+  const schema = { type: 'object', properties: { hold: { type: ['string', 'null'], enum: ['Rolling', 'Fixed', 'None', null] }, note: { type: ['string', 'null'] } } };
+  assert.deepEqual(repairRecord({ hold: 'None', note: 'None' }, schema), { hold: 'None', note: null });
+  assert.deepEqual(repairRecord({ hold: 'none', note: 'n/a' }, schema), { hold: null, note: null }, 'only the exact listed string is a value');
+  const branches = { type: 'object', definitions: { Na: { const: 'N/A' } }, properties: {
+    fixed: { anyOf: [{ const: 'none' }, { type: 'null' }] }, picked: { oneOf: [{ type: 'string', enum: ['None', 'Some'] }, { type: 'null' }] },
+    referenced: { anyOf: [{ $ref: '#/definitions/Na' }, { type: 'null' }] }, list: { type: 'array', items: { type: ['string', 'null'], enum: ['None', 'A', null] } } } };
+  const record = { fixed: 'none', picked: 'None', referenced: 'N/A', list: ['None', 'N/A'] };
+  assert.deepEqual(nullSpellings(record, branches), ['list[1]'], 'a const, an enum in any branch, through a reference, and an item schema');
+  assert.deepEqual(repairRecord(record, branches), { fixed: 'none', picked: 'None', referenced: 'N/A', list: ['None', null] });
+  // The scalar repair runs first: a "null" the field lists as its const is never coerced to JSON null there either.
+  const literal = { type: 'object', properties: { mark: { anyOf: [{ const: 'null' }, { type: 'null' }] }, ref: { anyOf: [{ $ref: '#/definitions/Lit' }, { type: 'null' }] } }, definitions: { Lit: { const: 'null' } } };
+  assert.deepEqual(repairRecord({ mark: 'null', ref: 'null' }, literal), { mark: 'null', ref: 'null' });
+  // A field's own enum beside its $ref still lists the value: the reference adds to what the field lists, never replaces it.
+  const beside = { type: 'object', definitions: { S: { type: ['string', 'null'] } }, properties: {
+    own: { $ref: '#/definitions/S', type: ['string', 'null'], enum: ['None', null] }, bare: { $ref: '#/definitions/S', type: ['string', 'null'] } } };
+  assert.deepEqual(nullSpellings({ own: 'None', bare: 'None' }, beside), ['bare']);
+  assert.deepEqual(repairRecord({ own: 'None', bare: 'None' }, beside), { own: 'None', bare: null });
+});
+
 test('a null the record as a whole refuses is not written: the spelling stays, and the submission is refused naming the field', async () => {
   // In strict mode the note must be a string; in loose mode it may be null.
   const schema = { type: 'object', required: ['mode'], properties: { mode: { type: 'string' }, note: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
