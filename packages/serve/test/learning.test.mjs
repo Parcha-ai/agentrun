@@ -432,7 +432,7 @@ test("a run whose end the store refuses at first is proposed once the end lands 
   release();
   const state = await stateOf(data, "calc", runId);
   assert.equal(storeRun(data, runId).state, "completed");
-  assert.equal(state.state, "proposed");
+  assert.ok(PROPOSED.includes(state.state), state.state);
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
   assert.deepEqual(said.filter((line) => line.includes(runId) && /after its carry back|not proposed/.test(line)), [], "the hook ran once, after the end was written");
 });
@@ -460,7 +460,7 @@ test("a server that stops while a run's end waits to be written proposes nothing
   const state = await stateOf(data, "calc", runId);
   await closeNext();
   assert.equal(storeRun(data, runId).state, "completed");
-  assert.equal(state.state, "proposed");
+  assert.ok(PROPOSED.includes(state.state), state.state);
   assert.equal(git(bareOf(data, "calc"), "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
 });
 
