@@ -18,7 +18,7 @@ async function until(ready, what) {
 
 /** An adapter whose turn runs until it is interrupted. Its interrupt says what it was asked, and, as a draining session's
  *  calls would, tries a paid request and a tool call through what the runner gave it. */
-function pausable() {
+function pausable({ cleanupMs = 0 } = {}) {
   const seen = { opened: 0, sends: 0, interrupts: [], duringDrain: undefined };
   let endTurn;
   const adapter = {
@@ -47,6 +47,8 @@ function pausable() {
             };
           }
           endTurn?.({ status: 'interrupted' });
+          // The turn has ended; letting go of its processes takes a moment more.
+          if (cleanupMs) await new Promise((resolve) => setTimeout(resolve, cleanupMs));
         },
         async close() {},
       };
@@ -68,6 +70,28 @@ test('stop({ drainMs }) asks the session to drain, refuses anything new meanwhil
   assert.match(seen.duringDrain.request, /pausing/, 'no new paid request while it drains');
   assert.match(seen.duringDrain.call, /pausing; this call was not run/, 'no new tool call while it drains');
   assert.equal(seen.sends, 1, 'no new turn');
+});
+
+test('a node whose turn ends while its session is still letting go sends no new turn', async () => {
+  const { adapter, seen, started } = pausable({ cleanupMs: 150 });
+  const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup] });
+  const node = ask(runner).catch((error) => error);
+  await until(started, 'the turn');
+  await runner.stop({ drainMs: 1000 });
+  assert.equal((await node).reason, 'aborted');
+  assert.equal(seen.sends, 1, 'the pause sent nothing after the turn it ended');
+});
+
+test('a stop while a node is still opening its session record stops it before its session opens', async () => {
+  const { adapter, seen } = pausable();
+  const store = memorySessionStore();
+  const slow = Object.create(store);
+  slow.open = async (key) => { await new Promise((resolve) => setTimeout(resolve, 150)); return store.open(key); };
+  const runner = createHarnessRunner(adapter, { store: slow, tools: [lookup] });
+  const node = ask(runner).catch((error) => error);
+  await runner.stop({ drainMs: 1000 });
+  assert.equal((await node).reason, 'aborted');
+  assert.equal(seen.opened, 0, 'no session was opened');
 });
 
 test('a node started after stop fails aborted at once, and opens no session', async () => {

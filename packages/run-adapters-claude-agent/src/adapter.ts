@@ -176,8 +176,8 @@ export function toolImageProblems(tool: string, images: readonly ToolImage[], ma
   return undefined;
 }
 
-/** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause starts none, and waits for
- *  these to have their outcomes recorded. */
+/** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause waits for these to have
+ *  their outcomes recorded; the host refuses new work meanwhile (the runner's stop does). */
 class CallsInFlight {
   draining = false;
   private readonly open = new Set<string>();
@@ -221,8 +221,6 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
       calls.begin(callId);
-      // A pause began before this call: it is recorded as not run, and the session resumes with that.
-      if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       const result = await tool.call(input, { callId, signal: effect.signal });
       if (result.isError) throw new Error(result.text);
       if (!result.images?.length) return result.text;
@@ -281,14 +279,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
-          // A pause makes no new paid request.
-          hooks: {
-            ...io.models,
-            beforeRequest: async (...request: Parameters<typeof io.models.beforeRequest>) => {
-              if (calls.draining) throw new Error("agentrun-claude-agent: the session is pausing; no new model request");
-              return io.models.beforeRequest(...request);
-            },
-          },
+          hooks: io.models,
           tools: spec.tools.map((t) => t.name),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
@@ -397,7 +388,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         async interrupt(interruptOptions = {}) {
           const drainMs = interruptOptions.drainMs ?? 0;
           if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("agentrun-claude-agent: drainMs must be a non-negative number of milliseconds");
-          // A pause: no new call, request or turn; the calls in flight run on until their outcomes are recorded.
+          // A pause: no new turn here (the host refuses new calls and requests); the calls in flight run on until their
+          // outcomes are recorded.
           calls.draining = true;
           try {
             if (drainMs > 0) await calls.idle(drainMs);

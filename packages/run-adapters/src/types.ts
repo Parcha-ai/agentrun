@@ -134,9 +134,10 @@ export interface AdapterSession {
   recover(): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
-  /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new call or turn starts,
-   *  and the calls in flight run on until their outcomes are recorded, for at most `drainMs`, before the turn stops. An
-   *  adapter that cannot drain stops at once, as with no `drainMs`. */
+  /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
+   *  calls in flight run on until their outcomes are recorded, for at most `drainMs`, before the turn stops; the host
+   *  refuses new calls and paid requests meanwhile (the runner's `stop` does). An adapter that cannot drain stops at
+   *  once, as with no `drainMs`. */
   interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;

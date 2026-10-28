@@ -130,3 +130,19 @@ test("a call that fails is heard as failed, after its outcome is recorded, with 
   assert.match(ends[0].result, /quota exceeded/);
   assert.equal((await searchEnd(store))[0]?.status, 'failed');
 });
+
+test('a session draining sends no new turn: send is refused until the pause is over', async (t) => {
+  const search = paidSearch(400);
+  const store = memorySessionStore();
+  const { adapter } = await claude(t, { script: ['call search {"q":"z"}'], sessionsDir: join(scratch(), 'sessions') });
+  const spec = { key: 'step:direct', label: 'task', system: [], tools: [search.tool], context: 'fresh' };
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const session = await adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await session.send('go');
+  await search.started;
+  const pausing = session.interrupt({ drainMs: 5_000 });
+  await assert.rejects(session.send('and another'), /the session is pausing; no new turn/);
+  await pausing;
+  await session.close();
+  assert.equal(search.runs, 1);
+});
