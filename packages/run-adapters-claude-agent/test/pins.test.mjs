@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-claude-agent';
+import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-claude-agent';
 import { fakeSdk } from '@parcha/agentrun-claude-agent/testing';
 import { sandboxSpawn } from '../dist/spawn.js';
 
@@ -44,10 +44,21 @@ test('an injected SDK that is not the pinned release is refused, typed, before a
   assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.296', cliPath: join(ROOT, 'none') }), mismatch('sdk_version', '0.3.286', '0.3.296'));
 });
 
-test('no SDK, or no CLI, is "Claude Agent SDK not installed", typed', () => {
-  const notInstalled = (e) => e instanceof ClaudeAgentNotInstalled && e.code === 'CLAUDE_AGENT_NOT_INSTALLED' && e.message === 'Claude Agent SDK not installed';
-  assert.throws(() => verifyClaudeAgent({}, () => undefined), notInstalled);
-  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'missing') }), notInstalled);
+test('no SDK, no MCP library or no CLI is "Claude Agent SDK not installed", typed, in one line that ends with the exact install line', () => {
+  const LINE = 'npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286';
+  assert.equal(CLAUDE_AGENT_SDK_INSTALL, LINE);
+  assert.equal(CLAUDE_AGENT_PACKAGE, '@parcha/agentrun-claude-agent');
+  const withLine = (e) => e instanceof ClaudeAgentNotInstalled && e.code === 'CLAUDE_AGENT_NOT_INSTALLED' && e.install === LINE
+    && e.message.startsWith('Claude Agent SDK not installed: ') && e.message.endsWith(`; install it with: ${LINE}`) && !/\n/.test(e.message);
+  // No SDK beside the adapter.
+  assert.throws(() => verifyClaudeAgent({}, () => undefined), (e) => withLine(e) && e.message.includes(`@anthropic-ai/claude-agent-sdk 0.3.286 is not installed beside ${CLAUDE_AGENT_PACKAGE}`));
+  // The SDK, but not the MCP library it brings as a peer (installing the SDK with npm installs it).
+  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286' }, (name) => (name === '@modelcontextprotocol/sdk' ? undefined : '0.3.286')), (e) => withLine(e) && /@modelcontextprotocol\/sdk/.test(e.message));
+  // The SDK, but no CLI of its platform packages.
+  const none = verifyClaudeAgentCli(undefined);
+  assert.ok(withLine(none) && /CLI/.test(none.message), none.message);
+  // A cliPath the host gave that holds nothing: the host's path to fix, so no install line.
+  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'missing') }), (e) => e instanceof ClaudeAgentNotInstalled && e.message === `Claude Agent SDK not installed: no CLI at ${join(ROOT, 'missing')}` && e.install === undefined);
 });
 
 test('making the adapter checks the pins, so a mismatch is thrown to the host before any run', () => {
