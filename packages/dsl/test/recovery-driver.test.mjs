@@ -362,6 +362,51 @@ test('a route is decided once, only a route is decided, and its receipts are car
   assert.deepEqual([journal.state.pin.routes[step(1)].receipts, journal.state.pin.routes[step(1)].branch, journal.state.questionSpendUsd], [null, 'angry', 0.502]);
 });
 
+test('an unpriced question answer is counted, not dropped: the run reads incomplete, a mixed run keeps its priced sum beside the count, and a resume that skips the finished unpriced question still reports it', async () => {
+  // A single unpriced answer. Its cost is unknown, so it is not in questionSpendUsd (which stays undefined,
+  // never a bare 0) and the run says one question went unpriced: an unknown cost is never zero.
+  const one = memoryStore(); let driver = await open(one, routed);
+  driver.recordQuestionSpend(null);
+  await driver.close();
+  assert.deepEqual([(await operator(one, routed)).state.questionSpendUsd, (await operator(one, routed)).state.unpricedQuestionCount], [undefined, 1]);
+
+  // Mixed: one priced answer and one unpriced. The priced sum is kept and the count stands beside it, so the
+  // reader has the known spend and the warning that it is incomplete, not a total that swallows the unknown.
+  const mixed = memoryStore(); driver = await open(mixed, routed);
+  driver.recordQuestionSpend(0.003);
+  driver.recordQuestionSpend(null);
+  await driver.close();
+  assert.deepEqual([(await operator(mixed, routed)).state.questionSpendUsd, (await operator(mixed, routed)).state.unpricedQuestionCount], [0.003, 1]);
+  // Every shape of "no price" counts: null, a non-finite number, a negative number.
+  const shapes = memoryStore(); driver = await open(shapes, routed);
+  for (const unpriced of [null, Number.NaN, Number.POSITIVE_INFINITY, -1]) driver.recordQuestionSpend(unpriced);
+  await driver.close();
+  assert.deepEqual([(await operator(shapes, routed)).state.questionSpendUsd, (await operator(shapes, routed)).state.unpricedQuestionCount], [undefined, 4]);
+
+  // End to end through with-recovery: a judge answer that comes back with no cost (cost_usd null) is recorded
+  // unpriced and resumed past. The route's answer is its decision, committed before its branch runs; a later
+  // process follows the decision without asking again, and the finished-but-unpriced question is still counted.
+  const resume = memoryStore(); let asked = 0;
+  const judge = (answer) => ({ runJudge: async () => { asked += 1; return answer; } });
+  await assert.rejects(run(resume, routed, judge(choice('angry', 0.95, null)), { cut: 'angry-step' }), /cut at angry-step/);
+  assert.equal((await operator(resume, routed)).state.unpricedQuestionCount, 1);
+  const resumed = await run(resume, routed, judge(choice('calm', 0.99, null)));
+  assert.deepEqual([resumed.status, resumed.state.went, asked], ['complete', 'angry', 1]);
+  const after = await operator(resume, routed);
+  assert.deepEqual([after.state.questionSpendUsd, after.state.unpricedQuestionCount], [undefined, 1]);
+
+  // A checkpoint written with only priced spend carries no count. A later process opens it (no count reads as
+  // none so far), takes an unpriced answer, and the count starts from there: a resume never loses the mark.
+  const prior = memoryStore(); driver = await open(prior, routed);
+  driver.recordQuestionSpend(0.002);
+  await driver.close();
+  assert.equal((await operator(prior, routed)).state.unpricedQuestionCount, undefined);
+  driver = await open(prior, routed);
+  driver.recordQuestionSpend(null);
+  await driver.close();
+  assert.deepEqual([(await operator(prior, routed)).state.questionSpendUsd, (await operator(prior, routed)).state.unpricedQuestionCount], [0.002, 1]);
+});
+
 test('an LLM step is admitted before it runs and handed to the runner as its attempt; a failed attempt is followed at once by the second, and a step that spent both is refused', async () => {
   const order = [];
   const store = watched(memoryStore(), (write, state) => { const status = write === 'save' ? state?.pin?.steps?.[step(0)]?.status : undefined; if (status && order.at(-1) !== `saved ${status}`) order.push(`saved ${status}`); });

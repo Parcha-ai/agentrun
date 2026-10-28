@@ -128,6 +128,10 @@ export type FrozenSnapshot = {
   unknownResponses?: Record<string, unknown>;
   /** Spend by question nodes, which have no session of their own: metered per answer, carried with the frames. */
   questionSpendUsd?: number;
+  /** How many question answers came back with no price, so their cost is not in `questionSpendUsd`. A run
+   *  with any makes its spend read as incomplete, never as a bare total that omits them: an unknown cost is
+   *  never zero. Carried with the frames and committed in the same save as the spend it stands beside. */
+  unpricedQuestionCount?: number;
   /** The durable form of the escalation that ended the run; set once, reused on resume. */
   escalation?: EscalationRow;
 };
@@ -213,6 +217,7 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
 export function validateFrozenSnapshot(saved: any, shape: FrozenShape): void {
   if (!record(saved) || saved.schema !== FROZEN_SNAPSHOT_SCHEMA || !Number.isFinite(saved.startedAt)
     || (saved.questionSpendUsd !== undefined && !(Number.isFinite(saved.questionSpendUsd) && saved.questionSpendUsd >= 0))
+    || (saved.unpricedQuestionCount !== undefined && !nonNegativeInt(saved.unpricedQuestionCount))
     || !["running", "paused", "cancelled"].includes(saved.status)
     || !record(saved.clocks) || !Object.values(saved.clocks).every(Number.isFinite)
     || !record(saved.files) || !Object.values(saved.files).every(value => typeof value === "string" && SHA256.test(value))
