@@ -32,6 +32,11 @@ export const SCHEMA_CHECK_CASES: readonly SchemaCheckCase[] = Object.freeze([
     schema: { type: "object", properties: { r: { $ref: "#/$defs/X" } }, $defs: { X: { anyOf: [{ $ref: "https://example.com/a.json" }, { type: "null" }] } } },
     refusedAt: ["/$defs/X/anyOf/0/$ref"],
   },
+  {
+    name: "a remote $ref in a contentSchema (a schema position)",
+    schema: { type: "object", properties: { payload: { type: "string", contentMediaType: "application/json", contentSchema: { $ref: "https://example.com/payload.json" } } } },
+    refusedAt: ["/properties/payload/contentSchema/$ref"],
+  },
   // Values, not schemas: a "$ref" key inside default, examples, const or enum is data, and a property named "$ref" is a name.
   { name: 'a "$ref" inside a default (a value)', schema: { type: "object", properties: { d: { type: "object", default: { $ref: "data-template.json" } } } }, refusedAt: [] },
   { name: 'a "$ref" inside examples (values)', schema: { type: "object", properties: { d: { type: "object", examples: [{ $ref: "https://example.com/x.json" }] } } }, refusedAt: [] },
