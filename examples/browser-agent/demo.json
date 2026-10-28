@@ -1,0 +1,47 @@
+{
+  "name": "browser-agent",
+  "title": "A Browser Agent",
+  "targets": ["local"],
+  "claim": "One agent does a task in a real browser from one line of plain words: it reads each page before and after it acts, hands the browser to the person for a step that is theirs, and answers from what the pages showed.",
+  "models": {
+    "lead": { "needs": ["text", "tools"], "default": "google/gemini-3.8-flash" }
+  },
+  "keys": [
+    {
+      "oneOf": [
+        { "env": "GEMINI_API_KEY", "why": "The lead (google/gemini-3.8-flash).", "where": "aistudio.google.com, Get API key", "required": true, "for": "live" },
+        { "env": "OPENAI_API_KEY", "why": "The lead (openai/gpt-6-luna) when it is the only key.", "where": "platform.openai.com, API keys", "required": true, "for": "live" },
+        { "env": "ANTHROPIC_API_KEY", "why": "The lead (anthropic/claude-haiku-5-5) when it is the only key.", "where": "console.anthropic.com, API keys", "required": true, "for": "live" },
+        [
+          { "env": "MODEL_BASE_URL", "why": "An OpenAI-compatible gateway that serves the models under their public ids, instead of provider keys.", "where": "your gateway's base URL, ending in /v1", "required": true },
+          { "env": "MODEL_API_KEY", "why": "The gateway's credential.", "where": "your gateway", "required": true }
+        ]
+      ],
+      "why": "A model provider's key for --live (the run names its model by provider and public id).",
+      "for": "live"
+    },
+    {
+      "oneOf": [[
+        { "env": "BROWSERBASE_API_KEY", "required": true, "where": "your Browserbase account (browserbase.com)", "why": "the browser a live run drives, which Browserbase sandboxes" },
+        { "env": "BROWSERBASE_PROJECT_ID", "required": true, "where": "your Browserbase account (browserbase.com)", "why": "the project the session belongs to" }
+      ]],
+      "why": "a live run's browser: Browserbase, unless --local-chrome",
+      "required": false,
+      "for": "live"
+    },
+    { "env": "CHROME_PATH", "why": "With --local-chrome: the Chrome the run starts on this machine.", "where": "Chrome for Testing, or your Chrome", "required": false, "for": "live" },
+    { "env": "PI_BROWSER_NO_SANDBOX", "why": "With --local-chrome where Chrome cannot start its own sandbox (a container with no capabilities): 1 starts it without one, so the container is the boundary.", "where": "your shell", "required": false, "for": "live" },
+    { "env": "LIVE_VIEW_DIR", "why": "With --local-chrome: a directory where the run's live view leaves the person's hand-off requests, so browser_request_handoff can reach a person.", "where": "a directory of your own", "required": false, "for": "live" }
+  ],
+  "programs": [
+    { "cmd": "ffmpeg", "why": "A recorded run makes a video of what the browser showed (frame.track) with it.", "required": false }
+  ],
+  "expectedCalls": 20,
+  "expectedCost": 0.1,
+  "panels": ["workflow-map"],
+  "tools": [],
+  "input": {
+    "shape": "examples/browser-agent/agent.ts, Input: the task in plain words, one line",
+    "default": "an example folder's question.md (npm run demo:browser -- examples/<folder>)"
+  }
+}
