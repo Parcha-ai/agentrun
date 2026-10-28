@@ -553,3 +553,21 @@ test('requests in flight together are each booked under the turn they were admit
   assert.deepEqual(ends, [[3, null, true]], 'turn 3 booked as cut, once, and turn 4 not again');
   assert.deepEqual((await turnsOf()).filter(([, , cut]) => cut), [[3, null, true]]);
 });
+
+test('two paid requests admitted at once, both inside the durable write: each gets its own turn and its own record', async () => {
+  const inner = await memorySessionStore().open('chat:together');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let held = 0;
+  // The session's writer, with the first two appends held open: both admissions are inside their write at once.
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (held < 2) { held += 1; await gate; } await inner.append(records); } };
+  const starts = [];
+  const booking = await modelPortFor(writer, { key: 'chat:together', onEvent: (e) => { if (e.type === 'request_start') starts.push(e.turn); } });
+  const both = Promise.all([booking.models.beforeRequest({ model: 'main' }), booking.models.beforeRequest({ model: 'small' })]);
+  while (held < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+  release();
+  const tickets = await both;
+  assert.deepEqual(tickets.map((t) => t.turn).sort(), [1, 2]);
+  assert.deepEqual((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => r.data.turn).sort(), [1, 2]);
+  assert.deepEqual(starts.sort(), [1, 2]);
+});

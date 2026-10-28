@@ -450,3 +450,31 @@ test('two paid requests in flight through the proxy, answered in reverse: each i
   assert.deepEqual(turns, [2, 1]);
   void createHarnessRunner;
 });
+
+test("close() while one request is in flight and another waits on the runner: each is booked once, under its own turn", async () => {
+  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const ends = [];
+  const booking = await modelPortFor(await memorySessionStore().open('chat:close'), { key: 'chat:close', onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.usd]); } });
+  let admitSecond;
+  const secondWaits = new Promise((resolve) => { admitSecond = resolve; });
+  let n = 0;
+  // The second request is admitted (its turn taken) and then waits, as a slow runner hook would, while close() begins.
+  const hooks = { beforeRequest: async (r) => { const ticket = await booking.models.beforeRequest(r); if (++n === 2) await secondWaits; return ticket; }, afterRequest: (u, t) => booking.models.afterRequest(u, t) };
+  // The first request's provider answer is still streaming when close() aborts it, and its teardown takes a moment, so it is
+  // still in flight when the second is released.
+  const fetchStub = async (_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => setTimeout(() => reject(new Error('aborted')), 50), { once: true }));
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, fetch: fetchStub }, KEY);
+  const first = send(p.url, { path: '/v1/test?beta=true' }).catch(() => {});
+  while (n < 1) await new Promise((resolve) => setTimeout(resolve, 2));
+  const second = send(p.url, { path: '/v1/test?beta=true' }).catch(() => {});
+  while (n < 2) await new Promise((resolve) => setTimeout(resolve, 2));
+  const closing = p.close();
+  admitSecond();
+  await closing;
+  await Promise.all([first, second]);
+  // Both bookings, the first after its teardown: bounded, never a fixed sleep.
+  for (const end = Date.now() + 2000; ends.length < 2 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 10));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(ends.sort((a, b) => a[0] - b[0]), [[1, null], [2, 0]], 'turn 1 cut by the close (unknown), turn 2 released at nothing: each once, under its own turn');
+});
