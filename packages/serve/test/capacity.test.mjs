@@ -97,6 +97,14 @@ test("a run whose process fails at its start is never started again while its en
   assert.equal(log.split("has no default export").length - 1, 1, `one process for the run:\n${log}`);
   const next = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
   assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
+  // Watched for 2 s once the next run is over: a late start of the failed run (its first message's wait, woken by the
+  // settle that ended it) writes a second line here.
+  await follow(api, next.body.run_id, ["failed"]);
+  let after = "";
+  for (const until = Date.now() + 2_000; Date.now() < until && after.split("has no default export").length - 1 < 2; await sleep(100)) {
+    after = await readFile(join(data, "runs", run.body.run_id, "process.log"), "utf8");
+  }
+  assert.equal(after.split("has no default export").length - 1, 1, `the failed run was never started again:\n${after}`);
 });
 
 test("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", async (t) => {
@@ -127,9 +135,9 @@ test("a message that waits on a run's settle answers 503 at its deadline, not wh
   });
   const took = Date.now() - from;
   assert.deepEqual([sent.status, sent.json.error?.code, sent.retryAfter], [503, "unavailable", "1"], JSON.stringify(sent.json));
-  // The store's write waits out its 5 s busy timeout without yielding, so the answer can trail the 2 s deadline by that;
-  // it still comes before the settle's retry, 10 s away, and the store is still held.
-  assert.ok(took < 9_000, `answered before the settle could end: ${took} ms`);
+  // The store's write waits without blocking the server, so the answer comes at the 2 s deadline, long before the
+  // settle's retry, 10 s away, and the store is still held.
+  assert.ok(took < 3_500, `answered at the deadline: ${took} ms`);
 });
 
 test("a run's first message waits for a process slower to come up than a request's deadline: the run starts, never failed", async (t) => {

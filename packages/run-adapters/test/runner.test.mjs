@@ -367,12 +367,89 @@ test('a session that opens after the run was stopped is interrupted and closed, 
   assert.deepEqual([adapter.opened.length, adapter.closed.length, adapter.requests], [1, 1, 0]);
 });
 
+test("a stale runner's accepted submission is refused once a newer process opened the session: it ends fenced, and the next ask is not answered with it", async () => {
+  const store = memorySessionStore();
+  // The stale process: its review is where a newer process takes the session, between its submit and its accept.
+  const stale = fauxAdapter({ script: () => [{ submit: { answer: 'stale' } }] });
+  const review = async () => { await store.open('step:s1'); return { accepted: true }; };
+  await assert.rejects(createHarnessRunner(stale, { store, timeoutMs: 5_000 })({ ...stepRequest(), review }), (error) => error instanceof HarnessRunError && error.reason === 'fenced' && error.final !== true);
+  assert.equal((await store.read('step:s1')).filter((r) => r.kind === RUNNER_RECORDS.accepted).length, 0, 'no runner.accepted was written');
+  // The live attempt delivers its own result. The faux harness resumes from the session's records, where the stale
+  // process's request is step 0 of the script, so the live one's reply is step 1.
+  const live = fauxAdapter({ script: () => [{ submit: { answer: 'stale' } }, { submit: { answer: 'live' } }] });
+  assert.deepEqual(await createHarnessRunner(live, { store })(stepRequest()), { answer: 'live' });
+});
+
+/** An adapter whose one turn makes the paid requests `plan` says, in that order, then delivers through submit. */
+function plannedAdapter(plan) {
+  return {
+    id: 'planned', version: '0', capabilities: () => ({ fork: false }), check: () => [],
+    async open(spec, io) {
+      let ended;
+      const submit = spec.tools.find((t) => t.name === 'submit');
+      return {
+        state: 'new',
+        async send() {
+          ended = (async () => {
+            for (const step of plan) {
+              if (step.before) await io.models.beforeRequest({ model: 'm' });
+              if ('after' in step) await io.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: step.after });
+              if (step.both) await Promise.all([io.models.beforeRequest({ model: 'm' }), io.models.beforeRequest({ model: 'm' })]);
+            }
+            await submit.call({ value: { answer: 'ok' } }, { callId: 'c1', signal: io.signal });
+            return { status: 'completed' };
+          })();
+        },
+        async recover() {}, turnEnd: () => ended, async interrupt() {}, async close() {},
+      };
+    },
+  };
+}
+
+test("two paid requests in flight at once, both answered: the next beforeRequest sees their sum, never an unknown spend", async () => {
+  const asked = [];
+  const runNode = createHarnessRunner(plannedAdapter([{ before: true }, { before: true }, { after: 0.25 }, { after: 0.5 }, { before: true }, { after: 0.125 }]), { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });
+  assert.deepEqual(await runNode(stepRequest()), { answer: 'ok' });
+  assert.deepEqual(asked, [0, 0, 0.75]);
+});
+
+test("a request booked at nothing (admitted, never sent) keeps the spend known, in this process and for a later one", async () => {
+  const store = memorySessionStore();
+  const asked = [];
+  const beforeRequest = (r) => { asked.push(r.spentUsd); };
+  // The first process: a request admitted and booked at 0 (it was never sent), then one at 0.5; the node is cut off.
+  const first = createHarnessRunner(plannedAdapter([{ before: true }, { after: 0 }, { before: true }, { after: 0.5 }]), { store, beforeRequest });
+  assert.deepEqual(await first(stepRequest()), { answer: 'ok' });
+  assert.deepEqual(asked, [0, 0]);
+  // What a later process reads: every admitted request has its booking, so its spend is the known sum (0.5), not
+  // unknown (the reload rule counts an admitted request with no booking at an unknown cost).
+  const records = await store.read('step:s1');
+  assert.equal(records.filter((r) => r.kind === RUNNER_RECORDS.request).length, 2);
+  assert.deepEqual(records.filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data.usd), [0, 0.5]);
+});
+
+test("a paid request booked at an unknown cost leaves the node's spend unknown from then on", async () => {
+  const asked = [];
+  const runNode = createHarnessRunner(plannedAdapter([{ before: true }, { after: null }, { before: true }, { after: 0.5 }, { before: true }]), { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.spentUsd); } });
+  assert.deepEqual(await runNode(stepRequest()), { answer: 'ok' });
+  assert.deepEqual(asked, [0, null, null]);
+});
+
+test("a paid request whose cost can't be recorded stops the node, saying so, not spending on uncounted", async () => {
+  const store = memorySessionStore();
+  const failing = { ...store, open: async (key) => { const writer = await store.open(key); return { ...writer, key, read: writer.read, append: async (records) => { if (records.some((r) => r.kind === RUNNER_RECORDS.turn)) throw new Error('the store is down'); return writer.append(records); } }; } };
+  const adapter = fauxAdapter({ script: () => [{ say: 'one' }, { submit: { answer: 'ok' } }] });
+  await assert.rejects(createHarnessRunner(adapter, { store: failing, timeoutMs: 5_000 })(stepRequest()), (error) => error instanceof HarnessRunError && error.reason === 'model_error' && /could not be recorded: the store is down/.test(error.message));
+  assert.equal(adapter.requests, 1, 'nothing more was spent');
+});
+
 test('a stop that lands while the session store is being read rejects aborted at once, and opens no session, on either signal', async () => {
   for (const via of ['request', 'options']) {
     const store = memorySessionStore();
     let release;
     const held = new Promise((resolve) => { release = resolve; });
-    const slow = { ...store, read: async (key) => { await held; return store.read(key); } };
+    // The session's records are slow to come back: the stop lands while the runner reads them through its writer.
+    const slow = { ...store, open: async (key) => { const writer = await store.open(key); return { ...writer, key, append: writer.append, read: async () => { await held; return writer.read(); } }; } };
     const adapter = fauxAdapter({ script: () => [{ hang: true }] });
     const stop = new AbortController();
     const runner = createHarnessRunner(adapter, { store: slow, timeoutMs: 5_000, ...(via === 'options' ? { signal: stop.signal } : {}) });

@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-learn",
-  "version": "0.1.0-beta.27",
+  "version": "0.1.0-beta.28",
   "private": true,
   "description": "Self-learning on any harness, as files: the layout of an agent's own git repository, the memo and note formats, and a structural checker for a run's branch that runs in a plain checkout, a pre-push hook or CI.",
   "keywords": [
@@ -45,7 +45,7 @@
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {
-    "@parcha/agentrun-dsl": "0.1.0-beta.27"
+    "@parcha/agentrun-dsl": "0.1.0-beta.28"
   },
   "repository": {
     "type": "git",

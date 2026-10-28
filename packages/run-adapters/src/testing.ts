@@ -2,14 +2,29 @@
 // own records in the store as a real adapter does (the requests it made, each tool call's intent and outcome, its turns),
 // so a later process resumes from them: a request already made is not made again, and a call a crash cut off is
 // answered interrupted, never run again.
+import { SessionFenced } from "./errors.js";
 import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
 
-/** A session store in memory: what one run's store holds, across the processes a test plays. */
+/** A session store in memory: what one run's store holds, across the processes a test plays. Each `open` of a key
+ *  counts one more holder at once, and a writer appends only while its count is the newest. */
 export function memorySessionStore(): SessionStore & { keys(): string[] } {
   const sessions = new Map<string, SessionRecord[]>();
+  const holders = new Map<string, number>();
+  const read = async (key: string) => structuredClone(sessions.get(key) ?? []);
   return {
-    async read(key) { return structuredClone(sessions.get(key) ?? []); },
-    async append(key, records) { sessions.set(key, [...(sessions.get(key) ?? []), ...structuredClone(records as SessionRecord[])]); },
+    read,
+    async open(key) {
+      const holder = (holders.get(key) ?? 0) + 1;
+      holders.set(key, holder);
+      return {
+        key,
+        read: () => read(key),
+        async append(records) {
+          if (holders.get(key) !== holder) throw new SessionFenced(key);
+          sessions.set(key, [...(sessions.get(key) ?? []), ...structuredClone(records as SessionRecord[])]);
+        },
+      };
+    },
     keys: () => [...sessions.keys()],
   };
 }
@@ -69,8 +84,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
     async open(spec, io) {
       if (options.openDelayMs) await new Promise((resolve) => setTimeout(resolve, options.openDelayMs));
       const script = options.script(spec);
-      const records = await io.store.read(spec.key);
-      const append = (kind: string, data: JsonValue) => io.store.append(spec.key, [{ kind, data }]);
+      const records = await io.writer.read();
+      const append = (kind: string, data: JsonValue) => io.writer.append([{ kind, data }]);
       let cursor = records.filter((r) => r.kind === FAUX_RECORDS.request).length;
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
       const turnsEnded = records.filter((r) => r.kind === FAUX_RECORDS.turnEnd).length;
@@ -87,7 +102,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       let turnSignal: AbortController | undefined;
 
       const end = async (status: TurnStatus, error?: string) => {
-        await append(FAUX_RECORDS.turnEnd, { status });
+        // A turn whose end cannot be written (its writer was fenced) still ends: failed, saying why.
+        try { await append(FAUX_RECORDS.turnEnd, { status }); } catch (cause) { status = "failed"; error = (cause as Error).message; }
         io.onEvent({ type: "turn_end", status });
         ending?.resolve({ status, ...(error === undefined ? {} : { error }) });
       };

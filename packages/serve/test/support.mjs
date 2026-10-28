@@ -154,3 +154,27 @@ export function withEnv(t, vars, names = Object.keys(vars)) {
   for (const name of all) delete process.env[name];
   Object.assign(process.env, vars);
 }
+
+/** One raw request to the server on `port` (Host 127.0.0.1:port unless given): status, headers, text and parsed JSON. */
+export function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
+  const sent = Object.fromEntries(Object.entries({ host: `127.0.0.1:${port}`, ...headers }).filter(([, value]) => value !== undefined));
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method, path, headers: sent }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let json;
+        try {
+          json = JSON.parse(text);
+        } catch {}
+        resolve({ status: res.statusCode, headers: res.headers, text, json });
+      });
+    });
+    req.once("error", reject);
+    req.end(body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body));
+  });
+}
+
+/** The Cookie header for the cookies an answer set. */
+export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
