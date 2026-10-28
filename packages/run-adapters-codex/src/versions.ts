@@ -1,8 +1,11 @@
 // The Codex build this adapter is pinned to and checked against, and the typed errors a host maps to a run's failure
 // line when the installed build is not it. Written for AgentRun.
 
-/** The Codex CLI release this adapter is built and tested with (`codex --version` prints `codex-cli <it>`). */
-export const CODEX_VERSION = "0.164.0";
+import { CODEX_VERSION } from "./binary.js";
+
+/** The Codex CLI release this adapter is built and tested with (`codex --version` prints `codex-cli <it>`); binary.ts,
+ *  a copy of upstream's, holds it. */
+export { CODEX_VERSION };
 
 /** The install line for the pinned release (npm installs this platform's binary package with it). */
 export const CODEX_INSTALL = `npm install --save-exact @openai/codex@${CODEX_VERSION}`;

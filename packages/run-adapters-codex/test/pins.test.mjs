@@ -6,7 +6,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { codexPins, codexTarget, findCodex, verifyCodex, verifyCodexBinary } from '../dist/binary.js';
+import { codexTarget, findCodex } from '../dist/binary.js';
+import { codexPins, verifyCodex, verifyCodexBinary } from '../dist/verify.js';
 import { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from '../dist/versions.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-pins-'));
