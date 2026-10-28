@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension, defineTool, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, type Extension, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
@@ -40,7 +40,10 @@ export const askPerson = defineTool({
   replay: "safe",
   execute: async (args) => {
     const { question } = args as { question: string };
-    return { content: [{ type: "text", text: asked(question) }], details: { question }, control: { terminate: true } };
+    // Both keys: pi-durable 1.1 reads a result's `content`, 1.2 and later its `output`; either alone reaches the other
+    // as an empty result.
+    const said = [{ type: "text" as const, text: asked(question) }];
+    return { content: said, output: said, details: { question }, control: { terminate: true } } as unknown as ToolExecutionResult;
   },
 });
 

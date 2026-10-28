@@ -13,6 +13,16 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
 /** The kinds of secret-shaped text in `text`. */
 export const secretShapes = (text: string): string[] => SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
 
+/** `text` with each of `values` (as written, and as JSON writes it) and each secret-shaped run replaced by "[redacted]":
+ *  what the checker prints never holds a secret, wherever it was found, a file's name and the branch's included. */
+export function redactSecrets(text: string, values: readonly string[]): string {
+  let out = text;
+  const forms = values.filter((v) => v.length > 0).flatMap((v) => [v, JSON.stringify(v).slice(1, -1)]);
+  for (const form of [...new Set(forms)].sort((a, b) => b.length - a.length)) out = out.split(form).join("[redacted]");
+  for (const [, pattern] of SHAPES) out = out.replace(new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`), "[redacted]");
+  return out;
+}
+
 /** A value shorter than this matches too much text by chance to be refused. */
 export const MIN_SECRET = 8;
 

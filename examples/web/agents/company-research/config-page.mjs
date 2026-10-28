@@ -14,7 +14,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { normalizePrompts, questionOf, ruleText } from "./prompts-lib.mjs";
 
@@ -231,4 +230,4 @@ export async function main(argv, { api, out = (line) => console.log(line), err =
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main(process.argv.slice(2));
+if (import.meta.main) process.exitCode = await main(process.argv.slice(2));

@@ -1,0 +1,6 @@
+AgentRun
+Copyright 2026 Parcha Labs, Inc.
+
+This product includes software from vercel-labs/durable-harness (https://github.com/vercel-labs/durable-harness), Copyright 2026 Vercel Inc., licensed under the Apache License 2.0.
+
+The copied files are listed in vendor/durable-harness/UPSTREAM.json. Two kernel files written for AgentRun, src/kernel/types.ts and src/kernel/errors.ts, keep one declaration each identical to that project's harness-world package (EffectRecord's fields and the EffectFailure class), so the copied files compile against them; UPSTREAM.json records them as "interfaces matched".

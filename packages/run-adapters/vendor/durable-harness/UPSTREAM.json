@@ -1,0 +1,67 @@
+{
+  "repo": "github.com/vercel-labs/durable-harness",
+  "commit": "ea8aa4060cf4fb8cd39737ce8ab21c4e0f40c741",
+  "license": "Apache-2.0",
+  "copyright": "Copyright 2026 Vercel Inc.",
+  "notice": null,
+  "files": {
+    "src/process/records.ts": {
+      "upstream": "packages/harness-process/src/records.ts",
+      "blob": "8ce81fe33c7bc8a563030f021e5f2bcdcc2b9597",
+      "sha256": "53b1ed7e60756835e112e7387e483d3baf92385c50b1906d69f5c3e55f5879bc"
+    },
+    "src/process/recovery.ts": {
+      "upstream": "packages/harness-process/src/recovery.ts",
+      "blob": "57e495656f63dde58d11c7775601132dd99d09e6",
+      "sha256": "16fcd724a3646b1218833ba8aad4141b757ae992cb55ac523aa2690b34e00640"
+    },
+    "src/process/journal.ts": {
+      "upstream": "packages/harness-process/src/journal.ts",
+      "blob": "a86848a6ce7962f1325b2b73fed47772ca16e6a3",
+      "sha256": "73e0f451d008d82692462e66719f51686bf92898b9d0088e8658450fffdfd182"
+    },
+    "src/process/tools.ts": {
+      "upstream": "packages/harness-process/src/tools.ts",
+      "blob": "f0dab38d2440513c84e442dfed8d6a8a5d654616",
+      "sha256": "e8f811beffb7eab60fc245f28cd6082228bbe11d1d0260d3f1946c67c1fbfe14"
+    },
+    "src/process/builtins.ts": {
+      "upstream": "packages/harness-process/src/builtins.ts",
+      "blob": "602487d768314e68eca215fd582e9d2e4cd37482",
+      "sha256": "62750338eb34974b22ee8de74783fe2b373adfdcad57f882b032cc8941e722dd"
+    },
+    "src/process/inbox.ts": {
+      "upstream": "packages/harness-process/src/inbox.ts",
+      "blob": "0f588d2d9f9d5e35882a09b6a921a72a80058ad7",
+      "sha256": "59d2a96779b065dfcb90868c4a7216bbdc98d90663fd45b9953a48c0b4c9ceae"
+    },
+    "src/process/tail.ts": {
+      "upstream": "packages/harness-process/src/tail.ts",
+      "blob": "0c9f118023f7e7122621c84c4766b478fe8a73ca",
+      "sha256": "8814035a33a55916306f2e91f9fb582389556da858a94085449f0a66aba4846d"
+    },
+    "src/kernel/types.ts": {
+      "upstream": "packages/harness-world/src/types.ts",
+      "blob": "d12a050e7395a6a4d5319acf88ba3d728b783443",
+      "sha256": "775a12d0c7737dad58ac8b5e8a9695c559762a8196b7cd78b48fa284803a9a3f",
+      "kind": "interfaces matched",
+      "declarations": [
+        "EffectRecord"
+      ]
+    },
+    "src/kernel/errors.ts": {
+      "upstream": "packages/harness-world/src/errors.ts",
+      "blob": "f778e8b800281227c9b005865a02e1026cc1fefd",
+      "sha256": "672cd4afb4caa648737f74b0ea71c0fc4bba53fb518de7c3e6303648de2c8d2f",
+      "kind": "interfaces matched",
+      "declarations": [
+        "EffectFailure"
+      ]
+    },
+    "src/process/zod.ts": {
+      "upstream": "packages/harness-process/src/zod.ts",
+      "blob": "67c50b6ede18d73a8edd7006a301e22d10580242",
+      "sha256": "3a1cac6ac89608ae63cbd8ef5ceeccd46cf6aff184c62011a4d9966f85b4b92f"
+    }
+  }
+}

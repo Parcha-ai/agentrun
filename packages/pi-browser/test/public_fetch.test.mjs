@@ -113,6 +113,16 @@ test("a first URL that is not http(s) is refused before any lookup or dial", asy
   }
 });
 
+test("maxBytes is a whole number of bytes above 0, checked before any lookup; a custom cap refuses a larger page", async () => {
+  for (const maxBytes of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 1.5]) {
+    const net = network();
+    await assert.rejects(publicFetch("http://public.example/", { ...net, maxBytes }), RangeError, String(maxBytes));
+    assert.deepEqual([net.looked, net.dialled], [[], []], String(maxBytes));
+  }
+  await assert.rejects(publicFetch("http://public.example/", { ...network(), maxBytes: 10 }), refused(/^refused: the page is over 10 bytes$/));
+  assert.equal((await publicFetch("http://public.example/", { ...network(), maxBytes: PAGE.length })).status, 200);
+});
+
 const RANGES = [
   ["64:ff9b::/96", "64:ff9b::a00:1"],
   ["64:ff9b:1::/48", "64:ff9b:1:ffff::1"],
