@@ -101,25 +101,20 @@ function validatorOf(schema: unknown): Validator | null {
  *  string spells. Some model families serialise nested tool arguments as strings: the content is valid and
  *  every submit fails on its spelling. A string that parses to a container the field also admits is read as that
  *  container; only against a scalar does a field that admits a string keep the string. */
-export function parseStringifiedContainers(value: unknown, schema: Record<string, unknown> | undefined, depth = 0, rootDefinitions?: Record<string, unknown>): unknown {
+export function parseStringifiedContainers(value: unknown, schema: Record<string, unknown> | undefined, depth = 0, root?: unknown): unknown {
   if (depth > 6 || !schema || typeof schema !== "object") return value;
-  // A `$ref` property carries no type of its own: it is read through the root schema's definitions, or the
-  // repair skips exactly the fields it exists for.
-  const definitions = rootDefinitions ?? (schema.definitions as Record<string, unknown> | undefined);
-  const deref = (spec: any, hops = 0): any => {
-    if (hops > 4 || !spec || typeof spec !== "object") return spec;
-    const ref = typeof spec.$ref === "string" ? spec.$ref.match(/^#\/definitions\/(.+)$/) : null;
-    if (ref && definitions && definitions[ref[1]] && typeof definitions[ref[1]] === "object") return deref(definitions[ref[1]], hops + 1);
-    return spec;
-  };
+  // A `$ref` property carries no type of its own: it is read through the root schema (its `definitions` or `$defs`),
+  // or the repair skips exactly the fields it exists for.
+  const top = root ?? schema;
+  const resolve = (spec: any): any => (spec && typeof spec === "object" && typeof spec.$ref === "string" ? (deref(spec, top) ?? spec) : spec);
   const expected = (spec: any): string[] => {
-    const resolved = deref(spec);
+    const resolved = resolve(spec);
     const types = Array.isArray(resolved?.type) ? resolved.type : resolved?.type ? [resolved.type] : [];
     const anyOf: any[] = Array.isArray(resolved?.anyOf) ? resolved.anyOf : [];
     return [...types, ...anyOf.flatMap((variant) => expected(variant))];
   };
   const repair = (input: unknown, rawSpec: any): unknown => {
-    const spec = deref(rawSpec);
+    const spec = resolve(rawSpec);
     const wants = expected(spec);
     let current = input;
     if (typeof current === "string" && (wants.includes("object") || wants.includes("array"))) {
@@ -135,7 +130,7 @@ export function parseStringifiedContainers(value: unknown, schema: Record<string
     // A scalar is coerced only when the field does not accept a string, and never when the field lists that string
     // itself as a value. Integers must be exact; a decimal becomes the float64 that JSON.parse of the same literal
     // yields, the only value a JSON number can hold.
-    if (typeof current === "string" && !wants.includes("string") && !listsValue(current, spec, { definitions })) {
+    if (typeof current === "string" && !wants.includes("string") && !listsValue(current, spec, top)) {
       const trimmed = current.trim();
       if ((wants.includes("integer") || wants.includes("number")) && /^-?\d+$/.test(trimmed) && Number.isSafeInteger(Number(trimmed))) current = Number(trimmed);
       else if (wants.includes("number") && /^-?(?:0|[1-9]\d*)\.\d+$/.test(trimmed) && Number.isFinite(Number(trimmed))) current = JSON.parse(trimmed) as number;
@@ -145,11 +140,11 @@ export function parseStringifiedContainers(value: unknown, schema: Record<string
     // An `anyOf`-wrapped object's nested fields live under the branch's properties, not the wrapper's.
     const flattenBranches = (candidate: any): any[] => [candidate, ...(Array.isArray(candidate?.anyOf) ? candidate.anyOf.flatMap(flattenBranches) : [])];
     if (current && typeof current === "object" && !Array.isArray(current)) {
-      const objectBranch = flattenBranches(spec).map((branch) => deref(branch)).find((branch) => branch?.properties && typeof branch.properties === "object");
-      if (objectBranch) return parseStringifiedContainers(current, objectBranch, depth + 1, definitions);
+      const objectBranch = flattenBranches(spec).map((branch) => resolve(branch)).find((branch) => branch?.properties && typeof branch.properties === "object");
+      if (objectBranch) return parseStringifiedContainers(current, objectBranch, depth + 1, top);
     }
     if (Array.isArray(current)) {
-      const arrayBranch = flattenBranches(spec).map((branch) => deref(branch)).find((branch) => branch?.items && typeof branch.items === "object");
+      const arrayBranch = flattenBranches(spec).map((branch) => resolve(branch)).find((branch) => branch?.items && typeof branch.items === "object");
       if (arrayBranch) return current.map((item) => repair(item, arrayBranch.items));
     }
     return current;
