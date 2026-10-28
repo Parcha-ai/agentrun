@@ -6,7 +6,7 @@ import { connect } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { matchRoute, parseStrict, ProxyRefusal, startModelProxy } from '@parcha/agentrun-adapters/host';
+import { hostHeaderProblems, matchRoute, parseStrict, ProxyRefusal, startModelProxy } from '@parcha/agentrun-adapters/host';
 import { openDrive } from '@parcha/agentrun-adapters/kernel';
 import { waitForSubmissions, zodShapeFromJsonSchema } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
@@ -53,6 +53,7 @@ async function proxy(t, extra = {}) {
     credential: extra.credential ?? (() => 'provider-secret'),
     hooks: { beforeRequest: async (r) => { hooks.before.push(r); if (extra.refuse) throw new Error(extra.refuse); }, afterRequest: async (u) => { hooks.after.push(u); if (extra.afterThrows) throw new Error(extra.afterThrows); } },
     price: extra.price ?? (() => 0.001),
+    ...(extra.headers ? { headers: extra.headers } : {}),
     fetch: extra.fetch ?? (async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body) }); return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); }),
   }, KEY);
   t.after(() => p.close());
@@ -545,4 +546,38 @@ test("two requests in flight, answered in reverse: each is booked with its own r
   const of = (kind) => records.filter((r) => r.kind === kind).map((r) => [r.data.turn, r.data.providerIds?.['request-id'], r.data.providerIds?.['x-litellm-call-id']]);
   assert.deepEqual(of(RUNNER_RECORDS.turn), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']], 'each turn has the ids its own response gave');
   assert.deepEqual(of(RUNNER_RECORDS.response), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']]);
+});
+
+test("the host's own headers go on every forwarded request, paid and free, over any the client sent by that name, and never the credential's", async (t) => {
+  const tags = 'job:j1,purpose:research,run:r1';
+  const { p, forwarded } = await proxy(t, { headers: { 'x-litellm-tags': tags, 'X-Beta': 'host-value' } });
+  // The client's x-beta is one the route forwards and the policy keeps (b1), so it reaches the host's headers: the host's wins.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', headers: { 'x-beta': 'b1', 'x-litellm-tags': 'job:forged' } })).status, 200);
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  // A free route (count_tokens, on Anthropic's policy) is forwarded with them too.
+  assert.equal((await send(p.url, { path: '/v1/count' })).status, 200);
+  assert.equal(forwarded.length, 3);
+  for (const { headers } of forwarded) {
+    const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+    assert.equal(lower['x-litellm-tags'], tags, 'the host\'s tags, never the client\'s');
+    assert.equal(lower['x-beta'], 'host-value', 'the host\'s value over the client\'s, whatever its case');
+    assert.equal(Object.keys(headers).filter((k) => k.toLowerCase() === 'x-beta').length, 1, 'one header by that name');
+    assert.equal(lower.authorization, 'Bearer provider-secret', 'the credential is the proxy\'s own');
+  }
+  const { p: plain, forwarded: none } = await proxy(t);
+  await send(plain.url, { path: '/v1/test?beta=true' });
+  assert.equal(Object.keys(none[0].headers).some((k) => k.toLowerCase() === 'x-litellm-tags'), false, 'without host headers, none is added');
+});
+
+test("a host's header is checked when the proxy starts: a name that is a token and not the proxy's own, a one-line value", async () => {
+  assert.deepEqual(hostHeaderProblems({ 'x-litellm-tags': 'job:1' }), []);
+  for (const [headers, said] of [
+    [{ Authorization: 'Bearer x' }, /the header Authorization is the proxy's own/],
+    [{ 'x-api-key': 'k' }, /x-api-key is the proxy's own/],
+    [{ 'anthropic-beta': 'b' }, /anthropic-beta is the proxy's own/],
+    [{ 'bad name': 'v' }, /not a token/],
+    [{ 'x-tags': 'a\r\nInjected: 1' }, /one line of text/],
+    [{ 'x-tags': 'v'.repeat(1025) }, /at most 1024/],
+  ]) assert.match(hostHeaderProblems(headers).join('; '), said, JSON.stringify(headers).slice(0, 60));
+  await assert.rejects(startModelProxy({ policy, model: 'm', origin: 'https://x.invalid', credential: () => 'c', hooks: {}, headers: { host: 'evil' } }, KEY), /the header host is the proxy's own/);
 });

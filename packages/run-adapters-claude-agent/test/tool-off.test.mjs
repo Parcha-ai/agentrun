@@ -284,3 +284,16 @@ test('the real CLI, killed in turn 2, resumes in a NEW session directory from th
   const sameSystem = JSON.stringify(uncached(sent[2].system ?? null)) === JSON.stringify(uncached(sent[1].system ?? null));
   t.diagnostic(`turn 3 sent ${third.length} messages (turn 2: ${second.length}); system prompt the same as turn 2's: ${sameSystem}; paid hooks before ${paid.before}, after ${paid.after}`);
 });
+
+test("a host's gateway headers (its spend tags) reach the provider on every request the real CLI makes through the proxy (the proxy test covers every route, a free one too)", { skip, timeout: 120_000 }, async (t) => {
+  const tags = 'job:j-123,purpose:research,run:r-9';
+  const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL && !Object.keys(r.results ?? {}).length ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
+  t.after(() => provider.close());
+  const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret', headers: { 'x-litellm-tags': tags } }, sessionsDir: join(mkdtempSync(join(ROOT, 'tags-')), 'sessions') });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'tags', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
+  const reached = provider.requests.filter((r) => r.authorized);
+  assert.ok(reached.some((r) => r.model === MODEL), 'a main-model request reached the provider');
+  for (const r of reached) assert.equal(r.headers['x-litellm-tags'], tags, `${r.path} (${r.model}) carries the host's tags`);
+  t.diagnostic(`requests with the tags: ${reached.length} (${[...new Set(reached.map((r) => `${r.path} ${r.model}`))].join('; ')})`);
+});

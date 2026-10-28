@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
-import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
+import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
@@ -112,6 +112,9 @@ export interface ClaudeAgentProvider {
   credential: () => Promise<string> | string;
   /** How the provider takes it: Anthropic's API takes `x-api-key` (default); a gateway may take a bearer token. */
   auth?: "x-api-key" | "bearer";
+  /** Headers sent with every model request, the CLI's small-model calls included (a gateway's spend tags:
+   *  `{ "x-litellm-tags": "job:...,run:..." }`). The CLI can neither set nor override them. Send a gateway's only to it. */
+  headers?: Readonly<Record<string, string>>;
 }
 
 export interface ClaudeAgentAdapterOptions {
@@ -286,6 +289,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   if (skillsWrong.length) throw new Error(`agentrun-claude-agent: ${skillsWrong.join("; ")}`);
   const maxImageBytes = options.maxImageBytes ?? CLAUDE_AGENT_MAX_IMAGE_BYTES;
   if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-claude-agent: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
+  const headersWrong = hostHeaderProblems(options.provider.headers);
+  if (headersWrong.length) throw new Error(`agentrun-claude-agent: provider.headers: ${headersWrong.join("; ")}`);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
   if (options.standIn) {
@@ -335,6 +340,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
+          ...(options.provider.headers ? { headers: options.provider.headers } : {}),
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
         },
