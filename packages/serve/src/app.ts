@@ -13,7 +13,7 @@ import type { TSchema } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, type Extension, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
-import { capModels, capOf, spentIn } from "./cap.js";
+import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, type ConfineChild } from "./adapters.js";
 import { DEFAULT_HARNESS } from "./harness.js";
@@ -98,7 +98,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
     const harness = revision.body.harness;
     const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
-    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir);
+    // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
+    const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never);
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard);
     return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
   }
   if (revision.kind === "agentic") {

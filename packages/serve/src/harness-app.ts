@@ -28,8 +28,12 @@ const now = () => Date.now();
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => (part && typeof part === "object" && "text" in part && typeof part.text === "string" ? part.text : "")).join("") : "";
 
-/** One request as pi's own assistant message: its content, and its usage with the cost when it is known. */
-function assistantMessage(harness: string, request: Pending | undefined, text: string, calls: ToolCall[]) {
+/** One request as pi's own assistant message: its content, and its usage with the cost when it is known. `refused`: a
+ *  request the run's cap kept back, as pi's own refusal reads (spend_cap_reached, at $0). */
+function assistantMessage(harness: string, request: Pending | undefined, text: string, calls: ToolCall[], refused?: string) {
+  if (refused !== undefined) {
+    return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: refused, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+  }
   const usage = request?.usage;
   const known = usage !== undefined && usage.usd !== null && usage.usd !== undefined;
   return {
@@ -67,7 +71,15 @@ export function adapterRun(
   budgetUsd?: number,
   tools: readonly string[] = [],
   dir?: string,
+  beforeRequest?: (request: { spentUsd: number | null }) => undefined | { refuse: string },
 ): AdapterRun {
+  // The run's cap refused a request: the turn ends on it, and its refusal is written as pi's is.
+  let refused: string | undefined;
+  const guard = beforeRequest && ((request: { spentUsd: number | null }) => {
+    const answer = beforeRequest(request);
+    if (answer) refused = answer.refuse;
+    return answer;
+  });
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
@@ -175,6 +187,11 @@ export function adapterRun(
         } finally {
           await flush(true);
           await writing;
+          if (refused !== undefined) {
+            const why = refused;
+            refused = undefined;
+            await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, "", [], why) as never] })));
+          }
           emit?.({ type: "run_end" });
         }
         const next = queue.shift();
@@ -232,7 +249,7 @@ export function adapterRun(
       if (typeof env.confinePrefix !== "function") throw new Error("the run's environment gives no confinement for the harness's process");
       const adapter = await make(confineOf(env.confinePrefix()));
       const writer = await sessions.open(spec.key);
-      const booking = await modelPortFor(writer, { key: spec.key, ...(budgetUsd !== undefined ? { budgetUsd } : {}), onEvent: onModel });
+      const booking = await modelPortFor(writer, { key: spec.key, ...(budgetUsd !== undefined ? { budgetUsd } : {}), ...(guard ? { beforeRequest: guard as never } : {}), onEvent: onModel });
       // A request a crash cut off is booked once, unknown, before anything is sent.
       await booking.bookCut();
       // Each request the session booked and the root has no entry for: its cost, with no content.
