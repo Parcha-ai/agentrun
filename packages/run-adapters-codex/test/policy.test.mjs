@@ -209,3 +209,26 @@ test('`text` carries only a format (plain text, or a JSON schema) and a verbosit
   }
   assert.equal(forwarded.length, 0);
 });
+
+test('a request asking to store its response reaches the provider as store: false', async () => {
+  const { p, forwarded } = await proxy();
+  assert.equal((await send(p.url, { body: { ...RECORDED_REQUEST, store: true } })).status, 200);
+  assert.equal(forwarded[0].body.store, false);
+});
+
+test('a request asking for more output than the session allows is clamped to it; a smaller ask is kept', async () => {
+  const { p, forwarded } = await proxy();
+  for (const asked of [10_000_000, 32_001, 100]) assert.equal((await send(p.url, { body: { ...RECORDED_REQUEST, max_output_tokens: asked } })).status, 200);
+  assert.deepEqual(forwarded.map((f) => f.body.max_output_tokens), [32_000, 32_000, 100]);
+});
+
+test('a paid answer cut at its output limit (response.incomplete) is booked at its usage and priced, not unknown', async () => {
+  const usage = { input_tokens: 3000, input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 0 }, output_tokens: 32_000, output_tokens_details: { reasoning_tokens: 9000 }, total_tokens: 35_000 };
+  // Valid JSON with spaces after its colons, as a provider may send it: only the event's own parse can read it.
+  const spaced = (event) => JSON.stringify(event).replace(/":/g, '": ');
+  const stream = `data: ${spaced({ type: 'response.created', response: { usage: null } })}\n\ndata: ${spaced({ type: 'response.incomplete', response: { object: 'response', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, usage } })}\n\n`;
+  const { p, reports } = await proxy({ answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }) });
+  assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
+  await settled();
+  assert.deepEqual(reports, [{ input: 2000, output: 32_000, cacheRead: 1000, cacheWrite: 0, usd: (2000 + 32_000 + 1000) / 1e6 }]);
+});
