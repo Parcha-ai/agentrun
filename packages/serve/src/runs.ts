@@ -805,6 +805,9 @@ export class Runs {
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
+    // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
+    // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
+    if (run.finishing && !run.outcome) await this.endWritten(run);
     if (run.kind === "agentic" && statusOf(run).status === "completed") this.reopen(run);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
@@ -823,11 +826,21 @@ export class Runs {
     return { mode, messageId };
   }
 
+  /** Waits, up to a request's deadline, for the end of a run that is finishing to be written. */
+  private async endWritten(run: Run): Promise<void> {
+    for (const deadline = Date.now() + (this.options.readyTimeoutMs ?? READY_TIMEOUT_MS); run.finishing && !run.outcome; await sleep(100)) {
+      if (Date.now() > deadline) throw new ApiError("unavailable", "The run's end is still being written; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    }
+  }
+
   /** A completed agentic run that gets a follow-up opens again: the same run on its own store and session, under its
    *  cap, taking a place under the server's. Launched here, with no wait after the place is counted, so no start takes
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
   private reopen(run: Run): void {
-    if (this.store.readRun(run.id)?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
+    const row = this.store.readRun(run.id);
+    if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
+    // Its end could not be written yet (persistLater tries again): it opens once the store has it.
+    if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
     this.placeFree();
     try {
       this.store.reopenRun(run.id);
