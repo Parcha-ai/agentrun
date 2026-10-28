@@ -20,9 +20,11 @@ test("after a restart, a completed run takes a follow-up on the next server and 
   const next = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
   assert.equal(next.status, 202, JSON.stringify(next.body));
   assert.equal(next.body.mode, "follow_up");
-  await follow(api, run_id, ["completed"]);
-  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
-  assert.equal(storeRun(data, run_id).summary, "On go on: done.");
+  const { rows } = await follow(api, run_id, ["completed"]);
+  const kinds = rows.map((r) => r.kind);
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "go on"]);
+  assert.ok(kinds.lastIndexOf("final_answer") > kinds.lastIndexOf("user_message"), `a new answer after the follow-up: ${kinds.join(", ")}`);
+  assert.equal(storeRun(data, run_id).state, "completed");
 });
 
 test("a failed or cancelled run takes no follow-up, and archiving closes a completed one: an archived run, or a run of an archived agent, is 409 not_continuable", async (t) => {

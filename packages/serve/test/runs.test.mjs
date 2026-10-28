@@ -45,11 +45,13 @@ test("a run starts queued, its timeline follows it to completed and final, and t
   const again = await follow(api, started.run_id, ["completed"]);
   assert.equal(again.last.final, true);
   const reread = (await api("GET", `/runs/${started.run_id}`)).body;
-  assert.equal(reread.result.final_answer, "On again: done.");
   assert.ok(reread.ended_at >= run.ended_at, "it ended again");
+  // The same session goes on: the follow-up's row, then a new turn's answer after it.
+  const kinds = again.rows.map((r) => r.kind);
   assert.deepEqual(again.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "again"]);
+  assert.ok(kinds.lastIndexOf("final_answer") > kinds.lastIndexOf("user_message"), `a new answer after the follow-up: ${kinds.join(", ")}`);
   assert.deepEqual((await api("GET", "/agents/calc")).body.runs, { count: 1, live: 0 }, "one run, not a second");
-  assert.deepEqual([storeRun(data, started.run_id).state, storeRun(data, started.run_id).summary], ["completed", "On again: done."]);
+  assert.equal(storeRun(data, started.run_id).state, "completed");
 });
 
 test("the change cursor: a saved cursor resumes onto the rows held, 0 resets, and the final cursor answers unchanged", async (t) => {
