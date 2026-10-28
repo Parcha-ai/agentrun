@@ -50,7 +50,9 @@ export interface CodexAdapterOptions {
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
-  /** For tests: how the code-mode models are read from the checked binary (default: its own catalog). */
+  /** TEST-ONLY (the stand-in's guard: AGENTRUN_CODEX_STANDIN=1 under a test runner, never in production; passed anywhere
+   *  else, the adapter throws when it is made): how the code-mode models are read from the checked binary, in place of its
+   *  own catalog. It must never switch off the refusal of code-mode models in a host. */
   readCodeModeModels?: (binary: string) => ReadonlySet<string>;
 }
 
@@ -85,7 +87,15 @@ function adapterEvent(event: unknown): AdapterEvent | undefined {
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
+/** The test-only options' guard, the stand-in's: only a test run with AGENTRUN_CODEX_STANDIN=1, never in production. */
+function testOnly(name: string): void {
+  if (process.env.AGENTRUN_CODEX_STANDIN !== "1") throw new TypeError(`agentrun-codex: ${name} is test-only and needs AGENTRUN_CODEX_STANDIN=1`);
+  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== "test") throw new TypeError(`agentrun-codex: ${name} is test-only and runs only under a test runner`);
+  if (process.env.NODE_ENV === "production") throw new TypeError(`agentrun-codex: ${name} is test-only and is refused in production`);
+}
+
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
+  if (options.readCodeModeModels) testOnly("readCodeModeModels");
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
   const checked = options.standIn ? undefined : verifyCodex().path;

@@ -331,3 +331,18 @@ test('a catalog read that fails fails closed: the check throws before any turn, 
     assert.deepEqual(seen, [], `nothing reached the provider, a binary that ${what}`);
   }
 });
+
+test('the catalog reader is test-only: passed outside the stand-in guard, the adapter refuses to be made, so a host cannot switch off the code-mode refusal', () => {
+  const options = { model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: scratch(), readCodeModeModels: () => new Set() };
+  const saved = { standin: process.env.AGENTRUN_CODEX_STANDIN, node: process.env.NODE_ENV };
+  try {
+    delete process.env.AGENTRUN_CODEX_STANDIN;
+    assert.throws(() => codexAdapter(options), (error) => error instanceof TypeError && /readCodeModeModels is test-only/.test(error.message), 'without AGENTRUN_CODEX_STANDIN=1');
+    process.env.AGENTRUN_CODEX_STANDIN = '1';
+    process.env.NODE_ENV = 'production';
+    assert.throws(() => codexAdapter(options), (error) => error instanceof TypeError && /test-only/.test(error.message), 'in production');
+  } finally {
+    if (saved.standin === undefined) delete process.env.AGENTRUN_CODEX_STANDIN; else process.env.AGENTRUN_CODEX_STANDIN = saved.standin;
+    if (saved.node === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved.node;
+  }
+});
