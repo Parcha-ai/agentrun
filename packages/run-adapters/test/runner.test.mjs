@@ -647,9 +647,11 @@ test("a resumed node whose store stalls while booking a cut request still stops 
   // An earlier process admitted a paid request and was cut off before its answer.
   await (await inner.open(key)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: 'm' } }]);
   const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, read: () => w.read(), append: (records) => (records.some((r) => r.data?.cut) ? new Promise(() => {}) : w.append(records)) }; } };
-  const adapter = plannedAdapter([]);
+  let opened = 0;
+  const planned = plannedAdapter([]);
+  const adapter = { ...planned, open: (...args) => { opened += 1; return planned.open(...args); } };
   const started = Date.now();
   await assert.rejects(createHarnessRunner(adapter, { store, timeoutMs: 200 })(stepRequest()), (e) => e instanceof HarnessRunError && e.reason === 'timeout');
   assert.ok(Date.now() - started < 5_000, `stopped at its timeout (${Date.now() - started} ms)`);
-  assert.equal(adapter.opened.length, 0, 'no session was opened');
+  assert.equal(opened, 0, 'no session was opened');
 });
