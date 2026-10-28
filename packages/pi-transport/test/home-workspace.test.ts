@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +41,21 @@ describe("moveWorkspace on local boxes", () => {
 		expect(receipt.files).toBeGreaterThan(0);
 		expect(walk(dst)).toEqual(walk(src));
 		expect(receipt.bytes).toBeGreaterThan(0);
+	});
+
+	it("moves a file whose time is a nanosecond short of the next second, and the target keeps that second", async (test) => {
+		const { from, to, src, dst } = await pair();
+		mkdirSync(src);
+		const file = join(src, "late.txt");
+		writeFileSync(file, "late");
+		execFileSync("touch", ["-d", "@1700000000.999999999", file]);
+		test.skip(
+			statSync(file, { bigint: true }).mtimeNs !== 1_700_000_000_999_999_999n,
+			"touch cannot set nanoseconds here",
+		);
+		getOrThrow(await moveWorkspace(from, to, { fromRoot: src, toRoot: dst }, context));
+		expect(statSync(join(dst, "late.txt"), { bigint: true }).mtimeNs / 1_000_000_000n).toBe(1_700_000_000n);
+		expect(walk(dst)).toEqual(walk(src));
 	});
 
 	it(`moves ${SEEDS} random trees: every manifest equal, checked on the host's file system`, async () => {
