@@ -104,4 +104,47 @@ for (const layout of LAYOUTS) {
     const [request] = await decisionsOf(store, layout);
     assert.deepEqual([request?.status, request?.attempt, request?.cost_usd], ['answered', 2, 0.003], 'the second ask is the request\'s second attempt');
   });
+
+  test(`a call the host cuts in flight has no outcome: the next process does not ask again, books it interrupted at an unknown cost and routes the run to review (${layout})`, async () => {
+    const store = memoryStore(); let asked = 0;
+    const kept = receiptStore();
+    // A cancel the journal holds ends the run for good; the host's own signal (its shutdown) cuts the call and leaves
+    // the run to resume. The judge's call ends on its signal, as an HTTP client's does.
+    const host = new AbortController();
+    let called; const inFlight = new Promise((resolve) => { called = resolve; });
+    const held = { signal: host.signal, runJudge: (params) => { asked += 1; called(); return new Promise((_, reject) => params.signal.addEventListener('abort', () => reject(params.signal.reason), { once: true })); } };
+    const cut = run(store, held, kept, layout);
+    await inFlight;
+    host.abort(new Error('the host cut the call'));
+    await assert.rejects(cut, /the host cut the call/);
+    const result = await run(store, { runJudge: async () => { asked += 1; return structuredClone(answer); } }, kept, layout);
+    assert.equal(asked, 1, 'a call cut in flight is not asked again');
+    assert.equal(result.status, 'escalated', 'the run routes to review');
+    assert.equal(result.escalation.kind, 'decision_interrupted');
+    const [request] = await decisionsOf(store, layout);
+    assert.deepEqual([request?.status, request?.cost_usd, request?.attempt], ['interrupted', null, 1], 'the cut call is booked interrupted at an unknown cost');
+  });
+
+  test(`a pause waits for a decision in flight and is taken once it settles (${layout})`, async () => {
+    const inner = memoryStore();
+    const driver = await openRecovery(inner, workflow, { key: KEY, layout });
+    let called, release;
+    const inFlight = new Promise((resolve) => { called = resolve; });
+    const answered = new Promise((resolve) => { release = resolve; });
+    const wrapped = withRecovery(driver, { runJudge: async () => { called(); await answered; return structuredClone(answer); } });
+    const running = runWorkflow(workflow, INPUT, wrapped).then((result) => result.status, (error) => error.code ?? String(error));
+    await inFlight;
+    driver.stop({ action: 'pause', source: 'operator' });
+    for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(driver.signal.aborted, false, 'the pause waits while the decision is in flight');
+    release();
+    let timer;
+    const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve('no pause by the deadline'), 2000); });
+    const ended = await Promise.race([running, deadline]);
+    clearTimeout(timer);
+    assert.equal(ended, 'FROZEN_PAUSED', 'the pause completes once the decision in flight settles');
+    await driver.close();
+    const [request] = await decisionsOf(inner, layout);
+    assert.deepEqual([request?.status, request?.cost_usd], ['answered', 0.003], 'the decision in flight ended answered before the pause was taken');
+  });
 }
