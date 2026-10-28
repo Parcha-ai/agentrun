@@ -73,7 +73,7 @@ export interface ModelProxyHooks {
    *  `afterRequest`, since requests may be in flight together. */
   beforeRequest(request: { model: string }): Promise<unknown>;
   /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
-  afterRequest(usage: ModelUsageReport, ticket?: any): Promise<void>;
+  afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
 }
 
 export interface ModelProxyOptions {
