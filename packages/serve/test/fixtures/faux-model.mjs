@@ -34,6 +34,8 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  // A follow-up whose answer starts only after a minute: a stop before then cuts it before its first content.
+  if (users.length > 1 && last === "Slowly, please.") return slow(faux, 60_000, "Done slowly.");
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");

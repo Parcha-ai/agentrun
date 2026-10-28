@@ -43,6 +43,13 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 /** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
 
+/** A host's marks of a model request: as it leaves (written before it does), and as its stream ends. A request that
+ *  ended has a `pi.assistant` entry, or was cut before its first content (a stop) and has none; a start with no end is
+ *  in flight when it is the latest, and was cut by a crash when a later one followed it. A cut request's cost is
+ *  unknown. */
+export const REQUEST_STARTED = "agentrun.request_started";
+export const REQUEST_ENDED = "agentrun.request_ended";
+
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
   conversationId?: number;
@@ -86,6 +93,8 @@ function createProjector(options: TimelineOptions) {
   let current = options.conversationId ?? 0;
   let requests = 0;
   let usd: number | null = 0;
+  let marked = 0;
+  let inFlight = false;
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -147,7 +156,12 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === "pi.assistant" && message) {
+    if (entry.kind === REQUEST_STARTED) {
+      marked += 1;
+      inFlight = true;
+    } else if (entry.kind === REQUEST_ENDED) {
+      inFlight = false;
+    } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
       const cost = obj(obj(message.usage)?.cost)?.total;
       usd = typeof cost === "number" && usd !== null ? usd + cost : null;
@@ -270,11 +284,13 @@ function createProjector(options: TimelineOptions) {
   }
 
   function usage(): TimelineEvent | undefined {
-    if (!requests || root === undefined) return undefined;
-    const total = usd === null ? null : Math.round(usd * 1e6) / 1e6;
+    // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
+    const count = Math.max(requests, marked);
+    if (!count || root === undefined) return undefined;
+    const total = usd === null || marked - (inFlight ? 1 : 0) > requests ? null : Math.round(usd * 1e6) / 1e6;
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${requests} model request${requests === 1 ? "" : "s"}`,
-      usage: { usd: total, requests },
+      summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
+      usage: { usd: total, requests: count },
     });
   }
 

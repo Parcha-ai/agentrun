@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -199,6 +199,21 @@ test("cost: a sum, and unknown when any answer carries none, never $0", () => {
   const unknown = timelineOf([assistant([{ type: "text", text: "a" }], 0), assistant([{ type: "text", text: "b" }], 1, { usage: undefined })]).at(-1);
   assert.equal(unknown.summary, "Cost so far: unknown over 2 model requests");
   assert.equal(unknown.usage.usd, null);
+});
+
+test("cost: a request marked as it left and cut before its first content counts, at an unknown cost; one still in flight does not make it unknown", () => {
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const ended = { kind: REQUEST_ENDED, data: {} };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  assert.deepEqual(timelineOf([started, ended, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "marked, ended, answered: one priced request");
+  assert.deepEqual(timelineOf([started, a, ended]).at(-1).usage, { usd: 0.01, requests: 1 }, "in either order");
+  assert.deepEqual(timelineOf([started, ended, a, started]).at(-1).usage, { usd: 0.01, requests: 2 }, "the next request in flight: the sum so far");
+  const stopped = timelineOf([started, ended, a, started, ended]).at(-1);
+  assert.deepEqual(stopped.usage, { usd: null, requests: 2 }, "stopped before its first content: ended with no entry");
+  assert.equal(stopped.summary, "Cost so far: unknown over 2 model requests");
+  assert.deepEqual(timelineOf([started, ended, a, started, started]).at(-1).usage, { usd: null, requests: 3 }, "a crash cut one, and the next process's is in flight");
+  // A run written before requests were marked reads as it did.
+  assert.deepEqual(timelineOf([a]).at(-1).usage, { usd: 0.01, requests: 1 });
 });
 
 test("an unknown entry kind and an unknown event are skipped, never thrown on", () => {
