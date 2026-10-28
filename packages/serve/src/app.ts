@@ -6,7 +6,7 @@
 //     agentrun-pi's durable workflow task, each model node on the host's model of its tier with the file tools it names. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
 import type { TSchema } from "@earendil-works/pi-ai";
@@ -15,7 +15,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { adapterFor } from "./adapters.js";
+import { adapterFor, type ConfineChild } from "./adapters.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
@@ -92,7 +92,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
-    const { door, onOpen } = adapterRun(await adapterFor(revision.body.harness, process.env), spec, BACKGROUND, cap, named);
+    // The harness's own files (its homes, its working state) go in a private directory beside the workspace, never in it.
+    const dir = join(where.root, "harness");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
+    const harness = revision.body.harness;
+    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir);
     return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
   }
   if (revision.kind === "agentic") {

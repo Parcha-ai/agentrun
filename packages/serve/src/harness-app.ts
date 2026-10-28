@@ -14,6 +14,7 @@ import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-adapters";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
+import { type ConfineChild, confineOf } from "./adapters.js";
 import { fileTools, type ToolResults } from "./host-tools.js";
 import { durableSessions } from "./sessions.js";
 
@@ -58,7 +59,15 @@ export interface AdapterRun {
 
 /** The door and the open of a run whose session is `spec` on `adapter`, with the file tools `tools` names (built at the
  *  open, over the run's environment). `budgetUsd`: the run's spend cap. */
-export function adapterRun(adapter: AgentAdapter, spec: Omit<SessionSpec, "tools">, context: Context, budgetUsd?: number, tools: readonly string[] = []): AdapterRun {
+export function adapterRun(
+  make: (confine?: ConfineChild) => Promise<AgentAdapter>,
+  harness: string,
+  spec: Omit<SessionSpec, "tools">,
+  context: Context,
+  budgetUsd?: number,
+  tools: readonly string[] = [],
+  dir?: string,
+): AdapterRun {
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
@@ -94,7 +103,7 @@ export function adapterRun(adapter: AgentAdapter, spec: Omit<SessionSpec, "tools
       calls = [];
       if (request && written.has(request.request)) return;
       await commit(async (tx) => {
-        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(adapter.id, request, content.text, content.calls) as never] });
+        await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, request, content.text, content.calls) as never] });
         if (request) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: request.request } });
       });
       if (request) written.add(request.request);
@@ -103,7 +112,7 @@ export function adapterRun(adapter: AgentAdapter, spec: Omit<SessionSpec, "tools
         const next = costed.shift()!;
         if (written.has(next.request)) continue;
         await commit(async (tx) => {
-          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(adapter.id, next, "", []) as never] });
+          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, next, "", []) as never] });
           await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
         });
         written.add(next.request);
@@ -218,6 +227,10 @@ export function adapterRun(adapter: AgentAdapter, spec: Omit<SessionSpec, "tools
         if (page.next === undefined) break;
         cursor = page.next;
       }
+      // The prefix pi's commands start under in this run, from pi-durable-disk's own builder: the harness's process too.
+      const env = (await durable.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context)) as unknown as { confinePrefix?(): string[] };
+      if (typeof env.confinePrefix !== "function") throw new Error("the run's environment gives no confinement for the harness's process");
+      const adapter = await make(confineOf(env.confinePrefix()));
       const writer = await sessions.open(spec.key);
       const booking = await modelPortFor(writer, { key: spec.key, ...(budgetUsd !== undefined ? { budgetUsd } : {}), onEvent: onModel });
       // A request a crash cut off is booked once, unknown, before anything is sent.
@@ -225,7 +238,7 @@ export function adapterRun(adapter: AgentAdapter, spec: Omit<SessionSpec, "tools
       // Each request the session booked and the root has no entry for: its cost, with no content.
       for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request)) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: fileTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent });
+      session = await adapter.open({ ...spec, tools: fileTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
     },

@@ -19,5 +19,27 @@ export function harnessesOf(env: NodeJS.ProcessEnv): HarnessOffer[] {
   return HARNESSES.map((id) => (id === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV] ? { id, available: true } : { id, available: false, reason: `This server does not run ${id} yet.` }));
 }
 
+const offered = new WeakMap<object, Promise<HarnessOffer[]>>();
+
+/** What this server offers of each harness, checked once per environment: each adapter's package, pins and provider,
+ *  and its check of the default model (adapters.ts). */
+export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessOffer[]> {
+  let offers = offered.get(env);
+  if (!offers) {
+    offers = (async () => {
+      if (env[FAUX_HARNESS_ENV]) return harnessesOf(env);
+      const [{ harnessReason }, { runModels }] = await Promise.all([import("./adapters.js"), import("./model.js")]);
+      const needs = await runModels(env, undefined).then((chosen) => (chosen.model ? { model: chosen.model, models: chosen.models as never } : undefined), () => undefined);
+      return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
+        if (id === DEFAULT_HARNESS) return { id, available: true };
+        const reason = await harnessReason(id, env, needs);
+        return reason === undefined ? { id, available: true } : { id, available: false, reason };
+      }));
+    })();
+    offered.set(env, offers);
+  }
+  return offers;
+}
+
 /** The harness a stored body names, as answers show it. */
 export const harnessOfBody = (body: { harness?: string }): string => body.harness ?? DEFAULT_HARNESS;
