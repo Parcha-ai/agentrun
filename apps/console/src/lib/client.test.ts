@@ -68,3 +68,28 @@ describe("follow", () => {
     expect(calls.length).toBe(2);
   });
 });
+
+describe("agents", () => {
+  it("reads an agent with its ETag, and saves an edit with If-Match, getting the next ETag back", async () => {
+    const { fn, calls } = fakeFetch((c) => new Response(JSON.stringify({ agent_id: "a1", revisions: c.init?.method === "PUT" ? 2 : 1 }), {
+      status: 200, headers: { "content-type": "application/json", etag: c.init?.method === "PUT" ? '"rev-2"' : '"rev-1"' },
+    }));
+    const v2 = createClient({ fetch: fn });
+    const got = await v2.getAgent("a1");
+    expect(got.etag).toBe('"rev-1"');
+    const saved = await v2.updateDefinition("a1", { definition: { version: 2 } }, got.etag);
+    expect(new Headers(calls[1].init?.headers).get("if-match")).toBe('"rev-1"');
+    expect(calls[1].url).toBe("/v2/agents/a1/definition");
+    expect(saved).toMatchObject({ etag: '"rev-2"', agent: { revisions: 2 } });
+  });
+
+  it("lists archived agents with the server's list parameter, and archives through its route", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { agents: [], next_cursor: null }));
+    const v2 = createClient({ fetch: fn });
+    await v2.listAgents({ archived: true });
+    await v2.archiveAgent("a 1");
+    await v2.setCurrent("a1", "rev-1");
+    expect(calls.map((c) => `${c.init?.method} ${c.url}`)).toEqual(["GET /v2/agents?archived=true", "POST /v2/agents/a%201/archive", "POST /v2/agents/a1/current"]);
+    expect(JSON.parse(String(calls[2].init?.body))).toEqual({ revision: "rev-1" });
+  });
+});

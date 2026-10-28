@@ -1,0 +1,58 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents",
+    "body": {
+      "definition": {
+        "version": 1,
+        "name": "Changelog checker (Codex)",
+        "description": "Checks a changelog entry against the merged change.",
+        "instructions": "Read the change and its changelog entry. Say what the entry gets wrong, in one list.",
+        "skills": [],
+        "tools": [],
+        "harness": "codex"
+      }
+    }
+  },
+  "status": 201,
+  "headers": {
+    "etag": "\"f9a48592ca4501902ee9f3b2a3d4a7332b9b1ce9afca2d484abb590b8644b165\"",
+    "content-type": "application/json",
+    "location": "/v2/agents/01a18490-3029-7897-b5b5-487227b6adc7"
+  },
+  "body": {
+    "agent_id": "01a18490-3029-7897-b5b5-487227b6adc7",
+    "definition": {
+      "id": "01a18490-3029-7897-b5b5-487227b6adc7",
+      "version": 1,
+      "name": "Changelog checker (Codex)",
+      "description": "Checks a changelog entry against the merged change.",
+      "instructions": "Read the change and its changelog entry. Say what the entry gets wrong, in one list.",
+      "harness": "codex",
+      "skills": [],
+      "tools": []
+    },
+    "kind": "agentic",
+    "revision": "f9a48592ca4501902ee9f3b2a3d4a7332b9b1ce9afca2d484abb590b8644b165",
+    "revisions": 1,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 0,
+      "live": 0
+    },
+    "region": "local",
+    "home_etag": "\"f9a48592ca4501902ee9f3b2a3d4a7332b9b1ce9afca2d484abb590b8644b165\"",
+    "archived_at": null,
+    "created_at": "2026-10-28T22:10:04.457Z",
+    "updated_at": "2026-10-28T22:10:04.494Z",
+    "warnings": [
+      {
+        "field": "definition.harness",
+        "reason": "not_set_up_here",
+        "message": "This server does not run codex yet."
+      }
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/01a18490-2e24-7b3f-890e-91b7fd0dbd78"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "01a18490-2e24-7b3f-890e-91b7fd0dbd78",
+    "definition": {
+      "id": "01a18490-2e24-7b3f-890e-91b7fd0dbd78",
+      "version": 1,
+      "name": "Changelog checker",
+      "description": "Checks a changelog entry against the merged change.",
+      "instructions": "Read the change and its changelog entry. Say what the entry gets wrong, in one list.",
+      "harness": "pi",
+      "skills": [],
+      "tools": []
+    },
+    "kind": "agentic",
+    "revision": "509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28",
+    "revisions": 2,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 0,
+      "live": 0
+    },
+    "region": "local",
+    "home_etag": "\"509fef8eb74e9ddd9194d7dad6c4ee217be5ee61e552989abf62891548829a28\"",
+    "archived_at": null,
+    "created_at": "2026-10-28T22:10:03.940Z",
+    "updated_at": "2026-10-28T22:10:04.013Z"
+  }
+}

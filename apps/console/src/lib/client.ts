@@ -1,8 +1,13 @@
+import type { Agent, Definition } from "./agentForm";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
+export type FieldIssue = { field: string; reason: string; message: string };
+
 export class ClientError extends Error {
+  /** A 422's issues, by field, as the server names them. */
+  fields?: FieldIssue[];
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
@@ -16,7 +21,11 @@ export type Client = ReturnType<typeof createClient>;
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
  *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
 export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
-  async function call<T>(method: string, path: string, { body, headers = {} }: { body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
+  async function call<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
+    return (await callTagged<T>(method, path, opts)).body;
+  }
+  /** A request and its response's ETag (an agent's current revision, for the next If-Match). */
+  async function callTagged<T>(method: string, path: string, { body, headers = {} }: { body?: unknown; headers?: Record<string, string> } = {}): Promise<{ body: T; etag: string | null }> {
     const res = await f(`${base}${path}`, {
       method,
       credentials: "same-origin",
@@ -24,16 +33,33 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError } | null)?.error;
-      throw new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[] } } | null)?.error;
+      const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
+      if (e?.fields) err.fields = e.fields;
+      throw err;
     }
-    return (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
+    const out = (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
+    return { body: out, etag: res.headers.get("etag") };
   }
+  const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     listRuns: (limit = 50) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}`),
-    listAgents: () => call<{ agents: { agent_id: string; definition: { name?: string } }[] }>("GET", "/agents"),
+    listAgentRuns: (id: string, limit = 50) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}`),
+    listAgents: ({ archived = false }: { archived?: boolean } = {}) => call<{ agents: Agent[]; next_cursor: string | null }>("GET", archived ? "/agents?archived=true" : "/agents"),
+    getAgent: async (id: string) => { const r = await callTagged<Agent>("GET", agent(id)); return { agent: r.body, etag: r.etag }; },
+    createAgent: (body: { definition: Definition; skills?: Record<string, string> }) => call<Agent>("POST", "/agents", { body }),
+    /** Saves a new revision. `etag` is the revision the edit was made on: the server refuses the save (412) when another
+     *  landed first. The answer's ETag is the new revision, for the next edit. */
+    updateDefinition: async (id: string, body: { definition: Partial<Definition>; note?: string; skills?: Record<string, string> }, etag: string | null) => {
+      const r = await callTagged<Agent>("PUT", `${agent(id)}/definition`, { body, headers: etag ? { "if-match": etag } : {} });
+      return { agent: r.body, etag: r.etag };
+    },
+    listRevisions: (id: string) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions`),
+    setCurrent: (id: string, revision: string) => call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }),
+    archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
+    unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
     getTimeline: (id: string, { after, waitMs }: { after?: number; waitMs?: number } = {}) => {
       const q = new URLSearchParams();
