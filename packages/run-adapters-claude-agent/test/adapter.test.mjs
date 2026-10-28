@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
+import { foldSession } from '@parcha/agentrun-adapters/kernel';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { ClaudeAgentThinkingOff, claudeAgentAdapter, thinkingOf } from '@parcha/agentrun-claude-agent';
 import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
@@ -24,6 +25,11 @@ const doc = (root) => ({ v: 2, name: 'claude', schemas: SCHEMAS, output: { schem
 const agent = (extra = {}) => ({ node: 'agent', label: 'task', instructions: 'Answer.', out: 'Out', as: 'final', ...extra });
 
 /** A Claude Agent adapter on the scripted SDK, whose "model" is a scripted Anthropic API behind the session's proxy. */
+/** Wait until `ready()` holds, or fail after 5 s naming `what`. */
+async function until(ready, what) {
+  for (const end = Date.now() + 5_000; !ready(); await new Promise((resolve) => setTimeout(resolve, 5))) if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+}
+
 async function claude(t, { script = [], sdk: sdkOptions = {}, ...extra } = {}) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
@@ -160,6 +166,41 @@ test("every session thinks: medium when its node names no level, the node's leve
   for (const level of ['off', 'none', 'disabled', '']) {
     assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, sdk: fakeSdk(), standIn: { command: process.execPath }, thinking: level }), (e) => e instanceof ClaudeAgentThinkingOff && e.code === 'CLAUDE_AGENT_THINKING_OFF');
   }
+});
+
+test("an interrupt as a never tool's outcome is still being written: the next turn's drive folds the outcome, never takes it for abandoned (K11 through the adapter)", async (t) => {
+  let charged = 0;
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: async () => { charged += 1; return { text: 'paid' }; } };
+  const spec = { key: 'step:k11', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const raw = await store.open(spec.key);
+  // The session's writer, with the charge's outcome append held, as a slow store holds it.
+  const charges = new Set();
+  let release;
+  let held = false;
+  const writer = { key: raw.key, read: () => raw.read(), append: async (records) => {
+    for (const r of records) if (r.kind === 'kernel.start' && r.data.name === 'tool.charge') charges.add(r.data.stepId);
+    if (!held && records.some((r) => r.kind === 'kernel.end' && charges.has(r.data.stepId))) { held = true; await new Promise((resolve) => { release = resolve; }); }
+    return raw.append(records);
+  } };
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const { adapter } = await claude(t, { script: ['call charge {"amount":5}'] });
+  const session = await adapter.open(spec, { store, writer, models, signal: new AbortController().signal, onEvent: () => {} });
+  await session.send('pay');
+  await until(() => held, 'the charge outcome in flight');
+  // The interrupt halts the drive; the harness gives a call in flight 5 s (harness.ts, `settled`), and the next turn
+  // opens a new drive. The outcome is held past that grace. Today this passes on the raw writer too: the halted
+  // harness's last flush writes through the same drive's queue, behind the held outcome, so it cannot finish (and the
+  // next drive cannot open) before the outcome lands. The serialized writer (serial.ts, K11 in serial.test.mjs) makes
+  // that ordering the writer's, not the harness's habit; this test keeps the end-to-end property.
+  const next = (async () => { await session.interrupt(); await session.send('and then?'); return session.turnEnd(); })();
+  await new Promise((resolve) => setTimeout(resolve, 6_000));
+  release();
+  await next;
+  await session.close();
+  assert.equal(charged, 1, 'the charge ran once');
+  const outcome = [...foldSession(spec.key, await raw.read()).effects.values()].find((e) => e.name === 'tool.charge');
+  assert.equal(outcome?.status, 'completed', `the charge ran and paid, but the log says ${outcome?.status}${outcome?.error ? ` (${outcome.error.message.slice(0, 60)})` : ''}`);
 });
 
 test("a crash inside a never tool's call: the next process recovers the turn, and the call is reported, never run again", async (t) => {

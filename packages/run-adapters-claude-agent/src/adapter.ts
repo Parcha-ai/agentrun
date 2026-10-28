@@ -20,6 +20,7 @@ import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
+import { serialWriter } from "./serial.js";
 import { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 
 /** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
@@ -139,6 +140,9 @@ export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk"
   const sdkVersion = options.sdk ? options.sdkVersion : installed("@anthropic-ai/claude-agent-sdk");
   if (!options.sdk && sdkVersion === undefined) throw new ClaudeAgentNotInstalled("@anthropic-ai/claude-agent-sdk is not installed beside the adapter, and no module was given (sdk)");
   if (sdkVersion !== undefined && sdkVersion !== CLAUDE_AGENT_SDK_VERSION) throw new ClaudeAgentPinMismatch("sdk_version", CLAUDE_AGENT_SDK_VERSION, sdkVersion);
+  // The harness builds the session's tool schemas with zod, imported from here, whichever SDK runs: an injected SDK
+  // does not bring it, so a missing one is refused now, not at the first turn.
+  if (installed("zod") === undefined) throw new ClaudeAgentNotInstalled("zod is not installed beside the adapter (the Agent SDK's peer, which the harness builds its tool schemas with)");
   const cli = verifyClaudeAgentCli(options.cliPath ?? findClaudeExecutable());
   if (cli instanceof Error) throw cli;
   return { cliPath: cli.path };
@@ -255,7 +259,10 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         const e = event as { type?: string; delta?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
       };
-      const open = (attempt = 0) => openDrive({ writer: io.writer, signal: io.signal, live, attempt });
+      // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
+      // once the halted drive's last writes are in (serial.ts).
+      const writer = serialWriter(io.writer);
+      const open = (attempt = 0) => openDrive({ writer, signal: io.signal, live, attempt });
       let drive = await open();
       const initial = drive.state();
       let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length

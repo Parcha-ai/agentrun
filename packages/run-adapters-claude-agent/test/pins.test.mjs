@@ -1,6 +1,7 @@
 // The Claude Agent SDK and its CLI are the host's (an optional peer dependency): the adapter checks them against its pins
 // when it is made, and refuses a mismatch with a typed error a host maps to the run's failure line.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -72,4 +73,20 @@ test('an SDK whose own spawn marker says another release starts no CLI: the spaw
 test('the installed SDK and its pinned CLI pass', { skip: !claudeAgentExecutable() && 'no pinned CLI installed here' }, () => {
   const { cliPath } = verifyClaudeAgent({});
   assert.equal(cliPath, claudeAgentExecutable());
+});
+
+test('an injected SDK with no zod beside the adapter is refused when the adapter is made, typed, before any turn', () => {
+  const noZod = (name) => (name === 'zod' ? undefined : '0.3.286');
+  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'none') }, noZod), (e) => e instanceof ClaudeAgentNotInstalled && /zod/.test(e.detail));
+});
+
+test("the pinned CLI is found beside the adapter's install, whatever the process's working directory", { skip: !claudeAgentExecutable() && 'the pinned CLI is not installed here' }, () => {
+  const elsewhere = mkdtempSync(join(tmpdir(), 'agentrun-cwd-'));
+  try {
+    const url = new URL('../dist/binary.js', import.meta.url).href;
+    const found = execFileSync(process.execPath, ['--input-type=module', '-e', `const m = await import(${JSON.stringify(url)}); process.stdout.write(m.findClaudeExecutable() ?? '')`], { cwd: elsewhere, encoding: 'utf8', env: { PATH: process.env.PATH } });
+    assert.equal(found, claudeAgentExecutable(), 'the same binary from a directory with no node_modules');
+  } finally {
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
 });
