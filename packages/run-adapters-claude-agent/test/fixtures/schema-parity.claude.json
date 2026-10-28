@@ -1,0 +1,218 @@
+[
+ {
+  "hash": "f592fb93da2b759e2ccd31110ec456cdbd88dd05cecd5c82896500199f31b5ec",
+  "source": "pydantic 2.13.5 model_json_schema: SearchInput",
+  "claude": "carried"
+ },
+ {
+  "hash": "10e90813da2c410fe633125d7930b6e5e28d2bb5850a87cc61e1754697583435",
+  "source": "pydantic 2.13.5 model_json_schema: FetchInput",
+  "claude": "carried"
+ },
+ {
+  "hash": "a8d79ea341d9374bc5f0a89824ccd7eeba2ff62a50bf6d6a5384c5d9ac005ded",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Input (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "a6d2cdc3e3b36b4134ee9d5f54b7a54bb9fd26b3b70120e54ce52f3af22fd293",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is IssueRecord (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "c389a4b89945bb0659a7f5ef56fff8892d4ea026e44420236682c6099ed5d7f7",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is LinkedPrs (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "dcd8f874d9910a73fae510472165ac2a53dbf5d0625d2908977c1215efba0538",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Research (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "5f13f457d9d9c9cfff97e12ba6b82e73327f999e6466250c5fd238edabbaa634",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Row (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "d8ec950f97c7374f4697051ce987b8c24332b0454b0e4fd3f7cb26af468ea7aa",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Result (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "35c47614e94804ad2ea3f89f3e048061d90ff49269ac90dda949d4b586671e9a",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is MaintainerLabels (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "4577794bdca1bfee0757fd3da2015863d62f8eca1eae427189a5297256b7945a",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is CodeFetched (submitParameters of the resolved schema)",
+  "claude": "carried"
+ },
+ {
+  "hash": "7a96b530ba32f5441ae759a03338ed6a2c12cb30c42a4f40fc2d72353eadbf1f",
+  "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Judgment (submitParameters of the resolved schema)",
+  "claude": {
+   "refused": [
+    "#/properties/value/properties/label: the keyword \"criteria\" is not carried to the model",
+    "#/properties/value/properties/good_first_issue: the keyword \"criteria\" is not carried to the model",
+    "#/properties/value/properties/actionable: the keyword \"criteria\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "77ac9ebb95061aa5066394d14b5b5ee4830f10676d9ad4aa74ba02d77a667292",
+  "source": "edge: everything the Claude bridge carries",
+  "claude": "carried"
+ },
+ {
+  "hash": "cbd40f8cd4337a806cac9886db08a451f3b81d6f89e2c040dcb4c83258448d24",
+  "source": "edge: format hostname",
+  "claude": {
+   "refused": [
+    "#/properties/p: the format \"hostname\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "71e25d1d1d2ec7cb46edb20f4aafdd33c287417fd3785909f934b98e913b6a64",
+  "source": "edge: format time",
+  "claude": {
+   "refused": [
+    "#/properties/p: the format \"time\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "8edfffc53bfc287672f0edca8fb6592ca026ecdc9fa066fea466966e2c5e6b57",
+  "source": "edge: format with no type",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"format\" is not carried to the model on this type"
+   ]
+  }
+ },
+ {
+  "hash": "7205acccd360a462d15a42b3004d6a059364539600329dbee29b8cab837046a3",
+  "source": "edge: minLength on a number",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"minLength\" is not carried to the model on this type"
+   ]
+  }
+ },
+ {
+  "hash": "4a930503cde2e27f8188c929795b4ad564ae2fc8fc1d2044e76e516539e9946f",
+  "source": "edge: uniqueItems",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"uniqueItems\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "4563f65f840b66fbb2bdb2a757eae98208ec7ca517cbf80dd09d50950b177195",
+  "source": "edge: remote $ref",
+  "claude": {
+   "refused": [
+    "#: the $ref \"https://example.com/schema.json\" is not local to the schema"
+   ]
+  }
+ },
+ {
+  "hash": "c31b002001a9184bb2eb39d13af1f6c077a3642820580aad18e0be79c4499ba3",
+  "source": "edge: recursive $ref",
+  "claude": {
+   "refused": [
+    "#: the $ref \"#/$defs/Node\" is recursive (#/$defs/Node -> #/$defs/Node)"
+   ]
+  }
+ },
+ {
+  "hash": "3dfe46f044dee8290e323acaf4072d1c949cce9dc13ef6ee3f2949d4c0fa61bf",
+  "source": "edge: allOf",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"allOf\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "88253003ef2aeca461b60840fca9cb8997256366d258579f897f6a70315a8970",
+  "source": "edge: not",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"not\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "12d9a5a832daab19b412f6d39bbe71642e470806e2acba5d676fdc41df099dd1",
+  "source": "edge: oneOf between real alternatives",
+  "claude": {
+   "refused": [
+    "#/properties/p: \"oneOf\" between real alternatives is not carried to the model (only one schema or null is)"
+   ]
+  }
+ },
+ {
+  "hash": "1e2716771bd4331404e626cc6da2837def1ecf5cddace59f6bdd588542d24119",
+  "source": "edge: oneOf of one schema or null",
+  "claude": "carried"
+ },
+ {
+  "hash": "46e2de6a6bd9296c1b6b29919025149a73e63ef377f9a29b241f9177cdbec33a",
+  "source": "edge: tuple items",
+  "claude": {
+   "refused": [
+    "#/properties/p: \"items\" as a list (a tuple) would be carried as any"
+   ]
+  }
+ },
+ {
+  "hash": "2fda817e6a818927d147a97e80bf02307ab26a53fdb13822383886f9d612aa06",
+  "source": "edge: prefixItems",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"prefixItems\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "e910f2f93d93c83a0d43c6593c5a69436d628f6f481e7b517b45ac7cb4da4f2b",
+  "source": "edge: two non-null types",
+  "claude": {
+   "refused": [
+    "#/properties/p: \"type\" lists more than one non-null type, which would be carried as any"
+   ]
+  }
+ },
+ {
+  "hash": "c52896e847e2e88d0b9342bbad5ab7c34542d20f374932d3cfef0c41e4e4a072",
+  "source": "edge: an object in enum",
+  "claude": {
+   "refused": [
+    "#/properties/p: \"enum\" must list strings, numbers, booleans or null"
+   ]
+  }
+ },
+ {
+  "hash": "069fe078769440a987c5bf2888f6fba5f73c21ac1c96951aed11344c309a11be",
+  "source": "edge: patternProperties",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"patternProperties\" is not carried to the model"
+   ]
+  }
+ },
+ {
+  "hash": "893cf697ddfadafd6e36e78544fda22abb8cf6a3b673cfd40c97358decd2bbe0",
+  "source": "edge: if/then",
+  "claude": {
+   "refused": [
+    "#/properties/p: the keyword \"if\" is not carried to the model",
+    "#/properties/p: the keyword \"then\" is not carried to the model"
+   ]
+  }
+ }
+]

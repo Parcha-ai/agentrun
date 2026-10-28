@@ -56,6 +56,16 @@ test('a schema of what the bridge carries passes, and round-trips: an input that
   for (const kept of ['"minLength":1', '"maximum":50', '"exclusiveMinimum":0', '"multipleOf":0.25', '"pattern":"^[A-Z]{2}$"', '"format":"email"', '"format":"uri"', '"format":"date-time"', '"minItems":1', '"maxItems":3']) assert.ok(shown.includes(kept), `the model is shown ${kept}: ${shown.slice(0, 300)}`);
 });
 
+test('annotations (title, examples, default) are carried for the model to read and check nothing', () => {
+  const schema = { type: 'object', properties: { depth: { type: 'string', title: 'Depth', default: 'quick', examples: ['deep'] } } };
+  assert.deepEqual(toolSchemaProblems(schema), []);
+  const zod = zodFromJsonSchema(schema, z);
+  const shown = JSON.stringify(z.toJSONSchema(zod));
+  for (const kept of ['"title":"Depth"', '"default":"quick"', '"examples":["deep"]']) assert.ok(shown.includes(kept), `${kept} in ${shown}`);
+  assert.equal(zod.safeParse({}).success, true, 'a default does not make the field required');
+  assert.deepEqual(zod.parse({}), {}, 'nor fill it in: the host gets what the model sent');
+});
+
 test('what the bridge would drop is refused, each by name and place', () => {
   const at = (prop) => ({ type: 'object', properties: { p: prop } });
   for (const [prop, said] of [
@@ -66,10 +76,10 @@ test('what the bridge would drop is refused, each by name and place', () => {
     [{ type: ['string', 'null'], pattern: '(' }, /"pattern" is not a regular expression/],
     [{ type: 'number', exclusiveMinimum: true }, /"exclusiveMinimum" must be a number/],
     [{ type: 'array', items: { type: 'string' }, uniqueItems: true }, /the keyword "uniqueItems"/],
-    [{ $ref: '#/definitions/x' }, /the keyword "\$ref"/],
+    [{ $ref: '#/definitions/x' }, /the \$ref "#\/definitions\/x" names nothing/],
+    [{ $ref: 'https://example.com/s.json' }, /is not local to the schema/],
     [{ allOf: [{ type: 'string' }] }, /the keyword "allOf"/],
-    [{ oneOf: [{ type: 'string' }, { type: 'number' }] }, /the keyword "oneOf"/],
-    [{ type: 'string', default: 'x' }, /the keyword "default"/],
+    [{ oneOf: [{ type: 'string' }, { type: 'number' }] }, /"oneOf" between real alternatives is not carried/],
     [{ anyOf: [{ type: 'string' }] }, /"anyOf" needs at least two schemas/],
     [{ type: ['string', 'number'] }, /more than one non-null type/],
     [{ type: 'array', items: [{ type: 'string' }] }, /"items" as a list/],

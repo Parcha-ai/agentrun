@@ -170,3 +170,5 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
   return adapter;
 }
 
+export { SCHEMA_CORPUS } from "./schema-corpus.js";
+export type { SchemaCorpusEntry } from "./schema-corpus.js";

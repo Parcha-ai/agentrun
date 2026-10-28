@@ -1,0 +1,245 @@
+{
+ "pydantic": "2.13.5",
+ "schemas": [
+  {
+   "tool": "SearchInput",
+   "inputSchema": {
+    "$defs": {
+     "Address": {
+      "properties": {
+       "street": {
+        "description": "Street and number.",
+        "title": "Street",
+        "type": "string"
+       },
+       "country": {
+        "maxLength": 2,
+        "minLength": 2,
+        "pattern": "^[A-Z]{2}$",
+        "title": "Country",
+        "type": "string"
+       },
+       "postcode": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Postcode"
+       }
+      },
+      "required": [
+       "street",
+       "country"
+      ],
+      "title": "Address",
+      "type": "object"
+     },
+     "Depth": {
+      "enum": [
+       "quick",
+       "deep"
+      ],
+      "title": "Depth",
+      "type": "string"
+     },
+     "Person": {
+      "properties": {
+       "name": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Full name",
+        "type": "string"
+       },
+       "born": {
+        "anyOf": [
+         {
+          "format": "date",
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Born"
+       },
+       "address": {
+        "anyOf": [
+         {
+          "$ref": "#/$defs/Address"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "aliases": {
+        "items": {
+         "type": "string"
+        },
+        "maxItems": 10,
+        "title": "Aliases",
+        "type": "array"
+       }
+      },
+      "required": [
+       "name"
+      ],
+      "title": "Person",
+      "type": "object"
+     }
+    },
+    "description": "Search the web for a subject.",
+    "properties": {
+     "query": {
+      "description": "What to look for.",
+      "examples": [
+       "acme corp"
+      ],
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+     },
+     "depth": {
+      "$ref": "#/$defs/Depth",
+      "default": "quick"
+     },
+     "limit": {
+      "default": 10,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "score_floor": {
+      "default": 0.0,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Score Floor",
+      "type": "number"
+     },
+     "site": {
+      "anyOf": [
+       {
+        "format": "uri",
+        "maxLength": 2083,
+        "minLength": 1,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Site"
+     },
+     "kind": {
+      "default": "web",
+      "enum": [
+       "web",
+       "news"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "subject": {
+      "$ref": "#/$defs/Person"
+     },
+     "others": {
+      "default": [],
+      "items": {
+       "$ref": "#/$defs/Person"
+      },
+      "title": "Others",
+      "type": "array"
+     },
+     "tags": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "default": {},
+      "title": "Tags",
+      "type": "object"
+     }
+    },
+    "required": [
+     "query",
+     "subject"
+    ],
+    "title": "SearchInput",
+    "type": "object"
+   },
+   "example": {
+    "query": "acme",
+    "depth": "deep",
+    "limit": 5,
+    "score_floor": 0.0,
+    "site": null,
+    "kind": "web",
+    "subject": {
+     "name": "Ada",
+     "born": "1990-01-02",
+     "address": {
+      "street": "1 Main",
+      "country": "US",
+      "postcode": null
+     },
+     "aliases": []
+    },
+    "others": [
+     {
+      "name": "Bo",
+      "born": null,
+      "address": null,
+      "aliases": []
+     }
+    ],
+    "tags": {
+     "k": "v"
+    }
+   }
+  },
+  {
+   "tool": "FetchInput",
+   "inputSchema": {
+    "properties": {
+     "url": {
+      "format": "uri",
+      "maxLength": 2083,
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+     },
+     "timeout_s": {
+      "anyOf": [
+       {
+        "exclusiveMinimum": 0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Timeout S"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "FetchInput",
+    "type": "object"
+   },
+   "example": {
+    "url": "https://example.com/a",
+    "timeout_s": null
+   }
+  }
+ ]
+}
