@@ -48,5 +48,8 @@ test("both stages build on one digest-pinned node:22 trixie base, and the runtim
   const install = /apt-get install [^\n]*/.exec(runtime)?.[0] ?? "";
   assert.match(install, /--no-install-recommends/, "without recommends");
   for (const pkg of ["tini", "git"]) assert.match(install, new RegExp(`\\s${pkg}(\\s|$)`), `the runtime installs ${pkg}`);
-  assert.match(runtime, /git --version/, "the build checks the git it installed");
+  // The RUN that reads git's version, continuation lines included, fails the build below 2.40.
+  const guard = [...runtime.matchAll(/^RUN (?:[^\n]*\\\n)*[^\n]*/gm)].map(([run]) => run).find((run) => run.includes("git --version")) ?? "";
+  assert.match(guard, /dpkg --compare-versions "\$v" ge 2\.40\b/, "the build compares the git it installed with 2.40");
+  assert.match(guard, /\|\| \{[^}]*\bexit 1; \}/, "an older git fails the build");
 });
