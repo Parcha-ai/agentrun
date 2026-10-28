@@ -69,10 +69,31 @@ test("a skill that is not the host's (one the CLI bundles) is refused, and none 
   assert.ok(!JSON.stringify(last).includes(CANARY), 'nothing was loaded');
 });
 
-test('an adapter with no skills offers no Skill tool', { skip, timeout: 120_000 }, async (t) => {
+test('an adapter with no skills offers no Skill tool and no read_skill_file', { skip, timeout: 120_000 }, async (t) => {
   const { output, offered } = await node(t, {});
   assert.deepEqual(output, { answer: 'ok' });
-  assert.ok(offered.length >= 1 && offered.every((tools) => !tools.includes('Skill')), JSON.stringify(offered));
+  assert.ok(offered.length >= 1 && offered.every((tools) => !tools.includes('Skill') && !tools.includes('mcp__hands__read_skill_file')), JSON.stringify(offered));
+});
+
+test("after loading a skill, the model reads one of its files with read_skill_file, and the file's text reaches it", { skip, timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(ROOT, 'read-'));
+  let step = 0;
+  const provider = await fakeAnthropic({ reply: (r) => {
+    if (r.model !== MODEL) return { text: 'ok' };
+    step += 1;
+    if (step === 1) return { tool: { name: 'Skill', input: { skill: 'agentrun:research-method' } } };
+    if (step === 2) return { tool: { name: 'mcp__hands__read_skill_file', input: { skill: 'research-method', path: 'reference/sources.md' } } };
+    return { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } };
+  } });
+  t.after(() => provider.close());
+  const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), skills: [SKILL] });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'skills', system: ['Answer.'], user: 'Use the skill and its reference, then answer ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
+  const main = provider.messages().filter((r) => r.model === MODEL);
+  assert.ok(main.every((r) => (r.body?.tools ?? []).some((x) => x.name === 'mcp__hands__read_skill_file')), 'read_skill_file is offered with skills');
+  const last = main.at(-1)?.body;
+  assert.ok(JSON.stringify(last).includes('Primary sources first.'), 'the reference file reached the model');
+  assert.deepEqual(toolResults(last).filter((r) => r.error), [], 'no call failed');
 });
 
 test('the skills are checked when the adapter is made: a plain name, a SKILL.md that names it with a description, plain relative paths, 1 MiB in all', () => {

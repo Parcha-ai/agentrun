@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
+import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
@@ -270,6 +270,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       for (const tool of spec.tools) {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one the Claude Agent SDK takes (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
+        if (skills.length && tool.name === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
         seen.add(tool.name);
       }
       return problems;
@@ -279,13 +280,15 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       if (problems.length) throw new Error(`agentrun-claude-agent: ${problems.join("; ")}`);
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
       if (!dir) throw new Error("agentrun-claude-agent: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
+      // With skills, the model also reads their files (read_skill_file), from the session's own copy of them.
+      const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const acquire = localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
           hooks: io.models,
-          tools: spec.tools.map((t) => t.name),
+          tools: tools.map((t) => t.name),
           // The Skill tool is offered to the model only when the session has skills.
           ...(skills.length ? { builtins: ["Skill"] } : {}),
           ...(options.price ? { price: options.price } : {}),
@@ -307,7 +310,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // The runner's turn cap and the host's beforeRequest bound the spend.
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
         },
-        tools: spec.tools.map((tool) => kernelTool(tool, io)),
+        tools: tools.map((tool) => kernelTool(tool, io)),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
