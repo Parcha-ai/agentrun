@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 001-gate-always-on, 002-names, 003-comments
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';

@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/ids.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: the ids' namespace is agentrun-claude-agent.
+// Changed by Parcha, patches: 002-names
 import { createHash } from 'node:crypto';
 
 /**

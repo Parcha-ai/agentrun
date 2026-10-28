@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-sdk.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from this package; a `script` of commands, one per user message, for a runner's prompts.
+// Changed by Parcha, patches: 006-fake-sdk-script
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { ClaudeAgentSdk } from '../harness.js';

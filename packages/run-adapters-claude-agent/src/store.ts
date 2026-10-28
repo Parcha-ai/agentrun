@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/store.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam.
+// Changed by Parcha, imports rewritten for AgentRun
 import type { JournalRecord, NativeJournal, TranscriptEntry } from './host/process.js';
 
 /**

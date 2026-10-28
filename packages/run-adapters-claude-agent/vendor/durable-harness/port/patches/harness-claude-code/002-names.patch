@@ -1,0 +1,162 @@
+Patch: 002-names
+Reason: messages, log tags, ids and the client app name say harness-world-claude-code and claude-code; this package's product text says Claude Agent
+Upstream: ours
+Pins: no built string, error or log tag says "Claude Code"
+---
+diff --git a/packages/harness-claude-code/src/env.ts b/packages/harness-claude-code/src/env.ts
+--- a/packages/harness-claude-code/src/env.ts
++++ b/packages/harness-claude-code/src/env.ts
+@@ -96,7 +96,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
+     CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
+     CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING: '1',
+     CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1',
+-    CLAUDE_AGENT_SDK_CLIENT_APP: 'harness-world-claude-code',
++    CLAUDE_AGENT_SDK_CLIENT_APP: 'agentrun-claude-agent',
+   });
+   if (options.bashTimeoutMs !== undefined) {
+     const max = Math.max(1_000, Math.floor(options.bashTimeoutMs));
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -325,12 +325,12 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
+   if (builtins === undefined || builtins === false) return [];
+   if (builtins === true) return [...CLAUDE_BUILTINS];
+   if (Array.isArray(builtins)) {
+-    if (!builtins.every((b) => typeof b === 'string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(b))) throw new TypeError('harness-world-claude-code: builtins takes tool names (Bash, Read, ...)');
++    if (!builtins.every((b) => typeof b === 'string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(b))) throw new TypeError('agentrun-claude-agent: builtins takes tool names (Bash, Read, ...)');
+     return [...builtins];
+   }
+   const preset = builtins as { type?: unknown; preset?: unknown };
+   if (preset.type === 'preset' && preset.preset === 'claude_code') return undefined;
+-  throw new TypeError("harness-world-claude-code: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
++  throw new TypeError("agentrun-claude-agent: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
+ }
+ 
+ /** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16). */
+@@ -399,7 +399,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+   };
+ 
+   return {
+-    name: options.name ?? 'claude-code',
++    name: options.name ?? 'claude-agent',
+     // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
+     modelCalls: 'self',
+     async drive(ctx: DriveContext) {
+@@ -424,7 +424,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+       // model steps, written around a "Crash during: model" drill.
+       const steps = new ModelSteps(ctx, options.log ? { log: options.log } : {});
+       const ledger = journalLedger(journal, { records });
+-      if (ctx.deadline === undefined) log('claude-code: the kernel gave no deadline; assuming a 300 s invocation', {});
++      if (ctx.deadline === undefined) log('claude-agent: the kernel gave no deadline; assuming a 300 s invocation', {});
+       const deadline = ctx.deadline ?? Date.now() + ASSUMED_INVOCATION_MS;
+       const handler = gatewayHandler({
+         routes: CLAUDE_ROUTES,
+@@ -440,7 +440,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+           if (cap !== 'concurrency') ctx.halt?.(spendCapped(cap));
+         },
+         // Without the app's own log, the handler's default: a refused model call is a warning in the Function's logs, not silence.
+-        ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-code gateway: ${message}`, fields) } : {}),
++        ...(options.log ? { log: (message: string, fields?: Record<string, unknown>) => log(`claude-agent gateway: ${message}`, fields) } : {}),
+       });
+ 
+       const abort = new AbortController();
+@@ -469,7 +469,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+         if (builtinsOn && !ownSandbox) {
+           if (ctx.signal.aborted) throw ctx.signal.reason;
+           if (!options.unsandboxedCommands) throw noCommandSandbox();
+-          log("claude-code: bubblewrap doesn't work in this VM: the CLI's commands run without its sandbox (unsandboxedCommands; the VM is the boundary, the model key only a correlation id)");
++          log("claude-agent: bubblewrap doesn't work in this VM: the CLI's commands run without its sandbox (unsandboxedCommands; the VM is the boundary, the model key only a correlation id)");
+         }
+ 
+         /**
+@@ -537,7 +537,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+             return undefined;
+           } catch (err) {
+             const why = String((err as Error)?.message ?? err).slice(0, 200);
+-            log('claude-code: the Drive flush after a built-in failed', { name, error: why });
++            log('claude-agent: the Drive flush after a built-in failed', { name, error: why });
+             return why;
+           }
+         };
+@@ -727,7 +727,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+           const tail = proc ? proc.stderrTail().slice(-500) : '';
+           const message = `claude exited mid-turn: ${why}${machine.signal.aborted ? ' (the link to the VM was lost)' : ''}${tail ? ` (${tail})` : ''}`;
+           if (ctx.attempt < CLI_RESTARTS && deadline - Date.now() > RESTART_MIN_LEFT_MS) {
+-            log('claude-code: the CLI exited mid-turn; the drive is rebuilt from the log', { why: why.slice(0, 200), linkLost: machine.signal.aborted, attempt: ctx.attempt });
++            log('claude-agent: the CLI exited mid-turn; the drive is rebuilt from the log', { why: why.slice(0, 200), linkLost: machine.signal.aborted, attempt: ctx.attempt });
+             return new Restart(message);
+           }
+           return new Error(message);
+@@ -748,7 +748,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+             const m = r.value as { type: string; subtype?: string; error?: unknown };
+             // The SDK dropped a mirror batch (the session store refused it three times): as an unmapped frame, the turn ends and the session is kept.
+             if (m.type === 'system' && m.subtype === 'mirror_error') {
+-              log('claude-code: the SDK dropped a mirror batch', { error: String(m.error ?? '').slice(0, 200) });
++              log('claude-agent: the SDK dropped a mirror batch', { error: String(m.error ?? '').slice(0, 200) });
+               ctx.halt?.(mirrorUnmapped('a batch the Agent SDK could not keep in the log'));
+               throw ctx.signal.reason ?? mirrorUnmapped('a batch the Agent SDK could not keep in the log');
+             }
+@@ -875,15 +875,15 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+ 
+ /** The refusal by provenance (docs/workspaces.md §6 rule 1). */
+ function sandboxRequired(): Unavailable {
+-  return new Unavailable('Claude Code runs only in a Vercel Sandbox: pass workspace: sandbox()', {
++  return new Unavailable('agentrun-claude-agent: the Claude Agent CLI runs only on the session machine its adapter makes', {
+     code: 'sandbox_required',
+-    hint: "durable-harness's claudeCode() and claudeCodeHarness() attach the session's sandbox by default; a hand-built harness needs the sandbox tier's machine.",
++    hint: "claudeAgentAdapter() makes it; a hand-built harness needs the adapter's machine.",
+   });
+ }
+ 
+ /** Claude Code's sandbox can't start in the VM (with the built-ins on, and no `unsandboxedCommands`). */
+ function noCommandSandbox(): Unavailable {
+-  return new Unavailable("Claude Code's own sandbox (bubblewrap) doesn't start in this session's VM, so its commands would run beside the CLI, where they can read its model key: this turn ends", {
++  return new Unavailable("agentrun-claude-agent: the CLI's own command sandbox (bubblewrap) doesn't start on this machine, so its commands would run beside the CLI, where they can read its model key: this turn ends", {
+     hint: 'Boot from the base (prepareSandboxBase) or an image built by the same recipe (bubblewrap, socat, a mountable /proc); the next turn tries again.',
+   });
+ }
+@@ -911,7 +911,7 @@ function spendCapped(cap: Exclude<GatewayCap, 'concurrency'>): Unavailable {
+ 
+ /** The mirror guard (§5.6 "Mirror"): the turn ends, the session is kept. */
+ function mirrorUnmapped(why: string): Unavailable {
+-  return new Unavailable(`harness-world-claude-code: mirror_unmapped: the CLI's transcript mirror sent ${why}, so the transcript can't be kept in the log; this turn ends and the session is kept`, {
++  return new Unavailable(`agentrun-claude-agent: mirror_unmapped: the CLI's transcript mirror sent ${why}, so the transcript can't be kept in the log; this turn ends and the session is kept`, {
+     hint: 'This is a VM or CLI fault, not a model one: check the deployment pins the CLI the image carries; the next turn tries again.',
+   });
+ }
+diff --git a/packages/harness-claude-code/src/ids.ts b/packages/harness-claude-code/src/ids.ts
+--- a/packages/harness-claude-code/src/ids.ts
++++ b/packages/harness-claude-code/src/ids.ts
+@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
+  * Name-based (SHA-256, formatted with the version-5 and RFC 4122 variant bits).
+  */
+ export function uuidFrom(name: string): string {
+-  const h = createHash('sha256').update(`harness-world-claude-code:${name}`).digest('hex');
++  const h = createHash('sha256').update(`agentrun-claude-agent:${name}`).digest('hex');
+   const variant = ((Number.parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16);
+   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+ }
+diff --git a/packages/harness-claude-code/src/inbox.ts b/packages/harness-claude-code/src/inbox.ts
+--- a/packages/harness-claude-code/src/inbox.ts
++++ b/packages/harness-claude-code/src/inbox.ts
+@@ -9,7 +9,7 @@ export class MessageQueue<T> implements AsyncIterable<T> {
+   private wake: (() => void) | undefined;
+ 
+   push(item: T): void {
+-    if (this.ended) throw new Error('harness-world-claude-code: the input is closed');
++    if (this.ended) throw new Error('agentrun-claude-agent: the input is closed');
+     this.items.push(item);
+     this.wake?.();
+   }
+diff --git a/packages/harness-claude-code/src/versions.ts b/packages/harness-claude-code/src/versions.ts
+--- a/packages/harness-claude-code/src/versions.ts
++++ b/packages/harness-claude-code/src/versions.ts
+@@ -61,7 +61,7 @@ export function installedVersion(name: string, from = import.meta.url): string |
+ export function checkAgentSdkVersion(versionOf: (name: string) => string | undefined = installedVersion): Unavailable | undefined {
+   const installed = versionOf(SDK);
+   if (installed === undefined || installed === CLAUDE_AGENT_SDK_VERSION) return undefined;
+-  return new Unavailable(`harness-world-claude-code: installed ${SDK} ${installed} (expected ${CLAUDE_AGENT_SDK_VERSION}): Claude Code runs only with the Agent SDK this harness is built with`, {
++  return new Unavailable(`agentrun-claude-agent: installed ${SDK} ${installed} (expected ${CLAUDE_AGENT_SDK_VERSION}): the Claude Agent harness runs only with the Agent SDK it is built with`, {
+     code: 'unavailable',
+     hint: `Install the pinned version: ${CLAUDE_AGENT_SDK_INSTALL}`,
+   });
