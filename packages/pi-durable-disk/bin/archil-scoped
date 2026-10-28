@@ -188,11 +188,11 @@ stray() {
 refuse() { echo "archil-scoped: refused: $*" >&2; exit 2; }
 safe_token() { printf '%s\n' "$2" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9_-]{0,63}' || refuse "$1 $2 is not one safe token"; }
 
-# A fuse.archil mount the table lists at exactly $1, never through a link (the table lists none under a link's name; a
-# dead mount's root cannot be stat'ed, so it is no link here either).
+# A fuse.archil mount the table lists at exactly $1. Nothing here touches the mountpoint itself: a stat of a FUSE mount
+# would refresh the attributes the kernel caches for it, and the claim must still find a dead daemon's mount dead. Only
+# root names entries in <root>/runs (run_path), and the table never lists a mount under a link's name.
 archil_mount() {
   run_path "$1"
-  [ ! -L "$mp" ] || refuse "$mp is a link"
   listed "$mp" fuse.archil || refuse "no fuse.archil mount is listed at $mp"
 }
 

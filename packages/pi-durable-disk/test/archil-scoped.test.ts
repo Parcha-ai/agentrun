@@ -45,7 +45,9 @@ function wrapper(cgroup: string, opts: { rootLink?: boolean; mpLink?: boolean; u
   const cgroupFile = join(dir, "cgroup");
   writeFileSync(cgroupFile, `${cgroup}\n`);
   const mounts = join(dir, "mounts");
-  writeFileSync(mounts, `dsk-1:/runs/r1[${REGION}] ${mp} fuse.archil rw,allow_other 0 0\nproc /proc proc rw 0 0\n`);
+  // As a kernel's table does: a mount under its real path, never under a link's name.
+  const listedAt = opts.mpLink ? join(dir, "elsewhere") : join(real, "runs", "r1");
+  writeFileSync(mounts, `dsk-1:/runs/r1[${REGION}] ${listedAt} fuse.archil rw,allow_other 0 0\nproc /proc proc rw 0 0\n`);
   const source = readFileSync(ARCHIL_SCOPED, "utf8");
   const script = source
     .replace("ARCHIL=/usr/bin/archil", `ARCHIL='${archil}'`)
@@ -121,8 +123,7 @@ test("each shape the claim uses reaches archil with exactly its arguments; only 
   }
 });
 
-// Each refused before archil runs, with exit 2. `args` is built over the rig's paths. The rig's stub mount table lists
-// runs/r1 whatever it is, so the wrapper's own checks are what refuse.
+// Each refused before archil runs, with exit 2. `args` is built over the rig's paths.
 type Rig = { root: string; mp: string };
 const REFUSED: [string, (w: Rig) => string[], { rootLink?: boolean; mpLink?: boolean }?][] = [
   ["a mountpoint at /etc", () => mountOf("/etc")],
