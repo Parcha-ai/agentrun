@@ -1,8 +1,8 @@
 import { ArrowRight, Copy, Play } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
-import { curlFor, keeper, type StartBody, startBody } from "@/lib/runStart";
+import { curlFor, keeper, type StartBody, startBody, started } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -23,6 +23,11 @@ export type PlaygroundProps = {
  *  request as code on the right, and the server's answer, with a way into the run it started. */
 export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
+  // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
+  useEffect(() => {
+    if (initialAgent && initialAgent !== agentId && agents.some((a) => a.agent_id === initialAgent)) setAgentId(initialAgent);
+    else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
+  }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
   const kind = agent?.kind ?? "agentic";
   const [text, setText] = useState("");
@@ -45,8 +50,9 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     setSending(true);
     const r = await onSend(agentId, built.body, key);
     setSending(false); setResult(r); setPane("response");
-    // A run started (2xx): the next send is a new request. A refusal keeps the key, so fixing and resending is honest.
-    if (r.status < 300) keys.done();
+    // A run started (2xx): the next send is a new request. A refusal or a lost answer keeps the key, so a retry is the
+    // same request and the server answers with the run it may have started.
+    if (started(r.status)) keys.done();
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { curlFor, keeper, startBody } from "./runStart";
+import { curlFor, keeper, startBody, started } from "./runStart";
 
 describe("startBody", () => {
   it("starts an agentic run with its first message as content, and only the options given", () => {
@@ -48,5 +48,15 @@ describe("curlFor", () => {
     expect(c).toContain('-H "Authorization: Bearer $AGENTRUN_TOKEN"');
     expect(c).toContain("-H 'Idempotency-Key: k1'");
     expect(c).toContain(`-d '{"input":{"content":"It'\\''s done."}}'`);
+  });
+});
+
+describe("started", () => {
+  it("a run started only on a 2xx: a lost answer (no status) or a refusal keeps the key for the retry", () => {
+    expect(started(202)).toBe(true);
+    expect(started(200)).toBe(true);
+    expect(started(0)).toBe(false);
+    expect(started(409)).toBe(false);
+    expect(started(503)).toBe(false);
   });
 });
