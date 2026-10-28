@@ -147,8 +147,11 @@ test('a capability beta the allowlist lacks refuses the request through the prox
         assert.equal(res.status, 403, value);
       }
     }
+    // The probe a shared machine's service sends each new loopback listener: refused without the key, and not counted.
+    assert.equal((await fetch(`${proxy.url}/`)).status, 401);
     assert.equal(sent.length, 0, 'nothing was forwarded');
-    assert.equal(logged.filter((l) => /refused/.test(l.message)).length, CAPABILITY_BETAS.length * 3);
+    // Each request here carries the session's key: a keyless refusal is a local prober's (tool-off.test), not counted.
+    assert.equal(logged.filter((l) => /refused/.test(l.message) && l.reason !== "this session's key is required").length, CAPABILITY_BETAS.length * 3);
     // The CLI's own values, all nine at once, still pass.
     const ok = await post([...CLAUDE_BETAS].join(','));
     await ok.text();

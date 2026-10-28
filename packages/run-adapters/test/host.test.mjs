@@ -102,9 +102,13 @@ test("only the policy's routes, by their exact text: an absolute URL, a foreign 
   const refused = ['http://evil.example/v1/test', '//evil.example/v1/test', '/v1/test/../files', '/v1/%74est', '/v1/test?x=1', '/v1/files', '/v1/test/', '/v1//test', '/V1/test'];
   for (const path of refused) assert.equal((await send(p.url, { path })).status, 403, path);
   for (const method of ['GET', 'PUT']) assert.equal((await send(p.url, { method })).status, 403, method);
+  // The probe a shared machine's service sends each new loopback listener: refused without the key, and not counted.
+  assert.equal((await send(p.url, { method: 'GET', path: '/', key: null })).status, 401);
   assert.equal(forwarded.length, 0, 'nothing refused reached the provider');
   // Every refusal is reported, with what was asked: a client calling a route the table lacks is seen.
-  const refusals = hooks.logged.filter((l) => /refused/.test(l.message));
+  // Each request here carries the session's key, so a keyless refusal is another local client's (a service on a shared
+  // machine probes new loopback listeners with a bare `GET /`), not counted.
+  const refusals = hooks.logged.filter((l) => /refused/.test(l.message) && l.reason !== "this session's key is required");
   assert.equal(refusals.length, refused.length + 2);
   assert.deepEqual(refusals.at(-1), { message: 'model proxy (test): refused', status: 403, method: 'PUT', path: '/v1/test', reason: 'PUT /v1/test is not in the table' });
   assert.ok(refusals.some((l) => l.path === '/v1/files' && l.method === 'POST'));

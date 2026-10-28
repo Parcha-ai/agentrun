@@ -32,6 +32,12 @@ function blockTypes(body) {
   return out;
 }
 
+/** The proxy's refusals of the CLI's own requests. The CLI always sends the session's key, so a request without it on
+ *  no route the CLI uses is another local client's: a service on a shared machine probes each new loopback listener
+ *  with a bare `GET /`. The proxy refuses it (401) all the same; it is just not the CLI's to count. */
+const CLI_PATHS = new Set(CLAUDE_MESSAGES_ROUTES.map((r) => r.path));
+const theClis = (logged) => logged.filter((l) => !(l.reason === "this session's key is required" && !CLI_PATHS.has(l.path)));
+
 const required = process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY === '1';
 let problem;
 try { verifyClaudeAgent({}); } catch (error) { problem = `${error.name}: ${error.message}`; }
@@ -137,7 +143,7 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
     assert.ok(table.has(`${r.method} ${r.path}`), `${r.method} ${r.path} is not in the table`);
     assert.ok(r.query === '' || CLAUDE_MESSAGES_ROUTES.find((x) => x.path === r.path)?.query?.includes(r.query), `query ${r.query} on ${r.path}`);
   }
-  assert.deepEqual(logged.filter((l) => /refused/.test(l.message)), [], 'the proxy refused nothing the CLI asked');
+  assert.deepEqual(theClis(logged).filter((l) => /refused/.test(l.message)), [], 'the proxy refused nothing the CLI asked');
   // Even with its built-ins on, a session could not reach a tool of this CLI's that the allowlist does not name.
   assert.deepEqual(asked.tools, []);
   for (const tool of PINNED_CLI_TOOLS.filter((t) => !CLAUDE_BUILTINS.includes(t))) assert.ok(asked.disallowedTools.includes(tool), `${tool} is not off by name`);
@@ -190,7 +196,7 @@ async function oneNode(t, model, extra = {}) {
   const forwarded = provider.requests.filter((r) => r.authorized);
   const main = forwarded.filter((r) => r.path === '/v1/messages' && r.model === model);
   assert.ok(main.length >= 1, `${model}: no main-model request`);
-  assert.deepEqual(logged.filter((l) => /refused|thinking\.disabled/.test(l.message)), [], `${model}: the proxy refused nothing and saw no request without thinking`);
+  assert.deepEqual(theClis(logged).filter((l) => /refused|thinking\.disabled/.test(l.message)), [], `${model}: the proxy refused nothing and saw no request without thinking`);
   const betas = forwarded.flatMap((r) => (r.headers['anthropic-beta'] ?? '').split(',').map((b) => b.trim()).filter(Boolean));
   return { main, betas, blocks: forwarded.flatMap((r) => blockTypes(r.body)), efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
 }
