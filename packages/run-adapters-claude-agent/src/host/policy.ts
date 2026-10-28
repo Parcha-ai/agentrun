@@ -61,6 +61,8 @@ export interface AnthropicPolicyOptions {
   smallModel?: string;
   /** The session's own tool names (`spec.tools`): every other tool definition is dropped. */
   tools: readonly string[];
+  /** The CLI's own tools the session has, offered by their own names beside its tools (`Skill`, when it has skills). */
+  builtins?: readonly string[];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
@@ -165,7 +167,7 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
     blocks((message as Record<string, unknown>).content, "a message's content");
   }
   blocks(body.system, "system");
-  const allowed = new Set(options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`));
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
   const tools = ownTools(body.tools, allowed);
   const choice = body.tool_choice;
   if (isPlain(choice) && choice.type === "tool" && !(typeof choice.name === "string" && allowed.has(choice.name))) refuse(403, "tool_choice names a tool this session does not have");

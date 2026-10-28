@@ -10,9 +10,9 @@
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, ToolImage, TurnStatus } from "@parcha/agentrun-adapters";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
@@ -23,9 +23,75 @@ import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
 import { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
+export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
 /** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
 export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
+
+/** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
+ *  that name or, unless the CLI has a command or skill of that name (`CLAUDE_AGENT_CLI_SKILL_NAMES`), by its bare one. */
+export const CLAUDE_AGENT_SKILLS_PLUGIN = "agentrun";
+
+/** A skill the model may load (the Skill tool): its name, and its files by path, `SKILL.md` among them. */
+export interface ClaudeAgentSkill {
+  /** Lowercase letters, digits and dashes; `SKILL.md`'s front matter names it the same. */
+  name: string;
+  /** Each file's text by its path inside the skill (`SKILL.md`, `reference/sources.md`). */
+  files: Readonly<Record<string, string>>;
+}
+
+const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SKILL_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+const SKILL_BYTES = 1024 * 1024;
+
+/** The skills, checked: each a name, a `SKILL.md` whose front matter has that name and a description, and files at plain
+ *  relative paths, 1 MiB in all; or the problems. */
+export function skillProblems(skills: readonly ClaudeAgentSkill[]): string[] {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  let bytes = 0;
+  for (const skill of skills) {
+    const name = String(skill?.name ?? "");
+    if (!SKILL_NAME.test(name)) { problems.push(`the skill name ${JSON.stringify(name.slice(0, 80))} is not lowercase letters, digits and dashes`); continue; }
+    if (seen.has(name)) problems.push(`the skill ${name} is given twice`);
+    seen.add(name);
+    const files = skill.files ?? {};
+    const md = files["SKILL.md"];
+    const front = typeof md === "string" ? /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(md)?.[1] : undefined;
+    if (front === undefined) problems.push(`the skill ${name} has no SKILL.md with front matter`);
+    else {
+      if (!new RegExp(`^name:\\s*(['"]?)${name}\\1\\s*$`, "m").test(front)) problems.push(`the skill ${name}'s SKILL.md names it otherwise`);
+      if (!/^description:\s*\S/m.test(front)) problems.push(`the skill ${name}'s SKILL.md has no description`);
+    }
+    // A path that is another's folder (reference, and reference/sources.md) can't be written as both.
+    const paths = new Set(Object.keys(files));
+    for (const folder of new Set([...paths].flatMap((path) => path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))))) {
+      if (paths.has(folder)) problems.push(`the skill ${name}'s ${folder} is both a file and a folder`);
+    }
+    for (const [path, text] of Object.entries(files)) {
+      if (!SKILL_PATH.test(path) || path.split("/").some((part) => part === "." || part === "..")) problems.push(`the skill ${name}'s file ${JSON.stringify(path.slice(0, 80))} is not a plain relative path`);
+      if (typeof text !== "string") problems.push(`the skill ${name}'s file ${path} is not text`);
+      else bytes += Buffer.byteLength(text);
+    }
+  }
+  if (bytes > SKILL_BYTES) problems.push(`the skills hold ${bytes} bytes, more than ${SKILL_BYTES}`);
+  return problems;
+}
+
+/** Writes the skills as the local plugin at `dir` (replacing what was there), and returns their plugin-qualified names. */
+function writeSkillsPlugin(dir: string, skills: readonly ClaudeAgentSkill[]): string[] {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(join(dir, ".claude-plugin"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, ".claude-plugin", "plugin.json"), JSON.stringify({ name: CLAUDE_AGENT_SKILLS_PLUGIN, version: "0.0.0", description: "The host's skills for this session." }), { mode: 0o600 });
+  for (const skill of skills) {
+    for (const [path, text] of Object.entries(skill.files)) {
+      const file = join(dir, "skills", skill.name, path);
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+      writeFileSync(file, text, { mode: 0o600 });
+    }
+  }
+  return skills.map((skill) => `${CLAUDE_AGENT_SKILLS_PLUGIN}:${skill.name}`);
+}
 
 /** The adapter's id, as a host's `harness` field names it. */
 export const CLAUDE_AGENT_ID = "claude-agent";
@@ -67,6 +133,10 @@ export interface ClaudeAgentAdapterOptions {
   maxImageBytes?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
+  /** The host's skills, which the model may load with the Skill tool (as `agentrun:<name>` or by the bare name), and no
+   *  others: never the CLI's bundled ones or any in a home directory. Written into each session's private directory.
+   *  Default none. */
+  skills?: readonly ClaudeAgentSkill[];
   /** Diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /**
@@ -254,6 +324,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   if (!THINKING.has(thinking)) throw new ClaudeAgentThinkingOff(thinking);
   const maxImageBytes = options.maxImageBytes ?? CLAUDE_AGENT_MAX_IMAGE_BYTES;
   if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-claude-agent: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
+  const skills = options.skills ?? [];
+  const skillsWrong = skillProblems(skills);
+  if (skillsWrong.length) throw new Error(`agentrun-claude-agent: ${skillsWrong.join("; ")}`);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
   if (options.standIn) {
@@ -279,6 +352,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       for (const tool of spec.tools) {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one the Claude Agent SDK takes (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
+        if (skills.length && tool.name === READ_SKILL_FILE) problems.push(`the tool name ${READ_SKILL_FILE} is the adapter's own when it has skills`);
         seen.add(tool.name);
         // What every harness refuses (the root, JSON Schema 2020-12, a remote $ref), then what this one measured.
         const common = toolSchemaProblems(tool.name, tool.inputSchema);
@@ -291,6 +365,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       if (problems.length) throw new Error(`agentrun-claude-agent: ${problems.join("; ")}`);
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
       if (!dir) throw new Error("agentrun-claude-agent: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
+      // With skills, the model also reads their files (read_skill_file), from the session's own copy of them.
+      const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const calls = new CallsInFlight();
       const acquire = localMachine({
@@ -298,7 +374,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
           hooks: io.models,
-          tools: spec.tools.map((t) => t.name),
+          tools: tools.map((t) => t.name),
+          // The Skill tool is offered to the model only when the session has skills.
+          ...(skills.length ? { builtins: ["Skill"] } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
@@ -318,12 +396,13 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // The runner's turn cap and the host's beforeRequest bound the spend.
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
         },
-        tools: spec.tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
+        tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
         disallowedTools: [...CLAUDE_AGENT_ALSO_OFF],
         model: modelFor(spec),
+        ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         credential: async () => options.provider.credential(),
