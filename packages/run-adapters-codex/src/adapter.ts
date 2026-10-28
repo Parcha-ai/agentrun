@@ -50,6 +50,8 @@ export interface CodexAdapterOptions {
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
+  /** For tests: how the code-mode models are read from the checked binary (default: its own catalog). */
+  readCodeModeModels?: (binary: string) => ReadonlySet<string>;
 }
 
 /** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure.
@@ -108,7 +110,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         seen.add(tool.name);
       }
       if (checked !== undefined) {
-        codeMode ??= readCodeModeModels(checked);
+        codeMode ??= (options.readCodeModeModels ?? readCodeModeModels)(checked);
         const model = modelFor(spec);
         if (codeMode.has(model)) problems.push(`the model ${JSON.stringify(model.slice(0, 80))} runs tools in code mode, which this adapter does not support yet; use a model that calls tools as functions`);
       }

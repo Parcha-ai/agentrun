@@ -302,3 +302,32 @@ test("the models Codex's catalog says run tools only in code mode are read from 
   assert.throws(() => codeModeModels('not json'), /catalog/);
   assert.throws(() => codeModeModels('{"nope":1}'), /catalog/);
 });
+
+test('a catalog read that fails fails closed: the check throws before any turn, and nothing reaches the provider', { skip: !pinned && 'the pinned Codex binary is not installed here', timeout: 60_000 }, async () => {
+  const { readCodeModeModels } = await import('../dist/code-mode.js');
+  const dir = scratch();
+  const standIn = (name, body) => {
+    const path = join(dir, name);
+    writeFileSync(path, `#!/bin/sh\n${body}\n`);
+    chmodSync(path, 0o755);
+    return path;
+  };
+  const broken = {
+    'prints something that is not JSON': standIn('not-json', 'echo "no catalog today"'),
+    'exits non-zero': standIn('fails', 'echo \'{"models":[]}\'; exit 3'),
+    'prints JSON with no models': standIn('no-models', 'echo \'{"error":"x"}\''),
+  };
+  for (const [what, path] of Object.entries(broken)) {
+    assert.throws(() => readCodeModeModels(path), /catalog|Command failed/, `a binary that ${what}`);
+    const seen = [];
+    const codex = codexAdapter({
+      model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'),
+      fetch: async (url, init) => { seen.push(url); throw new Error('no request should leave'); },
+      readCodeModeModels: () => readCodeModeModels(path),
+    });
+    const spec = { key: `step:closed-${what.length}`, label: 'x', system: [], tools: [], context: 'fresh' };
+    assert.throws(() => codex.check(spec), /catalog|Command failed/, `check, a binary that ${what}`);
+    await assert.rejects(codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} }), /catalog|Command failed/, `open, a binary that ${what}`);
+    assert.deepEqual(seen, [], `nothing reached the provider, a binary that ${what}`);
+  }
+});
