@@ -204,6 +204,20 @@ test("the third identical failure is refused without reaching the browser; a ses
   assert.deepEqual([ended.backend.tally().creates, ended.sessions.sessions[0].releaseReason], [2, "ended"]);
 });
 
+test("a read that failed on one page is a new call once the browser moves: its strikes are cleared by the move, an action's are not", async (t) => {
+  const NEXT = "https://example.test/next";
+  const backend = new FakeBackend({ start: START, pages: { [START]: ARTICLE, [NEXT]: fixturePage(NEXT, "Next page body", "Next") } });
+  const classifyPage = async (page) => (page.url.startsWith(START) ? { wall: "login_wall", injection: null, confidence: 0.9 } : { wall: "content", injection: null, confidence: 0.9 });
+  // The first run records the page the session is on; the second run finds the browser moved.
+  const calls = [["run", { code: "return 1" }], ["browser_read"], ["browser_read"], ["run", { code: "return 2" }], ["browser_read"]];
+  const out = await session(t, calls, { backend, decisions: { classifyPage }, between: { 3: (b) => b.goto(NEXT) } });
+  assert.deepEqual(out.texts.slice(1, 3).map((text) => failure(text).code), ["not_content", "not_content"]);
+  assert.match(out.texts[4], /Next page body/, `the read after the move reaches the new page, not the guard: ${out.texts[4].slice(0, 200)}`);
+  // A run that leaves the browser where it was moves nothing: the same third read is refused.
+  const stay = await session(t, calls, { decisions: { classifyPage } });
+  assert.equal(failure(stay.texts[4]).code, "refused");
+});
+
 test("browser_read judges the page like web_fetch: a wall is filed failed with its class and way out; an unjudged page is marked", async (t) => {
   const captcha = async () => ({ wall: "captcha_or_bot_check", injection: null, confidence: 0.97, guard: "captcha_or_bot_check 0.97" });
   const walled = await session(t, [["browser_read"]], { decisions: { classifyPage: captcha } });
