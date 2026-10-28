@@ -127,3 +127,19 @@ test("the agent home's own busy (a home held past its deadline) answers 409 home
   const answer = await api("POST", "/agents", agent("held-home"));
   assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
 });
+
+test("the agent home's own busy on a read no storeError wraps reaches the server's fallback: 409 home_busy, never 500", async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("held-read"))).status, 201);
+  // GET /agents/:id reads through the store's readAgent with no storeError on its path, so only the server's own
+  // fallback maps what it throws.
+  const probe = await scratch(t);
+  const store = openStore(probe);
+  const proto = Object.getPrototypeOf(store);
+  store.close();
+  const readAgent = proto.readAgent;
+  proto.readAgent = function () { throw new AgentHomeError("busy", "the agent home is held by another writer"); };
+  t.after(() => void (proto.readAgent = readAgent));
+  const answer = await api("GET", "/agents/held-read");
+  assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
+});
