@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { ROUTES } from "../dist/server.js";
+import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, flowAgent, serve } from "./support.mjs";
 
@@ -76,8 +77,14 @@ test("the contract's operations are as vendored; this server's own are added and
   // contract's components are as vendored.
   const components = structuredClone(doc.components);
   const marked = [];
+  const notes = [];
   const strip = (schema, at) => {
     for (const [field, property] of Object.entries(schema.properties ?? {})) {
+      for (const mark of ["x-agentrun-serve-unsupported", "x-agentrun-serve-details"]) {
+        if (property[mark] === undefined) continue;
+        delete property[mark];
+        notes.push(`${at}.${field}`);
+      }
       if (property["x-agentrun-serve"] === undefined) {
         strip(property, `${at}.${field}`);
         continue;
@@ -90,6 +97,33 @@ test("the contract's operations are as vendored; this server's own are added and
   for (const [name, schema] of Object.entries(components.schemas)) strip(schema, name);
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
+  assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details].sort(), "info lists the contract properties it notes");
+});
+
+test("the served definition takes exactly the fields this server takes: a contract field it refuses is marked with the reason its 422 gives, and a run it refuses has the details the document says", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const fields = doc.components.schemas.DefinitionInput.properties;
+  const refused = Object.keys(fields).filter((field) => fields[field]["x-agentrun-serve-unsupported"]);
+  assert.deepEqual(Object.keys(fields).filter((field) => !refused.includes(field)).sort(), [...DEFINITION_FIELDS].sort(), "every field validate.ts takes, and no other, unmarked");
+  assert.deepEqual(doc.info["x-agentrun-serve"].unsupported_fields, refused.map((field) => `DefinitionInput.${field}`));
+  const values = { input_schema: { type: "object" }, output_schema: { type: "object" }, max_cost_usd: 1 };
+  for (const field of refused) {
+    const answer = await api("POST", "/agents", agent(`with-${field.replaceAll("_", "-")}`, { [field]: values[field] ?? "x" }));
+    assert.equal(answer.status, 422, field);
+    const issue = answer.body.error.fields.find((f) => f.field === `definition.${field}`);
+    assert.equal(issue?.reason, "not_allowed", field);
+    assert.equal(fields[field]["x-agentrun-serve-unsupported"].reason, issue.message, `${field}: the document says why, as the refusal does`);
+  }
+  // A harness this server does not run: the revision saves with a warning, and its run is refused with the details
+  // the document gives agent_not_runnable.
+  assert.equal((await api("POST", "/agents", agent("elsewhere", { harness: "claude-agent" }))).status, 201);
+  const run = await api("POST", "/agents/elsewhere/runs", { input: { content: "hi" } });
+  assert.deepEqual([run.status, run.body.error.code], [409, "agent_not_runnable"]);
+  const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"]?.agent_not_runnable;
+  assert.ok(shape, "the document gives agent_not_runnable's details");
+  assert.deepEqual(schemaProblems(doc, shape, run.body.error.details), [], JSON.stringify(run.body.error.details));
+  assert.equal(run.body.error.details.harness, "claude-agent");
 });
 
 test("the document is OpenAPI 3.1 in shape: operations with responses, ids unique, path parameters declared, every reference whole", async (t) => {

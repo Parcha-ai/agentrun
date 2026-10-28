@@ -13,9 +13,9 @@ export const isObject = (value: unknown): value is Json => typeof value === "obj
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "skills", "tools"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "skills", "tools"];
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
-const NOT_KEPT: Record<string, string> = {
+export const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
   output_schema: "The agent store keeps no output_schema: a workflow run's output is its workflow's.",
   max_cost_usd: "The agent store keeps no max_cost_usd on a definition: give one with each run.",
