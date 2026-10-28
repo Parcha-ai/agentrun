@@ -218,7 +218,13 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       },
       afterRequest: async (usage: ModelUsage) => {
         spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
-        await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
+        try {
+          await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
+        } catch (error) {
+          // A paid request whose cost can't be kept: the node stops, saying so, rather than spend on uncounted.
+          if (!stopped) stop(failure("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`));
+          throw error;
+        }
         emit({ type: "request_end", turn: turns, usage });
       },
     };
