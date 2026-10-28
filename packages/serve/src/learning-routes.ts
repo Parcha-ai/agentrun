@@ -28,9 +28,6 @@ export const LEARNING_ROUTES: LearningRoute[] = [
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/retire$/, name: "retireAgentLearning" },
 ];
 
-/** With accounts, each learning route's least role: every one is a member's, retire included. */
-export const LEARNING_ROLES: Record<string, "member"> = Object.fromEntries(LEARNING_ROUTES.map((r) => [r.name, "member" as const]));
-
 const param = (name: string, description: string) => ({ name, in: "path", required: true, description, schema: { type: "string" } });
 const RUN = param("run_id", "The run.");
 const AGENT = param("agent_id", "The agent.");

@@ -51,16 +51,14 @@ async function plant(t, data, id, runId, files) {
   await writeRunState(data, id, runId, { ...(await readRunState(data, id, runId)), sha: made.sha });
 }
 
-test("the learning routes, their operations and their roles are one to one, every operation is this server's own, and every role is member", () => {
-  const { LEARNING_ROUTES, LEARNING_OPENAPI, LEARNING_ROLES } = routes;
+test("the learning routes and their operations are one to one, and every operation is this server's own", () => {
+  const { LEARNING_ROUTES, LEARNING_OPENAPI } = routes;
   assert.ok(Array.isArray(LEARNING_ROUTES), "the routes are exported");
   const names = LEARNING_ROUTES.map((r) => r.name).sort();
   assert.equal(names.length, 9);
   const ops = Object.values(LEARNING_OPENAPI).flatMap((methods) => Object.values(methods));
   assert.deepEqual(ops.map((op) => op.operationId).sort(), names, "one operation per route");
   assert.ok(ops.every((op) => op["x-agentrun-serve"] === true), "each marked x-agentrun-serve");
-  assert.deepEqual(Object.keys(LEARNING_ROLES).sort(), names, "one role per route");
-  assert.ok(Object.values(LEARNING_ROLES).every((role) => role === "member"), "reads, approve, refuse and retire are member");
 });
 
 test("a run's learning: its state as it is reviewed, off for an agent that does not learn, 404 for no such run, 401 with no credential", async (t) => {
