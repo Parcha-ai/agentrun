@@ -693,7 +693,8 @@ export class Runs {
       // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
       // run as it was in the store.
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
-      run.costUsd = cost ?? 0;
+      // An unknown cost stays unknown: never stored as 0.
+      if (cost !== null) run.costUsd = cost;
       run.endedAt ??= new Date().toISOString();
       run.outcome = outcome;
       run.finishing = undefined;
@@ -914,7 +915,7 @@ export class Runs {
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
     const usage = usageOf(run.rows);
-    return { usd: usage ? (usage.usage?.usd ?? run.costUsd ?? null) : (run.costUsd ?? 0), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: usage ? (usage.usage?.usd ?? null) : (run.costUsd ?? 0), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
