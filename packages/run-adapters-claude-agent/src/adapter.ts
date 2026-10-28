@@ -221,6 +221,8 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
       calls.begin(callId);
+      // A pause began before this call: it is recorded as not run, and the session resumes with that.
+      if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       const result = await tool.call(input, { callId, signal: effect.signal });
       if (result.isError) throw new Error(result.text);
       if (!result.images?.length) return result.text;

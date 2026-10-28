@@ -147,3 +147,60 @@ test('a session draining sends no new turn: send is refused until the pause is o
   await pausing;
   assert.equal(search.runs, 1);
 });
+
+/** A call that never finishes on its own: it stops when its signal aborts, as a hung request does. */
+function hanging(name, replay) {
+  const tool = { runs: 0 };
+  let started;
+  tool.started = new Promise((resolve) => { started = resolve; });
+  tool.tool = { name, description: 'Wait for an answer that never comes.', inputSchema: { type: 'object' }, replay, call: (_args, { signal }) => {
+    tool.runs += 1;
+    started();
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off by the pause')), { once: true }));
+  } };
+  return tool;
+}
+
+test('a call that outlives the drain is cut at the bound: the pause ends, and the resumed session reports the call interrupted, never dropped', async (t) => {
+  const dir = join(scratch(), 'sessions');
+  const store = memorySessionStore();
+  const charge = hanging('charge', 'never');
+  const ask = { ...request, tools: ['charge'], step: { sessionId: 'bound', attempt: 0, earlierSessionIds: [] } };
+  const first = await claude(t, { script: ['call charge {}'], sessionsDir: dir });
+  const runner = createHarnessRunner(first.adapter, { store, tools: [charge.tool] });
+  const node = runner(ask).then(() => 'delivered', (error) => error);
+  await charge.started;
+  const began = Date.now();
+  await runner.stop({ drainMs: 200 });
+  const took = Date.now() - began;
+  assert.ok(took >= 200 && took < 5_000, `the pause waited the bound, then stopped (${took} ms)`);
+  assert.equal((await node).reason, 'aborted');
+
+  const next = await claude(t, { script: ['call submit {"value":{"answer":"after the cut"}}', 'call submit {"value":{"answer":"after the cut"}}'], sessionsDir: dir });
+  assert.deepEqual(await createHarnessRunner(next.adapter, { store, tools: [charge.tool] })(ask), { answer: 'after the cut' });
+  assert.equal(charge.runs, 1, 'the cut call is never run again');
+  const records = await store.read('step:bound');
+  const steps = new Set(records.filter((r) => r.kind === 'kernel.start' && r.data.name === 'tool.charge').map((r) => r.data.stepId));
+  const ends = records.filter((r) => r.kind === 'kernel.end' && steps.has(r.data.stepId)).map((r) => r.data);
+  assert.ok(ends.length === 1 && ends[0].status === 'failed' && ends[0].error?.interrupted === true, `the call is recorded interrupted: ${JSON.stringify(ends)}`);
+  const told = records.flatMap((r) => r.data?.input?.streams?.claude?.entries ?? []).map((e) => e.data?.message).filter((m) => m?.role === 'user' && typeof m.content === 'string');
+  assert.ok(told.some((m) => /\[Recovery\]/.test(m.content) && /charge\(\{\}\), call \S+: interrupted/.test(m.content)), `the resumed CLI is told the call was interrupted: ${JSON.stringify(told).slice(0, 400)}`);
+});
+
+test('a call a pause cut off leaves nothing to wait for: the next pause, with nothing in flight, returns at once', async (t) => {
+  const wait = hanging('wait', 'safe');
+  const store = memorySessionStore();
+  const { adapter } = await claude(t, { script: ['call wait {}', 'just say hello'], sessionsDir: join(scratch(), 'sessions') });
+  const spec = { key: 'step:twice', label: 'task', system: [], tools: [wait.tool], context: 'fresh' };
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const session = await adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  t.after(async () => { await session.interrupt().catch(() => {}); await session.close(); });
+  await session.send('go');
+  await wait.started;
+  await session.interrupt({ drainMs: 200 });
+  await session.send('again');
+  await session.turnEnd();
+  const began = Date.now();
+  await session.interrupt({ drainMs: 5_000 });
+  assert.ok(Date.now() - began < 2_000, `the second pause waited ${Date.now() - began} ms for a call the first one cut`);
+});
