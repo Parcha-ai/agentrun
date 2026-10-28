@@ -124,6 +124,12 @@ test('a string the field\'s own enum or const lists exactly is a value, never a 
   // reference names, never only its `definitions`.
   const defs = { type: 'object', $defs: { Lit: { const: 'null' } }, properties: { ref: { anyOf: [{ $ref: '#/$defs/Lit' }, { type: 'null' }] }, inner: { type: 'object', properties: { ref: { anyOf: [{ $ref: '#/$defs/Lit' }, { type: 'null' }] } } } } };
   assert.deepEqual(repairRecord({ ref: 'null', inner: { ref: 'null' } }, defs), { ref: 'null', inner: { ref: 'null' } });
+  // A field's own const beside its `$defs` reference still lists the value; and a schema that refers to itself through
+  // `$defs` is walked once, never without end.
+  const constBeside = { type: 'object', $defs: { C: { anyOf: [{ pattern: '^null$' }, { type: 'null' }] } }, properties: { mark: { $ref: '#/$defs/C', const: 'null' } } };
+  assert.deepEqual(repairRecord({ mark: 'null' }, constBeside), { mark: 'null' });
+  const recursive = { type: 'object', $defs: { S: { anyOf: [{ type: 'string' }, { $ref: '#/$defs/S' }] } }, properties: { field: { $ref: '#/$defs/S' } } };
+  assert.deepEqual(repairRecord({ field: 'ok' }, recursive), { field: 'ok' });
   // A field's own enum beside its $ref still lists the value: the reference adds to what the field lists, never replaces it.
   const beside = { type: 'object', definitions: { S: { type: ['string', 'null'] } }, properties: {
     own: { $ref: '#/definitions/S', type: ['string', 'null'], enum: ['None', null] }, bare: { $ref: '#/definitions/S', type: ['string', 'null'] } } };

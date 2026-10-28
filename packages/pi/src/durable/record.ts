@@ -107,11 +107,14 @@ export function parseStringifiedContainers(value: unknown, schema: Record<string
   // or the repair skips exactly the fields it exists for.
   const top = root ?? schema;
   const resolve = (spec: any): any => (spec && typeof spec === "object" && typeof spec.$ref === "string" ? (deref(spec, top) ?? spec) : spec);
-  const expected = (spec: any): string[] => {
+  // Each schema once: one that refers to itself (through `$defs` or `definitions`) adds nothing the second time.
+  const expected = (spec: any, seen = new Set<unknown>()): string[] => {
     const resolved = resolve(spec);
-    const types = Array.isArray(resolved?.type) ? resolved.type : resolved?.type ? [resolved.type] : [];
-    const anyOf: any[] = Array.isArray(resolved?.anyOf) ? resolved.anyOf : [];
-    return [...types, ...anyOf.flatMap((variant) => expected(variant))];
+    if (!resolved || typeof resolved !== "object" || seen.has(resolved)) return [];
+    seen.add(resolved);
+    const types = Array.isArray(resolved.type) ? resolved.type : resolved.type ? [resolved.type] : [];
+    const anyOf: any[] = Array.isArray(resolved.anyOf) ? resolved.anyOf : [];
+    return [...types, ...anyOf.flatMap((variant) => expected(variant, seen))];
   };
   const repair = (input: unknown, rawSpec: any): unknown => {
     const spec = resolve(rawSpec);
@@ -130,7 +133,7 @@ export function parseStringifiedContainers(value: unknown, schema: Record<string
     // A scalar is coerced only when the field does not accept a string, and never when the field lists that string
     // itself as a value. Integers must be exact; a decimal becomes the float64 that JSON.parse of the same literal
     // yields, the only value a JSON number can hold.
-    if (typeof current === "string" && !wants.includes("string") && !listsValue(current, spec, top)) {
+    if (typeof current === "string" && !wants.includes("string") && !listsValue(current, rawSpec, top)) {
       const trimmed = current.trim();
       if ((wants.includes("integer") || wants.includes("number")) && /^-?\d+$/.test(trimmed) && Number.isSafeInteger(Number(trimmed))) current = Number(trimmed);
       else if (wants.includes("number") && /^-?(?:0|[1-9]\d*)\.\d+$/.test(trimmed) && Number.isFinite(Number(trimmed))) current = JSON.parse(trimmed) as number;
