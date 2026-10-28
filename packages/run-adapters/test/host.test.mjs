@@ -560,6 +560,7 @@ test("a response's reported cost: only a positive number its gateway wrote, else
   assert.equal(cost(LITELLM_STREAMED), undefined, 'a streamed answer\'s 0.0 is not a price');
   assert.equal(cost({ 'x-litellm-response-cost': '0.0042', 'x-litellm-response-cost-original': '0.0050' }), 0.0042, 'the gateway\'s own figure first');
   assert.equal(cost({ 'x-litellm-response-cost-original': '0.0050', 'x-litellm-response-cost-margin-amount': '0.001', 'x-litellm-response-cost-discount-amount': '0.0' }), undefined, 'a margin makes the original not what was paid');
+  assert.equal(cost({ 'x-litellm-response-cost-original': '0.0050', 'x-litellm-response-cost-discount-amount': '0.001', 'x-litellm-response-cost-margin-amount': '0.0' }), undefined, 'a discount makes the original not what was paid');
   assert.equal(cost({ 'x-litellm-response-cost-original': '0.0050' }), undefined, 'without the discount and margin, the original says nothing of what was paid');
   for (const bad of ['0', '0.0', '-0.01', '1,5', 'NaN', 'Infinity', '1e400', '0x10', '', 'abc', '1001', '.5']) assert.equal(cost({ 'x-litellm-response-cost': bad }), undefined, bad);
   assert.equal(cost({}), undefined);
