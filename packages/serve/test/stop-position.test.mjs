@@ -3,7 +3,7 @@
 // so a compaction (fewer messages shown, the stopped one among them or not) never moves it in either direction.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { stopMark, stoppedAt } from "../dist/runs.js";
+import { statusOf, stopMark, stoppedAt } from "../dist/runs.js";
 
 const user = (id) => ({ id, kind: "user_message", summary: `You: ${id}` });
 const answer = (id) => ({ id, kind: "final_answer", summary: "Done." });
@@ -60,4 +60,14 @@ test("messages order by their store entry, whatever conversation shows them", ()
   assert.equal(stoppedAt(stopMark(atSubagent), [...atSubagent, user("1:90")]), false, "the root message is newer than the task");
   const atRoot = [user("1:3"), user("40:45"), user("1:90")];
   assert.equal(stoppedAt(stopMark(atRoot), atRoot), true, "the task is older than the stopped message");
+});
+
+test("the run's status follows the stop when a compaction left no message of the person's shown", () => {
+  const meta = stopMark([user("1:3"), answer("1:4"), user("1:9")]);
+  const summarized = [{ id: "1:14", kind: "phase", summary: "Summarized older context" }];
+  const run = (fields) => ({ kind: "agentic", rows: summarized, submitted: 0, working: false, meta, ...fields });
+  assert.deepEqual(statusOf(run({})), { status: "input_required", state: "idle" }, "stopped, never queued");
+  assert.deepEqual(statusOf(run({ working: true })), { status: "input_required", state: "idle" }, "its process still ending the turn");
+  assert.equal(statusOf(run({ submitted: 1 })).state, "working", "a message sent since the stop is being worked on");
+  assert.deepEqual(statusOf(run({ meta: { title: "t", created_at: "2026-01-01T00:00:00.000Z" }, rows: [] })), { status: "queued", state: "working" }, "a run never stopped, with no message shown yet, is queued");
 });

@@ -212,9 +212,10 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (run.finishing) return { status: run.finishing, state: "idle" };
   if (run.kind === "workflow") return { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
-  if (!users) return { status: "queued", state: "working" };
-  if (run.submitted > 0) return { status: "working", state: "working" };
+  if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
+  // Before the fallback for a run with no message shown: a compaction can summarize every message of a stopped run.
   if (stopped(run)) return { status: "input_required", state: "idle" };
+  if (!users) return { status: "queued", state: "working" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
