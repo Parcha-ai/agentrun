@@ -40,6 +40,8 @@ function wrapper(cgroup: string, opts: { rootLink?: boolean; mpLink?: boolean; u
   };
   // The stub archil records its argv, the token it was given, its environment's names and any stdin left for it.
   const archil = stub("archil", `{ echo "argv=$*"; echo "token=\${ARCHIL_MOUNT_TOKEN-<unset>}"; echo "env=$(env | cut -d= -f1 | sort | tr '\\n' ' ')"; IFS= read -r rest || true; echo "stdin=$rest"; } > '${out}'`);
+  // The stub fusermount records its argv the same way, as the command the wrapper's release ran.
+  const fusermount = stub("fusermount", `echo "argv=fusermount $*" > '${out}'`);
   // The stub systemd-run records its own argv, then runs the command after "--" as a real --scope would.
   const systemdRun = stub("systemd-run", `echo "scope=$*" > '${out}.scope'; while [ "$1" != -- ]; do shift; done; shift; exec "$@"`);
   const cgroupFile = join(dir, "cgroup");
@@ -52,6 +54,7 @@ function wrapper(cgroup: string, opts: { rootLink?: boolean; mpLink?: boolean; u
   const script = source
     .replace("ARCHIL=/usr/bin/archil", `ARCHIL='${archil}'`)
     .replace("MOUNTS=/proc/self/mounts", `MOUNTS='${mounts}'`)
+    .replace("FUSERMOUNT=/usr/bin/fusermount", `FUSERMOUNT='${fusermount}'`)
     // This user stands in for root as the owner of the mount root, unless the test wants a root that is not root's.
     .replace("TRUST=0", `TRUST=${opts.untrusted ? 0 : process.getuid!()}`)
     .replace("/usr/bin/systemd-run", systemdRun)
@@ -123,6 +126,13 @@ test("each shape the claim uses reaches archil with exactly its arguments; only 
   }
 });
 
+test("release takes a dead mount off its listed mountpoint with fusermount -u, as root, with an argv it built", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const r = w.run(["release", w.mp], "left\n");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.seen?.argv, `fusermount -u -- ${w.mp}`);
+});
+
 // Each refused before archil runs, with exit 2. `args` is built over the rig's paths.
 type Rig = { root: string; mp: string };
 const REFUSED: [string, (w: Rig) => string[], { rootLink?: boolean; mpLink?: boolean }?][] = [
@@ -145,6 +155,10 @@ const REFUSED: [string, (w: Rig) => string[], { rootLink?: boolean; mpLink?: boo
   ["no verb", () => []],
   ["delegations without --json", (w) => ["delegations", w.mp]],
   ["checkin with an extra argument", (w) => ["checkin", w.mp, "--all"]],
+  ["release with an extra argument", (w) => ["release", w.mp, "-z"]],
+  ["release through a .. segment", (w) => ["release", `${w.root}/runs/../../usr`]],
+  ["release /usr", () => ["release", "/usr"]],
+  ["release of a path no archil mount is listed at", (w) => ["release", `${w.root}/runs/r2`]],
   ["a bad disk token", (w) => mountOf(w.mp, "dsk-1;id:/runs/r1")],
   ["a bad region token", (w) => ["mount", "dsk-1:/runs/r1", w.mp, "--region", "aws-us-east-1/x"]],
   ["a newline in the mountpoint", (w) => mountOf(`${w.mp}\n/etc`)],
@@ -165,7 +179,7 @@ for (const [name, args, opts] of REFUSED) {
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const MOUNT_ARGV = 'const args = [host.archil, "mount", ...(force ? ["--force"] : []), `${target.disk}:/${path}`, mountpoint, "--region", target.region];';
 /** Verbs the wrapper acts on itself; the rest reach archil. */
-const OWN = new Set(["prepare", "retire", "stray", "stale"]);
+const OWN = new Set(["prepare", "release", "retire", "stray", "stale"]);
 
 /** Each `archil(host, [...])` in the package's source, as the expressions it passes. */
 function callSites(): string[][] {
@@ -235,11 +249,27 @@ test("every mountpoint the package's source builds is <mountRoot>/runs/<segment>
   assert.deepEqual(wrong, [], "a mountpoint or mount root outside <mountRoot>/runs/<segment>");
 });
 
+test("every sudoers line this package writes or documents names the archil wrapper alone", () => {
+  const pkg = fileURLToPath(new URL("..", import.meta.url));
+  const files = readdirSync(pkg, { recursive: true }).map(String).filter((f) => !/(^|\/)(node_modules|dist|\.tmp)(\/|$)/.test(f) && /\.(ts|mjs|js|md|sh)$|Dockerfile$/.test(f) && f !== "CHANGELOG.md");
+  const lines: string[] = [];
+  const wrong: string[] = [];
+  for (const f of files) {
+    for (const m of readFileSync(join(pkg, f), "utf8").matchAll(/NOPASSWD:\s*([^'"\n]*)/g)) {
+      lines.push(`${f}: ${m[1].trim()}`);
+      // One command, the wrapper: a second entry, a list, or a wildcard argument grants more than the wrapper bounds.
+      if (/[,*]|fusermount|umount|mkdir|rmdir|\bALL\b/.test(m[1])) wrong.push(`${f}: ${m[1].trim()}`);
+    }
+  }
+  assert.ok(lines.length >= 3, `found ${lines.length} sudoers lines`);
+  assert.deepEqual(wrong, []);
+});
+
 // ---- the mount root is root's, so only root names entries under runs/ --------------------------------------------------
 
 /** Every verb, over the rig's paths, as the claim would call it (the cleanup verbs on the unlisted runs/r2). */
 const EVERY_VERB = (w: Rig): string[][] => [
-  mountOf(w.mp), ["unmount", w.mp], ["checkin", w.mp], ["sync", w.mp], ["delegations", "--json", w.mp],
+  mountOf(w.mp), ["unmount", w.mp], ["checkin", w.mp], ["sync", w.mp], ["delegations", "--json", w.mp], ["release", w.mp],
   ["prepare", `${w.root}/runs/r3`], ["retire", w.mp, "t1"], ["stray", `${w.root}/runs/r2`, "t1"], ["stale", `${w.root}/runs/r2`],
 ];
 
