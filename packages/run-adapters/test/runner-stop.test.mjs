@@ -113,3 +113,55 @@ test('stop with no drainMs stops at once, and a drainMs that is not a non-negati
   assert.equal((await node).reason, 'aborted');
   assert.equal(seen.interrupts[0]?.drainMs, 0);
 });
+
+test('a paid request waiting to be admitted when a pause begins is refused inside the admission, and one the host was still checking too: no record, no request_start', async () => {
+  let releaseHost;
+  const hostHeld = new Promise((resolve) => { releaseHost = resolve; });
+  let hostCalls = 0;
+  const outcomes = [];
+  let endTurn;
+  let asked;
+  const asking = new Promise((resolve) => { asked = resolve; });
+  const adapter = {
+    id: 'two-requests', version: '0.0.0', capabilities: () => ({ fork: false }), check: () => [],
+    async open(_spec, io) {
+      let turn;
+      return {
+        state: 'new',
+        async send() {
+          turn = new Promise((resolve) => { endTurn = resolve; });
+          // Two paid requests at once: A is held in the host's check, B waits behind it in the admission chain.
+          for (const name of ['A', 'B']) outcomes.push(io.models.beforeRequest({ model: 'm' }).then(() => `${name} admitted`, (error) => `${name} refused: ${error.message}`));
+          asked();
+        },
+        async recover() {},
+        turnEnd: () => turn,
+        async interrupt() {
+          // The pause began; now the host's check of A answers. Neither A nor B may be admitted after this point.
+          releaseHost();
+          await Promise.all(outcomes);
+          endTurn?.({ status: 'interrupted' });
+        },
+        async close() {},
+      };
+    },
+  };
+  const store = memorySessionStore();
+  const events = [];
+  const runner = createHarnessRunner(adapter, {
+    store, tools: [lookup], onEvent: (e) => events.push(e),
+    beforeRequest: async () => { hostCalls += 1; if (hostCalls === 1) await hostHeld; },
+  });
+  const node = ask(runner).catch((error) => error);
+  await asking;
+  await until(() => hostCalls === 1, "the host's check of A");
+  await runner.stop({ drainMs: 1000 });
+  assert.equal((await node).reason, 'aborted');
+  const results = await Promise.all(outcomes);
+  assert.deepEqual(results.map((r) => r.replace(/: .*/, '')), ['A refused', 'B refused'], results.join(' | '));
+  assert.ok(results.every((r) => /pausing: no new paid request/.test(r)), results.join(' | '));
+  const records = await Promise.all(store.keys().map((k) => store.read(k)));
+  assert.deepEqual(records.flat().filter((r) => r.kind === 'runner.request'), [], 'no request was recorded');
+  assert.deepEqual(events.filter((e) => e.type === 'request_start'), [], 'no request_start');
+  assert.equal(hostCalls, 1, 'the host is not asked about a request that waited until after the pause began');
+});

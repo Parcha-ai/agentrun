@@ -91,6 +91,9 @@ export interface ModelPortOptions {
   append?: (records: SessionRecord[]) => Promise<void>;
   /** The attempt has stopped: the error a new paid request is refused with. */
   stopped?: () => Error | undefined;
+  /** A pause is draining the attempt: the error a new paid request is refused with, while the attempt itself goes on. A
+   *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
+  draining?: () => Error | undefined;
   /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
   stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string) => Error;
 }
@@ -155,9 +158,14 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   const admit = async (model: string): Promise<ModelTicket> => {
     const stopped = options.stopped?.() ?? failed;
     if (stopped) throw stopped;
+    const pausing = options.draining?.();
+    if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
+    // A pause that began while the host was checking: nothing was written for this request, so it is refused, not sent.
+    const paused = options.draining?.();
+    if (paused) throw paused;
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
@@ -317,6 +325,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...(options.beforeRequest ? { beforeRequest: options.beforeRequest } : {}),
       onEvent: (event) => emit(event),
       stopped: () => stopped,
+      draining: () => (draining ? failure("aborted", "harness node pausing: no new paid request") : undefined),
       stop: (reason, message) => { stop(failure(reason, message)); return stopped!; },
     });
 
@@ -376,14 +385,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...adapter.check(spec),
     ];
     if (problems.length) throw refuse(problems.join("; "));
-    // A pause makes no new paid request; everything else is the booking's.
-    const models: ModelPort = {
-      ...booking.models,
-      beforeRequest: async (request) => {
-        if (draining) throw failure("aborted", "harness node pausing: no new paid request");
-        return booking.models.beforeRequest(request);
-      },
-    };
+    const models = booking.models;
 
     let session: Awaited<ReturnType<AgentAdapter["open"]>> | undefined;
     let opening: Promise<Awaited<ReturnType<AgentAdapter["open"]>>> | undefined;
