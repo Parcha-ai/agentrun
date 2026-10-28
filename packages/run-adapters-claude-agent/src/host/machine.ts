@@ -31,7 +31,9 @@ export interface ChildCommand {
 
 /** The host's confinement of a child: the same command and arguments, started under the host's own (a
  *  `setpriv --no-new-privs` prefix, say). It may only add in front: what it returns must end with the command and its
- *  arguments unchanged, and it never sees or changes the child's environment. */
+ *  arguments unchanged, and it never sees or changes the child's environment. The prefix must exec the child in place
+ *  (as setpriv does): a wrapper that forks and stays as the child's parent defeats the parent watch, since the death
+ *  signal then follows the wrapper, not this process. */
 export type ConfineChild = (child: Readonly<ChildCommand>) => ChildCommand;
 
 export interface LocalMachineOptions {
