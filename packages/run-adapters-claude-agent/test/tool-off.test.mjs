@@ -284,7 +284,7 @@ test('the real CLI, killed in turn 2, resumes in a NEW session directory from th
 });
 
 test("a host's gateway headers (its spend tags) reach the provider on every request the real CLI makes through the proxy (the proxy test covers every route, a free one too)", { skip, timeout: 120_000 }, async (t) => {
-  const tags = 'job:j-123,purpose:ati,run:r-9';
+  const tags = 'job:j-123,purpose:research,run:r-9';
   const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL && !Object.keys(r.results ?? {}).length ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
   t.after(() => provider.close());
   const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret', headers: { 'x-litellm-tags': tags } }, sessionsDir: join(mkdtempSync(join(ROOT, 'tags-')), 'sessions') });

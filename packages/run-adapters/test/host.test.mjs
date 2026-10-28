@@ -427,7 +427,7 @@ test("a request for the session's smaller model is asked about and priced as tha
 });
 
 test("the host's own headers go on every forwarded request, paid and free, over any the client sent by that name, and never the credential's", async (t) => {
-  const tags = 'job:j1,purpose:ati,run:r1';
+  const tags = 'job:j1,purpose:research,run:r1';
   const { p, forwarded } = await proxy(t, { headers: { 'x-litellm-tags': tags, 'X-Beta': 'host-value' } });
   assert.equal((await send(p.url, { path: '/v1/test?beta=true', headers: { 'x-beta': 'client-value', 'x-litellm-tags': 'job:forged' } })).status, 200);
   assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
