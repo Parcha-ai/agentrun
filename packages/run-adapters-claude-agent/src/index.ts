@@ -1,5 +1,5 @@
 // The Claude Agent SDK as an AgentRun harness adapter (id `claude-agent`). Written for AgentRun.
-export { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_DIGESTS, CLAUDE_AGENT_ID, claudeAgentAdapter, claudeAgentCliPins, thinkingOf, verifyClaudeAgent, verifyClaudeAgentCli } from "./adapter.js";
+export { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_DIGESTS, CLAUDE_AGENT_ID, CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter, claudeAgentCliPins, thinkingOf, toolImageProblems, verifyClaudeAgent, verifyClaudeAgentCli } from "./adapter.js";
 export { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 export type { ClaudeAgentPin } from "./errors.js";
 export type { ClaudeAgentAdapterOptions, ClaudeAgentProvider, ClaudeAgentThinking } from "./adapter.js";

@@ -12,6 +12,12 @@ export type NodeRequest = Parameters<NonNullable<WorkflowDeps["runNode"]>>[0] & 
   maxTurns?: number;
 };
 
+/** An image a tool answers with: its media type (`image/png`) and its bytes, base64. */
+export interface ToolImage {
+  mimeType: string;
+  data: string;
+}
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;
@@ -19,7 +25,9 @@ export interface HostTool {
   inputSchema: Record<string, unknown>;
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
-  call(args: unknown, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; isError?: boolean }>;
+  /** The tool's answer: its text, and any images it shows (a screenshot), which a harness that can show them sends the
+   *  model with the text. */
+  call(args: unknown, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
 }
 
 /** One durable record of a session, in the order it was appended. */
@@ -77,13 +85,30 @@ export interface ModelUsage {
   /** Null when the price is unknown; `estimated` when it is not the provider's own figure. */
   usd: number | null;
   estimated?: boolean;
+  /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
+   *  price is null; the provider may have billed it. */
+  cut?: boolean;
+  /** The ids the provider's response gave the request, by header name (the provider's `request-id`, a gateway's call
+   *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
+   *  them only if its response had begun. */
+  providerIds?: Record<string, string>;
 }
 
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be
  *  refused there (a turn cap, the host's budget); its usage is reported when it completes. */
 export interface ModelPort {
-  beforeRequest(request: ModelRequest): Promise<void>;
-  afterRequest(usage: ModelUsage): Promise<void>;
+  /** Admits a paid request, or throws to refuse it. It may return the request's ticket, which names the turn it was admitted as. */
+  beforeRequest(request: ModelRequest): Promise<ModelTicket | void>;
+  /** Books a completed request. `ticket` is what its own `beforeRequest` returned: requests may be in flight together, so
+   *  an answer is booked under the turn it was admitted as, not the latest one. */
+  afterRequest(usage: ModelUsage, ticket?: ModelTicket): Promise<void>;
+  /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
+  responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
+}
+
+/** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
+export interface ModelTicket {
+  turn: number;
 }
 
 /** What the host lends a session. */
@@ -98,11 +123,14 @@ export interface SessionIO {
   onEvent(event: AdapterEvent): void;
 }
 
-/** An event of a session, as the adapter reports it. The runner adds the node it belongs to. */
+/** An event of a session, as the adapter reports it. The runner adds the node it belongs to. A call's `tool_end` is sent
+ *  only once its outcome is durable in the session's records, so a host never shows a result its store does not have;
+ *  `result` is the text recorded, when the adapter reports it. A call stopped before its outcome was recorded gets no
+ *  `tool_end`: its turn's `turn_end` closes it. */
 export type AdapterEvent =
   | { type: "text"; delta: string }
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
-  | { type: "tool_end"; callId: string; name: string; isError: boolean }
+  | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string }
   | { type: "turn_end"; status: TurnStatus };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
@@ -123,8 +151,11 @@ export interface AdapterSession {
   recover(): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
-  /** Stop the turn in flight; calls it left open end interrupted. */
-  interrupt(): Promise<void>;
+  /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
+   *  calls in flight run on until their outcomes are recorded, for at most `drainMs`, before the turn stops; the host
+   *  refuses new calls and paid requests meanwhile (the runner's `stop` does). An adapter that cannot drain stops at
+   *  once, as with no `drainMs`. */
+  interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;
 }

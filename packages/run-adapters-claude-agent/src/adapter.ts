@@ -12,8 +12,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
+import type { AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, ToolImage, TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
+import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
@@ -61,6 +62,9 @@ export interface ClaudeAgentAdapterOptions {
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
+  /** The most one image a tool answers with may be, as base64 (default 5 MB, `CLAUDE_AGENT_MAX_IMAGE_BYTES`; at most
+   *  10 MB, Anthropic's API's own limit). A larger one is the call's error. */
+  maxImageBytes?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
   /** Diagnostics. */
@@ -152,7 +156,62 @@ export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk"
 const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === "test") && process.env.NODE_ENV !== "production";
 
 /** The kernel's tool for a host tool: the same name, schema and replay policy, reported to the host under that name. */
-function kernelTool(tool: HostTool, io: SessionIO): KernelTool {
+/** The most a tool's image may be, as base64, by default: the strictest of the platforms Claude runs on (Anthropic's API
+ *  takes 10 MB, Amazon Bedrock 5 MB), so one setting holds everywhere. */
+export const CLAUDE_AGENT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** The most `maxImageBytes` may be: Anthropic's API's own limit for one image, as base64. */
+const MAX_IMAGE_BYTES_CEILING = 10 * 1024 * 1024;
+/** The image types Anthropic's API takes. */
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** Why a tool's images can't be sent, naming the tool and the image, or undefined: a type the API takes, base64, and at
+ *  most `maxBytes` of it. */
+export function toolImageProblems(tool: string, images: readonly ToolImage[], maxBytes = CLAUDE_AGENT_MAX_IMAGE_BYTES): string | undefined {
+  for (const [i, image] of images.entries()) {
+    const at = `the tool ${tool}'s image ${i + 1}`;
+    if (!IMAGE_TYPES.has(image?.mimeType)) return `${at} is ${String(image?.mimeType).slice(0, 40)}, not one the model takes (${[...IMAGE_TYPES].join(", ")})`;
+    if (typeof image.data !== "string" || !BASE64.test(image.data)) return `${at} is not base64`;
+    if (image.data.length > maxBytes) return `${at} is ${image.data.length} bytes of base64, more than ${maxBytes}`;
+  }
+  return undefined;
+}
+
+/** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause waits for these to have
+ *  their outcomes recorded; the host refuses new work meanwhile (the runner's stop does). */
+class CallsInFlight {
+  draining = false;
+  private readonly open = new Set<string>();
+  private readonly waiters = new Set<() => void>();
+  begin(callId: string) {
+    this.open.add(callId);
+  }
+  /** The call's outcome is recorded, or it never will be (the drive stopped). */
+  end(callId: string) {
+    if (this.open.delete(callId) && this.open.size === 0) for (const done of [...this.waiters]) done();
+  }
+  clear() {
+    this.open.clear();
+    for (const done of [...this.waiters]) done();
+  }
+  /** Every call in flight has its outcome recorded, or `ms` passed. */
+  idle(ms: number): Promise<void> {
+    if (this.open.size === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.waiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.waiters.add(done);
+    });
+  }
+}
+
+/** The kernel's tool for a host tool. The host hears of the call (`tool_start`) once its intent is in the session's
+ *  records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
+function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
   return {
     name: tool.name,
     description: tool.description,
@@ -161,25 +220,40 @@ function kernelTool(tool: HostTool, io: SessionIO): KernelTool {
     async execute(input, effect) {
       // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
+      // waits for this call rather than refusing it.
+      calls.begin(callId);
+      // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
+      if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      let isError = true;
-      try {
-        const result = await tool.call(input, { callId, signal: effect.signal });
-        isError = result.isError === true;
-        if (result.isError) throw new Error(result.text);
-        return result.text;
-      } finally {
-        io.onEvent({ type: "tool_end", callId, name: tool.name, isError });
-      }
+      const result = await tool.call(input, { callId, signal: effect.signal });
+      if (result.isError) throw new Error(result.text);
+      if (!result.images?.length) return result.text;
+      // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
+      const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
+      if (wrong) throw new Error(wrong);
+      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
     },
   };
 }
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
+/** Root keywords the pinned CLI (2.1.286) drops a tool for, with no word to the model or the host: measured, a root
+ *  `{ "type": "object", "anyOf": [...] }` (or allOf, oneOf) never reaches the model while the session's other tools do. */
+const CLI_DROPS_ROOT = ["anyOf", "allOf", "oneOf"] as const;
+
+/** What the Claude path refuses in a tool's input schema beyond `toolSchemaProblems`, measured on the pinned CLI and
+ *  Anthropic's API (tuple `items`, the one shape the API rejects, is already invalid 2020-12). */
+function claudeSchemaProblems(tool: string, schema: Record<string, unknown>): string[] {
+  return CLI_DROPS_ROOT.filter((key) => key in schema).map((key) => `${tool}: /${key}: the Claude Agent CLI drops a tool whose root has ${key}; put the alternatives under a property`);
+}
+
 export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAdapter {
   const thinking = options.thinking ?? "medium";
   if (!THINKING.has(thinking)) throw new ClaudeAgentThinkingOff(thinking);
+  const maxImageBytes = options.maxImageBytes ?? CLAUDE_AGENT_MAX_IMAGE_BYTES;
+  if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-claude-agent: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
   if (options.standIn) {
@@ -206,6 +280,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one the Claude Agent SDK takes (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
+        // What every harness refuses (the root, JSON Schema 2020-12, a remote $ref), then what this one measured.
+        const common = toolSchemaProblems(tool.name, tool.inputSchema);
+        problems.push(...common, ...(common.length ? [] : claudeSchemaProblems(tool.name, tool.inputSchema)));
       }
       return problems;
     },
@@ -215,6 +292,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
       if (!dir) throw new Error("agentrun-claude-agent: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
 
+      const calls = new CallsInFlight();
       const acquire = localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
@@ -240,7 +318,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // The runner's turn cap and the host's beforeRequest bound the spend.
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
         },
-        tools: spec.tools.map((tool) => kernelTool(tool, io)),
+        tools: spec.tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
@@ -256,8 +334,14 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown; callId?: string; name?: string; args?: unknown; reason?: string };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown; args?: unknown; reason?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
+        // hear the call ended, with the text recorded.
+        if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
+          calls.end(e.callId);
+          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}) });
+        }
         // A call the CLI refused itself (a tool the session doesn't have): shown as a call that failed, by the name the
         // model gave. The CLI's transcript, mirrored to the store, keeps the refusal.
         if (e?.type === "tool_refused" && typeof e.callId === "string" && typeof e.name === "string") {
@@ -312,6 +396,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       return {
         get state() { return state; },
         async send(text) {
+          if (calls.draining) throw new Error("agentrun-claude-agent: the session is pausing; no new turn");
           await ready();
           await drive.submit({ id: randomUUID(), kind: "prompt", text });
           void run();
@@ -325,9 +410,21 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           if (!running) throw new Error("agentrun-claude-agent: no turn is in flight");
           return running;
         },
-        async interrupt() {
-          drive.halt?.(new Error("interrupted"));
-          await running?.catch(() => {});
+        async interrupt(interruptOptions = {}) {
+          const drainMs = interruptOptions.drainMs ?? 0;
+          if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("agentrun-claude-agent: drainMs must be a non-negative number of milliseconds");
+          // A pause: no new turn here (the host refuses new calls and requests); the calls in flight run on until their
+          // outcomes are recorded.
+          calls.draining = true;
+          try {
+            if (drainMs > 0) await calls.idle(drainMs);
+            drive.halt?.(new Error("interrupted"));
+            await running?.catch(() => {});
+          } finally {
+            // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
+            calls.clear();
+            calls.draining = false;
+          }
         },
         async close() {
           if (closed) return;

@@ -134,7 +134,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | agent-base | 9.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | agentkeepalive | 4.6.0 | MIT | harness, pi-browser | no | 1 |
 | ajv-formats | 3.0.1 | MIT | run-adapters-claude-agent | no | 1 |
-| ajv | 8.18.0 | MIT | run-adapters-claude-agent | no | 1 |
+| ajv | 8.18.0 | MIT | run-adapters, run-adapters-claude-agent | no | 1 |
 | anynum | 1.0.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | asynckit | 0.4.0 | MIT | harness, pi-browser | no | 1 |
 | balanced-match | 4.0.4 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
@@ -189,11 +189,11 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | express-rate-limit | 8.7.1 | MIT | run-adapters-claude-agent | no | 1 |
 | express | 5.3.0 | MIT | run-adapters-claude-agent | no | 1 |
 | extend | 3.0.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
-| fast-deep-equal | 3.1.3 | MIT | run-adapters-claude-agent | no | 1 |
+| fast-deep-equal | 3.1.3 | MIT | run-adapters, run-adapters-claude-agent | no | 1 |
 | fast-sha256 | 1.3.0 | Unlicense | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
 | fast-string-truncated-width | 3.0.3 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | fast-string-width | 3.0.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| fast-uri | 3.1.8 | BSD-3-Clause | run-adapters-claude-agent | no | 1 |
+| fast-uri | 3.1.8 | BSD-3-Clause | run-adapters, run-adapters-claude-agent | no | 1 |
 | fast-wrap-ansi | 0.2.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | fast-xml-builder | 1.3.1 | MIT | harness, pi-durable-disk, serve | no | 1 |
 | fast-xml-parser | 5.11.2 | MIT | harness, pi-durable-disk, serve | no | 1 |
@@ -242,7 +242,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | jose | 6.2.13 | MIT | run-adapters-claude-agent | no | 1 |
 | json-bigint | 1.0.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | json-schema-to-ts | 3.1.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, run-adapters-claude-agent, serve | no | 1 |
-| json-schema-traverse | 1.0.0 | MIT | run-adapters-claude-agent | no | 1 |
+| json-schema-traverse | 1.0.0 | MIT | run-adapters, run-adapters-claude-agent | no | 1 |
 | json-schema-typed | 8.0.2 | BSD-2-Clause | run-adapters-claude-agent | no | 1 |
 | jwa | 2.0.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | jws | 4.0.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
@@ -287,7 +287,7 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | quickjs-wasi | 3.6.2 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
 | range-parser | 1.3.0 | MIT | run-adapters-claude-agent | no | 1 |
 | raw-body | 3.0.2 | MIT | run-adapters-claude-agent | no | 1 |
-| require-from-string | 2.0.2 | MIT | run-adapters-claude-agent | no | 1 |
+| require-from-string | 2.0.2 | MIT | run-adapters, run-adapters-claude-agent | no | 1 |
 | retry | 0.12.0 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-git-remote, serve | no | 1 |
 | retry | 0.13.1 | MIT | harness, pi, pi-agent-learn, pi-browser, pi-durable-agent, pi-durable-disk, pi-git-remote, pi-transport, pi-vision, serve | no | 1 |
 | router | 2.2.0 | MIT | run-adapters-claude-agent | no | 1 |

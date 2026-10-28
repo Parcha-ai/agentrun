@@ -14,9 +14,9 @@ export interface ServedTool {
   inputSchema: Record<string, unknown>;
 }
 
-/** A tool call's result, in MCP's shape. */
+/** A tool call's result, in MCP's shape: text, and any images the tool answered with (base64). */
 export type ServedResult = {
-  content: { type: "text"; text: string }[];
+  content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
   isError?: boolean;
 }
 

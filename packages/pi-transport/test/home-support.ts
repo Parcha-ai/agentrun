@@ -147,7 +147,8 @@ export function walk(root: string): Map<string, Seen> {
 				seen.set(key, {
 					kind: "file",
 					mode: stat.mode & 0o7777,
-					detail: `${Math.floor(stat.mtimeMs / 1000)} ${createHash("sha256").update(content).digest("hex")}`,
+					// Whole seconds from the nanoseconds: from mtimeMs, a time just short of a second can round up to it.
+					detail: `${lstatSync(path as unknown as string, { bigint: true }).mtimeNs / 1_000_000_000n} ${createHash("sha256").update(content).digest("hex")}`,
 				});
 			}
 		}
