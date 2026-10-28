@@ -5,7 +5,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -344,4 +345,46 @@ test("a judge that never answers cannot hold shutdown: close() ends within the d
   const state = await readRunState(join(dir, "agents"), "calc", run.run_id);
   assert.deepEqual([state.state, state.reason], ["no_judge", "the judge did not answer"]);
   assert.ok(branches(bareOf(join(dir, "agents"), "calc")).includes(`runs/${run.run_id}`), "the branch waits for the next start");
+});
+
+/** Another connection holding store.sqlite with no reader allowed, until released. */
+function holdStore(t, data) {
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN EXCLUSIVE");
+  const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
+  t.after(release);
+  return release;
+}
+
+test("a review that meets a held agent store waits it out in the background and completes once it is free, and says it was busy", async (t) => {
+  const lines = [];
+  const { api, data, learning } = await serve(t, { learning: { screen: SCREEN, judge: judge().run }, log: (line) => lines.push(line) });
+  assert.equal(typeof learning?.review, "function", "the server has a review");
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  await planted(t, data, "calc", "plant-held", { candidates: [{ callId: "c1", type: "lesson", text: RATE_LIMIT, evidence: [] }] });
+  const release = holdStore(t, data);
+  const reviewing = learning.review("calc", "plant-held").then(() => "done", (error) => `failed: ${error.message}`);
+  await sleep(3_000);
+  release();
+  assert.equal(await reviewing, "done", "the review outlasts a request's 2 s wait");
+  assert.equal((await readRunState(data, "calc", "plant-held")).state, "merged");
+  assert.ok(lines.some((line) => /learning_review_busy/.test(line)), "the busy store is said in the log");
+});
+
+test("a run whose end is written late, after the store was held at its end, is still proposed and reviewed once", async (t) => {
+  const j = judge();
+  const { api, data } = await serve(t, { learning: { screen: SCREEN, judge: j.run }, carryBackRetry: { delaysMs: [50, 50] }, settleRetryMs: 300 });
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  const go = join(await scratch(t), "go");
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${go} exists.` } });
+  await follow(api, run.run_id, ["working"]);
+  const release = holdStore(t, data);
+  await writeFile(go, "");
+  await sleep(2_500);
+  release();
+  const state = await stateOf(data, "calc", run.run_id, (s) => s.state === "merged" && s.pruned === true, 45_000);
+  assert.ok(state.merge, "reviewed and merged");
+  const asked = j.calls.length;
+  await sleep(1_000);
+  assert.equal(j.calls.length, asked, "and reviewed once");
 });
