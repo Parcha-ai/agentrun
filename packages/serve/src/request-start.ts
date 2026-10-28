@@ -6,8 +6,7 @@
 // pi's compaction summary is a paid request too (`completeSimple`), and pi books its usage in its own usage document,
 // never as an entry the run's timeline sums. So it is marked the same way (`request: "compaction"`), and its answer's
 // cost is written as REQUEST_COST: the run's total, and /usage with it, include it, and one cut before its answer reads
-// unknown. Only `streamSimple`, the generation's request: pi's
-// compaction completes its summary another way and is not a request of the run's turns.
+// unknown. Both are wrapped here: `streamSimple` for the generation's requests, `completeSimple` for the summary.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

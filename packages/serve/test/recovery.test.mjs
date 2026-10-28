@@ -2,6 +2,7 @@
 // still replay, and a carry back that a busy home put off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -144,7 +145,8 @@ test("a run store still locked when the next server reads it is read again once 
 /** A run that answered and released, shown to the next server as still running under a stand-in process that stays
  *  alive: what a server adopts when the run's process outlived the server before it. `release()` then writes the run's
  *  released record, still naming the live stand-in. */
-async function adoptedStandIn(t) {
+/** `script`: what the stand-in process runs (by default, nothing but staying alive), given `args`. */
+async function adoptedStandIn(t, script = "setInterval(() => {}, 1000)", env = {}) {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await sleep(2_500);
   process.kill(pid, "SIGTERM");
@@ -154,7 +156,7 @@ async function adoptedStandIn(t) {
   }
   const file = join(data, "runs", runId, "run.json");
   const released = JSON.parse(await readFile(file, "utf8"));
-  const standIn = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const standIn = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, ...env } });
   t.after(() => standIn.kill("SIGKILL"));
   const holder = { ...released.holder, pid: standIn.pid, serve: "http://127.0.0.1:9" };
   // Whole, through a temporary file and a rename, as a run writes it: the server reads run.json every 500 ms, and a
@@ -276,6 +278,27 @@ test("an adopted run whose process lives on 30 s after it released is read anywa
   assert.ok(Date.now() - releasedAt >= 30_000, "it waited the 30 s for the process to exit first");
   assert.equal(page.status, "completed");
   assert.ok(lines.some((line) => line.includes(runId) && line.includes("has not exited; reading its store anyway")));
+});
+
+test("a start that needs the place of a cancelled run whose adopted process will not exit waits for it, and still answers by its deadline", { timeout: 120_000 }, async (t) => {
+  // An orphan no SIGKILL timer reaches, and which ignores SIGTERM: it holds its place for as long as it lives. It says
+  // when its SIGTERM is set, so the cancel never reaches it first.
+  const ready = join(await scratch(t), "ready");
+  const { data, runId } = await adoptedStandIn(t, "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.env.READY_FILE, ''); setInterval(() => {}, 1000)", { READY_FILE: ready });
+  for (let i = 0; !existsSync(ready); i++) {
+    assert.ok(i < 200, "the stand-in sets its SIGTERM");
+    await sleep(50);
+  }
+  // drainTimeout 2s: a start waits up to the drain, the kill's second and one more for a leaving run's place.
+  const api = await adopting(t, data, runId, { maxRuns: 1, drainTimeout: "2s" });
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  const asked = Date.now();
+  const answer = await Promise.race([api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } }), sleep(15_000).then(() => "still waiting")]);
+  const waited = Date.now() - asked;
+  assert.notEqual(answer, "still waiting", "the start answered, never waiting on a process that will not go");
+  assert.equal(answer.status, 429, JSON.stringify(answer.body));
+  assert.ok(waited >= 3_000, `it waited for the place being given back: ${waited} ms`);
+  assert.ok(waited < 8_000, `and answered by its deadline, never hanging on a process that will not go: ${waited} ms`);
 });
 
 test("Idempotency-Key answers outlive a restart for the retention capabilities state", async (t) => {

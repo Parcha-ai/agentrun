@@ -111,13 +111,15 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
   });
   const ran = [];
   const lookup = { name: 'lookup', description: 'Look a thing up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async (args) => { ran.push(args); return { text: 'found' }; } };
-  const started = [];
-  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup], maxTurns: 60, timeoutMs: 200_000, onEvent: (e) => { if (e.type === 'tool_start') started.push(e.name); } });
+  const toolEvents = [];
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup], maxTurns: 60, timeoutMs: 200_000, onEvent: (e) => { if (e.type === 'tool_start' || e.type === 'tool_end') toolEvents.push(e); } });
   const output = await runNode({ kind: 'agent', label: 'probe', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['lookup'] });
 
   assert.deepEqual(output, { answer: 'ok' });
   assert.deepEqual(ran, [{ q: 'x' }]);
-  assert.deepEqual(started, ['lookup', 'submit']);
+  // Only the host's tools ran; every other call the model made is shown to the host as a call that failed, by its name.
+  assert.deepEqual(toolEvents.filter((e) => e.type === 'tool_end' && !e.isError).map((e) => e.name), ['lookup', 'submit']);
+  for (const [name] of attacks) assert.ok(toolEvents.some((e) => e.type === 'tool_end' && e.name === name && e.isError), `${name} is shown as a failed call`);
   assert.equal(main >= plan.length, true, `the model got to ask for everything (${main} of ${plan.length})`);
   for (const [name] of attacks) assert.equal(existsSync(canary(name.toLowerCase())), false, `${name} wrote`);
   for (const name of ['bash', 'bg', 'write', 'edit', 'task', 'agent', 'nb', 'cron', 'mcp']) assert.equal(existsSync(canary(name)), false, name);
@@ -281,4 +283,17 @@ test('the real CLI, killed in turn 2, resumes in a NEW session directory from th
   assert.ok(after.some((m) => m.role === 'user' && JSON.stringify(m.content).includes('tool_result') && /interrupted|may or may not/.test(JSON.stringify(m.content))), "the call is answered as interrupted");
   const sameSystem = JSON.stringify(uncached(sent[2].system ?? null)) === JSON.stringify(uncached(sent[1].system ?? null));
   t.diagnostic(`turn 3 sent ${third.length} messages (turn 2: ${second.length}); system prompt the same as turn 2's: ${sameSystem}; paid hooks before ${paid.before}, after ${paid.after}`);
+});
+
+test("a host's gateway headers (its spend tags) reach the provider on every request the real CLI makes through the proxy (the proxy test covers every route, a free one too)", { skip, timeout: 120_000 }, async (t) => {
+  const tags = 'job:j-123,purpose:research,run:r-9';
+  const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL && !Object.keys(r.results ?? {}).length ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
+  t.after(() => provider.close());
+  const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret', headers: { 'x-litellm-tags': tags } }, sessionsDir: join(mkdtempSync(join(ROOT, 'tags-')), 'sessions') });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'tags', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
+  const reached = provider.requests.filter((r) => r.authorized);
+  assert.ok(reached.some((r) => r.model === MODEL), 'a main-model request reached the provider');
+  for (const r of reached) assert.equal(r.headers['x-litellm-tags'], tags, `${r.path} (${r.model}) carries the host's tags`);
+  t.diagnostic(`requests with the tags: ${reached.length} (${[...new Set(reached.map((r) => `${r.path} ${r.model}`))].join('; ')})`);
 });
