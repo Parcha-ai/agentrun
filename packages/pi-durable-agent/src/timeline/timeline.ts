@@ -43,10 +43,10 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 /** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
 
-/** A host's marks of a model request: as it leaves (written before it does), and as its stream ends. A request that
- *  ended has a `pi.assistant` entry, or was cut before its first content (a stop) and has none; a start with no end is
- *  in flight when it is the latest, and was cut by a crash when a later one followed it. A cut request's cost is
- *  unknown. */
+/** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
+ *  that answered or failed has a `pi.assistant` entry; one aborted before its first content has none; a start with no
+ *  end and no entry is in flight when it is the latest, unless the run is settled, and was cut by a crash when a later
+ *  one followed it or the run settled without it. A cut request's cost is unknown. */
 export const REQUEST_STARTED = "agentrun.request_started";
 export const REQUEST_ENDED = "agentrun.request_ended";
 
@@ -286,7 +286,8 @@ function createProjector(options: TimelineOptions) {
   function usage(): TimelineEvent | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
-    const cut = marked - (inFlight ? 1 : 0) > requests;
+    // A settled run has nothing in flight: its last request with no entry was cut by the process that ended.
+    const cut = marked - (inFlight && !options.settled ? 1 : 0) > requests;
     if ((!requests && !cut) || root === undefined) return undefined;
     const count = Math.max(requests, marked);
     const total = usd === null || cut ? null : Math.round(usd * 1e6) / 1e6;

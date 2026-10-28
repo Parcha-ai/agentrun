@@ -212,6 +212,10 @@ test("cost: a request marked as it left and cut before its first content counts,
   assert.deepEqual(stopped.usage, { usd: null, requests: 2 }, "stopped before its first content: ended with no entry");
   assert.equal(stopped.summary, "Cost so far: unknown over 2 model requests");
   assert.deepEqual(timelineOf([started, ended, a, started, started]).at(-1).usage, { usd: null, requests: 3 }, "a crash cut one, and the next process's is in flight");
+  // A run settled with its last request unanswered (its process died mid-request, and it never resumed): that request
+  // was cut, not in flight.
+  assert.deepEqual(timelineOf([started, a, started], { settled: true }).at(-1).usage, { usd: null, requests: 2 });
+  assert.deepEqual(timelineOf([user("hi", 0), started], { settled: true }).map((r) => [r.kind, r.usage ?? null]), [["user_message", null], ["usage", { usd: null, requests: 1 }]], "its only request, cut");
   // A run written before requests were marked reads as it did.
   assert.deepEqual(timelineOf([a]).at(-1).usage, { usd: 0.01, requests: 1 });
 });
