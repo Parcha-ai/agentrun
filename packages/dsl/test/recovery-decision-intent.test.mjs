@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
+import { memoryStore, openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
 
 const KEY = 'run-1';
 const INPUT = { text: 'a filing' };
@@ -62,6 +62,7 @@ for (const layout of LAYOUTS) {
     const first = { runJudge: async () => { asked += 1; dead = true; return structuredClone(answer); } };
     await assert.rejects(run(store, first, kept, layout), /the process died/);
     dead = false;
+    const before = kept.receipts.length;
     const second = { runJudge: async () => { asked += 1; return structuredClone(answer); } };
     const result = await run(store, second, kept, layout);
     assert.equal(asked, 1, 'runJudge is called exactly once across the two processes');
@@ -71,8 +72,10 @@ for (const layout of LAYOUTS) {
     assert.equal(more.length, 0, 'one decision request');
     assert.deepEqual({ record: request?.record, kind: request?.kind, label: request?.label, attempt: request?.attempt, status: request?.status, cost_usd: request?.cost_usd },
       { record: 'decision.request', kind: 'judge', label: 'check', attempt: 1, status: 'interrupted', cost_usd: null }, 'the interrupted request is booked at an unknown cost, never 0');
-    const booked = kept.receipts.filter((receipt) => receipt.id === request?.decision_id);
-    assert.deepEqual(booked.map((receipt) => [receipt.status, receipt.cost_usd]), [['failed', null]], 'its receipt is booked once, at an unknown cost');
+    // A store that refuses writes leaves its process alive long enough to record the cut call; a dead one records nothing.
+    const receipts = kept.receipts.filter((receipt) => receipt.id === request?.decision_id);
+    assert.ok(receipts.length > 0 && receipts.every((receipt) => receipt.cost_usd === null), 'every receipt of the decision is at an unknown cost');
+    assert.deepEqual(kept.receipts.slice(before).map((receipt) => [receipt.id, receipt.status, receipt.cost_usd]), [[request?.decision_id, 'failed', null]], 'the next process books it once, at an unknown cost');
   });
 
   test(`a decision answered before a crash replays from its receipt at no cost and is not asked again (${layout})`, async () => {
