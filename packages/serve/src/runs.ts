@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { type AgentEntry, type Agents, storeError, whenFree } from "./agents.js";
+import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_META, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
@@ -608,7 +608,13 @@ export class Runs {
     run.settles++;
     run.settling = (run.settling ?? Promise.resolve())
       .then(() => (run.outcome ? undefined : this.settleOnce(run, code, exited)))
-      .catch((error: Error) => warn(run.id, `not settled: ${error.message}; the next start tries again`))
+      .catch((error: Error) => {
+        if (!storeBusy(error) || this.closing) return warn(run.id, `not settled: ${error.message}; the next start tries again`);
+        // A store still held past the run end's retries: settled again later, not left until the next start.
+        const every = this.options.settleRetryMs ?? SETTLE_RETRY_MS;
+        warn(run.id, `not settled: ${error.message}; trying again in ${every / 1000} s`);
+        setTimeout(() => void this.settle(run, code, exited), every).unref();
+      })
       .finally(() => void run.settles--);
     return run.settling;
   }
@@ -655,7 +661,8 @@ export class Runs {
   private async workflowEnd(run: Run, ending: WorkflowEnding | undefined): Promise<{ outcome: Status; state: Ended; summary: string } | undefined> {
     if (!ending) return undefined;
     const { readWorkflowRun, workflowCarry } = await import("@parcha/pi-durable-agent/workflow");
-    const revision = (await this.options.agents.request(() => this.store.readRevision(run.revision))) as Extract<Revision, { kind: "workflow" }>;
+    // A run's end waits for a busy store as long as its carry back does, not a request's 2 s.
+    const revision = (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store"))) as Extract<Revision, { kind: "workflow" }>;
     const at = { runId: run.id, storePath: this.storeFile(run), revision };
     const { state, summary } = await workflowCarry(at, ending);
     if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
@@ -872,8 +879,9 @@ export class Runs {
 
   /** `Run`, as the contract shows it. */
   async view(run: Run) {
-    const { status, state } = statusOf(run);
     const stored = await this.options.agents.request(() => this.store.readRun(run.id));
+    // After the read: the run may have moved on while it waited, and every field below is of this one moment.
+    const { status, state } = statusOf(run);
     const row = TERMINAL.has(status) ? stored : undefined;
     const answer = answerOf(run.rows);
     const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);

@@ -155,15 +155,27 @@ export class Agents {
     const revision = this.revisionOf(definition, files, note);
     await this.checked(revision);
     await check?.(revision);
-    // The checks awaited: another request may have moved the current revision meanwhile, so read it again.
-    const now = held((await this.get(agent.id)) ?? entry);
-    if (now.revision && sameRevision(now.revision, revision)) {
-      this.checkVersion(definition, now.version);
-      return now;
+    // Each try reads the current revision, checks against it and commits on it in one go: a try a busy store sent back
+    // checks again, and the store refuses the commit if another writer moved the current revision after this read.
+    const attempt = async (): Promise<AgentEntry | undefined> => {
+      const now = held(this.entry(agent.id) ?? entry);
+      if (now.revision && sameRevision(now.revision, revision)) {
+        this.checkVersion(definition, now.version);
+        return now;
+      }
+      this.checkVersion(definition, now.revisions + 1);
+      await this.store.commitRevision(agent.id, revision, { setCurrent: true, ifCurrent: now.revision?.id ?? null });
+      return undefined;
+    };
+    for (let tries = 1; ; tries++) {
+      try {
+        return (await this.request(attempt)) ?? (await this.get(agent.id))!;
+      } catch (error) {
+        // Without If-Match an edit goes on the revision current when it commits: one moved under it is read again.
+        if (ifCurrent === undefined && tries < 5 && error instanceof AgentHomeError && error.code === "stale") continue;
+        storeError(error);
+      }
     }
-    this.checkVersion(definition, now.revisions + 1);
-    await this.request(() => this.store.commitRevision(agent.id, revision, { setCurrent: true, ...(ifCurrent !== undefined ? { ifCurrent } : {}) })).catch((error) => storeError(error));
-    return (await this.get(agent.id))!;
   }
 
   /** Makes `revision`, one of the agent's own, its current one. */

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, answerFlow, flowAgent, follow, scratch, serve } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -142,4 +142,91 @@ test("the agent home's own busy on a read no storeError wraps reaches the server
   t.after(() => void (proto.readAgent = readAgent));
   const answer = await api("GET", "/agents/held-read");
   assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
+});
+
+test("two edits held by a reader of the store are each checked against the revision current when it commits", async (t) => {
+  const { api, data, port, token } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("raced"))).status, 201);
+  const put = (instructions, version) => timed(port, token, "PUT", "/agents/raced/definition", agent("raced", { instructions, version }));
+  // Both ask for version 2: the second to commit is one more, so it is refused, not written as version 3.
+  let release = hold(t, data, "READ");
+  const versions = [put("Answer A.", 2), put("Answer B.", 2)];
+  await sleep(500);
+  release();
+  const answered = (await Promise.all(versions)).map((answer) => [answer.status, answer.body.error?.fields?.[0]?.field ?? null]).sort();
+  assert.deepEqual(answered, [[200, null], [422, "definition.version"]]);
+  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 2, "one edit made a revision");
+  // The same edit twice makes one revision: the second finds it current.
+  release = hold(t, data, "READ");
+  const same = [put("Answer C.", 3), put("Answer C.", 3)];
+  await sleep(500);
+  release();
+  assert.deepEqual((await Promise.all(same)).map((answer) => answer.status), [200, 200]);
+  assert.equal((await api("GET", "/agents/raced/revisions")).body.revisions.length, 3, "the same edit twice made one revision");
+});
+
+/** A workflow agent whose run is working, its model node answering 1.5 s after it starts. */
+async function workingFlow(api, id) {
+  assert.equal((await api("POST", "/agents", flowAgent(id, answerFlow("Answer soon.")))).status, 201);
+  const started = await api("POST", `/agents/${id}/runs`, { input: { question: "Answer soon." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["working"]);
+  return started.body.run_id;
+}
+
+test("a workflow that ends while the agent store is held past a request's 2 s waits with the run end's retries, then completes", async (t) => {
+  const busy = [];
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: Array(60).fill(100), onBusy: (_id, attempt) => busy.push(attempt) }, settleRetryMs: 120_000 });
+  const runId = await workingFlow(api, "held-end");
+  const release = hold(t, data, "EXCLUSIVE");
+  await sleep(4_500);
+  release();
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
+  assert.equal(last.status, "completed", JSON.stringify(last));
+  assert.ok(busy.length > 0, "the run's end met the held store");
+});
+
+test("a workflow whose end outlasts the run end's retries is settled again, not left until the next start", async (t) => {
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [50, 50] }, settleRetryMs: 300 });
+  const runId = await workingFlow(api, "settled-again");
+  const release = hold(t, data, "EXCLUSIVE");
+  await sleep(3_000);
+  release();
+  const { last } = await follow(api, runId, ["completed", "failed"], { deadlineMs: 15_000 });
+  assert.equal(last.status, "completed", JSON.stringify(last));
+});
+
+test("a run's view is of one moment: a run that ends while its read waits is answered ended, with its result", async (t) => {
+  const { api } = await serve(t);
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("viewed"))).status, 201);
+  const started = await api("POST", "/agents/viewed/runs", { input: { content: `Answer once ${go} exists.` } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["working"]);
+  // The next store readRun (the view's) waits until the test lets it go; every other read goes through.
+  const probe = await scratch(t);
+  const store = openStore(probe);
+  const proto = Object.getPrototypeOf(store);
+  store.close();
+  const readRun = proto.readRun;
+  t.after(() => void (proto.readRun = readRun));
+  let letGo;
+  let waiting = new Promise((resolve) => (letGo = resolve));
+  proto.readRun = function (...args) {
+    if (!waiting) return readRun.apply(this, args);
+    const until = waiting;
+    waiting = undefined;
+    const row = readRun.apply(this, args);
+    return until.then(() => row);
+  };
+  const viewing = api("GET", `/runs/${started.body.run_id}`);
+  for (let i = 0; waiting; i++) {
+    assert.ok(i < 200, "the view read the store");
+    await sleep(25);
+  }
+  await writeFile(go, "");
+  await follow(api, started.body.run_id, ["completed"]);
+  letGo();
+  const viewed = await viewing;
+  assert.deepEqual([viewed.status, viewed.body.status, viewed.body.result?.final_answer], [200, "completed", "Now."], JSON.stringify(viewed.body));
 });
