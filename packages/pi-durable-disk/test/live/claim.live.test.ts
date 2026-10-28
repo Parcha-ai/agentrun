@@ -461,9 +461,11 @@ test("a non-exclusive mount at the claim's mountpoint fails verification and is 
   for (const flag of ["--shared", "--conditional"]) {
     const id = await newRun(`mode${flag.replace(/-/g, "")}`);
     const mp = join(A, "runs", id);
-    mkdirSync(mp, { recursive: true });
+    // As the wrapper's prepare makes it; then archil itself, as root, since the wrapper refuses a non-exclusive mount.
+    // The token goes on stdin to the shell that execs archil, never in sudo's argv.
+    spawnSync("sudo", ["-n", "install", "-d", "-o", String(process.getuid!()), "-g", String(process.getgid!()), "-m", "0755", mp]);
     const tok = await token(`mode${flag}`);
-    const m = spawnSync("sudo", ["-n", ARCHIL_SCOPED, "mount", flag, `${scratchDiskId()}:/runs/${id}`, mp, "--region", REGION], {
+    const m = spawnSync("sudo", ["-n", "sh", "-c", 'IFS= read -r t; ARCHIL_MOUNT_TOKEN="$t" exec /usr/bin/archil "$@"', "sh", "mount", flag, `${scratchDiskId()}:/runs/${id}`, mp, "--region", REGION], {
       env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME ?? "/" },
       input: `${tok}\n`,
       encoding: "utf8",
