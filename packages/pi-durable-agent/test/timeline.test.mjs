@@ -355,6 +355,16 @@ test("a snapshot rebuilds from its entries and drops what it no longer holds", (
   assert.deepEqual(out.drop.sort(), before.filter((id) => id !== out.rows[0].id).sort());
 });
 
+test("isLive tells a live row (a phase the events made) from a committed one (an entry's)", () => {
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "run_start" }, { type: "message_end", entry: user("one", 0) }]);
+  const rows = reducer.rows();
+  const phase = rows.find((r) => r.kind === "phase");
+  const message = rows.find((r) => r.kind === "user_message");
+  assert.equal(reducer.isLive(phase.id), true);
+  assert.equal(reducer.isLive(message.id), false);
+});
+
 test("a host labels its own tools; agent_label names the conversation", () => {
   registerLabel("ati_search", (args) => `Searched for ${args.query}`, { many: (n) => `Searched ${n} times`, subject: (input) => input ?? undefined });
   const rows = timelineOf([

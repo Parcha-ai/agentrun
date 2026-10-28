@@ -347,14 +347,15 @@ export class Runs {
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
-  private take(run: Run, rows: TimelineEvent[]): void {
+  /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
+  private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
     run.rows = withAsks(rows);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
     for (const row of arrived) run.users.add(row.id);
     run.submitted = Math.max(0, run.submitted - arrived.length);
-    if (run.log.sync(run.rows)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(run.rows, keep)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
 
@@ -507,7 +508,9 @@ export class Runs {
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
-        this.take(run, reducer.rows());
+        // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
+        // already shown, which stay; only live rows go when they end.
+        this.take(run, reducer.rows(), (id) => !reducer.isLive(id));
       }
     }
   }
