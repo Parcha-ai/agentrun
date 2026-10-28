@@ -83,7 +83,9 @@ test("the money and the replay: a child cut off mid-run resumes from its own sto
   const stalled = call(first, { agent: 'checker', task: 'Check it.' }, 'toolu_7', dead.signal);
   await until(() => dying.requests >= 2 && dying.calls.length >= 1, 'two requests and a tool call');
   dead.abort(new Error('the process died'));
-  await stalled;
+  // A stopped call is not an answer: it rejects with the stop, so the lead's harness records it interrupted and runs the
+  // same call id again on resume (an answer here would be recorded as the call's outcome, and the child never resumed).
+  await assert.rejects(stalled, /the process died/);
   // The next process: the lead's harness runs the same call (same id) again; the child resumes, nothing is re-sent.
   const next = fauxAdapter({ script: () => script().filter((a) => !('hang' in a)) });
   const again = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: next, store, parentKey: 'step:lead', beforeRequest });
@@ -128,6 +130,18 @@ test('one child at a time: a second delegate call waits for the first to finish'
   const results = await both;
   assert.ok(results.every((r) => JSON.parse(r.text).answer === ANSWER.answer));
   assert.equal(live.most, 1);
+});
+
+test('a child that fails on its own, with nothing stopped, is an error answer the lead reads', async () => {
+  const adapter = fauxAdapter({ script: () => [{ fail: 'the provider is down' }] });
+  const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead', maxTurns: 2 });
+  const result = await call(t, { agent: 'checker', task: 'Check it.' });
+  assert.equal(result.isError, true);
+  assert.match(result.text, /The delegate checker stopped without an answer/);
+});
+
+test("a lead that already has a tool named delegate is refused: the host would get two", () => {
+  assert.match(delegateProblems({ agents: { a: { description: 'd', system: 's', tools: [] } }, tools: [...LEAD_TOOLS, tool(DELEGATE_TOOL)] }).join('; '), /the lead already has a tool named delegate/);
 });
 
 test('an unknown agent or an empty task is an error the lead reads, and runs nothing', async () => {
