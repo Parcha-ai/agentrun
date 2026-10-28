@@ -173,3 +173,39 @@ test('a refusal names the kind of thing refused, never a value from the request'
   }
   assert.equal(forwarded.length, 0);
 });
+
+test('a node with an output schema: the recorded request carries `text` with a JSON schema, and it is shaped and sent', async () => {
+  const recorded = JSON.parse(fixture('responses-request-schema-gpt-5.4-mini.json'));
+  const { p, forwarded } = await proxy();
+  const r = await send(p.url, { body: recorded });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(forwarded[0].body.text, recorded.text);
+  assert.equal(forwarded[0].body.text.format.type, 'json_schema');
+  for (const text of [{ format: { type: 'text' } }, { verbosity: 'low' }, { format: { type: 'json_schema', name: 'out', schema: { type: 'object' } }, verbosity: 'high' }]) {
+    assert.equal((await send(p.url, { body: { ...recorded, text } })).status, 200, JSON.stringify(text));
+  }
+  assert.equal(forwarded.length, 4);
+});
+
+test('`text` carries only a format (plain text, or a JSON schema) and a verbosity; anything else is refused, echoing nothing', async () => {
+  const recorded = JSON.parse(fixture('responses-request-schema-gpt-5.4-mini.json'));
+  const { p, forwarded } = await proxy();
+  const secret = 'value-from-the-request-t4';
+  for (const text of [
+    secret,
+    { format: { type: 'json_schema', name: 'out', schema: { type: 'object' }, strict: true, [secret]: 1 } },
+    { format: { type: 'json_object' } },
+    { format: { type: secret } },
+    { format: { type: 'text', name: secret } },
+    { format: { type: 'json_schema', name: 'out' } },
+    { format: { type: 'json_schema', name: 7, schema: {} } },
+    { format: { type: 'json_schema', name: 'out', schema: {}, strict: secret } },
+    { verbosity: secret },
+    { format: { type: 'text' }, [secret]: true },
+  ]) {
+    const r = await send(p.url, { body: { ...recorded, text } });
+    assert.equal(r.status, 400, JSON.stringify(text));
+    assert.ok(!r.text.includes(secret), `the refusal does not echo the request: ${r.text}`);
+  }
+  assert.equal(forwarded.length, 0);
+});

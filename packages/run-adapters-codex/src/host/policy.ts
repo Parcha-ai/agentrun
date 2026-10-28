@@ -8,8 +8,9 @@
 //
 // A refusal says what kind of thing it refused, never a value from the request (the proxy reports it to the client).
 // A body may carry only the keys the pinned CLI sends; `client_metadata` (its installation and session ids) is dropped,
-// `store` is always false, `include` may ask only for the encrypted reasoning the CLI replays, and the model is the
-// session's. `max_output_tokens` is clamped. No tool the provider runs on its own passes: web search, which the CLI
+// `store` is always false, `include` may ask only for the encrypted reasoning the CLI replays, `text` only for an output
+// format (plain text, or the JSON schema a node's output schema becomes) and a verbosity, and the model is the session's.
+// `max_output_tokens` is clamped. No tool the provider runs on its own passes: web search, which the CLI
 // adds whatever its config says, is dropped, and any other provider-hosted tool is refused. A function or custom tool
 // that is not one of the session's names is dropped, so the model is offered exactly the host's tools (or, in code
 // mode, the carriers it calls them through).
@@ -26,7 +27,12 @@ export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
 ]);
 
 /** The keys a Responses request from the pinned CLI may carry; `client_metadata` is dropped, anything else refused. */
-const BODY_KEYS = new Set(["model", "input", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "store", "stream", "include", "prompt_cache_key", "max_output_tokens"]);
+const BODY_KEYS = new Set(["model", "input", "tools", "tool_choice", "parallel_tool_calls", "reasoning", "store", "stream", "include", "prompt_cache_key", "max_output_tokens", "text"]);
+/** What `text` may say: the output's format (plain text, or the JSON schema a node's output schema becomes) and its
+ *  verbosity. */
+const TEXT_KEYS = new Set(["format", "verbosity"]);
+const VERBOSITY = new Set(["low", "medium", "high"]);
+const SCHEMA_FORMAT_KEYS = new Set(["type", "name", "schema", "strict"]);
 const DROPPED_KEYS = new Set(["client_metadata"]);
 /** What `include` may ask for: the encrypted reasoning the CLI sends back on its next request (`store` is false). */
 const INCLUDE = new Set(["reasoning.encrypted_content"]);
@@ -73,6 +79,26 @@ function toolChoice(choice: unknown, allowed: ReadonlySet<string>): unknown {
   if (choice === "auto" || choice === "none" || choice === "required") return choice;
   if (isPlain(choice) && choice.type === "function" && typeof choice.name === "string" && allowed.has(choice.name)) return choice;
   throw new ProxyRefusal(400, "tool_choice names a mode or tool this session does not offer");
+}
+
+/** `text` as the provider gets it: only a format (`{ type: "text" }`, or `{ type: "json_schema", name, schema, strict? }`)
+ *  and a verbosity. */
+function textOptions(text: unknown): Record<string, unknown> {
+  const refuse = (): never => { throw new ProxyRefusal(400, "text carries something other than a plain-text or JSON-schema format and a verbosity"); };
+  if (!isPlain(text) || !Object.keys(text).every((key) => TEXT_KEYS.has(key))) refuse();
+  const { format, verbosity } = text as Record<string, unknown>;
+  if (verbosity !== undefined && !(typeof verbosity === "string" && VERBOSITY.has(verbosity))) refuse();
+  if (format !== undefined) {
+    if (!isPlain(format)) refuse();
+    const f = format as Record<string, unknown>;
+    if (f.type === "text") {
+      if (Object.keys(f).length !== 1) refuse();
+    } else if (f.type === "json_schema") {
+      if (!Object.keys(f).every((key) => SCHEMA_FORMAT_KEYS.has(key))) refuse();
+      if (typeof f.name !== "string" || !isPlain(f.schema) || (f.strict !== undefined && typeof f.strict !== "boolean")) refuse();
+    } else refuse();
+  }
+  return text as Record<string, unknown>;
 }
 
 /** A Responses usage object in the proxy's terms, or undefined when it is not one. */
@@ -173,6 +199,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       }
       if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
       if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
+      if (out.text !== undefined) out.text = textOptions(out.text);
       if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed, false);
       if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed);
       if (Array.isArray(out.input)) {
