@@ -448,3 +448,18 @@ test('a blob whose first write was cut short, written again whole with another p
   await writeBlob(drive.world, 'run-1', text, { pieceChars: 6 });
   assert.equal((await readBlobs(drive.world, 'run-1')).get(hash), text);
 });
+
+test("a duplicate begin whose first call's outcome could not be written stops with the drive: no result made up", async () => {
+  const inner = await memorySessionStore().open('run-1');
+  // The writer refuses the call's outcome, as a fenced one does.
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (records.some((r) => r.kind === KERNEL_RECORDS.end)) throw new SessionFenced('run-1'); await inner.append(records); } };
+  const drive = await openDrive({ writer, signal: new AbortController().signal });
+  const calls = new BuiltinCalls(drive, { live: false });
+  const call = { callId: 'c1', name: 'Bash', input: { command: 'pay' }, replay: 'never' };
+  assert.equal((await calls.begin(call)).run, true);
+  const second = calls.begin(call);
+  await calls.end('c1', { text: 'paid' });
+  await assert.rejects(second, (error) => error instanceof Restart && error === drive.signal.reason, 'the duplicate stops with the drive');
+  assert.equal(drive.signal.aborted, true);
+  assert.equal((await inner.read()).some((r) => r.kind === KERNEL_RECORDS.end), false, 'the log has no outcome');
+});

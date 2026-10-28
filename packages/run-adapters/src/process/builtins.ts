@@ -1,7 +1,7 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/builtins.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only; a call begun twice (the same execution delivered twice) is reserved before the first await, and the second begin waits for its outcome instead of running it again.
-import { type DriveContext, EffectFailure, EffectInterrupted, type HostToolIO, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only; a call begun twice (the same execution delivered twice) is reserved before the first await, and the second begin waits for its outcome (or the drive's stop) instead of running it again.
+import { type DriveContext, EffectFailure, EffectInterrupted, Fatal, type HostToolIO, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
 import { clip, failureText, toolKey, type ToolResult } from './tools.js';
 
 /**
@@ -150,10 +150,12 @@ export class BuiltinCalls {
     const start = await first;
     if (!start.run) return start;
     await this.open.get(callId)?.done;
+    // The first call's outcome could not be written: the drive stopped, and this caller stops with it.
+    if (this.ctx.signal.aborted) throw this.ctx.signal.reason;
     const known = this.ctx.state().effects.get(toolKey(callId));
     if (known?.status === 'completed') return { run: false, result: { text: String(known.output ?? ''), isError: false } };
-    const error = known?.status === 'failed' && known.error ? known.error : { message: 'the call did not report its result', interrupted: true };
-    return { run: false, result: { text: failureText(error), isError: true, ...(error.interrupted ? { interrupted: true } : {}) } };
+    if (known?.status === 'failed' && known.error) return { run: false, result: { text: failureText(known.error), isError: true, ...(known.error.interrupted ? { interrupted: true } : {}) } };
+    throw new Fatal(`agentrun-adapters: built-in call ${callId} has no recorded outcome`);
   }
 
   private async beginOnce(call: BuiltinCall): Promise<BuiltinStart> {
