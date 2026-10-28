@@ -170,3 +170,35 @@ test('an unknown agent or an empty task is an error the lead reads, and runs not
   assert.equal((await call(t, { agent: 'checker', task: '  ' })).isError, true);
   assert.equal(adapter.requests, 0);
 });
+
+test("a child that delivered before the lead's process died answers from its record when the call runs again past the deadline", async () => {
+  const store = memorySessionStore();
+  const first = fauxAdapter({ script: () => [{ submit: ANSWER }] });
+  // The first process: the child delivers, then the process dies before the lead records the tool's result.
+  const before = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: first, store, parentKey: 'step:lead', deadlineAt: () => Date.now() + 60_000 });
+  assert.deepEqual(JSON.parse((await call(before, { agent: 'checker', task: 'Check it.' }, 'toolu_saved')).text), ANSWER);
+  // The next process replays the same call after the lead's deadline: the saved answer, and no child runs again.
+  const next = fauxAdapter({ script: () => [{ submit: { answer: 'a second, paid answer', citations: [], gaps: [] } }] });
+  const after = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: next, store, parentKey: 'step:lead', deadlineAt: () => Date.now() - 1 });
+  const replayed = await call(after, { agent: 'checker', task: 'Check it.' }, 'toolu_saved');
+  assert.equal(replayed.isError, undefined, replayed.text);
+  assert.deepEqual(JSON.parse(replayed.text), ANSWER);
+  assert.deepEqual([next.opened.length, next.requests], [0, 0], 'nothing was opened or paid for');
+});
+
+test("an agent name that is not one of the delegate's own, like constructor, is an unknown agent the lead reads, never a crash", async () => {
+  const adapter = fauxAdapter({ script: () => [{ submit: ANSWER }] });
+  const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead' });
+  for (const name of ['constructor', 'toString', '__proto__']) {
+    const result = await call(t, { agent: name, task: 'x' });
+    assert.equal(result.isError, true, name);
+    assert.match(result.text, /is not one of the agents/, name);
+  }
+  assert.equal(adapter.requests, 0);
+});
+
+test("a child tool list the runner would refuse is refused when the tool is made: a tool named twice, or the runner's own submit", () => {
+  assert.match(delegateProblems({ agents: { a: { description: 'd', system: 's', tools: ['fetch', 'fetch'] } }, tools: LEAD_TOOLS }).join('; '), /the agent a names the tool fetch twice/);
+  assert.match(delegateProblems({ agents: { a: { description: 'd', system: 's', tools: ['submit'] } }, tools: [...LEAD_TOOLS, tool('submit')] }).join('; '), /the agent a names submit, which the runner gives every child itself/);
+  assert.throws(() => delegateTool({ agents: { a: { description: 'd', system: 's', tools: ['fetch', 'fetch'] } }, tools: LEAD_TOOLS, adapter: fauxAdapter({ script: () => [] }), store: memorySessionStore(), parentKey: 'step:lead' }), /names the tool fetch twice/);
+});

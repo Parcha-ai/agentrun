@@ -9,7 +9,7 @@
 // lead and every child; its deadline is the lead's, or the agent's share of what is left. Children run one at a time, and
 // a child has no delegate tool (depth 1).
 import { Mutex } from "./process/tools.js";
-import { createHarnessRunner, type BeforeRequest } from "./runner.js";
+import { createHarnessRunner, RUNNER_RECORDS, SUBMIT_TOOL, type BeforeRequest } from "./runner.js";
 import type { AgentAdapter, HarnessEvent, HostTool, NodeRequest, SessionStore } from "./types.js";
 
 /** The tool's name, as the lead calls it. */
@@ -83,8 +83,12 @@ export function delegateProblems(options: Pick<DelegateOptions, "agents" | "tool
     const agent = options.agents[name]!;
     if (!AGENT_NAME.test(name)) problems.push(`the agent name ${JSON.stringify(name.slice(0, 80))} is not lowercase letters, digits and dashes`);
     if (typeof agent.system !== "string" || agent.system.length === 0) problems.push(`the agent ${name} has no system prompt`);
+    const seen = new Set<string>();
     for (const tool of agent.tools) {
+      if (seen.has(tool)) problems.push(`the agent ${name} names the tool ${tool} twice`);
+      seen.add(tool);
       if (tool === DELEGATE_TOOL) problems.push(`the agent ${name} may not delegate further (depth 1)`);
+      else if (tool === SUBMIT_TOOL) problems.push(`the agent ${name} names ${SUBMIT_TOOL}, which the runner gives every child itself`);
       else if (!lead.has(tool)) problems.push(`the agent ${name} names the tool ${tool}, which the lead does not have`);
     }
     const share = agent.deadlineShare;
@@ -118,13 +122,22 @@ export function delegateTool(options: DelegateOptions): HostTool {
     replay: "safe",
     call: (args, { callId, signal }) => serial.run(async () => {
       const { agent: name, task, context } = (args ?? {}) as { agent?: unknown; task?: unknown; context?: unknown };
-      const agent = typeof name === "string" ? options.agents[name] : undefined;
+      // An own entry only: a name like `constructor` is not an agent.
+      const agent = typeof name === "string" && Object.hasOwn(options.agents, name) ? options.agents[name] : undefined;
       if (!agent) return { text: `Not delegated: ${JSON.stringify(String(name).slice(0, 80))} is not one of the agents (${names.join(", ")}).`, isError: true };
       if (typeof task !== "string" || task.trim() === "") return { text: "Not delegated: give the task as text.", isError: true };
       const tag = { agent: name as string, callId, parentKey: options.parentKey };
+      // The child's session: its step's id, so its records are the runner's under `step:<id>`.
+      const sessionId = `${options.parentKey}/delegate:${callId}`;
       const deadlineAt = options.deadlineAt?.();
       const left = deadlineAt === undefined ? undefined : deadlineAt - Date.now();
-      if (left !== undefined && left <= 0) return { text: "Not delegated: the lead has no time left.", isError: true };
+      if (left !== undefined && left <= 0) {
+        // A child that delivered before a crash answers from its record, deadline or not; only new work is refused. Read,
+        // not opened: opening would fence the session for nothing.
+        const saved = (await options.store.read(`step:${sessionId}`)).findLast((r) => r.kind === RUNNER_RECORDS.accepted);
+        if (saved) return { text: JSON.stringify((saved.data as { value: unknown }).value) };
+        return { text: "Not delegated: the lead has no time left.", isError: true };
+      }
       const timeoutMs = left === undefined ? options.timeoutMs : Math.max(1, Math.floor(left * (agent.deadlineShare ?? 1)));
       const runNode = createHarnessRunner(typeof options.adapter === "function" ? options.adapter(name as string) : options.adapter, {
         store: options.store,
@@ -144,7 +157,7 @@ export function delegateTool(options: DelegateOptions): HostTool {
           schema: DELEGATE_RESULT_SCHEMA as unknown as Record<string, unknown>,
           tools: [...agent.tools],
           ...(agent.tier === undefined ? {} : { tier: agent.tier }),
-          step: { sessionId: `${options.parentKey}/delegate:${callId}`, attempt: 0, earlierSessionIds: [] },
+          step: { sessionId, attempt: 0, earlierSessionIds: [] },
         });
         return { text: JSON.stringify(answer) };
       } catch (error) {
