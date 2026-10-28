@@ -106,6 +106,7 @@ test("the learn tool comes with learning: naming it while learning is off is ref
   assert.equal(named.status, 201, "naming it while learning is on is allowed");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   await follow(api, run.run_id, ["completed"]);
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
   assert.equal((await reviewedOf(data, "calc", run.run_id)).reason, "no injection screen on this server", "and the run gets one learn tool");
 });
 
@@ -160,6 +161,7 @@ test("a run starts from main's notes at one commit: they are in its workspace an
   assert.equal(await readFile(join(work, ".agent", "learnings", "L-0123456789ab.md"), "utf8"), renderLearning(lesson("L-0123456789ab", "Search both forms of the legal name.")));
   const bare = bareOf(data, "calc");
   const branch = `runs/${run.run_id}`;
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
   const state = await reviewedOf(data, "calc", run.run_id);
   assert.deepEqual({ ...state }, { state: "no_screen", reason: "no injection screen on this server", branch, base, sha: tip(bare, branch) }, "the server records what it proposed, and review that it waits for a screen");
   assert.ok(branches(bare).includes(branch), `the run leaves ${branch}`);
@@ -300,7 +302,7 @@ test("a run whose end its server never carried back is proposed once by the next
   const bare = bareOf(data, "calc");
   assert.deepEqual(branches(bare).filter((b) => b.startsWith("runs/")), [`runs/${run.run_id}`]);
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
-  // The server closed after what ran behind the carry back, the review included: the state is final.
+  // The server closed after what ran behind the carry back, its review included, and has no screen: exactly "no_screen".
   const recorded = await readRunState(data, "calc", run.run_id);
   assert.deepEqual({ ...recorded }, { state: "no_screen", reason: "no injection screen on this server", branch: `runs/${run.run_id}`, base: state.base, sha: state.sha });
   assert.doesNotMatch(next.stderr(), /not proposed|after its carry back|catch-up/, "no error line");
@@ -437,6 +439,7 @@ test("a run whose end the store refuses at first is proposed once the end lands 
   assert.equal(await readRunState(data, "calc", runId), undefined, "nothing is proposed before the end lands");
   assert.equal(branches(bare).includes(`runs/${runId}`), false);
   release();
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
   const state = await reviewedOf(data, "calc", runId);
   assert.equal(storeRun(data, runId).state, "completed");
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
@@ -463,6 +466,7 @@ test("a server that stops while a run's end waits to be written proposes nothing
   let closingNext;
   const closeNext = () => (closingNext ??= next.close());
   t.after(closeNext);
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
   const state = await reviewedOf(data, "calc", runId);
   await closeNext();
   assert.equal(storeRun(data, runId).state, "completed");
@@ -547,6 +551,7 @@ test("a push that fails ends the run as it would have; the next start proposes i
     const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
     const closeNext = once(next);
     api = client(next.baseUrl, next.token);
+    // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
     const state = await reviewedOf(data, "calc", run.run_id);
     await closeNext();
     const at = (await stat(stateFile)).mtimeMs;
