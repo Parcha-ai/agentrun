@@ -55,6 +55,10 @@ export interface ProviderPolicy {
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
+  /** The model the body `apply` returned asks for, once `apply` checked it is one this session may use (its own, or a
+   *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
+   *  Absent, or undefined for a body: the session's model. */
+  modelOf?(body: Record<string, unknown>): string | undefined;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -250,8 +254,17 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const e = error as ProxyRefusal;
       return refuse(res, e instanceof ProxyRefusal ? e.status : 400, e instanceof ProxyRefusal ? e.message : "the body was refused", req);
     }
+    // The model this request is for, as the policy read it from the body it checked: the runner is asked about it, and
+    // it is priced at its rate.
+    let asked = model;
     try {
-      if (!route.free) await hooks.beforeRequest({ model });
+      const named = policy.modelOf?.(body);
+      if (typeof named === "string" && named) asked = named;
+    } catch (error) {
+      say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    }
+    try {
+      if (!route.free) await hooks.beforeRequest({ model: asked });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
@@ -343,7 +356,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         unread = true;
       }
       try {
-        usd = unread ? null : options.price?.(model, usage) ?? null;
+        usd = unread ? null : options.price?.(asked, usage) ?? null;
       } catch (error) {
         say(`model proxy (${policy.id}): the price could not be computed; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         usd = null;
