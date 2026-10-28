@@ -2,7 +2,7 @@
 // the two cannot drift. A blocker no setting of this host fixes (a tool it does not bind, a model pi-ai does not know,
 // no instructions, a workflow needing what it does not give) refuses the save, 422 by field; one a setting fixes (a
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
-import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
+import { ASK_TOOL, BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, harnessesOf } from "./harness.js";
 import { chooseModel, nodeTiers } from "./model.js";
@@ -28,6 +28,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (!(BOUND_TOOLS as readonly string[]).includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
+      // The person's answer comes back through pi's own turn: on another harness the tool is not bound yet.
+      else if (tool === ASK_TOOL && harness !== DEFAULT_HARNESS) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${ASK_TOOL} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
     });
     const chosen = await chooseModel(env, revision.model);
     if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
