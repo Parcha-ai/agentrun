@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
 import { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
 
 const test = (name, fn) => nodeTest(name, { timeout: 30_000 }, fn);
 async function until(ready, what) {
@@ -142,6 +142,23 @@ test('a child that fails on its own, with nothing stopped, is an error answer th
 
 test("a lead that already has a tool named delegate is refused: the host would get two", () => {
   assert.match(delegateProblems({ agents: { a: { description: 'd', system: 's', tools: [] } }, tools: [...LEAD_TOOLS, tool(DELEGATE_TOOL)] }).join('; '), /the lead already has a tool named delegate/);
+});
+
+test("with the lead's deadline already passed, nothing is delegated: an error the lead reads, and no child session is opened", async () => {
+  const adapter = fauxAdapter({ script: () => [{ submit: ANSWER }] });
+  const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead', deadlineAt: () => Date.now() - 1 });
+  const result = await call(t, { agent: 'checker', task: 'Check it.' });
+  assert.deepEqual(result, { text: 'Not delegated: the lead has no time left.', isError: true });
+  assert.deepEqual([adapter.opened.length, adapter.requests], [0, 0]);
+});
+
+test("the lead's context reaches the child with its task, in its first message", async () => {
+  const store = memorySessionStore();
+  const adapter = fauxAdapter({ script: () => [{ submit: ANSWER }] });
+  const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store, parentKey: 'step:lead' });
+  await call(t, { agent: 'checker', task: 'Check the three claims.', context: 'The draft cites sources A and B.' }, 'toolu_ctx');
+  const first = (await store.read('step:step:lead/delegate:toolu_ctx')).find((r) => r.kind === FAUX_RECORDS.user)?.data.text ?? '';
+  assert.match(first, /Check the three claims\.\n\nContext from the lead:\nThe draft cites sources A and B\./);
 });
 
 test('an unknown agent or an empty task is an error the lead reads, and runs nothing', async () => {
