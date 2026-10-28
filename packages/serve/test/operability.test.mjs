@@ -103,12 +103,12 @@ test("the printed link encodes the token, and a token the first boot did not mak
 
 test("the stored token is printed on the boot that made it, and on no later one", { timeout: 60_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
-  const first = await bin(t, data);
+  const first = await bin(t, data, [], { AGENTRUN_ACCOUNTS: "0" });
   const token = (await readFile(join(data, ".token"), "utf8")).trim();
   assert.ok(first.seen.out.includes(`AGENTRUN_API_KEY=${token}`));
   first.child.kill("SIGTERM");
   await first.exited;
-  const second = await bin(t, data);
+  const second = await bin(t, data, [], { AGENTRUN_ACCOUNTS: "0" });
   assert.ok(second.seen.out.includes(`AGENTRUN_API_KEY=<in ${join(data, ".token")}>`), second.seen.out);
   assert.ok(second.seen.out.includes(`?token=<in ${join(data, ".token")}>`), second.seen.out);
   assert.equal(second.seen.out.includes(token) || second.seen.out.includes(token.slice(0, 12)), false, "the second boot prints no token value");
