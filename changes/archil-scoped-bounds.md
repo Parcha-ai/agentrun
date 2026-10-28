@@ -8,4 +8,5 @@ kind: breaking
 - The reference's sudoers drop-in is unchanged (the wrapper, and `fusermount -u <mountRoot>/runs/*`); it says never to grant a bare `fusermount`, `mkdir` or `rmdir`.
 - The claim reads a dead mount as dead by its `statfs`, which always reaches the FUSE daemon, before its `stat`, which the kernel may answer from cached attributes: a dead daemon's mount no longer reads as live and is cleaned with `fusermount -u`. The wrapper never touches the mountpoint for `unmount`, `checkin`, `sync` and `delegations`.
 - `fork` mounts its source and target at their own `<mountRoot>/runs/<run>`, under each run's claim, instead of mount roots it made itself.
+- `supervise --check` mounts its second and third probe mounts beside the first, at `<mountRoot>/runs/<probe>-b` and `-c`, instead of under a mount root it made itself.
 - A test reads every archil call in the package's source and requires the wrapper to take each with its exact arguments, and to take no verb the package does not call.
