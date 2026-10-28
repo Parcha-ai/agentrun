@@ -12,7 +12,7 @@ across a park and a restart.
 
 From an install of the package instead of a checkout: this needs `@parcha/pi-durable-disk` 0.1.0-beta.15 or later (`localRun` and `beforeResume` first shipped in 0.1.0-beta.13, and `readLocalRunStatus`, which reads the run's `run.json`, in 0.1.0-beta.15); [Run one from an install](../README.md#run-one-from-an-install).
 
-From a checkout, after the root `npm ci --ignore-scripts && npm run build`, on Linux with Node 22.19 or later (no disk,
+From a checkout, after the root `npm ci --ignore-scripts && npm run build`, on Linux with Node 22.19+ or 24.2+ (no disk,
 no key, no network):
 
 ```sh

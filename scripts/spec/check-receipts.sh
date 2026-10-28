@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Model-checks the recovery driver's effects (spec/receipts/Receipts.tla) with TLC.
+# Model-checks the recovery driver's effects (spec/receipts/Receipts.tla) and the serve door's journal
+# (spec/receipts/Door.tla) with TLC.
 #
 #   Receipts.cfg       every property: two call steps, two crashes and failing commits.
 #   ReceiptsFull.cfg   every property at larger bounds: six call steps and six crashes.
+#   Door.cfg           every property of the door: two requestIds, two incarnations, one lost lease.
 #   Receipts_<P>.cfg   a property with a known counterexample (a finding with its node test); must still
 #                      be violated, by exactly that property. When a fix lands, the config stops failing,
 #                      this script says so, and the property moves into the configs above.
@@ -31,7 +33,8 @@ jar="$(cd "$(dirname "$jar")" && pwd)/$(basename "$jar")"
 timeout_bin="$(command -v timeout || command -v gtimeout || true)"
 [ -n "$timeout_bin" ] || { echo "GNU timeout not found (timeout, or gtimeout from coreutils on macOS): install coreutils" >&2; exit 2; }
 
-holds=(Receipts.cfg ReceiptsFull.cfg)
+holds=(Receipts.cfg ReceiptsFull.cfg Door.cfg)
+module_of() { case "$1" in Door*) echo Door ;; *) echo Receipts ;; esac; }
 cpus="$(nproc 2>/dev/null || echo 2)"
 share=$(( cpus / ${#holds[@]} )); [ "$share" -ge 1 ] || share=1
 workers="${TLC_WORKERS:-$share}"
@@ -41,15 +44,16 @@ limit="${TLC_TIMEOUT_S:-300}"
 limit_of() { echo "$limit"; }
 
 tlc() { # config -> runs TLC on a private copy so its states/ directory never lands in the tree
-  local cfg="$1" dir="$out/${1%.cfg}" rc=0 cap began
+  local cfg="$1" dir="$out/${1%.cfg}" mod rc=0 cap began
+  mod="$(module_of "$1")"
   cap="$(limit_of "$1")"; began=$(date +%s)
   rm -rf "$dir"; mkdir -p "$dir/tmp"
-  cp "$spec/Receipts.tla" "$spec/$cfg" "$dir/"
+  cp "$spec/$mod.tla" "$spec/$cfg" "$dir/"
   # A private java.io.tmpdir: TLC unpacks its standard modules there, and concurrent runs sharing
   # one directory read each other's half-written files. timeout sends TERM at the limit and KILL
   # 10 s later, so a stopped run exits 124 or 137; a 137 before the limit is some other kill.
   (cd "$dir" && "$timeout_bin" --kill-after=10 "$cap" java ${TLC_JAVA_OPTS:--XX:+UseParallelGC -Xmx${heap_mb}m} -Djava.io.tmpdir="$dir/tmp" -cp "$jar" tlc2.TLC -workers "$workers" \
-     -config "$cfg" -metadir "$dir/states" Receipts.tla) > "$dir/tlc.log" 2>&1 || rc=$?
+     -config "$cfg" -metadir "$dir/states" "$mod.tla") > "$dir/tlc.log" 2>&1 || rc=$?
   if { [ "$rc" = 124 ] || [ "$rc" = 137 ]; } && [ $(( $(date +%s) - began )) -ge "$cap" ]; then echo "$cap" > "$dir/timed-out"; fi
 }
 # config -> prints the stall failure and returns 0 when that config's TLC hit the limit.

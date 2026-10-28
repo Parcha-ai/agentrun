@@ -3,7 +3,9 @@
 // process was killed answered again at once.
 import assert from "node:assert/strict";
 import { chmod, readFile, writeFile } from "node:fs/promises";
+import { request } from "node:http";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, serve, storeRun } from "./support.mjs";
@@ -77,6 +79,109 @@ test("a start that fails gives its place back: after a store write refused, and 
   }
 });
 
+test("a run whose process fails at its start is never started again while its end is written: one process, and its place is free once it reads failed", async (t) => {
+  const { api, data } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
+  const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // The agent store held by another writer while the process fails, as a loaded host's slow store does: the run's end
+  // waits, and nothing may start its process again meanwhile.
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
+  store.exec("BEGIN IMMEDIATE");
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  store.exec("ROLLBACK");
+  store.close();
+  await follow(api, run.body.run_id, ["failed"]);
+  const log = await readFile(join(data, "runs", run.body.run_id, "process.log"), "utf8");
+  assert.equal(log.split("has no default export").length - 1, 1, `one process for the run:\n${log}`);
+  const next = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+  assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
+  // Watched for 2 s once the next run is over: a late start of the failed run (its first message's wait, woken by the
+  // settle that ended it) writes a second line here.
+  await follow(api, next.body.run_id, ["failed"]);
+  let after = "";
+  for (const until = Date.now() + 2_000; Date.now() < until && after.split("has no default export").length - 1 < 2; await sleep(100)) {
+    after = await readFile(join(data, "runs", run.body.run_id, "process.log"), "utf8");
+  }
+  assert.equal(after.split("has no default export").length - 1, 1, `the failed run was never started again:\n${after}`);
+});
+
+test("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", async (t) => {
+  // A deadline of 2 s, and a store retry 10 s away: the run's end waits longer than a message may.
+  const { data, port, token, api } = await serve(t, { faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname, readyTimeoutMs: 2_000, carryBackRetry: { delaysMs: [10_000] } });
+  assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
+  const run = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // The agent store held by another writer from here until the message is answered, so the run's end stays unwritten.
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN IMMEDIATE");
+  t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
+  const log = join(data, "runs", run.body.run_id, "process.log");
+  // A loaded machine is slow to start a process; the deadline under test starts at the message.
+  for (let i = 0; !(await readFile(log, "utf8").catch(() => "")).includes("has no default export"); i++) {
+    if (i >= 1_200) assert.fail(`the run's process did not fail at its start within 60 s; its log:\n${await readFile(log, "utf8").catch((error) => String(error))}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const from = Date.now();
+  // A fresh connection: nothing rides a pooled socket the server may be closing.
+  const sent = await new Promise((resolve, reject) => {
+    const body = JSON.stringify({ content: "still there?" });
+    const req = request({ host: "127.0.0.1", port, method: "POST", path: `/v2/runs/${run.body.run_id}/messages`, agent: false, headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
+      let text = "";
+      res.on("data", (chunk) => (text += chunk)).on("end", () => resolve({ status: res.statusCode, retryAfter: res.headers["retry-after"], json: JSON.parse(text) }));
+    });
+    req.once("error", reject).end(body);
+  });
+  const took = Date.now() - from;
+  assert.deepEqual([sent.status, sent.json.error?.code, sent.retryAfter], [503, "unavailable", "1"], JSON.stringify(sent.json));
+  // The store's write waits without blocking the server, so the answer comes at the 2 s deadline, long before the
+  // settle's retry, 10 s away, and the store is still held.
+  assert.ok(took < 3_500, `answered at the deadline: ${took} ms`);
+});
+
+test("a run's first message waits for a process slower to come up than a request's deadline: the run starts, never failed", async (t) => {
+  const { api } = await serve(t, { faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname, readyTimeoutMs: 1_000 });
+  assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify(last));
+});
+
+test("once the server has stopped, no run of it settles: a first message still on its way writes nothing after close", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname, drainTimeout: "5s" });
+  const api = client(one.baseUrl, one.token);
+  assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await one.close();
+  // The server runs in this process: what it says about the run after its close is written here.
+  const said = [];
+  const write = process.stderr.write;
+  process.stderr.write = (chunk, ...rest) => (String(chunk).includes(run.body.run_id) && said.push(String(chunk)), write.call(process.stderr, chunk, ...rest));
+  t.after(() => void (process.stderr.write = write));
+  await sleep(1_500);
+  assert.deepEqual(said, [], "nothing of the run after the server stopped");
+});
+
+test("a run whose first message never landed before the server stopped gets it from the next server, however slow its process", async (t) => {
+  const SLOW = new URL("./fixtures/faux-slow-start.mjs", import.meta.url).pathname;
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s" });
+  const api = client(one.baseUrl, one.token);
+  assert.equal((await api("POST", "/agents", agent("slow"))).status, 201);
+  const run = await api("POST", "/agents/slow/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  // Stopped while the run's process is still loading: its first message has not reached it.
+  await one.close();
+  const two = await startServe({ data, port: 0, faux: SLOW, drainTimeout: "5s", readyTimeoutMs: 1_000 });
+  t.after(() => two.close());
+  const { last } = await follow(client(two.baseUrl, two.token), run.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify(last));
+});
+
 test("AGENTRUN_MAX_RUNS and --max-runs set the cap; a value that is not a positive integer is refused", async (t) => {
   const { data } = await serve(t);
   const zero = await startServe({ data: join(data, "..", "other"), port: 0, faux: FAUX, maxRuns: 0 }).then((server) => (t.after(() => server.close()), "started"), (error) => error.message);
@@ -148,6 +253,19 @@ test("a cancel settles a run whose carry back cannot be written: cancelled, fina
     assert.ok(i < 100, "the carry back lands once the store can be written");
     await sleep(100);
   }
+  assert.equal(storeRun(data, run.run_id).state, "stopped");
+});
+
+test("a run cancelled as the server stops has its end in the store once the stop is done: no next start opens it again", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const one = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(one.baseUrl, one.token);
+  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
+  const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: "Take your time." } });
+  await follow(api, run.run_id, ["working"]);
+  assert.equal((await api("POST", `/runs/${run.run_id}/cancel`)).status, 202);
+  // Stopped at once: the run's process is still going, and its end is written by the stop's own settle.
+  await one.close();
   assert.equal(storeRun(data, run.run_id).state, "stopped");
 });
 

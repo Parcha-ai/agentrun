@@ -6,6 +6,7 @@
 // in `after`, also on failure.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -102,7 +103,8 @@ test("recordHome brings a mount's recording home over S3 while the claim is held
   const minted = await mintMountToken(control, { nickname: `pda-p1-rh-${STAMP}`, ttl: "2h" });
   token = minted.identifier;
   ledger.token(minted.identifier, minted.nickname, "live recordHome (reusable, ttl 2h)");
-  mkdirSync(BASE, { recursive: true });
+  // A mount root and its runs/ are root's, 0755: the archil wrapper refuses any other.
+  spawnSync("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, `${BASE}/runs`]);
   claim = await acquire({ ref: { disk: scratchDiskId(), region: REGION, id: ID }, token: minted.token, mountRoot: BASE });
   ledger.mount(claim.root, `runs/${ID}`);
 

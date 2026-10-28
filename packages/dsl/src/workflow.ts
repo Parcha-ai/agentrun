@@ -545,7 +545,21 @@ export function buildReferenceContext(files: Record<string, string>): { referenc
   return { references, references_parsed: referencesParsed };
 }
 
-export function normalizeStringNullsForSchema(value: unknown, schema: Record<string, unknown> | undefined, depth = 0): unknown {
+/** Whether a field's schema lists the value itself: its own `const`, or a member of its own `enum`, or the same in the
+ *  schema a local `$ref` names in the root schema's `definitions` or `$defs`, or in any `anyOf` or `oneOf` branch, at any
+ *  depth. A schema's own listed values count beside its `$ref`, never in place of it. */
+function listsValue(value: unknown, spec: any, root: Record<string, unknown> | undefined, hops = 0): boolean {
+  if (hops > 16 || !spec || typeof spec !== "object") return false;
+  if (spec.const === value || (Array.isArray(spec.enum) && spec.enum.includes(value))) return true;
+  if (typeof spec.$ref === "string") {
+    const match = spec.$ref.match(/^#\/(definitions|\$defs)\/([^/]+)$/);
+    const target = match ? (root as any)?.[match[1]]?.[match[2]] : undefined;
+    if (target && listsValue(value, target, root, hops + 1)) return true;
+  }
+  return [spec.anyOf, spec.oneOf].some((branches) => Array.isArray(branches) && branches.some((branch) => listsValue(value, branch, root, hops + 1)));
+}
+
+export function normalizeStringNullsForSchema(value: unknown, schema: Record<string, unknown> | undefined, depth = 0, root: Record<string, unknown> | undefined = schema): unknown {
   if (depth > 6 || !value || typeof value !== "object" || Array.isArray(value)) return value;
   const properties = (schema as { properties?: Record<string, any> })?.properties || {};
   for (const [key, spec] of Object.entries(properties)) {
@@ -554,14 +568,16 @@ export function normalizeStringNullsForSchema(value: unknown, schema: Record<str
     const anyOf: any[] = Array.isArray(spec.anyOf) ? spec.anyOf : [];
     const nullable = types.includes("null") || anyOf.some((variant) => variant?.type === "null");
     const current = (value as Record<string, unknown>)[key];
-    if (nullable && typeof current === "string" && ["null", "none", "n/a"].includes(current.trim().toLowerCase())) {
+    // A string the field's own enum or const lists exactly is one of its values, never a spelling of null.
+    const listed = listsValue(current, spec, root);
+    if (nullable && !listed && typeof current === "string" && ["null", "none", "n/a"].includes(current.trim().toLowerCase())) {
       (value as Record<string, unknown>)[key] = null;
       continue;
     }
     const objectSpecs = [spec, ...anyOf].filter((candidate) => candidate?.type === "object" || (candidate?.properties && typeof candidate.properties === "object"));
-    for (const objectSpec of objectSpecs) normalizeStringNullsForSchema(current, objectSpec as Record<string, unknown>, depth + 1);
+    for (const objectSpec of objectSpecs) normalizeStringNullsForSchema(current, objectSpec as Record<string, unknown>, depth + 1, root);
     const items = spec.type === "array" || types.includes("array") ? spec.items : anyOf.find((variant) => variant?.type === "array")?.items;
-    if (items && Array.isArray(current)) for (const element of current) normalizeStringNullsForSchema(element, items as Record<string, unknown>, depth + 1);
+    if (items && Array.isArray(current)) for (const element of current) normalizeStringNullsForSchema(element, items as Record<string, unknown>, depth + 1, root);
   }
   return value;
 }
@@ -648,7 +664,17 @@ function workflowWarnings(workflow: Workflow): string[] {
  *  Set `executeCode: false` for untrusted author feedback: check syntax and mechanical contracts without evaluating
  *  authored expressions or probing transforms. That is not execution admission; trusted/default validation and runtime
  *  output checks remain authoritative. */
-export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: boolean; input?: Record<string, unknown>; inputKeys?: string[]; probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> } }): { ok: true; warnings?: string[] } | { ok: false; errors: string[]; issues: ValidationIssue[]; warnings?: string[] } {
+export type ValidateWorkflowOptions = {
+  executeCode?: boolean;
+  input?: Record<string, unknown>;
+  inputKeys?: string[];
+  probeContext?: { references?: Record<string, string>; references_parsed?: Record<string, { header: string[]; rows: string[][] }> };
+  /** The host's tool names. Given, a node that names a tool outside them (a model or artifact node's `tools`, a call
+   *  node's `tool`) is refused here. Absent, tool names are not checked until a node runs. */
+  tools?: readonly string[];
+};
+
+export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOptions): { ok: true; warnings?: string[] } | { ok: false; errors: string[]; issues: ValidationIssue[]; warnings?: string[] } {
   const bounded = workflowDocumentError(workflow);
   if (bounded) return { ok: false, errors: [bounded], issues: [{ path: "", code: "DOCUMENT_INVALID", message: bounded }] };
   const shapeIssues = workflowShapeIssues(workflow);
@@ -965,6 +991,10 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
       const writesUnderKey = (node as any).node === "agent" || (node as any).node === "decide" || (node as any).node === "extract" || (node as any).node === "code";
       if (writesUnderKey && typeof (node as any).as === "string" && !(node as any).as.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): "as" must be a non-empty state key, not blank`);
       if (labelIsKey && typeof (node as any).label === "string" && !(node as any).label.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${(node as any).node}): label must be a non-empty state key when the node writes under it (no "as")`);
+      if (opts?.tools) {
+        const named = [...(Array.isArray((node as any).tools) ? (node as any).tools : []), ...((node as any).node === "call" && (node as any).via === "tool" ? [(node as any).tool] : [])];
+        for (const tool of named) if (typeof tool === "string" && !opts.tools.includes(tool)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${(node as any).label || (node as any).node}): tool "${tool}" is not one of the host's tools`);
+      }
     }
     switch (node.node) {
       case "chain":
@@ -1217,7 +1247,7 @@ export function validateWorkflow(workflow: Workflow, opts?: { executeCode?: bool
         else {
           if (containsReportNode(child.root)) fail("STRUCTURE_INVALID", ptrOf(path), `${path} (${label}): a child cannot render a report or deliver an artifact; the parent owns the terminal`);
           if (typeof child.input?.schemaId !== "string" || !Object.hasOwn(child.schemas, child.input.schemaId)) fail("WORKFLOW_FIELD_INVALID", `${ptrOf(path)}/workflow`, `${path} (${label}): the child must declare input.schemaId in its own schemas`);
-          const validated = validateWorkflow(child, { executeCode: opts?.executeCode, inputKeys: Object.keys(node.input && typeof node.input === "object" ? node.input : {}) });
+          const validated = validateWorkflow(child, { executeCode: opts?.executeCode, inputKeys: Object.keys(node.input && typeof node.input === "object" ? node.input : {}), ...(opts?.tools ? { tools: opts.tools } : {}) });
           if (!validated.ok) for (const issue of validated.issues) fail(issue.code, `${ptr}/workflow${issue.path}`, `${path} (${label}) child: ${issue.message}`);
           for (const step of steps) if (step.node === "call" && Array.isArray(step.produces)) for (const file of step.produces) producedFiles.add(String(file));
         }

@@ -2,7 +2,7 @@
 // for hosts A, B and C, the run, token and unit bookkeeping, the CLI supervisor helpers, and the before and after hooks
 // that set up /mnt/pda/p5 and remove everything a test made (recorded in P5-STATE.json), also on failure. Each file that
 // imports it runs in its own process, with its own hooks; they share the ledger.
-import { after, before } from "node:test";
+import { after, afterEach, before, beforeEach, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -24,6 +24,17 @@ export const B = `${BASE}/b`;
 export const C = `${BASE}/c`;
 export const STAMP = Date.now().toString(36);
 export const OUT = fileURLToPath(new URL(`../../.tmp/live-${STAMP}`, import.meta.url));
+/**
+ * A test hook, never in src: PDA_LIVE_FAIL_TEST=<a test's full name> makes that test throw at its first `waitFor` after it
+ * started an instance, with the instance's unit and mount still up. It shows what one red leaves for the tests after it.
+ */
+const FAIL_TEST = process.env.PDA_LIVE_FAIL_TEST ?? "";
+let currentTest = "";
+let startsInTest = 0;
+beforeEach((t) => {
+  currentTest = t.name;
+  startsInTest = 0;
+});
 /** Next to the ledger, named after it: P5-STATE.json gives P5-live-results.json. */
 let resultsFile: string;
 /** Where `after` writes this file's measurements: by default <ledger>-live-results.json next to the ledger. */
@@ -56,6 +67,7 @@ export async function newRun(name: string): Promise<string> {
 /** Every line a supervisor prints is a decision; record each token user and unit the moment it appears. */
 export function noteLine(line: Record<string, unknown>): void {
   if (line.action === "started") {
+    startsInTest++;
     const t = line.token as { identifier: string; nickname: string };
     tokens.add(t.identifier);
     ledger.token(t.identifier, t.nickname, `live, minted by a supervise process for ${line.run}`);
@@ -98,6 +110,7 @@ export function superviseOnce(id: string | null, flags: string[]): { code: numbe
 export function superviseLoop(id: string, flags: string[], every = "3s") {
   const child = spawn(process.execPath, superviseArgs(id, [...flags, "--every", every]), { env: supervisorEnv(), stdio: ["ignore", "pipe", "pipe"] });
   loops.add(child);
+  child.once("close", () => loops.delete(child));
   const lines: (Record<string, unknown> & { seenAt: number })[] = [];
   let buf = "";
   let stderr = "";
@@ -125,6 +138,7 @@ export function superviseLoop(id: string, flags: string[], every = "3s") {
 }
 
 export async function waitFor<T>(what: string, fn: () => Promise<T | null | undefined | false> | T | null | undefined | false, timeoutMs = 60_000, everyMs = 100): Promise<T> {
+  if (FAIL_TEST && currentTest === FAIL_TEST && startsInTest > 0) throw new Error(`PDA_LIVE_FAIL_TEST: "${FAIL_TEST}" failed on purpose while waiting for ${what}`);
   const t0 = Date.now();
   for (;;) {
     const v = await fn();
@@ -211,6 +225,72 @@ export async function stopInstance(h: HostHandle, how = "driver stop"): Promise<
   if (i >= 0) handles.splice(i, 1);
 }
 
+/** This run's own names: its units (pda-p5-<role>-p5-<stamp>-<test>-...) and mountpoints (<root>/runs/p5-<stamp>-<test>). */
+const ours = (name: string) => name.includes(`p5-${STAMP}-`);
+
+/** Whether `p` settles within `ms`; its timer is cleared either way. */
+async function within(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<boolean>((r) => (timer = setTimeout(r, ms, false)));
+  return Promise.race([p.then(() => true), late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * End a supervise loop and wait until it has exited and its output is read: on SIGTERM `supervise --every` finishes the
+ * tick it is in, which can still start an instance and print its handle. SIGKILL after 30 s.
+ */
+async function endLoop(l: ChildProcess): Promise<void> {
+  const closed = new Promise((r) => l.once("close", r));
+  l.kill("SIGTERM");
+  if (!(await within(closed, 30_000))) {
+    l.kill("SIGKILL");
+    await within(closed, 5_000);
+  }
+  loops.delete(l);
+}
+
+/**
+ * After each test, whatever it left up on this host: daemons it froze, supervise loops, units and mounts of this run.
+ * After a red, this keeps every later test from failing its own empty-mount-table check on the red one's leftovers. A
+ * test that passed must have left nothing: what was cleaned after one is recorded with `passed`, and the last `after`
+ * fails the run on it. Only this run's processes, units and mounts, by name; run directories and token users stay for
+ * `after`, which records their removal.
+ */
+afterEach(async (t) => {
+  // node:test sets `passed` on a test's context (Node 20.12 and later); @types/node 22 does not declare it. Without it a
+  // leak cannot be told from a red, so a Node that lacks it fails here, loud.
+  const { passed } = t as TestContext & { readonly passed: unknown };
+  assert.equal(typeof passed, "boolean", `node:test gave no verdict (t.passed) for "${t.name}" on Node ${process.version}: the leak check cannot run`);
+  const left: Record<string, unknown> = { test: t.name, passed, thawed: [...stopped], loops: loops.size, units: [], mounts: [] };
+  for (const pid of stopped) sh("sudo", ["-n", "kill", "-CONT", String(pid)]);
+  stopped.clear();
+  await Promise.all([...loops].map(endLoop));
+  if ((left.thawed as number[]).length) await sleep(500);
+  // This test's handles, those its loops' last ticks started included. They leave the shared list here, so a stop that
+  // fails is recorded on this test alone; the sweeps below (and `after`'s) remove what it left.
+  for (const h of handles.splice(0)) {
+    const r = await stopInstance(h, "stopped after its test").then(() => "stopped", (e: unknown) => `stop failed: ${(e as Error).message}`);
+    (left.units as unknown[]).push({ unit: h.unit, r });
+  }
+  const units = LIVE ? sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p5-*"]).stdout : "";
+  for (const line of units.trim().split("\n").filter(Boolean)) {
+    const unit = line.split(/\s+/)[0];
+    if (!ours(unit)) continue;
+    sh("sudo", ["-n", "systemctl", "stop", unit]);
+    sh("sudo", ["-n", "systemctl", "reset-failed", unit]);
+    (left.units as unknown[]).push({ unit, r: "stray, stopped" });
+    ledger.unitGone(unit, "stray, stopped after its test");
+  }
+  for (const mp of LIVE ? archilMounts().filter(ours) : []) {
+    const via = await unmountClaim(mp).catch((e: unknown) => `failed: ${(e as Error).message}`);
+    (left.mounts as unknown[]).push({ mp, via });
+    ledger.unmounted(mp, `${String(via)} (after its test)`);
+  }
+  if ((left.thawed as number[]).length || (left.loops as number) || (left.units as unknown[]).length || (left.mounts as unknown[]).length) {
+    ((results.afterEach ??= []) as unknown[]).push(left);
+  }
+});
+
 before(async () => {
   if (!LIVE) return;
   disk = await scratchDisk();
@@ -219,9 +299,9 @@ before(async () => {
   results.client = sh("/usr/bin/archil", ["--version"]).stdout.split("\n")[0];
   assert.deepEqual(archilMounts(), [], "no P5 mounts left from an earlier run");
   assert.equal(sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p5-*"]).stdout.trim(), "", "no pda-p5 units left from an earlier run");
-  sh("sudo", ["-n", "mkdir", "-p", BASE]);
-  sh("sudo", ["-n", "chown", `${process.getuid!()}:${process.getgid!()}`, BASE]);
-  for (const d of [A, B, C, OUT]) mkdirSync(d, { recursive: true, mode: 0o755 });
+  // Every mount root and its runs/ are root's, 0755: the archil wrapper refuses any other (only root may name entries there).
+  sh("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, ...[A, B, C, `${BASE}/check`].flatMap((r) => [r, `${r}/runs`])]);
+  mkdirSync(OUT, { recursive: true, mode: 0o755 });
   tokenDirExisted = sh("sudo", ["-n", "test", "-d", "/run/pi-durable-disk"]).status === 0;
   if (!tokenDirExisted) ledger.file("/run/pi-durable-disk", "the token directory localHost creates on demand (root 0700, tmpfs); removed in after if empty");
   sh("chmod", ["755", OUT]);
@@ -281,5 +361,11 @@ after(async () => {
   cleanup.delegationsAfter = (await Promise.all(runIds.map((id) => findDelegations(disk, id)))).flat().length;
   results.cleanup = cleanup;
   writeFileSync(resultsFile, JSON.stringify(results, null, 2) + "\n");
+});
+
+// Last, after the cleanup and the results file: anything afterEach had to clean after a test that passed was a leak.
+after(() => {
+  const leaks = ((results.afterEach ?? []) as { passed: boolean }[]).filter((l) => l.passed);
+  assert.deepEqual(leaks, [], `a test that passed left these up (afterEach stopped them): ${JSON.stringify(leaks)}`);
 });
 

@@ -297,8 +297,8 @@ export interface RunLease {
   checkSeal(store: StoreHeadSource): Promise<void>;
   /**
    * `storage` reporting to the lease: every resolved commit's sequence counts toward the seal `release()` writes; a
-   * commit is refused once the watchdog found the lease lapsed, and one stuck meanwhile ends in the fence; a FencedError
-   * from a commit fences the lease. Wrap every Storage a Harness of the run opens over.
+   * commit is refused once the lease is fenced or the watchdog found it lapsed, and one stuck meanwhile ends in the
+   * fence; a FencedError from a commit fences the lease. Wrap every Storage a Harness of the run opens over.
    */
   observe(storage: Storage): Storage;
   /** The store is open and checked: clear the seal in `run.json` (a heartbeat write). */
@@ -484,7 +484,8 @@ function observeCommits(storage: Storage, hooks: { before(): void; after(seq: Se
 const asFenced = (error: unknown, what: string): FencedError =>
   error instanceof FencedError ? error : new FencedError(`${what} failed, so the claim cannot be trusted`, { cause: error });
 
-function exitFenced(error: FencedError): void {
+/** The default `onFenced`: a line on stderr, exit 75. */
+export function exitFenced(error: FencedError): void {
   process.stderr.write(`pi-durable-disk: fenced (${error.code}): ${error.message}\n`);
   process.exit(EXIT_FENCED);
 }
@@ -741,6 +742,7 @@ class Lease implements RunLease {
   observe(storage: Storage): Storage {
     return observeCommits(storage, {
       before: () => {
+        if (this.#fence) throw this.#fence.error;
         const lapse = this.#watchdogLapse();
         if (lapse) throw this.fence(lapse);
       },

@@ -28,6 +28,8 @@ import { statePath } from "./_paths.ts";
 const PROFILES: readonly Profile[] = ["exclusive", "shared"];
 const ID = `p2-${Date.now().toString(36)}`;
 const MOUNT_ROOT = "/mnt/pda/p2";
+// <root>/runs/<run>: the only mountpoint shape the archil wrapper mounts at.
+const RUNS = join(MOUNT_ROOT, "runs");
 const STATE_PATH = statePath("PDA_P2_STATE", "P2-STATE.json");
 const RESULTS_PATH = process.env.PDA_P2_RESULTS;
 
@@ -58,7 +60,7 @@ async function createRunDirectory(name: string): Promise<void> {
 }
 
 function mountRun(name: string, token: string, options: { mountpoint?: string; flags?: string[] } = {}): string {
-  const mountpoint = options.mountpoint ?? join(MOUNT_ROOT, name);
+  const mountpoint = options.mountpoint ?? join(RUNS, name);
   const flags = options.flags ?? [];
   const target = `${scratchDiskId()}:/runs/${name}`;
   const record = { mountpoint, target, flags, mountedAt: now() };
@@ -119,7 +121,7 @@ describe("store on an Archil mount", { skip: LIVE ? false : "set PDA_LIVE=1, ARC
     if (mountpoint) {
       for (const sub of [...PROFILES.map((p) => `conformance-${p}`), "latency", "locked", "shared-readers"]) {
         const path = join(mountpoint, sub);
-        if (path.startsWith(`${MOUNT_ROOT}/${ID}/`)) rmSync(path, { recursive: true, force: true });
+        if (path.startsWith(`${RUNS}/${ID}/`)) rmSync(path, { recursive: true, force: true });
       }
       const entry = resources.runDirectories.find((d) => d.key === `runs/${ID}/`);
       if (entry) entry.dataRemovedAt = now();
@@ -138,7 +140,7 @@ describe("store on an Archil mount", { skip: LIVE ? false : "set PDA_LIVE=1, ARC
 
   for (const profile of PROFILES) {
     const withStorage: StorageConformanceProvider = (use) =>
-      withStoreIn(join(mountpoint || join(MOUNT_ROOT, ID), `conformance-${profile}`), profile, async (store, file) => {
+      withStoreIn(join(mountpoint || join(RUNS, ID), `conformance-${profile}`), profile, async (store, file) => {
         await use(store.storage);
         if (profile === "exclusive") assert.equal(existsSync(`${file}-shm`), false, "the exclusive profile created -shm on the mount");
       });
@@ -226,7 +228,7 @@ describe("store on an Archil mount", { skip: LIVE ? false : "set PDA_LIVE=1, ARC
 
 describe("the fence on a real revoked delegation", { skip: LIVE ? false : "set PDA_LIVE=1, ARCHIL_API_KEY and PDA_LIVE_DISK" }, () => {
   const name = `${ID}-fence`;
-  const takerPoint = join(MOUNT_ROOT, `${name}-taker`);
+  const takerPoint = join(RUNS, `${name}-taker`);
   let token: { token: string; identifier: string } | undefined;
   let holder = "";
   let taker = "";

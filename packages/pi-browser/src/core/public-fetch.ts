@@ -85,6 +85,7 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
   const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
   const request = options.fetchImpl ?? ((target, init) => undiciFetch(target, init as never) as unknown as Promise<Response>);
   const maxBytes = options.maxBytes ?? PUBLIC_MAX_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError(`maxBytes must be a whole number of bytes above 0, not ${maxBytes}`);
   let target = new URL(url);
   if (!/^https?:$/.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not http(s)`);
   for (let hop = 0; ; hop += 1) {
