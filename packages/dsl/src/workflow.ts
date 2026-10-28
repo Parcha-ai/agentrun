@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
 import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
-import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusalError, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import type { CostBasis, DecisionEvidence } from "./decision-provider.js";
 import { DECISION_RECEIPT_VERSION, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
@@ -335,7 +336,16 @@ export type WorkflowDeps = {
     /** The id of this request's decision receipt (`DecisionReceipt.id`): the same request asked again
      *  carries the same id. */
     decisionId?: string;
-  }) => Promise<{ answers: Record<string, SystemOneAnswer>; model?: string | null; usage?: { input_tokens: number; output_tokens: number } | null; cost_usd?: number | null; request_sha256?: string }>;
+  }) => Promise<{ answers: Record<string, SystemOneAnswer>; model?: string | null; usage?: { input_tokens: number; output_tokens: number } | null; cost_usd?: number | null; request_sha256?: string;
+    /** Whether each choice and score answer's confidence is the provider's own or derived from its probabilities. */
+    confidence_source?: Record<string, ConfidenceSource>;
+    /** The sources the provider grounded its answers in (a DecisionProvider's, through judgeFromProvider). */
+    evidence?: DecisionEvidence[];
+    /** The provider's own id for the request, when it gives one. */
+    provider_request_id?: string | null;
+    /** How `cost_usd` was reached: reported by the provider, estimated by the host, or unknown (null). */
+    cost_basis?: CostBasis;
+  }>;
   /** Records one typed-question request and what its answers decide. It is awaited before the answers
    *  reach state, an event or a branch, so a durable recorder holds every decision the run acted on; a
    *  rejection fails the node. A request the judge could not answer, or one cancelled in flight, is
@@ -1967,6 +1977,8 @@ type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value:
 async function decide<T>(
   deps: WorkflowDeps,
   ask: { nodeKind: string; kind: DecisionKind; judgeKind: JudgeRequest["kind"]; label: string; state: unknown; questions: Record<string, SystemOneQuestion>; signal?: AbortSignal; request?: DecisionReceipt["request"];
+    /** The node takes a refused answer as a decision of its own (a route with an unsure branch); every other node fails on one. */
+    acceptsRefusal?: boolean;
     /** Called as soon as the request has failed, before its receipt is written. */
     onFailure?: (error: unknown) => void },
   settle: (answers: Record<string, SystemOneAnswer>) => { rule: DecisionRule; action: unknown; value: T },
@@ -1978,23 +1990,35 @@ async function decide<T>(
   const position = ask.request ?? { index: 0, count: 1 };
   const state_sha256 = sha256Hex(digestText(ask.state));
   const id = sha256Hex(canonicalJson(["decision-v1", path, ask.kind, position.index, ask.questions, state_sha256]));
+  // A refused answer decodes to no value: the node fails on it before `settle` sees it, unless it takes refusals itself.
+  const settleAnswers = (answers: Record<string, SystemOneAnswer>) => {
+    const refused = refusedQuestions(answers);
+    if (refused.length && !ask.acceptsRefusal) throw refusalError(refused);
+    return settle(answers);
+  };
   const recorded = deps.recovery?.decision ? await deps.recovery.decision(id) : undefined;
   if (recorded?.status === "answered") {
     validateAnswers(ask.questions, recorded.answers);
-    const { value } = settle(recorded.answers);
+    const { value } = settleAnswers(recorded.answers);
     return { id, answers: recorded.answers, value, model: recorded.model ?? null, cost_usd: 0, replayed: true };
   }
   const request: JudgeRequest = { label: ask.label, kind: ask.judgeKind, ...(item ? { item } : {}), executionPath: path, signal, state: ask.state, questions: ask.questions, decisionId: id };
   const startedAt = Date.now();
-  const receipt = (result: JudgeResult | undefined, outcome: Pick<DecisionReceipt, "status" | "rule" | "action"> & { error?: unknown }): DecisionReceipt => ({
-    v: DECISION_RECEIPT_VERSION, id, at: new Date().toISOString(), node: ask.label, kind: ask.kind, item: item?.index ?? null, execution_path: path, request: position,
-    status: outcome.status, state_sha256, questions: ask.questions,
-    answers: result?.answers && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers : {},
-    rule: outcome.rule, action: outcome.action,
-    model: result?.model ?? null, usage: result?.usage ?? null, cost_usd: typeof result?.cost_usd === "number" ? result.cost_usd : null, request_sha256: result?.request_sha256 ?? null,
-    latency_ms: Date.now() - startedAt,
-    ...(outcome.error !== undefined ? { error: String((outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
-  });
+  const receipt = (result: JudgeResult | undefined, outcome: Pick<DecisionReceipt, "status" | "rule" | "action"> & { error?: unknown }): DecisionReceipt => {
+    const answers = result?.answers && typeof result.answers === "object" && !Array.isArray(result.answers) ? result.answers : {};
+    const refused = refusedQuestions(answers);
+    const source = result?.confidence_source;
+    return {
+      v: DECISION_RECEIPT_VERSION, id, at: new Date().toISOString(), node: ask.label, kind: ask.kind, item: item?.index ?? null, execution_path: path, request: position,
+      status: outcome.status, state_sha256, questions: ask.questions, answers,
+      rule: outcome.rule, action: outcome.action,
+      model: result?.model ?? null, usage: result?.usage ?? null, cost_usd: typeof result?.cost_usd === "number" ? result.cost_usd : null, request_sha256: result?.request_sha256 ?? null,
+      latency_ms: Date.now() - startedAt,
+      ...(refused.length ? { refused } : {}),
+      ...(source && typeof source === "object" && !Array.isArray(source) ? { confidence_source: { ...source } } : {}),
+      ...(outcome.error !== undefined ? { error: String((outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
+    };
+  };
   /** Records `made`; with `failure`, the request's own failure, a recorder that also fails surfaces both. */
   const record = async (made: DecisionReceipt, result: JudgeResult | undefined, failure?: { error: unknown }): Promise<void> => {
     if (!deps.recordDecision) return;
@@ -2017,7 +2041,7 @@ async function decide<T>(
   let settled: { rule: DecisionRule; action: unknown; value: T };
   try {
     validateAnswers(ask.questions, result.answers);
-    settled = settle(result.answers);
+    settled = settleAnswers(result.answers);
   } catch (error) {
     ask.onFailure?.(error);
     await record(receipt(result, { status: "failed", rule: null, action: null, error }), result, { error });
@@ -2184,12 +2208,18 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
   }
   const names = Object.keys(node.branches);
   const criteria: Record<string, string | null> = Object.fromEntries(names.map((n) => [n, node.branches[n]?.criteria?.trim() || null]));
-  const decided = await decide(deps, { nodeKind: "route", kind: "route", judgeKind: "route", label: node.label, state: interpolateValue(node.state, state, node.label), questions: { branch: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
+  const rule: DecisionRule = { kind: "route", branches: [...names], unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null };
+  const decided = await decide(deps, { nodeKind: "route", kind: "route", judgeKind: "route", label: node.label, state: interpolateValue(node.state, state, node.label), questions: { branch: { type: "choice", instructions: node.instructions, criteria } }, acceptsRefusal: Boolean(node.unsure) }, (answers) => {
     const a = answers.branch;
+    // A refusal takes the unsure branch, as an answer with no confidence would; it chose no branch of its own.
+    if (a?.type === "refusal" && node.unsure) {
+      const value: { branch: string | null; taken: string; unsure: boolean; refused?: true } = { branch: null, taken: node.unsure.branch, unsure: true, refused: true };
+      return { rule, action: value, value };
+    }
     if (!a || a.type !== "choice" || !names.includes(a.choice)) throw new Error(`route node "${node.label}": the choice "${String((a as any)?.choice)}" names no branch`);
     const unsure = Boolean(node.unsure && a.confidence < node.unsure.gte);
-    const value = { branch: a.choice, taken: unsure ? node.unsure!.branch : a.choice, unsure };
-    return { rule: { kind: "route", branches: [...names], unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null }, action: value, value };
+    const value: { branch: string | null; taken: string; unsure: boolean; refused?: true } = { branch: a.choice, taken: unsure ? node.unsure!.branch : a.choice, unsure };
+    return { rule, action: value, value };
   });
   const value = decided.value; const taken = value.taken; const sidecar = answersSidecar(decided.answers);
   deps.onEvent?.({ type: "route.chosen", label: node.label, detail: { kind: "route", as: node.as ?? null, value, sidecar, ...meteringOf(decided), decision_id: decided.id } });

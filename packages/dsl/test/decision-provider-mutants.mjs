@@ -17,8 +17,7 @@ function scripted(replies, breaks = {}) {
     if (reply.kind === 'hang') {
       await new Promise((resolve) => {
         if (!breaks.ignoresAbort) signal.addEventListener('abort', resolve, { once: true });
-        if (!breaks.ignoresDeadline) setTimeout(resolve, deadline).unref();
-        if (breaks.ignoresAbort && breaks.ignoresDeadline) setTimeout(resolve, 10_000).unref();
+        if (!breaks.ignoresDeadline) setTimeout(resolve, deadline);
       });
       if (signal.aborted && !breaks.ignoresAbort) throw fail('aborted', 'The request was cancelled.');
       if (breaks.ignoresDeadline) return { kind: 'answer', answers: {} };

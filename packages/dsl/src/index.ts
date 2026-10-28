@@ -27,11 +27,18 @@ export type { DryRunOptions, DryRunResult } from "./dry-run.js";
 export {
   compileQuestions, validateAnswers, answersToValue, answersSidecar,
   answerConfidence, synthesizeAnswers, SYSTEM_ONE_LIMITS, SystemOneError, isSystemOneResponseReason,
+  deriveConfidence, completeConfidence, refusedQuestions,
 } from "./system-one.js";
 export type {
   SystemOneQuestion, SystemOneAnswer, SystemOneBox, SystemOneResult, SystemOneRetryClass, SystemOneResponseReason,
-  CompiledQuestions, AnswersSidecar,
+  CompiledQuestions, AnswersSidecar, ConfidenceSource,
 } from "./system-one.js";
+
+export { judgeFromProvider, checkCapabilities, DecisionProviderError } from "./decision-provider.js";
+export type {
+  DecisionProvider, DecisionCapabilities, DecisionInput, DecisionRequest, DecisionContext, DecisionEvidence, DecisionOutcome,
+  ProviderAnswer, CostBasis, DecisionProviderErrorCode,
+} from "./decision-provider.js";
 
 export { inspectWorkflow, formatWorkflowTree } from "./inspection.js";
 export type { WorkflowInspection, WorkflowInspectionNode } from "./inspection.js";

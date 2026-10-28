@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { APIConnectionError, APIError, APITimeoutError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
-import { validateAnswers, SystemOneError, isSystemOneResponseReason } from "@parcha/agentrun-dsl";
-import type { WorkflowDeps, SystemOneResponseReason } from "@parcha/agentrun-dsl";
+import { validateAnswers, SystemOneError, isSystemOneResponseReason, checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
+import type { WorkflowDeps, SystemOneResponseReason, DecisionProvider, DecisionProviderErrorCode } from "@parcha/agentrun-dsl";
 
 /** Injectable client boundary. Custom clients must honor signal and disable their own retries. */
 export interface JevClient {
@@ -346,4 +346,45 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       clearTimeout(timer);
     }
   };
+}
+
+/** Jev as a DecisionProvider: `createJevRunner(options)` behind the DSL's provider seam, for a host that runs every
+ *  decision model through `judgeFromProvider`. Its errors become DecisionProviderErrors with the same message, and a
+ *  deadline that ends the request is a timeout. The cost basis is "reported" for a cost with no configured price, and
+ *  "estimate" when `pricing` is set, since the runner then reports either one as the cost. */
+export function jevProvider(options: JevOptions = {}): DecisionProvider {
+  const judge = createJevRunner(options);
+  const provider = options.provider ?? "typesafe";
+  const capabilities: DecisionProvider["capabilities"] = {
+    types: ["noul", "choice", "score", "box"], inputs: ["text", "json", "image"], evidence: "none", probability: "model", grounding: false,
+    replay: "never", maxQuestions: null, maxStateBytes: options.maxStateBytes ?? null,
+  };
+  return {
+    id: "jev", needs: [keyVariable[provider] ?? keyVariable.typesafe], capabilities,
+    async decide(request, ctx) {
+      checkCapabilities(capabilities, request);
+      const deadline = ctx.deadlineMs === null ? undefined : AbortSignal.timeout(ctx.deadlineMs);
+      const signal = deadline ? AbortSignal.any([ctx.signal, deadline]) : ctx.signal;
+      try {
+        const result = await judge({ ...request, signal, decisionId: ctx.decisionId });
+        return {
+          answers: result.answers, evidence: [], model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null,
+          cost_basis: typeof result.cost_usd !== "number" ? "unknown" : options.pricing ? "estimate" : "reported", provider_request_id: null,
+        };
+      } catch (error) {
+        if (!(error instanceof JevError)) throw new DecisionProviderError("http", "Jev request failed.");
+        const timedOut = Boolean(deadline?.aborted) && !ctx.signal.aborted;
+        throw new DecisionProviderError(jevErrorCode(error, timedOut), error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts });
+      }
+    },
+  };
+}
+
+function jevErrorCode(error: JevError, timedOut: boolean): DecisionProviderErrorCode {
+  if (error.code === "aborted") return timedOut ? "timeout" : "aborted";
+  if (error.code !== "http") return error.code;
+  if (error.status === 401 || error.status === 403) return "auth";
+  if (error.status === 429) return "rate_limited";
+  if (error.status === 400 || error.status === 422) return "invalid_request";
+  return "http";
 }

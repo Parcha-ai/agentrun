@@ -1,7 +1,7 @@
 // Decision receipts: one record per typed-question request, holding what was asked, what came back, the
 // rule that turns those answers into an action (its thresholds included) and the action itself. A receipt
 // alone explains a decision: `rederiveDecision` recomputes the action from it without a model call.
-import { answerConfidence, answersToValue, type CompiledQuestions, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import { answerConfidence, answersToValue, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 
 export const DECISION_RECEIPT_VERSION = 1;
 
@@ -65,6 +65,12 @@ export type DecisionReceipt = {
   request_sha256: string | null;
   /** Wall time of the judge call, in milliseconds. */
   latency_ms: number;
+  /** The questions whose answer came back as a refusal, when any did. A refusal decodes to no value: it fails the
+   *  request, except a route with an `unsure` branch, which takes that branch. */
+  refused?: string[];
+  /** For each choice and score answer, whether its confidence is the provider's own or was derived from its
+   *  probabilities; present when the judge said. */
+  confidence_source?: Record<string, ConfidenceSource>;
   error?: string;
 };
 
@@ -92,6 +98,8 @@ export function rederiveDecision(receipt: Pick<DecisionReceipt, "rule" | "answer
       // An answered route carries its branch answer; a receipt without one decided nothing.
       const answer = answers.branch;
       if (!answer || typeof answer !== "object") return null;
+      // A refused route has no branch of its own: it took the unsure branch, and without one it decided nothing.
+      if (answer.type === "refusal") return rule.unsure ? { branch: null, taken: rule.unsure.branch, unsure: true, refused: true } : null;
       const branch = answer.choice;
       // The chosen branch must be a string; when the rule carries `branches` (recorded since this check was
       // added) it must name one of them. A rule recorded before `branches` skips the membership check, so an
