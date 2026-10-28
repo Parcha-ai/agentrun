@@ -26,3 +26,13 @@ test("the shared process layer's errors name this package", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the tool bridge returns a tool's images as recorded", async () => {
+  const drive = await openDrive({ writer: await memorySessionStore().open('run-2'), signal: new AbortController().signal });
+  const images = [{ mimeType: 'image/png', data: 'AAAA' }];
+  const shot = { name: 'shot', description: 'A screenshot.', inputSchema: { type: 'object' }, replay: 'safe', execute: async () => ({ text: 'the page', images }) };
+  const first = await shared.toolBridge(drive, [shot]).call('shot', {}, 'c1');
+  assert.deepEqual(first, { text: 'the page', isError: false, images });
+  const again = await shared.toolBridge(drive, [shot]).call('shot', {}, 'c1');
+  assert.deepEqual(again.images, images, 'a call the log already finished comes back with its images');
+});

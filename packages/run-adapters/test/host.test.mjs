@@ -6,7 +6,7 @@ import { connect } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { matchRoute, parseStrict, ProxyRefusal, startModelProxy } from '@parcha/agentrun-adapters/host';
+import { hostHeaderProblems, matchRoute, parseStrict, ProxyRefusal, reportedCostOf, startModelProxy } from '@parcha/agentrun-adapters/host';
 import { openDrive } from '@parcha/agentrun-adapters/kernel';
 import { waitForSubmissions, zodShapeFromJsonSchema } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
@@ -53,6 +53,7 @@ async function proxy(t, extra = {}) {
     credential: extra.credential ?? (() => 'provider-secret'),
     hooks: { beforeRequest: async (r) => { hooks.before.push(r); if (extra.refuse) throw new Error(extra.refuse); }, afterRequest: async (u) => { hooks.after.push(u); if (extra.afterThrows) throw new Error(extra.afterThrows); } },
     price: extra.price ?? (() => 0.001),
+    ...(extra.headers ? { headers: extra.headers } : {}),
     fetch: extra.fetch ?? (async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body) }); return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); }),
   }, KEY);
   t.after(() => p.close());
@@ -117,6 +118,18 @@ test("only the policy's routes, by their exact text: an absolute URL, a foreign 
   assert.equal(forwarded[0].url, 'https://provider.invalid/v1/test?beta=true');
 });
 
+test("a refusal names the client that called by its user-agent, cut to 120 characters, and none when it sent none", async (t) => {
+  const { p, hooks } = await proxy(t);
+  // Another local process that found the port: a keyless GET / with its own user-agent.
+  assert.equal((await send(p.url, { method: 'GET', path: '/', key: null, headers: { 'user-agent': 'Go-http-client/1.1' }, body: '' })).status, 401);
+  assert.equal((await send(p.url, { method: 'PUT', headers: { 'user-agent': `claude-cli/${'9'.repeat(200)}` } })).status, 403);
+  assert.equal((await send(p.url, { method: 'GET', path: '/', key: null, body: '' })).status, 401);
+  const refusals = hooks.logged.filter((l) => /refused/.test(l.message));
+  assert.deepEqual(refusals.map((l) => l.userAgent), ['Go-http-client/1.1', `claude-cli/${'9'.repeat(109)}`, undefined]);
+  assert.ok(!('userAgent' in refusals[2]), 'no user-agent sent, none reported');
+  assert.equal(refusals[0].status, 401);
+});
+
 test("a local route is answered by the proxy with its status alone, with or without the key, and nothing is forwarded or asked", async (t) => {
   const { p, forwarded, hooks } = await proxy(t);
   // A client's connectivity check carries no key (the Claude Agent CLI's does not): it learns only that the proxy is up.
@@ -147,7 +160,7 @@ test("an onResponse that throws loses neither the provider's answer nor its book
   const r = await send(p.url);
   assert.equal(r.status, 200);
   assert.match(r.text, /"done":true/);
-  assert.deepEqual(hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001 }], 'the paid request is booked once');
+  assert.deepEqual(hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001, estimated: true }], 'the paid request is booked once');
   assert.ok(hooks.logged.some((l) => /onResponse threw/.test(l.message) && /a host bug/.test(l.error)));
 });
 
@@ -155,7 +168,7 @@ test("no host callback that runs after a paid answer can turn it into an error o
   // A log that throws, beside an onResponse that throws: the answer and its booking go on.
   const noisy = await proxy(t, { onResponse: () => { throw new Error('host bug'); }, log: () => { throw new Error('log bug'); } });
   assert.equal((await send(noisy.p.url)).status, 200);
-  assert.deepEqual(noisy.hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001 }]);
+  assert.deepEqual(noisy.hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001, estimated: true }]);
   // A policy that cannot read the usage, or a price that throws: booked once, at an unknown cost.
   const unreadable = await proxy(t, { policy: { ...policy, usageOf: () => { throw new Error('policy bug'); } } });
   const answer = await send(unreadable.p.url);
@@ -238,7 +251,7 @@ test('a request the runner refuses is never forwarded, and answers a status the 
 test('every paid request forwarded is booked once: its usage when it says it; an unknown cost when cut short, silent or unreachable; nothing for an error answer; no credential is a 500', async (t) => {
   const done = await proxy(t);
   await send(done.p.url);
-  assert.deepEqual(done.hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001 }]);
+  assert.deepEqual(done.hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.001, estimated: true }]);
 
   const cut = await proxy(t, { fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); c.error(new Error('cut')); } }), { status: 200 }) });
   await send(cut.p.url).catch(() => {});
@@ -285,7 +298,7 @@ test("a client that hangs up once it has read the usage the provider reported (t
   const reported = await proxy(t, { fetch: holding(sse({ in: 11, out: 4 })) });
   await hangUp(reported.p.url, 'with usage');
   await settled(reported.hooks);
-  assert.deepEqual(reported.hooks.after, [{ input: 11, output: 4, cacheRead: 0, usd: 0.001 }], 'the usage the provider reported is booked');
+  assert.deepEqual(reported.hooks.after, [{ input: 11, output: 4, cacheRead: 0, usd: 0.001, estimated: true }], 'the usage the provider reported is booked');
 
   const silent = await proxy(t, { fetch: holding('data: {"delta":"hi"}\n\n') });
   await hangUp(silent.p.url, 'without usage');
@@ -382,7 +395,7 @@ test("a long answer's usage is read from both ends: input reported as it starts,
   const middle = `data: {"delta":"${'x'.repeat(200 * 1024)}"}\n\n`;
   const long = await proxy(t, { policy: split, fetch: async () => new Response(`data: {"start":{"in":1200}}\n\n${middle}data: {"end":{"out":340}}\n\n`, { status: 200 }) });
   assert.equal((await send(long.p.url)).status, 200);
-  assert.deepEqual(long.hooks.after, [{ input: 1200, output: 340, cacheRead: 0, usd: 0.001 }]);
+  assert.deepEqual(long.hooks.after, [{ input: 1200, output: 340, cacheRead: 0, usd: 0.001, estimated: true }]);
 });
 
 test('waitForSubmissions returns the pending input once it is submitted, and [] once stopped', async () => {
@@ -423,4 +436,235 @@ test("a request for the session's smaller model is asked about and priced as tha
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(throwing.hooks.before.map((r) => r.model), ['session-model']);
   assert.ok(throwing.hooks.logged.some((l) => /could not name the request's model/.test(l.message)));
+});
+
+test('two paid requests in flight through the proxy, answered in reverse: each is booked under its own turn, once', async (t) => {
+  const { createHarnessRunner, modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const ends = [];
+  const booking = await modelPortFor(await store.open('chat:proxy'), { key: 'chat:proxy', onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.input]); } });
+  // The slow request (admitted first) answers after the fast one: each answer reports its own size as input tokens.
+  const slow = new Promise((resolve) => setTimeout(resolve, 150));
+  const fetchStub = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.input === 'slow') await slow;
+    return new Response(sse({ in: body.input === 'slow' ? 100 : 7, out: 1 }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
+  await Promise.all([first, second]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(ends, [[2, 7], [1, 100]], 'the fast (turn 2) answer first, then the slow (turn 1), each under its own turn');
+  const turns = (await store.read('chat:proxy')).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data.turn);
+  assert.deepEqual(turns, [2, 1]);
+  void createHarnessRunner;
+});
+
+test("close() while one request is in flight and another waits on the runner: each is booked once, under its own turn", async () => {
+  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const ends = [];
+  const booking = await modelPortFor(await memorySessionStore().open('chat:close'), { key: 'chat:close', onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.usd]); } });
+  let admitSecond;
+  const secondWaits = new Promise((resolve) => { admitSecond = resolve; });
+  let n = 0;
+  // The second request is admitted (its turn taken) and then waits, as a slow runner hook would, while close() begins.
+  const hooks = { beforeRequest: async (r) => { const ticket = await booking.models.beforeRequest(r); if (++n === 2) await secondWaits; return ticket; }, afterRequest: (u, t) => booking.models.afterRequest(u, t) };
+  // The first request's provider answer is still streaming when close() aborts it, and its teardown takes a moment, so it is
+  // still in flight when the second is released.
+  const fetchStub = async (_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => setTimeout(() => reject(new Error('aborted')), 50), { once: true }));
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0.001, fetch: fetchStub }, KEY);
+  const first = send(p.url, { path: '/v1/test?beta=true' }).catch(() => {});
+  while (n < 1) await new Promise((resolve) => setTimeout(resolve, 2));
+  const second = send(p.url, { path: '/v1/test?beta=true' }).catch(() => {});
+  while (n < 2) await new Promise((resolve) => setTimeout(resolve, 2));
+  const closing = p.close();
+  admitSecond();
+  await closing;
+  await Promise.all([first, second]);
+  // Both bookings, the first after its teardown: bounded, never a fixed sleep.
+  for (const end = Date.now() + 2000; ends.length < 2 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 10));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(ends.sort((a, b) => a[0] - b[0]), [[1, null], [2, 0]], 'turn 1 cut by the close (unknown), turn 2 released at nothing: each once, under its own turn');
+});
+
+test("each booked request carries the ids its response headers gave (a gateway's call id, the provider's request id), recorded when the headers arrive: a request a crash cut after them keeps them, one cut before them has none, and nothing else of the response is kept", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const key = 'chat:ids';
+  const ends = [];
+  const onEvent = (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.providerIds ?? null, e.usage.cut ?? false]); };
+  const booking = await modelPortFor(await store.open(key), { key, onEvent });
+  // As a LiteLLM gateway answers: its own call id (what its spend log records), and the provider's request id passed on.
+  const ids = (n) => ({ 'x-litellm-call-id': `7a6d0296-8607-4ead-bddd-ac09e92c6c3${n}`, 'request-id': `req_011CUa${n}` });
+  // Headers that are not ids, or not id-shaped, and must never be kept.
+  const noise = { 'content-type': 'text/event-stream', 'set-cookie': 'session=provider-secret', 'anthropic-organization-id': 'org-1', 'x-request-id': 'has space, not an id' };
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const fetchStub = async (_url, init) => {
+    const { input } = JSON.parse(init.body);
+    if (input === 'answered') return new Response(sse(), { status: 200, headers: { ...noise, ...ids(1) } });
+    // Its headers arrive, and the answer never ends: the provider saw it, and may bill it.
+    if (input === 'cut-after-headers') return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); } }), { status: 200, headers: { ...noise, ...ids(2) } });
+    // No answer at all before the crash.
+    await held;
+    throw new Error('never answered');
+  };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(async () => { release(); await p.close(); });
+  await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'answered' } });
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut-after-headers' } }).catch(() => {});
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut-before-headers' } }).catch(() => {});
+  const read = () => store.read(key);
+  for (const end = Date.now() + 2_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 5))) {
+    const records = await read();
+    if (records.filter((r) => r.kind === RUNNER_RECORDS.request).length === 3 && records.some((r) => r.kind === RUNNER_RECORDS.response && r.data.turn === 2)) break;
+  }
+  // The crash: the next process books the two requests that never came back, once each.
+  await (await modelPortFor(await store.open(key), { key, onEvent })).bookCut();
+  const booked = (await read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => [r.data.turn, r.data.providerIds ?? null, r.data.cut ?? false]);
+  assert.deepEqual(booked, [[1, ids(1), false], [2, ids(2), true], [3, null, true]], 'answered with its ids; cut after the headers, with them (the provider saw it); cut before them, without');
+  assert.deepEqual(ends, booked, 'request_end says the same');
+  const text = JSON.stringify(await read());
+  for (const kept of ['provider-secret', 'session=', 'org-1', 'has space']) assert.ok(!text.includes(kept), `${kept} is not in the records`);
+});
+
+test("two requests in flight, answered in reverse: each is booked with its own response's ids, under its own turn, never another's", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const key = 'chat:ids-overlap';
+  const booking = await modelPortFor(await store.open(key), { key });
+  // The provider's own id for each request, from its response: the slow (first admitted) request's arrives last.
+  const slow = new Promise((resolve) => setTimeout(resolve, 150));
+  const fetchStub = async (_url, init) => {
+    const { input } = JSON.parse(init.body);
+    if (input === 'slow') await slow;
+    return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', 'request-id': `req_${input}`, 'x-litellm-call-id': `call-${input}` } });
+  };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
+  await Promise.all([first, second]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const records = await store.read(key);
+  const of = (kind) => records.filter((r) => r.kind === kind).map((r) => [r.data.turn, r.data.providerIds?.['request-id'], r.data.providerIds?.['x-litellm-call-id']]);
+  assert.deepEqual(of(RUNNER_RECORDS.turn), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']], 'each turn has the ids its own response gave');
+  assert.deepEqual(of(RUNNER_RECORDS.response), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']]);
+});
+
+// What a gateway (LiteLLM) says a response cost, as the broker sent it on 2026-10-28: a plain answer carries the figure;
+// a streamed one's headers leave before it is priced, and say 0.0.
+const LITELLM_PLAIN = { 'x-litellm-response-cost-original': '3.6999999999999997e-06', 'x-litellm-response-cost-discount-amount': '0.0', 'x-litellm-response-cost-margin-amount': '0.0', 'x-litellm-response-cost-margin-percent': '0.0', 'x-litellm-call-id': 'call-plain' };
+const LITELLM_STREAMED = { 'x-litellm-response-cost-original': '0.0', 'x-litellm-response-cost-discount-amount': '0.0', 'x-litellm-response-cost-margin-amount': '0.0', 'x-litellm-response-cost-margin-percent': '0.0', 'x-litellm-call-id': 'call-streamed' };
+const answering = (headers, body = sse()) => async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream', ...headers } });
+
+test("a response's reported cost: only a positive number its gateway wrote, else unknown, never 0", () => {
+  const cost = (headers) => reportedCostOf(new Headers(headers));
+  assert.equal(cost({ 'x-litellm-response-cost': '0.0042' }), 0.0042);
+  assert.equal(cost(LITELLM_PLAIN), 3.6999999999999997e-06, 'the figure before discount and margin, both reported 0');
+  assert.equal(cost(LITELLM_STREAMED), undefined, 'a streamed answer\'s 0.0 is not a price');
+  assert.equal(cost({ 'x-litellm-response-cost': '0.0042', 'x-litellm-response-cost-original': '0.0050' }), 0.0042, 'the gateway\'s own figure first');
+  assert.equal(cost({ 'x-litellm-response-cost-original': '0.0050', 'x-litellm-response-cost-margin-amount': '0.001', 'x-litellm-response-cost-discount-amount': '0.0' }), undefined, 'a margin makes the original not what was paid');
+  assert.equal(cost({ 'x-litellm-response-cost-original': '0.0050', 'x-litellm-response-cost-discount-amount': '0.001', 'x-litellm-response-cost-margin-amount': '0.0' }), undefined, 'a discount makes the original not what was paid');
+  assert.equal(cost({ 'x-litellm-response-cost-original': '0.0050' }), undefined, 'without the discount and margin, the original says nothing of what was paid');
+  for (const bad of ['0', '0.0', '-0.01', '1,5', 'NaN', 'Infinity', '1e400', '0x10', '', 'abc', '1001', '.5']) assert.equal(cost({ 'x-litellm-response-cost': bad }), undefined, bad);
+  assert.equal(cost({}), undefined);
+});
+
+test('a response whose gateway reported its cost is booked at that figure, with the price table\'s beside it', async (t) => {
+  const { p, hooks } = await proxy(t, { fetch: answering(LITELLM_PLAIN), price: () => 0.00375 });
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  assert.deepEqual(hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 3.6999999999999997e-06, tableUsd: 0.00375, providerIds: { 'x-litellm-call-id': 'call-plain' } }]);
+});
+
+test('a streamed response, whose gateway reports 0.0 before pricing it, is booked at the price table\'s figure, estimated, never $0', async (t) => {
+  const { p, hooks } = await proxy(t, { fetch: answering(LITELLM_STREAMED), price: () => 0.00375 });
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  assert.deepEqual(hooks.after, [{ input: 7, output: 2, cacheRead: 0, usd: 0.00375, estimated: true, providerIds: { 'x-litellm-call-id': 'call-streamed' } }]);
+});
+
+test("a provider's error answer costs nothing, whatever cost its headers name", async (t) => {
+  const { p, hooks } = await proxy(t, { fetch: async () => new Response('{"error":"overloaded"}', { status: 529, headers: { 'x-litellm-response-cost': '0.5' } }) });
+  await send(p.url, { path: '/v1/test?beta=true' });
+  assert.deepEqual(hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }]);
+});
+
+test("the run's books keep each turn's figure and where it came from: the gateway's, with the table's beside it, or the table's, estimated", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const key = 'chat:reported-cost';
+  const booking = await modelPortFor(await store.open(key), { key });
+  const fetchStub = async (_url, init) => answering(JSON.parse(init.body).input === 'plain' ? LITELLM_PLAIN : LITELLM_STREAMED)();
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.00375, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'plain' } });
+  await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'streamed' } });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const turns = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn).map(({ data: { turn, usd, estimated, tableUsd } }) => ({ turn, usd, estimated, tableUsd }));
+  assert.deepEqual(turns, [
+    { turn: 1, usd: 3.6999999999999997e-06, estimated: undefined, tableUsd: 0.00375 },
+    { turn: 2, usd: 0.00375, estimated: true, tableUsd: undefined },
+  ]);
+});
+
+test("the host's own headers go on every forwarded request, paid and free, over any the client sent by that name, and never the credential's", async (t) => {
+  const tags = 'job:j1,purpose:research,run:r1';
+  const { p, forwarded } = await proxy(t, { headers: { 'x-litellm-tags': tags, 'X-Beta': 'host-value' } });
+  // The client's x-beta is one the route forwards and the policy keeps (b1), so it reaches the host's headers: the host's wins.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', headers: { 'x-beta': 'b1', 'x-litellm-tags': 'job:forged' } })).status, 200);
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  // A free route (count_tokens, on Anthropic's policy) is forwarded with them too.
+  assert.equal((await send(p.url, { path: '/v1/count' })).status, 200);
+  assert.equal(forwarded.length, 3);
+  for (const { headers } of forwarded) {
+    const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+    assert.equal(lower['x-litellm-tags'], tags, 'the host\'s tags, never the client\'s');
+    assert.equal(lower['x-beta'], 'host-value', 'the host\'s value over the client\'s, whatever its case');
+    assert.equal(Object.keys(headers).filter((k) => k.toLowerCase() === 'x-beta').length, 1, 'one header by that name');
+    assert.equal(lower.authorization, 'Bearer provider-secret', 'the credential is the proxy\'s own');
+  }
+  const { p: plain, forwarded: none } = await proxy(t);
+  await send(plain.url, { path: '/v1/test?beta=true' });
+  assert.equal(Object.keys(none[0].headers).some((k) => k.toLowerCase() === 'x-litellm-tags'), false, 'without host headers, none is added');
+});
+
+test("a host's header is checked when the proxy starts: a name that is a token and not the proxy's own, a one-line value", async () => {
+  assert.deepEqual(hostHeaderProblems({ 'x-litellm-tags': 'job:1' }), []);
+  for (const [headers, said] of [
+    [{ Authorization: 'Bearer x' }, /the header Authorization is the proxy's own/],
+    [{ 'x-api-key': 'k' }, /x-api-key is the proxy's own/],
+    [{ 'anthropic-beta': 'b' }, /anthropic-beta is the proxy's own/],
+    [{ 'bad name': 'v' }, /not a token/],
+    [{ 'x-tags': 'a\r\nInjected: 1' }, /one line of text/],
+    [{ 'x-tags': 'v'.repeat(1025) }, /at most 1024/],
+    [{ 'x-litellm-tags': 'job:東京' }, /one line of text an HTTP header can carry/],
+    [{ 'x-tags': 'a\tb\u0007c' }, /one line of text an HTTP header can carry/],
+    [{ 'x-tags': 'a\x7fb' }, /one line of text an HTTP header can carry/],
+  ]) assert.match(hostHeaderProblems(headers).join('; '), said, JSON.stringify(headers).slice(0, 60));
+  await assert.rejects(startModelProxy({ policy, model: 'm', origin: 'https://x.invalid', credential: () => 'c', hooks: {}, headers: { host: 'evil' } }, KEY), /the header host is the proxy's own/);
+});
+
+test("a header value an HTTP header can carry passes the check and is forwarded as given; one it cannot is refused before the proxy starts", async (t) => {
+  assert.deepEqual(hostHeaderProblems({ 'x-tags': 'job:café\tteam' }), [], 'Latin-1 and a tab are header text');
+  await assert.rejects(startModelProxy({ policy, model: 'm', origin: 'https://x.invalid', credential: () => 'c', hooks: {}, headers: { 'x-litellm-tags': 'job:東京' } }, KEY), /x-litellm-tags's value must be one line of text an HTTP header can carry/);
+  const { p, forwarded } = await proxy(t, { headers: { 'x-tags': 'job:café' } });
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  assert.equal(Object.entries(forwarded[0].headers).find(([k]) => k.toLowerCase() === 'x-tags')?.[1], 'job:café');
+});
+
+test("the credential's header replaces a host's header of the same name in any case, so the provider gets one value, the credential", async (t) => {
+  const gateway = { ...policy, authHeaders: (credential) => ({ 'x-gateway-key': credential }) };
+  const { p, forwarded } = await proxy(t, { policy: gateway, headers: { 'X-Gateway-Key': 'host-value' } });
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  const keys = Object.entries(forwarded[0].headers).filter(([k]) => k.toLowerCase() === 'x-gateway-key');
+  assert.deepEqual(keys, [['x-gateway-key', 'provider-secret']]);
 });

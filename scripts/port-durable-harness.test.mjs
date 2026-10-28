@@ -99,7 +99,7 @@ test('a patch that changes nothing is named, and dropping a patch that others ar
   const cascaded = await portPackage(packageDir, { drop: ['001-begin-reservation'], cascade: true });
   assert.ok(!cascaded.files.get('src/process/builtins.ts').includes('private async again('), 'without 001 there is no reservation');
   assert.deepEqual((await readPatches(join(packageDir, PORT_DIR), 'harness-process')).map((p) => p.name), [
-    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk',
+    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk', '008-tool-images',
   ]);
   for (const patch of await readPatches(join(packageDir, PORT_DIR), 'harness-process')) assert.ok(patch.Reason.length > 20, `${patch.name} says why`);
   assert.equal((await readPatches(join(packageDir, PORT_DIR), 'harness-process'))[0].Upstream, 'offer', 'begin() is the one offered upstream');

@@ -85,3 +85,14 @@ test("a registered value straddling the guard's cut points never reaches the ref
   again.note("run", {}, failure("code_error", long));
   assert.doesNotMatch(JSON.stringify(again.check("run", {})), /run-t/, "the 300-character cut of the stored error");
 });
+
+test("a move clears the strikes of the tools that read the page; an action's strikes stand", () => {
+  const guard = createRepeatGuard();
+  const fresh = failure("not_content", "This browser is fresh and has loaded no page yet.");
+  const boom = failure("code_error", "boom");
+  for (let i = 0; i < 2; i += 1) { guard.note("browser_read", { what: "markdown" }, fresh); guard.note("snapshot", {}, fresh); guard.note("run", { code: "x" }, boom); }
+  guard.moved();
+  assert.equal(guard.check("browser_read", { what: "markdown" }), null);
+  assert.equal(guard.check("snapshot", {}), null);
+  assert.equal(guard.check("run", { code: "x" })?.code, "refused", "the same failing code on the new page is still refused");
+});

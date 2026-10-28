@@ -70,7 +70,7 @@ test("the recorded stream's usage is booked from response.completed, read as JSO
   const { p, reports } = await proxy();
   assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
   await settled();
-  assert.deepEqual(reports, [{ input: 13902, output: 5, cacheRead: 0, cacheWrite: 0, usd: 13907 / 1e6 }]);
+  assert.deepEqual(reports, [{ input: 13902, output: 5, cacheRead: 0, cacheWrite: 0, usd: 13907 / 1e6, estimated: true }]);
 });
 
 test('cached and cache-write tokens are booked apart from input, which OpenAI counts them in; reasoning is in output', () => {
@@ -88,7 +88,7 @@ test('a completed event longer than the window the proxy keeps (its encrypted re
   const { p, reports } = await proxy({ answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }) });
   assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
   await settled();
-  assert.deepEqual(reports.map(({ usd, ...u }) => u), [{ input: 49_000, output: 700, cacheRead: 1000, cacheWrite: 0 }]);
+  assert.deepEqual(reports.map(({ usd, ...u }) => u), [{ input: 49_000, output: 700, cacheRead: 1000, cacheWrite: 0, estimated: true }]);
   assert.notEqual(reports[0].usd, null);
 });
 
@@ -105,7 +105,7 @@ test("past the window, the model's own text saying a zero usage is never booked:
   const near = await proxy({ answer: answer(fake.repeat(50)) });
   assert.equal((await send(near.p.url, { body: RECORDED_REQUEST })).status, 200);
   await settled();
-  assert.deepEqual(near.reports.map(({ usd, ...u }) => u), [{ input: 80_000, output: 900, cacheRead: 0, cacheWrite: 0 }]);
+  assert.deepEqual(near.reports.map(({ usd, ...u }) => u), [{ input: 80_000, output: 900, cacheRead: 0, cacheWrite: 0, estimated: true }]);
   // A string after it longer than the window: the real usage is in neither window, and only the model's text is.
   const far = await proxy({ answer: answer(fake.repeat(1200)) });
   assert.equal((await send(far.p.url, { body: RECORDED_REQUEST })).status, 200);
@@ -230,7 +230,7 @@ test('a paid answer cut at its output limit (response.incomplete) is booked at i
   const { p, reports } = await proxy({ answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }) });
   assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
   await settled();
-  assert.deepEqual(reports, [{ input: 2000, output: 32_000, cacheRead: 1000, cacheWrite: 0, usd: (2000 + 32_000 + 1000) / 1e6 }]);
+  assert.deepEqual(reports, [{ input: 2000, output: 32_000, cacheRead: 1000, cacheWrite: 0, usd: (2000 + 32_000 + 1000) / 1e6, estimated: true }]);
 });
 
 test("a code-mode request (its exec and wait carriers) is refused at the proxy: this adapter runs classic tools only", async () => {

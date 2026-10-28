@@ -1,6 +1,7 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/test/fake-sdk.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 // Changed by Parcha, 2026-10-27: imports from this package; a `script` of commands, one per user message, for a runner's prompts.
+// Changed by Parcha, 2026-10-28: the session's tools are listed and called through an MCP client on the harness's own server, as the CLI does; `listed` keeps what each query's tools/list answered.
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { ClaudeAgentSdk } from '../harness.js';
@@ -127,23 +128,41 @@ const IDLE = `process.stdin.on('data', () => {}).on('end', () => process.exit(0)
 
 export interface FakeSdk extends ClaudeAgentSdk {
   queries: Record<string, any>[];
+  /** Each query's `tools/list` answer from the session's MCP server, as the CLI would read it. */
+  listed: { name: string; description?: string; inputSchema: unknown }[][];
+}
+
+/** The session's tools, read the way the CLI reads them: an MCP client over a linked in-memory pair, on the harness's server. */
+async function sessionTools(instance: any, listed: FakeSdk['listed']): Promise<Map<string, FakeTool>> {
+  if (!instance?.server) return new Map((instance?.tools ?? []).map((t: FakeTool) => [t.name, t]));
+  const [{ Client }, { InMemoryTransport }] = await Promise.all([import('@modelcontextprotocol/sdk/client/index.js'), import('@modelcontextprotocol/sdk/inMemory.js')]);
+  const [client, server] = InMemoryTransport.createLinkedPair();
+  await instance.connect(server);
+  const mcp = new Client({ name: 'fake-cli', version: '1.0.0' });
+  await mcp.connect(client);
+  const { tools } = await mcp.listTools();
+  listed.push(tools);
+  return new Map(
+    tools.map((t) => [t.name, { name: t.name, handler: async (args: unknown, extra: any) => (await mcp.callTool({ name: t.name, arguments: args as Record<string, unknown>, _meta: extra?._meta })) as any }]),
+  );
 }
 
 export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
   const lag = fake.mirrorLagMs ?? 100;
   let scripted = 0;
   const queries: Record<string, any>[] = [];
+  const listed: FakeSdk['listed'] = [];
   const sdk = {
     queries,
-    tool: (name: string, _description: string, _shape: unknown, handler: FakeTool['handler']) => ({ name, handler }),
-    createSdkMcpServer: (o: { name: string; tools?: FakeTool[] }) => ({ type: 'sdk', name: o.name, instance: { tools: o.tools ?? [] } }),
+    listed,
     query({ prompt, options }: { prompt: AsyncIterable<any>; options: Record<string, any> }) {
       queries.push(options);
       fake.onQuery?.(options);
       const store = options.sessionStore;
       const sessionId: string = options.resume ?? options.sessionId;
       const key = { projectKey: `-fake${options.cwd.replace(/[^A-Za-z0-9]/g, '-')}`, sessionId };
-      const tools = new Map<string, FakeTool>((options.mcpServers?.hands?.instance?.tools ?? []).map((t: FakeTool) => [t.name, t]));
+      const tools = sessionTools(options.mcpServers?.hands?.instance, listed);
+      tools.catch(() => {});
       const signal: AbortSignal | undefined = options.abortController?.signal;
       let calls = 0;
       let parent: string | undefined;
@@ -279,7 +298,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
       }
 
       async function* run(): AsyncGenerator<any> {
-        yield { type: 'system', subtype: 'init', tools: [...tools.keys()].map((t) => `mcp__hands__${t}`), session_id: sessionId };
+        yield { type: 'system', subtype: 'init', tools: [...(await tools).keys()].map((t) => `mcp__hands__${t}`), session_id: sessionId };
         if (options.resume) {
           const loaded: any[] = (await store.load(key)) ?? [];
           parent = loaded.at(-1)?.uuid;
@@ -337,7 +356,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             const id = `toolu_${randomUUID().slice(0, 8)}_${++calls}`;
             await mirror([entry('assistant', { message: { role: 'assistant', content: [{ type: 'tool_use', id, name: `mcp__hands__${dying[1]}`, input: JSON.parse(dying[2]!) } ] } })]);
             yield { type: 'assistant', parent_tool_use_id: null, session_id: sessionId, message: { content: [{ type: 'tool_use', id, name: `mcp__hands__${dying[1]}` }] } };
-            void tools.get(dying[1]!)?.handler(JSON.parse(dying[2]!), { _meta: { 'claudecode/toolUseId': id } });
+            void tools.then((t) => t.get(dying[1]!)?.handler(JSON.parse(dying[2]!), { _meta: { 'claudecode/toolUseId': id } }));
             return;
           }
           const call = /^call (\S+) (.*)$/s.exec(command);
@@ -350,7 +369,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: { content: [{ type: 'text', text: `Calling ${name}.` }] } };
             yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: a.message };
             const mirrored = mirror([a], lag);
-            const tool = tools.get(name);
+            const tool = (await tools).get(name);
             const result = tool ? await tool.handler(args, { _meta: { 'claudecode/toolUseId': id } }) : { content: [{ type: 'text', text: `no tool ${name}` }], isError: true };
             await mirrored;
             if (signal?.aborted) return;

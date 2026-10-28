@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { codexTarget, findCodex } from '../dist/binary.js';
+import { localMachine } from '../dist/host/machine.js';
+import { CODEX_ROUTES, gatewayHandler } from '../dist/host/process.js';
 import { codexPins, verifyCodex, verifyCodexBinary } from '../dist/verify.js';
 import { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from '../dist/versions.js';
 
@@ -61,6 +63,32 @@ test("a platform package of another release is refused before the binary is read
   const right = cli('pkg', 'codex-cli 0.164.0');
   const result = verifyCodexBinary({ path: right.path, packageVersion: '0.165.0-linux-x64' }, { version: '0.164.0', sha256: right.sha256, packageVersion: '0.164.0-linux-x64' });
   assert.ok(mismatch('package_version', '0.164.0-linux-x64', '0.165.0-linux-x64')(result));
+});
+
+test("a relative CODEX_BIN is checked and run as one absolute path: the session starts it from its own empty directory", async () => {
+  const right = cli('relative', 'codex-cli 0.164.0');
+  // The host names it from its own working directory, where it is; the session's directory has no such file.
+  const host = process.cwd();
+  process.chdir(ROOT);
+  let result;
+  try {
+    result = verifyCodexBinary({ path: './relative' }, { version: '0.164.0', sha256: right.sha256 });
+  } finally {
+    process.chdir(host);
+  }
+  const route = { routes: CODEX_ROUTES, models: { model: 'luna-test' }, credential: () => 'provider-secret', target: 'https://provider.invalid' };
+  const acquire = localMachine({ dir: mkdtempSync(join(ROOT, 'session-')), proxy: { hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, tools: [] } });
+  const machine = await acquire({ ctx: { runId: 'relative-bin' }, model: gatewayHandler(route) });
+  try {
+    const child = await machine.spawn({ command: result.path, args: ['--version'], env: { HOME: machine.dirs.home } });
+    const lines = [];
+    for await (const line of child.lines()) lines.push(line);
+    await child.exited;
+    assert.deepEqual(lines, ['codex-cli 0.164.0'], 'the checked binary runs from the session directory');
+  } finally {
+    await machine.close();
+  }
+  assert.equal(result.path, right.path);
 });
 
 test('no binary, a path with no file, or a file that cannot run is "not installed", typed, naming the install line', () => {

@@ -1,6 +1,7 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/env.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 // Changed by Parcha, 2026-10-27: the client app is agentrun-claude-agent; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
+// Changed by Parcha, 2026-10-28: `toolDescriptionMax`, so no tool's description is cut short.
 /**
  * The durable environment of the `claude` CLI in the session's VM
  * (docs/workspaces.md §5.6 "Env"). It replaces the parent's environment
@@ -44,6 +45,11 @@ export interface DurableEnvOptions {
   /** The longest a Bash command may run (`BASH_MAX_TIMEOUT_MS`, and its default): `sandbox({ commandTimeoutMs })`. */
   bashTimeoutMs?: number;
   /**
+   * The longest of the session's tool descriptions. The CLI cuts an MCP tool's description at 2048 characters unless
+   * `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` says more; above that, it's set to this, so the model reads each one whole.
+   */
+  toolDescriptionMax?: number;
+  /**
    * The app's own variables (`sandbox({ env })`, checked there and again at
    * spawn): added under everything above, so none can replace the model
    * port, its key, the paths or the durability flags.
@@ -69,6 +75,9 @@ export interface DurableEnvOptions {
  *   (its model key) and the CLI's view of the VM (docs/workspaces.md §6).
  *   It also drops the commit and PR instructions from the prompt.
  */
+/** Where the pinned CLI cuts an MCP tool's description by default. */
+export const MCP_DESCRIPTION_CUT = 2048;
+
 export function durableEnv(options: DurableEnvOptions): Record<string, string> {
   const { home, model } = options;
   const small = options.smallModel ?? model;
@@ -101,6 +110,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1',
     CLAUDE_AGENT_SDK_CLIENT_APP: 'agentrun-claude-agent',
   });
+  if (options.toolDescriptionMax !== undefined && options.toolDescriptionMax > MCP_DESCRIPTION_CUT) env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(options.toolDescriptionMax);
   if (options.bashTimeoutMs !== undefined) {
     const max = Math.max(1_000, Math.floor(options.bashTimeoutMs));
     env.BASH_MAX_TIMEOUT_MS = String(max);

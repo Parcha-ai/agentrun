@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-claude-agent';
+import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli } from '@parcha/agentrun-claude-agent';
 import { fakeSdk } from '@parcha/agentrun-claude-agent/testing';
 import { sandboxSpawn } from '../dist/spawn.js';
 
@@ -24,6 +24,25 @@ const mismatch = (pin, expected, found) => (e) => e instanceof ClaudeAgentPinMis
 
 test('the pins are the production deployment\'s: SDK 0.3.286, whose CLI is 2.1.286', () => {
   assert.deepEqual([CLAUDE_AGENT_SDK_VERSION, CLAUDE_AGENT_CLI_VERSION], ['0.3.286', '2.1.286']);
+});
+
+// The install line names the constant, a consumer's npm resolves the peer pin, and this repository's tests (CI's real-CLI
+// suites among them) run the dev pin: a drift in any one means the CLI tested is not the CLI installed.
+test('the SDK pin is one version everywhere: the constant, the peer and dev pins, and the lock', () => {
+  const sdk = '@anthropic-ai/claude-agent-sdk';
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const lock = JSON.parse(readFileSync(new URL('../../../package-lock.json', import.meta.url), 'utf8'));
+  const workspace = lock.packages['packages/run-adapters-claude-agent'];
+  const installed = Object.entries(lock.packages).filter(([path]) => path.endsWith(`node_modules/${sdk}`));
+  assert.ok(installed.length > 0, `the lock resolves ${sdk}`);
+  const found = {
+    peer: manifest.peerDependencies[sdk],
+    dev: manifest.devDependencies[sdk],
+    lockPeer: workspace.peerDependencies[sdk],
+    lockDev: workspace.devDependencies[sdk],
+    ...Object.fromEntries(installed.map(([path, entry]) => [path, entry.version])),
+  };
+  assert.deepEqual(found, Object.fromEntries(Object.keys(found).map((key) => [key, CLAUDE_AGENT_SDK_VERSION])));
 });
 
 test("a CLI whose sha256 is not the pinned build's is refused, typed, with the pin, what was expected and what was found", () => {
@@ -44,10 +63,21 @@ test('an injected SDK that is not the pinned release is refused, typed, before a
   assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.296', cliPath: join(ROOT, 'none') }), mismatch('sdk_version', '0.3.286', '0.3.296'));
 });
 
-test('no SDK, or no CLI, is "Claude Agent SDK not installed", typed', () => {
-  const notInstalled = (e) => e instanceof ClaudeAgentNotInstalled && e.code === 'CLAUDE_AGENT_NOT_INSTALLED' && e.message === 'Claude Agent SDK not installed';
-  assert.throws(() => verifyClaudeAgent({}, () => undefined), notInstalled);
-  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'missing') }), notInstalled);
+test('no SDK, no MCP library or no CLI is "Claude Agent SDK not installed", typed, in one line that ends with the exact install line', () => {
+  const LINE = 'npm install --save-exact @anthropic-ai/claude-agent-sdk@0.3.286';
+  assert.equal(CLAUDE_AGENT_SDK_INSTALL, LINE);
+  assert.equal(CLAUDE_AGENT_PACKAGE, '@parcha/agentrun-claude-agent');
+  const withLine = (e) => e instanceof ClaudeAgentNotInstalled && e.code === 'CLAUDE_AGENT_NOT_INSTALLED' && e.install === LINE
+    && e.message.startsWith('Claude Agent SDK not installed: ') && e.message.endsWith(`; install it with: ${LINE}`) && !/\n/.test(e.message);
+  // No SDK beside the adapter.
+  assert.throws(() => verifyClaudeAgent({}, () => undefined), (e) => withLine(e) && e.message.includes(`@anthropic-ai/claude-agent-sdk 0.3.286 is not installed beside ${CLAUDE_AGENT_PACKAGE}`));
+  // The SDK, but not the MCP library it brings as a peer (installing the SDK with npm installs it).
+  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286' }, (name) => (name === '@modelcontextprotocol/sdk' ? undefined : '0.3.286')), (e) => withLine(e) && /@modelcontextprotocol\/sdk/.test(e.message));
+  // The SDK, but no CLI of its platform packages.
+  const none = verifyClaudeAgentCli(undefined);
+  assert.ok(withLine(none) && /CLI/.test(none.message), none.message);
+  // A cliPath the host gave that holds nothing: the host's path to fix, so no install line.
+  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'missing') }), (e) => e instanceof ClaudeAgentNotInstalled && e.message === `Claude Agent SDK not installed: no CLI at ${join(ROOT, 'missing')}` && e.install === undefined);
 });
 
 test('making the adapter checks the pins, so a mismatch is thrown to the host before any run', () => {
@@ -75,9 +105,9 @@ test('the installed SDK and its pinned CLI pass', { skip: !claudeAgentExecutable
   assert.equal(cliPath, claudeAgentExecutable());
 });
 
-test('an injected SDK with no zod beside the adapter is refused when the adapter is made, typed, before any turn', () => {
-  const noZod = (name) => (name === 'zod' ? undefined : '0.3.286');
-  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'none') }, noZod), (e) => e instanceof ClaudeAgentNotInstalled && /zod/.test(e.detail));
+test('an injected SDK with no MCP library beside the adapter is refused when the adapter is made, typed, before any turn', () => {
+  const noMcp = (name) => (name === '@modelcontextprotocol/sdk' ? undefined : '0.3.286');
+  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'none') }, noMcp), (e) => e instanceof ClaudeAgentNotInstalled && /@modelcontextprotocol\/sdk/.test(e.detail));
 });
 
 test("the pinned CLI is found beside the adapter's install, whatever the process's working directory", { skip: !claudeAgentExecutable() && 'the pinned CLI is not installed here' }, () => {
