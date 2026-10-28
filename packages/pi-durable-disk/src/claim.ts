@@ -3,7 +3,7 @@
 // a mount token and uses the archil client: mount, verify, barrier, release, dead-mount cleanup.
 import { spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, rmdir, stat } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, rmdir, stat, statfs } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -43,7 +43,7 @@ export interface ArchilHost {
   /** `staleGrace`: how long a daemon left on an unmounted mountpoint may take to exit by itself before it is killed. */
   timeoutMs?: { mount?: number; sync?: number; unmount?: number; cli?: number; staleGrace?: number };
   /** File access on the mount; replaceable so tests can inject a dead mount (ENOTCONN, ECONNABORTED) or a fence (EIO). */
-  fs?: { stat?(path: string): Promise<unknown>; persist?(path: string, data: string): Promise<void> };
+  fs?: { stat?(path: string): Promise<unknown>; statfs?(path: string): Promise<unknown>; persist?(path: string, data: string): Promise<void> };
 }
 
 export interface AcquireOptions {
@@ -378,6 +378,7 @@ export async function takeOver(control: ControlApi, opts: AcquireOptions): Promi
 type Host = Required<Omit<ArchilHost, "timeoutMs" | "fs">> & {
   timeoutMs: { mount: number; sync: number; unmount: number; cli: number; staleGrace: number };
   stat(path: string): Promise<unknown>;
+  statfs(path: string): Promise<unknown>;
   persist(path: string, data: string): Promise<void>;
 };
 
@@ -390,6 +391,7 @@ function resolveHost(h: ArchilHost = {}): Host {
     proc: h.proc ?? "/proc",
     timeoutMs: { mount: 120_000, sync: 300_000, unmount: 180_000, cli: 30_000, staleGrace: 5_000, ...h.timeoutMs },
     stat: h.fs?.stat ?? stat,
+    statfs: h.fs?.statfs ?? statfs,
     persist: h.fs?.persist ?? persistFile,
   };
 }
@@ -479,17 +481,20 @@ export const DEAD_CONNECTION: ReadonlySet<string> = new Set(["ENOTCONN", "ECONNA
 
 /**
  * Whether the FUSE daemon behind a mount is gone, which `archil` reports as "not running". Its connection is torn down,
- * so a stat fails with ENOTCONN; a stat already in flight while the dying daemon's connection is torn down (right after a
+ * so a request fails with ENOTCONN; one already in flight while the dying daemon's connection is torn down (right after a
  * kill -9, while its threads exit) fails with ECONNABORTED instead. Both are the connection's own end: a live daemon,
- * however slow, answers, and a stopped one keeps the stat waiting.
+ * however slow, answers, and a stopped one keeps the request waiting. statfs first: it always reaches the daemon, while
+ * the kernel answers a stat from the attributes it cached for a while after any process stat'ed the mount.
  */
 async function isDead(host: Host, mountpoint: string): Promise<boolean> {
-  try {
-    await host.stat(mountpoint);
-    return false;
-  } catch (err) {
-    return DEAD_CONNECTION.has(String((err as { code?: unknown }).code));
+  for (const probe of [host.statfs, host.stat]) {
+    try {
+      await probe(mountpoint);
+    } catch (err) {
+      if (DEAD_CONNECTION.has(String((err as { code?: unknown }).code))) return true;
+    }
   }
+  return false;
 }
 
 // Exit codes of the mount tools are not evidence (a busy mount can report success and stay); the mount table decides.
