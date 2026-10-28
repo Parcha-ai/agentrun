@@ -288,7 +288,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   };
   const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage) => {
     // Every refusal is reported, so a client that calls something the table does not hold is seen, not silently refused.
-    say(`model proxy (${policy.id}): refused`, { status, method: String(req?.method ?? "").slice(0, 16), path: String(req?.url ?? "").slice(0, 200), reason: message.slice(0, 200) });
+    // The client's user-agent names who called: the session's own harness, or another local process that found the port.
+    const agent = req?.headers["user-agent"];
+    say(`model proxy (${policy.id}): refused`, {
+      status, method: String(req?.method ?? "").slice(0, 16), path: String(req?.url ?? "").slice(0, 200), reason: message.slice(0, 200),
+      ...(typeof agent === "string" && agent ? { userAgent: agent.slice(0, 120) } : {}),
+    });
     res.writeHead(status, { "content-type": "application/json", connection: "close" });
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
   };
