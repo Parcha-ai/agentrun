@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one; a tool's images go to the model with its text.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one; a tool's images go to the model with its text; a refusal the CLI made reaches the host only once its tool_result entry is in the log.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -493,7 +493,18 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const input = new MessageQueue<UserMessage>();
         /** User messages sent and not yet consumed by a turn (by `uuid`). */
         const outstanding = new Set<string>();
-        const transcript = new TranscriptBuilder({ message: (e) => store.message(e), live: (e) => ctx.live(e) });
+        const transcript = new TranscriptBuilder({
+          message: (e) => store.message(e),
+          // A refusal is told once its answer is in the log, as a host tool's end is told once its outcome is.
+          live: (e) => {
+            const refused = e as { type?: string; callId?: string };
+            if (refused.type !== 'tool_refused' || typeof refused.callId !== 'string') return ctx.live(e);
+            void store.resultBarrier(refused.callId, barrierMs).then(
+              () => ctx.live(e),
+              (error: unknown) => log('claude-agent: a refused call is not shown: its answer never reached the log', { callId: refused.callId, error: String((error as Error)?.message ?? error).slice(0, 200) })
+            );
+          },
+        });
         const bridge = toolBridge(ctx, tools, {
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),

@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/transcript.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; 2026-10-28: a call the CLI refuses itself (a tool the session doesn't have) is a `tool_refused` live event.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; 2026-10-28: a call the CLI refuses itself (a tool the session doesn't have) is a `tool_refused` live event, never one that reached the session's tool server.
 import type { TranscriptEntry } from './host/process.js';
 
 /**
@@ -59,6 +59,8 @@ export class TranscriptBuilder {
   private readonly waiters = new Map<string, (() => void)[]>();
   /** Each call the model made, by its id: its name as the model gave it and its input. */
   private readonly asked = new Map<string, { name: string; input: unknown }>();
+  /** Calls that reached the session's tool server (`beforeCall`): their error, whatever its text, is theirs, not a refusal. */
+  private readonly bridged = new Set<string>();
 
   constructor(private readonly sink: TranscriptSink) {}
 
@@ -85,7 +87,7 @@ export class TranscriptBuilder {
       // A call the CLI refused itself is answered at once with its error: the call never ran, and the host is told.
       const content = (m.message as { content?: unknown } | undefined)?.content;
       for (const block of Array.isArray(content) ? (content as ResultBlock[]) : []) {
-        if (block.type !== 'tool_result' || block.is_error !== true || !block.tool_use_id) continue;
+        if (block.type !== 'tool_result' || block.is_error !== true || !block.tool_use_id || this.bridged.has(block.tool_use_id)) continue;
         const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? (block.content as { text?: string }[]).map((c) => c?.text ?? '').join('') : '';
         const refused = CLI_REFUSAL.exec(text);
         if (!refused) continue;
@@ -131,6 +133,7 @@ export class TranscriptBuilder {
    * block before it calls the tool); after `waitMs`, by this.
    */
   async beforeCall(id: string, name: string, waitMs = 1000): Promise<void> {
+    this.bridged.add(id);
     if (this.written.has(id)) return;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(done, waitMs);

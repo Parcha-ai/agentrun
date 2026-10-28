@@ -64,3 +64,81 @@ test("a tool the session doesn't have is refused by the CLI, kept in the store, 
   const records = JSON.stringify(await Promise.all(store.keys().map((k) => store.read(k))));
   for (const name of ['browser_navigate', 'mcp__browser__navigate', 'WebFetch']) assert.ok(records.includes(`No such tool available: ${name}`), `${name}'s refusal is in the store`);
 });
+
+test("a session tool's own error is heard once, whatever its text: a call the session's tool server ran is never one the CLI turned down", { skip, timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: { name: 'mcp__hands__plain', input: {} } },
+    // An error whose text looks like the CLI's own refusal: the call still ran, so it is the tool's answer.
+    { tool: { name: 'mcp__hands__tagged', input: {} } },
+    { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } },
+  ];
+  let main = 0;
+  const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL ? plan[main++] ?? { text: 'done' } : { text: 'ok' }) });
+  t.after(() => provider.close());
+  const events = [];
+  const logged = [];
+  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions'), log: (message, detail) => logged.push({ message, ...detail }) });
+  const plain = { name: 'plain', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'the backend is down', isError: true }) };
+  const tagged = { name: 'tagged', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: '<tool_use_error>x</tool_use_error>', isError: true }) };
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [plain, tagged], maxTurns: 20, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'own-errors', system: ['Answer.'], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['plain', 'tagged'] }), { answer: 'ok' });
+
+  for (const name of ['plain', 'tagged']) {
+    const mine = events.filter((e) => (e.type === 'tool_start' || e.type === 'tool_end') && e.name === name);
+    const ids = [...new Set(mine.map((e) => e.callId))];
+    assert.equal(ids.length, 1, `${name} is one call: ${JSON.stringify(mine)}`);
+    assert.deepEqual(mine.map((e) => [e.type, e.isError]), [['tool_start', undefined], ['tool_end', true]], `${name} is heard once, as failed`);
+  }
+  assert.deepEqual(logged.filter((l) => /turned down a call/.test(l.message)), [], 'no call that ran is logged as turned down');
+});
+
+test("a refusal the CLI made reaches the host only once the session's store holds it", { skip, timeout: 120_000 }, async (t) => {
+  const plan = [
+    { tool: { name: 'browser_navigate', input: { url: 'https://example.com' } } },
+    { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } },
+  ];
+  let main = 0;
+  const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL ? plan[main++] ?? { text: 'done' } : { text: 'ok' }) });
+  t.after(() => provider.close());
+  // The store's writer is held on the batch that carries the refusal, and let go a while later, by the test.
+  const inner = memorySessionStore();
+  const order = [];
+  let held = false;
+  const store = {
+    ...inner,
+    async open(key) {
+      const handle = await inner.open(key);
+      return {
+        ...handle,
+        async append(records) {
+          if (!held && JSON.stringify(records).includes('No such tool available: browser_navigate')) {
+            held = true;
+            order.push('held');
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            order.push('released');
+          }
+          return handle.append(records);
+        },
+      };
+    },
+  };
+  let atEnd;
+  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions') });
+  const runNode = createHarnessRunner(adapter, {
+    store,
+    tools: [],
+    maxTurns: 20,
+    timeoutMs: 100_000,
+    onEvent: (e) => {
+      if (e.name !== 'browser_navigate') return;
+      order.push(e.type);
+      // What the store holds at the moment the host hears the refusal end (read takes its copy at once).
+      if (e.type === 'tool_end') atEnd = Promise.all(inner.keys().map((k) => inner.read(k)));
+    },
+  });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'refused-durable', system: ['Answer.'], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
+
+  assert.ok(held, 'the refusal went through the held writer');
+  assert.deepEqual(order, ['held', 'released', 'tool_start', 'tool_end'], 'the host hears the refusal only after its record is written');
+  assert.ok(JSON.stringify(await atEnd).includes('No such tool available: browser_navigate'), "at the refusal's tool_end, the store holds it");
+});
