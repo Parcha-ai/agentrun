@@ -823,7 +823,7 @@ export async function acquire(opts: AcquireOptions): Promise<Claim> {
   // The wrapper reads exactly one line, so a token with a line break would reach archil cut short.
   if (!token || /[\r\n]/.test(token)) throw new ClaimError("INVALID_ARGUMENT", "no mount token, or one with a line break");
   const host = resolveHost(opts.host);
-  const root = join(mountRoot, path);
+  const root = join(mountRoot, runPath(ref.id));
   const t0 = performance.now();
   let reused = false;
   const existing = await mountEntry(host, root);
