@@ -35,6 +35,22 @@ test("a revision's id is the hash of {agent, parent, kind, body}: the same four 
   store.close();
 });
 
+test("a revision keeps the harness it names, in its body and so its id; one that names none keeps none and its id is unchanged; a harness that is not an id is refused before a write", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "H" });
+  const plain = await store.commitRevision(agent.id, A);
+  assert.equal("harness" in plain.body, false, "no harness named, none kept");
+  const claude = await store.commitRevision(agent.id, { ...A, harness: "claude-agent" });
+  assert.equal(claude.body.harness, "claude-agent");
+  assert.notEqual(claude.id, plain.id, "the harness is part of the body, so of the id");
+  assert.equal(store.readRevision(claude.id).body.harness, "claude-agent", "read back as written");
+  const flow = await store.commitRevision(agent.id, { ...WF, harness: "codex" });
+  assert.equal(flow.body.harness, "codex");
+  for (const harness of ["", "Claude", "claude agent", 3]) await assert.rejects(store.commitRevision(agent.id, { ...A, harness }), refused("invalid", /harness/), String(harness));
+  assert.equal(store.listRevisions(agent.id).length, 3);
+  store.close();
+});
+
 test("a revision is written once: the database refuses an UPDATE, and a row whose content was changed does not pass the id check", async () => {
   const dir = await scratch();
   const store = openStore(dir);

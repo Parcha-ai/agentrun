@@ -15,8 +15,9 @@ import { AgentHomeError } from "./store.js";
 
 export const STORE_FILE = "store.sqlite";
 export type RevisionKind = "agentic" | "workflow";
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant> };
-export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[] };
+/** `harness`: the harness that runs the revision, an id its host knows (absent: the host's default). */
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string };
+export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
 /** `archivedAt`: when it was archived, while it is: hidden from lists, kept with its history. */
@@ -38,8 +39,8 @@ export type RunRow = { id: string; agent: string; revision: string; kind: Revisi
 /** What can be archived. */
 export type ArchiveKind = "agent" | "run";
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; note?: string }
-  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; note?: string };
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; note?: string }
+  | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; note?: string };
 export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision };
 
 const SCHEMA = `
@@ -114,6 +115,8 @@ function revisionOf(row: Record<string, unknown>): Revision {
   return revision;
 }
 
+const HARNESS_ID = /^[a-z][a-z0-9-]{0,63}$/;
+
 /** The body of a new revision and the text of each skill it names. Everything about the input is checked here, before any write. */
 function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: Map<string, string> } {
   if (!isObject(input)) throw invalid("the revision is not an object");
@@ -125,14 +128,16 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   }
   const tools = input.tools ?? [];
   if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string" && t !== "") || new Set(tools).size !== tools.length) throw invalid("the tools are not a list of distinct non-empty names");
+  if (input.harness !== undefined && (typeof input.harness !== "string" || !HARNESS_ID.test(input.harness))) throw invalid("the harness is not a harness id (lowercase letters, digits and dashes)");
+  const harness = input.harness !== undefined ? { harness: input.harness } : {};
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
-    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}) }, texts };
+    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...harness }, texts };
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
-  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools] }, texts };
+  return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools], ...harness }, texts };
 }
 
 /** The reads: plain SQL over the one file, on a read-only handle. `openStoreReader` reads `store.sqlite` in place: it writes nothing and makes no copy, and a store with an unfinished write is named, not rolled back. */

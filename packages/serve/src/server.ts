@@ -12,6 +12,7 @@ import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type Agen
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
+import { harnessesOf } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
@@ -145,6 +146,8 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
+    /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
+    harnesses: harnessesOf(env),
     models,
     /** The tools an agentic revision may name. */
     tools: [...BOUND_TOOLS],
@@ -335,7 +338,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow });
+  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow, ...(revision.body.harness ? { harness: revision.body.harness } : {}) });
 
   /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
    *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
@@ -344,14 +347,16 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound } });
+    const harness = blockers.find((b) => b.harness)?.harness;
+    const named = harness ? { harness } : {};
+    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}) } });
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...named } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow });
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow, ...(revision.harness ? { harness: revision.harness } : {}) });
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);

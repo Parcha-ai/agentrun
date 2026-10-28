@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Agent, AgentHomeError, type AgentStore, type NewRevision, openStore, type Revision, type RevisionRow, type RunRow, STORE_FILE } from "@parcha/pi-durable-agent";
 import { ApiError, invalid } from "./errors.js";
+import { DEFAULT_HARNESS, harnessOfBody } from "./harness.js";
 import { type DefinitionBody, isObject, type Json, skillIssues, skillNames, stable } from "./validate.js";
 
 /** One agent as the routes show it: its row, its current revision and that revision's number (the oldest is 1). */
@@ -90,7 +91,9 @@ export class Agents {
   private revisionOf(definition: Json, files: Record<string, string>, note: string | undefined): NewRevision {
     const issues = skillIssues(definition.skills, Object.keys(files));
     if (issues.length) throw invalid(issues);
-    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...(note !== undefined ? { note } : {}) };
+    // The default harness is never stored: naming pi and naming none are one revision.
+    const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
+    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
     return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common };
   }
@@ -152,7 +155,9 @@ export class Agents {
       const texts = await this.request(() => this.texts(held.map(([, sha]) => sha)));
       files = Object.fromEntries(held.map(([path, sha]) => [path, texts.get(sha) ?? ""]));
     }
-    const revision = this.revisionOf(definition, files, note);
+    // An edit that names no harness keeps the agent's, as it keeps its skill files: absent here is unchanged, not pi.
+    const current = entry.revision?.body.harness;
+    const revision = this.revisionOf(definition.harness === undefined && current ? { ...definition, harness: current } : definition, files, note);
     await this.checked(revision);
     await check?.(revision);
     // Each try reads the current revision, checks against it and commits on it in one go: a try a busy store sent back
@@ -247,7 +252,7 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   const body = revision.kind === "agentic"
     ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}) }
     : { workflow: revision.body.workflow };
-  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
+  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
 }
 
 /** `Agent` as the contract shows it, with its current revision. */
