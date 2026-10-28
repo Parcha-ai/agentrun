@@ -8,3 +8,4 @@ export { findClaudeExecutable as claudeAgentExecutable } from "./binary.js";
 export { anthropicPolicy, OWN_TOOL_PREFIX, thinks } from "./host/policy.js";
 export type { AnthropicPolicyOptions } from "./host/policy.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
+export { toolSchemaProblems } from "./schema.js";

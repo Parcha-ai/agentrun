@@ -20,6 +20,7 @@ import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
+import { toolSchemaProblems } from "./schema.js";
 import { serialWriter } from "./serial.js";
 import { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 
@@ -206,6 +207,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one the Claude Agent SDK takes (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
+        // Its input schema reaches the model through zod: what the bridge cannot carry is refused, never dropped.
+        for (const where of toolSchemaProblems(tool.inputSchema ?? { type: "object" })) problems.push(`the tool ${tool.name}'s input schema: ${where}`);
       }
       return problems;
     },
