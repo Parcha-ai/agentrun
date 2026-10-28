@@ -432,10 +432,7 @@ its runs are refused with `409 agent_not_runnable` until git is there.
     (one file at `main`, a plain path under 64 KB), `GET /agents/{id}/learning/log` (the merges, newest first, by their
     `Curated-Run` trailer; a run's counts are its verdict, never read out of a commit's words; `limit` at most 100, then
     `cursor`), and `POST /agents/{id}/learning/retire` (`{id, reason}`).
-  Nothing person-identifying is written into the learning repository: approve, refuse and retire record the stable
-  account id (`token` for the server's token), and who did it by name stays in the log.
-  `learning.principal` in ServeOptions is a TEST HOOK only; it goes away when accounts land, in favour of the
-  credential's principal.
+  Approve, refuse and retire record the server's one principal, its token, as `token`.
   Reads come from the bare repository with git's plumbing, which takes no lock. Every text passes through the host's
   secrets at read time, so a value made secret after a proposal reads `[redacted]`, and a file holding one shows its
   path and `withheld` only. The memo and a file answer with their own type, `nosniff`, and a `sandbox` policy.

@@ -307,9 +307,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
-  /** The learning routes' view of this server; until accounts, the one principal is the server's token. */
+  /** The learning routes' view of this server. */
   const learningContext: LearningContext = {
-    data, agents, review, secrets, runOf: (id) => needRun(id), bodyOf: (req) => bodyOf(req), principal: options.learning?.principal ?? (() => ({ id: "token" })),
+    data, agents, review, secrets, runOf: (id) => needRun(id), bodyOf: (req) => bodyOf(req),
     ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}),
   };
 

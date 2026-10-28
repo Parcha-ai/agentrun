@@ -59,13 +59,11 @@ export type LearningContext = {
   secrets: () => string[];
   runOf(id: string): Promise<{ id: string; agentId: string }>;
   bodyOf(req: IncomingMessage): Promise<Json>;
-  /** Who the request is, from its credential only. Only `id`, a stable opaque account id ("token" for the server's
-   *  token), is ever written into the learning repository; anything person-identifying stays in the log. */
-  principal(req: IncomingMessage): LearningPrincipal;
   log?: (event: string, fields: Record<string, string | number>) => void;
 };
 
-export type LearningPrincipal = { readonly id: string; readonly email?: string };
+/** The server's one principal is its token: approve, refuse and retire are recorded as "token", never from the body. */
+const PRINCIPAL = "token";
 
 const FILE_CAP = 64 * 1024;
 const DIFF_TOTAL_CAP = 1024 * 1024;
@@ -151,8 +149,7 @@ async function answerRun(name: string, req: IncomingMessage, res: ServerResponse
       const body = await ctx.bodyOf(req);
       const reason = name === "refuseRunLearning" ? oneLine(body.reason, "reason") : undefined;
       if (state?.state !== "awaiting_approval") throw new ApiError("not_awaiting_approval", "this run's learning is not waiting for approval");
-      const { id: principal } = ctx.principal(req);
-      const result = reason === undefined ? await ctx.review.approve(agentId, run.id, principal) : await ctx.review.refuse(agentId, run.id, principal, reason);
+      const result = reason === undefined ? await ctx.review.approve(agentId, run.id, PRINCIPAL) : await ctx.review.refuse(agentId, run.id, PRINCIPAL, reason);
       return sendJson(res, 200, result, secrets);
     }
   }
@@ -301,13 +298,11 @@ async function answerAgent(name: string, req: IncomingMessage, res: ServerRespon
       if (typeof id !== "string" || !/^L-[0-9a-f]{12}$/.test(id)) throw invalid([{ field: "id", reason: id === undefined ? "missing" : "not_an_option", message: "id is a note's id, L- and 12 hex digits" }]);
       const reason = oneLine(body.reason, "reason");
       const { retireLearning } = await import("@parcha/pi-agent-learn");
-      // On main, the reason and the stable account id only: never a person's email or name.
-      const { id: principal } = ctx.principal(req);
       const result = await withAgentRepo(ctx.data, agentId, async () => {
         const repo = await openAgentRepo(ctx.data, agentId, join(ctx.data, "agents", agentId, "curator"));
-        return retireLearning({ repo, id, reason: `${reason} (by ${principal})`, secrets: [...secrets] });
+        return retireLearning({ repo, id, reason: `${reason} (by ${PRINCIPAL})`, secrets: [...secrets] });
       });
-      ctx.log?.("learning_retired", { agent: agentId, note: id, by: principal, result: result.status });
+      ctx.log?.("learning_retired", { agent: agentId, note: id, by: PRINCIPAL, result: result.status });
       return sendJson(res, 200, result, secrets);
     }
   }

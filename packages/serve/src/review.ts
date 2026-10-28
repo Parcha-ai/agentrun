@@ -18,8 +18,6 @@ import { CATCH_UP_BUSY_MS, learningOf, learningRunsDir, openAgentRepo, readRunSt
 export type LearningOptions = {
   screen?: InjectionScreen;
   judge?: Judge;
-  /** For tests: who a learning route's request is. Without it, the server's token ("token"); with accounts, the credential's. */
-  principal?: () => { readonly id: string; readonly email?: string };
 };
 
 export const NO_SCREEN = "no injection screen on this server";

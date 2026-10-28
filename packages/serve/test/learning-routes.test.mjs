@@ -105,7 +105,7 @@ test("the memo and the diff: from the branch while proposed, from main and the l
   const proposed = await first.api("GET", `/runs/${runId}/learning/diff`);
   assert.equal(proposed.body.of, "proposed");
   assert.ok(proposed.body.files.some((f) => f.path === `learnings/${id}.md` && f.status === "added"));
-  assert.ok(proposed.body.files.some((f) => f.path === `learnings/${planted}.md` && /Zx81/.test(f.diff)), "a member sees what the screen will refuse");
+  assert.ok(proposed.body.files.some((f) => f.path === `learnings/${planted}.md` && /Zx81/.test(f.diff)), "the owner sees what the screen will refuse");
   await first.close();
   const again = await serve(t, { data: first.data, learning: { screen, judge } });
   await stateOf(again.data, "calc", runId, (s) => s.state === "merged" && s.pruned === true);
@@ -151,6 +151,7 @@ test("approve and refuse over HTTP: the principal is the credential's, never the
   const refused = await api("POST", `/runs/${two}/learning/refuse`, { reason: "Too close to one case." });
   assert.equal(refused.body.status, "landed");
   assert.equal((await api("GET", `/runs/${two}/learning`)).body.decision, "refuse");
+  assert.equal((await readRunState(data, "calc", two)).decided_by, "token", "the server's token refused");
 });
 
 test("an agent's learning at main, one file, and the log of merges: newest first, paged, limit at most 100", async (t) => {
@@ -176,7 +177,7 @@ test("an agent's learning at main, one file, and the log of merges: newest first
   assert.equal((await api("GET", "/agents/plain-no/learning")).status, 404);
 });
 
-test("retire is a member's act: the note is retired on main and leaves the index, a second retire changes nothing, a reason out of shape is 422", async (t) => {
+test("retire is the owner's act: the note is retired on main by \"token\" and leaves the index, a second retire changes nothing, a reason out of shape is 422", async (t) => {
   const { api, data } = await serve(t, { learning: { screen: SCREEN, judge } });
   await api("POST", "/agents", agent("calc", { learning: "auto" }));
   const runId = await learned(api, data, "calc");
@@ -186,6 +187,7 @@ test("retire is a member's act: the note is retired on main and leaves the index
   assert.equal(retired.status, 200, JSON.stringify(retired.body));
   assert.equal(retired.body.status, "retired");
   assert.match(show(bareOf(data, "calc"), "main", `learnings/${id}.md`), /status: retired/);
+  assert.match(git(bareOf(data, "calc"), "log", "-1", "--format=%B", "main"), /\(by token\)/, "the retire on main is the token's");
   assert.doesNotMatch(show(bareOf(data, "calc"), "main", "learnings/INDEX.md") ?? "", new RegExp(id));
   assert.equal((await api("POST", "/agents/calc/learning/retire", { id, reason: "Again." })).body.status, "unchanged");
 });
@@ -288,26 +290,6 @@ test("the agent's learning is truncated by its notes, not by its other files", a
   await inChunks(t, data, "calc", notes);
   const full = await api("GET", "/agents/calc/learning");
   assert.deepEqual([full.body.notes.length, full.body.truncated], [500, true]);
-});
-
-test("nothing person-identifying reaches main: approve, refuse and retire by an accounts-shaped principal write its id and never its email", async (t) => {
-  const lines = [];
-  const principal = () => ({ id: "acct_7f3a91", email: "ana@example.com" });
-  const { api, data } = await serve(t, { learning: { screen: SCREEN, judge, principal }, log: (line) => lines.push(line) });
-  await api("POST", "/agents", agent("calc", { learning: "approve" }));
-  const one = await learned(api, data, "calc");
-  assert.equal((await api("POST", `/runs/${one}/learning/approve`, {})).status, 200);
-  const two = await learned(api, data, "calc", "A filing's date is its acceptance date, not the date it was signed.");
-  assert.equal((await api("POST", `/runs/${two}/learning/refuse`, { reason: "Too close to one case." })).status, 200);
-  assert.equal((await readRunState(data, "calc", one)).decided_by, "acct_7f3a91");
-  const retired = await api("POST", "/agents/calc/learning/retire", { id: learningId(one, RATE_LIMIT), reason: "The registry dropped its limit." });
-  assert.equal(retired.body.status, "retired", JSON.stringify(retired.body));
-  const bare = bareOf(data, "calc");
-  const history = git(bare, "log", "--format=%B", "main");
-  assert.match(history, /acct_7f3a91/, "the retire names the stable account id");
-  const everything = git(bare, "rev-list", "--objects", "--all").split("\n").map((line) => git(bare, "cat-file", "-p", line.split(" ")[0])).join("\n");
-  assert.equal(everything.includes("ana@example.com"), false, "no email anywhere in the repository");
-  assert.ok(lines.some((line) => /learning_retired/.test(line) && /acct_7f3a91/.test(line)), "who retired it is in the log");
 });
 
 test("under a held agent store the learning routes answer home_busy within about 3 s: not a 500, not a hang, not a wrong answer", async (t) => {
