@@ -520,3 +520,29 @@ test("each booked request carries the ids its response headers gave (a gateway's
   const text = JSON.stringify(await read());
   for (const kept of ['provider-secret', 'session=', 'org-1', 'has space']) assert.ok(!text.includes(kept), `${kept} is not in the records`);
 });
+
+test("two requests in flight, answered in reverse: each is booked with its own response's ids, under its own turn, never another's", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const key = 'chat:ids-overlap';
+  const booking = await modelPortFor(await store.open(key), { key });
+  // The provider's own id for each request, from its response: the slow (first admitted) request's arrives last.
+  const slow = new Promise((resolve) => setTimeout(resolve, 150));
+  const fetchStub = async (_url, init) => {
+    const { input } = JSON.parse(init.body);
+    if (input === 'slow') await slow;
+    return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', 'request-id': `req_${input}`, 'x-litellm-call-id': `call-${input}` } });
+  };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
+  await Promise.all([first, second]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const records = await store.read(key);
+  const of = (kind) => records.filter((r) => r.kind === kind).map((r) => [r.data.turn, r.data.providerIds?.['request-id'], r.data.providerIds?.['x-litellm-call-id']]);
+  assert.deepEqual(of(RUNNER_RECORDS.turn), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']], 'each turn has the ids its own response gave');
+  assert.deepEqual(of(RUNNER_RECORDS.response), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']]);
+});
