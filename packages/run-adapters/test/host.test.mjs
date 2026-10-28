@@ -297,3 +297,22 @@ test('zodShapeFromJsonSchema builds the tool shape from a JSON Schema, with the 
   assert.throws(() => schema.parse({ lines: 1 }));
   assert.throws(() => schema.parse({ path: 'x', mode: 'c' }));
 });
+
+test("a request for the session's smaller model is asked about and priced as that model, not the session's", async (t) => {
+  // A policy that lets a body name the session's small model, and says which model a checked body asks for.
+  const small = { ...policy, apply: (body) => ({ ...body, model: body.model === 'small-model' ? 'small-model' : 'session-model' }), modelOf: (body) => body.model };
+  const priced = [];
+  const { p, hooks } = await proxy(t, { policy: small, price: (model, usage) => { priced.push(model); return model === 'small-model' ? 0.0001 : 0.001; } });
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'small-model', input: 'title' } })).status, 200);
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'big', input: 'work' } })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(hooks.before.map((r) => r.model), ['small-model', 'session-model']);
+  assert.deepEqual(priced, ['small-model', 'session-model']);
+  assert.deepEqual(hooks.after.map((u) => u.usd), [0.0001, 0.001]);
+  // A policy without modelOf, or one that throws, books the session's model, as before.
+  const throwing = await proxy(t, { policy: { ...small, modelOf: () => { throw new Error('policy bug'); } } });
+  assert.equal((await send(throwing.p.url, { path: '/v1/test?beta=true', body: { model: 'small-model', input: 'title' } })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(throwing.hooks.before.map((r) => r.model), ['session-model']);
+  assert.ok(throwing.hooks.logged.some((l) => /could not name the request's model/.test(l.message)));
+});
