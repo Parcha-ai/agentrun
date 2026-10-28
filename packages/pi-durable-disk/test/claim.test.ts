@@ -578,6 +578,30 @@ test("a second holder that may not reuse a live mount of the run is refused as h
   await first.release();
 });
 
+// A holder that may not reuse still cleans a DEAD mount of its run (one an earlier fork that crashed on this host left):
+// the dead-mount check comes before the refusal of a live one, or that fork would be refused as held until someone
+// cleaned the mount by hand.
+test("a holder that may not reuse cleans a dead mount of its run through release, then mounts", async () => {
+  const r = disposeAfter(rig());
+  liveMount(r);
+  r.set((s) => {
+    s.mounts[r.root].alive = false;
+    delete s.holders[TARGET]; // the server let the dead client's delegation go
+  });
+  // Dead to the claim's look, once: the mount it makes after cleaning is live.
+  let looked = false;
+  const stat = async (p: string) => {
+    if (looked) return {};
+    looked = true;
+    throw Object.assign(new Error(`ENOTCONN: stat '${p}'`), { code: "ENOTCONN" });
+  };
+  const claim = await acquire({ ...r.opts, reuse: false, host: { ...r.host, fs: { ...r.host.fs, stat } } });
+  assert.equal(claim.reused, false, "a fresh mount, not the dead one");
+  assert.equal(r.calls("archil", "release").length, 1, "the dead mount was released through the wrapper");
+  assert.ok(r.read().mounts[r.root]?.alive, "the run is mounted again");
+  await claim.release();
+});
+
 test("a mountpoint that cannot be created is MOUNT_FAILED; under a root-owned root it is made by the wrapper's prepare through sudo", { skip: process.getuid?.() === 0 }, async () => {
   for (const sudo of [false, true]) {
     const r = disposeAfter(rig({ sudo }));
