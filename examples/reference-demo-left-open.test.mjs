@@ -21,14 +21,18 @@ test('a file that leaves a child (with one of its own), a server and a pipe held
   writeFileSync(planted, `
     import { spawn } from 'node:child_process';
     import { existsSync } from 'node:fs';
-    import { createServer } from 'node:net';
+    import { once } from 'node:events';
+    import { connect, createServer } from 'node:net';
     import { after, test } from 'node:test';
     import ${JSON.stringify(new URL('./reference-demo-helpers.mjs', import.meta.url).href)};
     const tidy = createServer().listen(0, '127.0.0.1');
     after(() => new Promise((resolve) => tidy.close(resolve)));
     test('passes, and leaves three things open', async () => {
       spawn(process.execPath, ['-e', ${JSON.stringify(`const c = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore" }); ${write('LEFT_OPEN_SUB')}; setTimeout(() => {}, 600000);`)}, 'still-running'], { stdio: ['ignore', 'pipe', 'pipe'] });
-      createServer().listen(0, '127.0.0.1');
+      // A server left open with a connection the file made to it: the accepted end is the server's, the client end a socket of its own.
+      const server = createServer().listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      await once(connect(server.address().port, '127.0.0.1'), 'connect');
       const parent = spawn(process.execPath, ['-e', ${JSON.stringify(`const c = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true }); ${write('LEFT_OPEN_HELD')}; c.unref();`)}], { stdio: ['ignore', 'pipe', 'ignore'] });
       await new Promise((resolve) => parent.on('exit', resolve));
       while (!existsSync(process.env.LEFT_OPEN_SUB)) await new Promise((resolve) => setTimeout(resolve, 20));
@@ -57,6 +61,9 @@ test('a file that leaves a child (with one of its own), a server and a pipe held
   const named = out.match(/left open after the file's last test, now closed: (.*)/)?.[1] ?? '';
   assert.match(named, new RegExp(`child \\d+ \\(-e .* still-running\\) and 1 it started \\(${subPid}\\)`), `the child, by pid and argv, and the one it started: ${named}`);
   assert.equal(named.match(/server \{"address":"127\.0\.0\.1"/g)?.length, 1, `the server left open, and not the one the file's own after() closed: ${named}`);
+  // At least the file's own connection: a local port probe may add one.
+  assert.match(named, /server \{"address":"127\.0\.0\.1"[^}]*\} with \d+ connections?/, `the server named with its accepted connections: ${named}`);
+  assert.equal(named.match(/a socket to 127\.0\.0\.1:\d+/g)?.length, 1, `one socket of its own, the client end; the accepted end is the server's: ${named}`);
   assert.equal(named.match(/a pipe still held open/g)?.length, 1, `the one pipe a child's child kept, and not the child's own stdio: ${named}`);
   assert.equal(processAlive(subPid), false, 'the child\'s own child was killed with it');
 });
