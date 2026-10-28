@@ -1,15 +1,16 @@
 // The Claude Agent adapter's host side, attacked directly: the Anthropic policy the session's proxy applies, the spawn
 // hook that starts the CLI, and the local machine's environment. No network, no CLI.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { request } from 'node:http';
 import { ProxyRefusal, startModelProxy } from '@parcha/agentrun-adapters/host';
 import { anthropicPolicy } from '@parcha/agentrun-claude-agent';
-import { childEnv, localMachine } from '../dist/host/machine.js';
+import { childEnv, confined, localMachine } from '../dist/host/machine.js';
 import { CLAUDE_BETAS } from '../dist/host/policy.js';
 import { gatewayHandler, isBrandedMachine, journalLedger, ModelSteps, settleAbandonedModelSteps } from '../dist/host/process.js';
 import { isResumeDir, spawnProblem } from '../dist/spawn.js';
@@ -246,7 +247,9 @@ test("a child's environment is the allowlist and what the harness names: no host
     child.child.stdout.on('data', (d) => { out += d; });
     await child.exited;
     const seen = JSON.parse(out);
-    assert.deepEqual(Object.keys(seen.env).sort(), ['ANTHROPIC_AUTH_TOKEN', 'HOME', 'LANG', 'PATH', 'TZ']);
+    // The allowlist, what the harness named, and the machine's own git ceiling (the session's directory): no host value.
+    assert.deepEqual(Object.keys(seen.env).sort(), ['ANTHROPIC_AUTH_TOKEN', 'GIT_CEILING_DIRECTORIES', 'HOME', 'LANG', 'PATH', 'TZ']);
+    assert.equal(seen.env.GIT_CEILING_DIRECTORIES, dirname(machine.root));
     assert.equal(seen.cwd, machine.root, "the CLI works in the session's own empty directory");
   } finally {
     await machine.close();
@@ -349,4 +352,52 @@ test("a main-model request that would not think is said (thinking.disabled), nev
   // A callback that throws never breaks the request.
   const throwing = anthropicPolicy({ model: 'claude-main', tools: [], onThinkingDisabled: () => { throw new Error('host bug'); } });
   assert.equal(throwing.apply(body(), MESSAGES).model, 'claude-main');
+});
+
+/** A session's machine under `dir`, with `confine`; returns it and a run of one child to its exit. */
+async function machineAt(t, dir, confine) {
+  const handler = gatewayHandler({ routes: [], models: { model: 'claude-main' }, credential: () => 'provider-secret', target: 'https://provider.invalid' });
+  const acquire = localMachine({ dir, ...(confine ? { confine } : {}), env: { PATH: process.env.PATH }, proxy: { hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, tools: [] } });
+  const machine = await acquire({ ctx: { runId: 'r1' }, model: handler });
+  t.after(() => machine.close());
+  const run = async (command, args) => {
+    const proc = machine.start({ command, args, env: {} });
+    let out = '';
+    proc.child.stdout.on('data', (c) => { out += c; });
+    const { code } = await proc.exited;
+    return { code, out };
+  };
+  return { machine, run };
+}
+
+test("a session's git never finds a repository above the session, in a parent the model could write", async (t) => {
+  const parent = mkdtempSync(join(tmpdir(), 'agentrun-ceiling-'));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q', parent]);
+  const { run } = await machineAt(t, join(parent, 'sessions', 's1'));
+  const found = await run('git', ['rev-parse', '--show-toplevel']);
+  assert.notEqual(found.code, 0, `git found the repository ${found.out.trim()}`);
+  const env = await run(process.execPath, ['-e', 'process.stdout.write(process.env.GIT_CEILING_DIRECTORIES ?? "")']);
+  assert.equal(env.out, join(parent, 'sessions', 's1'));
+});
+
+test("the host's confinement wraps a child's command and arguments, never its environment, and may only add in front", async (t) => {
+  const seen = [];
+  const { run } = await machineAt(t, scratch(), (c) => { seen.push(c); return { command: '/usr/bin/env', args: ['--', c.command, ...c.args] }; });
+  const out = await run(process.execPath, ['-e', 'process.stdout.write(JSON.stringify([process.argv.length, Object.keys(process.env).sort()]))']);
+  assert.equal(out.code, 0);
+  assert.deepEqual(seen, [{ command: process.execPath, args: ['-e', 'process.stdout.write(JSON.stringify([process.argv.length, Object.keys(process.env).sort()]))'] }]);
+  assert.deepEqual(JSON.parse(out.out)[1], ['GIT_CEILING_DIRECTORIES', 'PATH'], 'the environment is the machine\'s, untouched by the confinement');
+  const child = { command: '/pinned/claude', args: ['--x', 'y'] };
+  assert.deepEqual(confined(child, (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] })), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', '/pinned/claude', '--x', 'y'] });
+  for (const bad of [(c) => ({ command: c.command, args: c.args }), () => ({ command: '/usr/bin/env', args: [] }), (c) => ({ command: '/bin/sh', args: ['-c', 'x', '/other', ...c.args] }), (c) => ({ command: '/usr/bin/env', args: [c.command, ...c.args, '--more'] }), () => undefined]) {
+    assert.throws(() => confined(child, bad), /confinement must start the child's own command/);
+  }
+});
+
+test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs set', { skip: !existsSync('/usr/bin/setpriv') && 'no setpriv here' }, async (t) => {
+  const { run } = await machineAt(t, scratch(), (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] }));
+  const out = await run(process.execPath, ['-e', 'process.stdout.write(require("fs").readFileSync("/proc/self/status", "utf8").match(/^NoNewPrivs:\\s*(\\d)/m)[1])']);
+  assert.equal(out.code, 0);
+  assert.equal(out.out, '1');
 });

@@ -218,3 +218,67 @@ test("on each current model, a node that names no level thinks at medium on the 
   assert.deepEqual([...sent].sort(), [...CLAUDE_BLOCKS].sort(), 'the content blocks the CLI sent');
   t.diagnostic(`blocks: ${[...sent].sort().join(', ')}`);
 });
+
+/** A request's messages without the prompt-cache markers the CLI moves to the newest message each turn, and with a
+ *  message's content as blocks: a resumed CLI sends a mid-conversation system note as a string where the live one sent
+ *  the same text as one text block (the API takes both alike). Nothing else is normalized. */
+const uncached = (messages) => JSON.parse(JSON.stringify(messages, (k, v) => (k === 'cache_control' ? undefined : v))).map?.((m) => (m && typeof m.content === 'string' && m.role === 'system' ? { ...m, content: [{ type: 'text', text: m.content }] } : m)) ?? messages;
+
+test('the real CLI, killed in turn 2, resumes in a NEW session directory from the session store alone: turn 3 runs on the same history, nothing re-sent', { skip, timeout: 240_000 }, async (t) => {
+  const model = 'claude-sonnet-5-5';
+  let main = 0;
+  // Turn 1 asks for a safe tool, turn 2 for a never one (which the kill cuts off), turn 3 answers.
+  const provider = await fakeAnthropic({ reply: (r) => {
+    if (r.model !== model) return { text: 'ok' };
+    main += 1;
+    if (main === 1) return { tool: { name: 'mcp__hands__lookup', input: { q: 'x' } } };
+    if (main === 2) return { tool: { name: 'mcp__hands__charge', input: { amount: 5 } } };
+    return { text: 'done' };
+  } });
+  t.after(() => provider.close());
+  const looked = [];
+  let charged = 0;
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const lookup = { name: 'lookup', description: 'Look a thing up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async (args) => { looked.push(args); return { text: 'found' }; } };
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:resume', label: 'pay', system: ['Use the tools.'], tools: [lookup, charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const paid = { before: 0, after: 0 };
+  const models = { beforeRequest: async () => { paid.before += 1; }, afterRequest: async () => { paid.after += 1; } };
+  const adapterIn = (dir) => claudeAgentAdapter({ model, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir });
+
+  // The first process: turns 1 and 2; the drive dies inside the never call, and its CLI is killed with it.
+  const firstDir = mkdtempSync(join(ROOT, 'resume-a-'));
+  const died = new AbortController();
+  const a = await adapterIn(firstDir).open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {} });
+  assert.equal(a.state, 'new');
+  await a.send('Charge the card after looking it up.');
+  await reached;
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+  const sentBefore = provider.messages().filter((r) => r.model === model);
+  assert.equal(sentBefore.length, 2, 'turns 1 and 2 reached the provider');
+
+  // The next process, in a NEW directory: nothing of the first one's survives, only the session store.
+  const nextDir = mkdtempSync(join(ROOT, 'resume-b-'));
+  const b = await adapterIn(nextDir).open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn', 'the store holds the open turn');
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+
+  const sent = provider.messages().filter((r) => r.model === model).map((r) => r.body);
+  assert.equal(sent.length, 3, `three main-model requests in all, none re-sent (got ${sent.length})`);
+  assert.equal(charged, 1, 'the never call ran once');
+  assert.deepEqual(looked, [{ q: 'x' }], 'the safe call ran once (its result came from the store)');
+  // Turn 3 carries the history of turns 1 and 2 as they were sent, then turn 2's call and its interrupted result.
+  const [, second, third] = sent.map((body) => uncached(body.messages));
+  assert.deepEqual(third.slice(0, second.length), second, 'turn 3 starts with the history turn 2 sent');
+  const after = third.slice(second.length);
+  assert.ok(after.some((m) => m.role === 'assistant' && JSON.stringify(m.content).includes('mcp__hands__charge')), "turn 2's call is in the history");
+  assert.ok(after.some((m) => m.role === 'user' && JSON.stringify(m.content).includes('tool_result') && /interrupted|may or may not/.test(JSON.stringify(m.content))), "the call is answered as interrupted");
+  const sameSystem = JSON.stringify(uncached(sent[2].system ?? null)) === JSON.stringify(uncached(sent[1].system ?? null));
+  t.diagnostic(`turn 3 sent ${third.length} messages (turn 2: ${second.length}); system prompt the same as turn 2's: ${sameSystem}; paid hooks before ${paid.before}, after ${paid.after}`);
+});

@@ -194,3 +194,37 @@ test("a crash inside a never tool's call: the next process recovers the turn, an
   const ended = (await store.read('step:s1')).filter((r) => r.kind === 'kernel.end').map((r) => r.data);
   assert.ok(ended.some((e) => e.status === 'failed' && e.error?.interrupted === true), JSON.stringify(ended));
 });
+
+test("the same crash, the next process in a NEW session directory (a fresh box): it recovers from the session store alone", async (t) => {
+  let charged = 0;
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:s1', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const dir = scratch();
+
+  // The first process: the call starts, then the process dies (its signal), with no outcome written.
+  const first = await claude(t, { script: ['call charge {"amount":5}'], sessionsDir: dir });
+  const died = new AbortController();
+  const a = await first.adapter.open(spec, { store, writer: await store.open('step:s1'), models, signal: died.signal, onEvent: () => {} });
+  assert.equal(a.state, 'new');
+  await a.send('pay');
+  await reached;
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+
+  // The next process: the turn is open; recovering it reports the call interrupted and does not run it again.
+  // Nothing of the first process's directory survives: the session store is all the next one has.
+  const next = await claude(t, { sessionsDir: scratch() });
+  const b = await next.adapter.open(spec, { store, writer: await store.open('step:s1'), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn');
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 1, 'the charge ran once');
+  const ended = (await store.read('step:s1')).filter((r) => r.kind === 'kernel.end').map((r) => r.data);
+  assert.ok(ended.some((e) => e.status === 'failed' && e.error?.interrupted === true), JSON.stringify(ended));
+});

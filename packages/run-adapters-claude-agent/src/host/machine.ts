@@ -21,9 +21,22 @@ export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
 const DIRS: readonly CacheDir[] = ["home", "config", "tmp", "cache"];
 const STDERR_TAIL = 8 * 1024;
 
+/** A command and its arguments, as the machine starts it. */
+export interface ChildCommand {
+  command: string;
+  args: string[];
+}
+
+/** The host's confinement of a child: the same command and arguments, started under the host's own (a
+ *  `setpriv --no-new-privs` prefix, say). It may only add in front: what it returns must end with the command and its
+ *  arguments unchanged, and it never sees or changes the child's environment. */
+export type ConfineChild = (child: Readonly<ChildCommand>) => ChildCommand;
+
 export interface LocalMachineOptions {
   /** The session's own directory. The machine makes its private directories in it. */
   dir: string;
+  /** Start every child of the session (the CLI) under the host's confinement. */
+  confine?: ConfineChild;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits. */
   proxy: {
     hooks: ModelProxyHooks;
@@ -53,11 +66,25 @@ export interface MachineChild extends SessionProcess {
   readonly child: ChildProcess;
 }
 
-/** Start a child of the session: `env` beyond the allowlist, in its own process group, killed whole. */
-export function startChild(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string): MachineChild {
-  const child = spawnChild(options.command, options.args ?? [], {
+/** The command `confine` makes of `child`, refused unless it ends with the child's command and arguments unchanged. */
+export function confined(child: ChildCommand, confine: ConfineChild | undefined): ChildCommand {
+  if (!confine) return child;
+  const out = confine({ command: child.command, args: [...child.args] });
+  const argv = [out?.command, ...(Array.isArray(out?.args) ? out.args : [])];
+  const tail = argv.slice(argv.length - child.args.length - 1);
+  const kept = argv.length > child.args.length + 1 && tail.length === child.args.length + 1 && tail.every((a, i) => a === (i === 0 ? child.command : child.args[i - 1]));
+  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-claude-agent: the host's confinement must start the child's own command and arguments, after its own");
+  return { command: out.command, args: out.args };
+}
+
+/** Start a child of the session: `env` beyond the allowlist, in its own process group, killed whole. Its git stops at
+ *  `ceiling` (the session's directory): it never looks for a repository above the session, in a parent the model
+ *  could write. */
+export function startChild(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling?: string, confine?: ConfineChild): MachineChild {
+  const run = confined({ command: options.command, args: options.args ?? [] }, confine);
+  const child = spawnChild(run.command, run.args, {
     cwd: options.cwd ?? cwd,
-    env: childEnv(from, options.env),
+    env: { ...childEnv(from, options.env), ...(ceiling ? { GIT_CEILING_DIRECTORIES: ceiling } : {}) },
     detached: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -145,7 +172,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let closed = false;
     const start = (spawnOptions: MachineSpawn): MachineChild => {
       if (closed) throw new Error("agentrun-claude-agent: the session machine is closed");
-      const proc = startChild(spawnOptions, from, root);
+      const proc = startChild(spawnOptions, from, root, base, options.confine);
       children.add(proc);
       void proc.exited.then(() => children.delete(proc));
       return proc;

@@ -7,3 +7,4 @@ export { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION as CLAUDE_AGENT_CLI_VERSI
 export { findClaudeExecutable as claudeAgentExecutable } from "./binary.js";
 export { anthropicPolicy, OWN_TOOL_PREFIX, thinks } from "./host/policy.js";
 export type { AnthropicPolicyOptions } from "./host/policy.js";
+export type { ChildCommand, ConfineChild } from "./host/machine.js";

@@ -19,7 +19,7 @@ import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
-import { localMachine } from "./host/machine.js";
+import { type ConfineChild, localMachine } from "./host/machine.js";
 import { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 
 /** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
@@ -53,6 +53,9 @@ export interface ClaudeAgentAdapterOptions {
   /** The model of the CLI's small background calls. Default: the session's model. */
   smallModel?: string;
   provider: ClaudeAgentProvider;
+  /** Start the CLI under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may
+   *  only add in front of the pinned binary and its arguments, and never touches its environment. */
+  confine?: ConfineChild;
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
@@ -210,6 +213,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
 
       const acquire = localMachine({
         dir,
+        ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
           hooks: io.models,
           tools: spec.tools.map((t) => t.name),
