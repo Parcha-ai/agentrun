@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.28 (2026-10-28)
+
+- The agent store archives an agent or a run without deleting it: `store.setArchived("agent" | "run", id, archived)` appends one row to a new `archive_changes` table when the state changes, and `listAgents`, `readAgent`, `listRuns` and `readRun` carry `archivedAt` while an item is archived (a run's own, else its agent's). The rows are written once: the database refuses an `UPDATE` or a `DELETE`. The table needs no new store version: a store an earlier version wrote opens and reads with nothing archived, and an earlier version still opens a store that has the table. The store page hides archived agents behind Show archived and marks archived agents and runs, and its host hook takes `run(run)` for a stored run's head.
+
 ## 0.1.0-beta.27 (2026-10-25)
 
 - `commitRevision(agent, revision, { ifCurrent })` makes a commit a compare-and-swap: `ifCurrent` is the agent's current revision as the caller read it (null for none), compared inside the commit's own transaction, and another current revision refuses the commit with `AgentHomeError` `stale` and writes nothing. A host serving `If-Match` passes it, so of two edits that read the same revision exactly one lands.
