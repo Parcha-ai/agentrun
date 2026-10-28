@@ -1,7 +1,8 @@
 // The adapter a harness id runs on, and whether this server can run it. With a faux harness module (FAUX_HARNESS_ENV)
 // every id runs on run-adapters' faux harness, scripted by the module's `script(spec)`, as `--faux` runs pi on the
-// faux model. Otherwise codex runs on @parcha/agentrun-codex with serve's own model, price and gateway; a package or a
-// pinned CLI that is missing says so with the one line that installs it. claude-agent is not wired yet.
+// faux model. Otherwise codex runs on @parcha/agentrun-codex and claude-agent on @parcha/agentrun-claude-agent, each
+// with serve's own model, price and endpoint, under the run's confinement; a package or a pinned CLI that is missing
+// says so with the one line that installs it.
 import { pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-adapters";
 import { FAUX_HARNESS_ENV } from "./harness.js";
@@ -58,6 +59,40 @@ export function priceOf(needs: AdapterNeeds) {
   };
 }
 
+/** Where claude-agent's requests go: Anthropic Messages only, at ANTHROPIC_BASE_URL's origin (an Anthropic-compatible
+ *  endpoint) or api.anthropic.com, with ANTHROPIC_API_KEY. serve's AGENT_MODEL_BASE_URL is an OpenAI Responses
+ *  gateway, which can never serve it. */
+export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
+  if (env.AGENT_MODEL_BASE_URL) throw new HarnessUnavailable("claude-agent needs an Anthropic Messages endpoint (ANTHROPIC_API_KEY); AGENT_MODEL_BASE_URL is an OpenAI Responses gateway.");
+  if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; this server's model is ${model.provider}/${model.modelId}.`);
+  if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.");
+  let origin = "https://api.anthropic.com";
+  if (env.ANTHROPIC_BASE_URL) {
+    const url = new URL(env.ANTHROPIC_BASE_URL);
+    if (url.pathname.replace(/\/+$/, "") !== "") throw new HarnessUnavailable(`claude-agent sends Anthropic Messages to the endpoint's origin + /v1/messages; ANTHROPIC_BASE_URL has the path ${url.pathname}, which it cannot reach yet.`);
+    origin = url.origin;
+  }
+  return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "" };
+}
+
+/** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
+ *  only by the person who wants it (its SDK is an optional peer). */
+const CLAUDE_PACKAGE = "@parcha/agentrun-claude-agent";
+
+async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
+  const claude = (await import(CLAUDE_PACKAGE).catch(() => {
+    throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`);
+  })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
+  const provider = claudeProvider(env, needs.model);
+  try {
+    // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once).
+    return claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider, price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}) });
+  } catch (error) {
+    const message = (error as Error).message;
+    throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
+  }
+}
+
 /** The bare id Codex takes: serve's "openai/<id>" without its provider. */
 const bareId = (model: ModelRef) => (model.modelId.startsWith("openai/") ? model.modelId.slice("openai/".length) : model.modelId);
 
@@ -85,6 +120,7 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
     return fauxAdapter({ script: module.script });
   }
   if (harness === "codex") return codexOf(env, needs);
+  if (harness === "claude-agent") return claudeOf(env, needs);
   throw new HarnessUnavailable(`This server does not run ${harness} yet.`);
 }
 
