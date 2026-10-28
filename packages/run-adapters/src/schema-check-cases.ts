@@ -27,6 +27,25 @@ export const SCHEMA_CHECK_CASES: readonly SchemaCheckCase[] = Object.freeze([
   { name: "a remote $ref by URL", schema: { type: "object", properties: { r: { $ref: "https://example.com/schema.json" } } }, refusedAt: ["/properties/r/$ref"] },
   { name: "a remote $ref by file", schema: { type: "object", properties: { r: { $ref: "other.json#/x" } } }, refusedAt: ["/properties/r/$ref"] },
   { name: "a local $ref into $defs", schema: { type: "object", properties: { r: { $ref: "#/$defs/X" } }, $defs: { X: { type: "object", properties: P } } }, refusedAt: [] },
+  {
+    name: "a remote $ref in a schema position deep inside (anyOf in $defs)",
+    schema: { type: "object", properties: { r: { $ref: "#/$defs/X" } }, $defs: { X: { anyOf: [{ $ref: "https://example.com/a.json" }, { type: "null" }] } } },
+    refusedAt: ["/$defs/X/anyOf/0/$ref"],
+  },
+  // Values, not schemas: a "$ref" key inside default, examples, const or enum is data, and a property named "$ref" is a name.
+  {
+    name: 'a "$ref" that is a value (in default, examples, const, enum) or a property name',
+    schema: {
+      type: "object",
+      properties: {
+        d: { type: "object", default: { $ref: "data-template.json" }, examples: [{ $ref: "https://example.com/x.json" }] },
+        c: { const: { $ref: "other.json#/y" } },
+        e: { enum: [{ $ref: "z.json" }, null] },
+        $ref: { type: "string" },
+      },
+    },
+    refusedAt: [],
+  },
   // What may be used.
   { name: "an empty object", schema: { type: "object" }, refusedAt: [] },
   { name: "an open object", schema: { type: "object", additionalProperties: true }, refusedAt: [] },
