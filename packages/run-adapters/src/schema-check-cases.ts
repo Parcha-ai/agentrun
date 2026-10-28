@@ -18,11 +18,17 @@ export const SCHEMA_CHECK_CASES: readonly SchemaCheckCase[] = Object.freeze([
   { name: 'a root of type ["object", "null"]', schema: { type: ["object", "null"], properties: P }, refusedAt: ["/"] },
   { name: "a root that is only a $ref", schema: { $ref: "#/$defs/X", $defs: { X: { type: "object", properties: P } } }, refusedAt: ["/"] },
   { name: "a root that is not a schema object", schema: "object", refusedAt: ["/"] },
+  { name: "no schema at all", schema: undefined, refusedAt: ["/"] },
   // JSON Schema 2020-12.
   { name: 'a type of "strng"', schema: { type: "object", properties: { a: { type: "strng" } } }, refusedAt: ["/properties/a/type"] },
   { name: "a minimum given as a string", schema: { type: "object", properties: { n: { type: "number", minimum: "1" } } }, refusedAt: ["/properties/n/minimum"] },
   { name: "required not an array", schema: { type: "object", properties: P, required: "a" }, refusedAt: ["/required"] },
   { name: "tuple items (an array of schemas)", schema: { type: "object", properties: { t: { type: "array", items: [{ type: "string" }, { type: "number" }] } } }, refusedAt: ["/properties/t/items"] },
+  // $schema: a dialect Anthropic's API takes (measured: 2020-12, 2019-09, draft-07, -06, -04), or refused there.
+  { name: "a $schema of draft-07", schema: { $schema: "http://json-schema.org/draft-07/schema#", type: "object", properties: P }, refusedAt: [] },
+  { name: "a $schema of 2020-12", schema: { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: P }, refusedAt: [] },
+  { name: "a $schema that is not a string", schema: { $schema: 42, type: "object", properties: P }, refusedAt: ["/$schema"] },
+  { name: "a $schema naming no dialect", schema: { $schema: "https://example.com/unknown", type: "object", properties: P }, refusedAt: ["/$schema"] },
   // $ref: local followed, remote refused.
   { name: "a remote $ref by URL", schema: { type: "object", properties: { r: { $ref: "https://example.com/schema.json" } } }, refusedAt: ["/properties/r/$ref"] },
   { name: "a remote $ref by file", schema: { type: "object", properties: { r: { $ref: "other.json#/x" } } }, refusedAt: ["/properties/r/$ref"] },
