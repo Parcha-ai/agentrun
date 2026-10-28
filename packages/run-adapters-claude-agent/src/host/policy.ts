@@ -61,6 +61,8 @@ export interface AnthropicPolicyOptions {
   smallModel?: string;
   /** The session's own tool names (`spec.tools`): every other tool definition is dropped. */
   tools: readonly string[];
+  /** The CLI's own tools the session has, offered by their own names beside its tools (`Skill`, when it has skills). */
+  builtins?: readonly string[];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
@@ -85,15 +87,45 @@ function onlyKeys(body: Record<string, unknown>, keys: ReadonlySet<string>, what
   for (const key of Object.keys(body)) if (!keys.has(key)) refuse(403, `${what}: a key outside the API's own is not allowed`);
 }
 
-/** A content list (a message's, the system prompt's, a tool result's): only the block types this session sends. */
-function blocks(content: unknown, where: string): void {
+/** The image types the API takes, which a host tool's image may be. */
+const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+/** The note the CLI adds beside a tool's image: the file it kept in its own session directory. */
+const LOCAL_IMAGE_NOTE = /^\[Image: source: [^\]\n]+\]$/;
+
+/** A content list (a message's, the system prompt's, a tool result's): only the block types this session sends. An
+ *  image only as a host tool answered it: inside its result, inline, of a type the API takes (never one the provider
+ *  would fetch). */
+function blocks(content: unknown, where: string, inResult = false): void {
   if (content === undefined || typeof content === "string") return;
   if (!Array.isArray(content)) refuse(400, `${where} must be a string or a list of blocks`);
   for (const block of content as unknown[]) {
     if (!isPlain(block) || typeof block.type !== "string") return refuse(400, `a block in ${where} must be an object with a type`);
+    if (inResult && block.type === "image") {
+      const source = block.source;
+      if (!isPlain(source) || source.type !== "base64" || typeof source.media_type !== "string" || !IMAGE_TYPES.has(source.media_type) || typeof source.data !== "string") refuse(403, `${where} holds a block of a type this session does not send`);
+      continue;
+    }
     if (!CLAUDE_BLOCKS.has(block.type)) refuse(403, `${where} holds a block of a type this session does not send`);
-    if (block.type === "tool_result") blocks(block.content, "a tool result's content");
+    if (block.type === "tool_result") blocks(block.content, "a tool result's content", true);
   }
+}
+
+/** A message with the CLI's note of its own image file left out of each tool result that holds the image itself: the
+ *  note names a path in the session's directory, which differs between a session and its resumption, and says nothing
+ *  the image doesn't. */
+function withoutImageNotes(message: unknown): unknown {
+  if (!isPlain(message) || !Array.isArray(message.content)) return message;
+  let changed = false;
+  const content = (message.content as unknown[]).map((block) => {
+    if (!isPlain(block) || block.type !== "tool_result" || !Array.isArray(block.content)) return block;
+    const parts = block.content as unknown[];
+    if (!parts.some((part) => isPlain(part) && part.type === "image")) return block;
+    const kept = parts.filter((part) => !(isPlain(part) && part.type === "text" && typeof part.text === "string" && LOCAL_IMAGE_NOTE.test(part.text)));
+    if (kept.length === parts.length) return block;
+    changed = true;
+    return { ...block, content: kept };
+  });
+  return changed ? { ...message, content } : message;
 }
 
 function outputConfig(config: unknown): void {
@@ -135,13 +167,13 @@ export function applyAnthropic(body: unknown, route: ProxyRoute, options: Anthro
     blocks((message as Record<string, unknown>).content, "a message's content");
   }
   blocks(body.system, "system");
-  const allowed = new Set(options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`));
+  const allowed = new Set([...options.tools.map((name) => `${OWN_TOOL_PREFIX}${name}`), ...(options.builtins ?? [])]);
   const tools = ownTools(body.tools, allowed);
   const choice = body.tool_choice;
   if (isPlain(choice) && choice.type === "tool" && !(typeof choice.name === "string" && allowed.has(choice.name))) refuse(403, "tool_choice names a tool this session does not have");
   const small = options.smallModel ?? options.model;
   if (body.model !== options.model && body.model !== small) refuse(403, "the model is not this session's");
-  const out: Record<string, unknown> = { ...body, ...(tools === undefined ? {} : { tools }) };
+  const out: Record<string, unknown> = { ...body, messages: (body.messages as unknown[]).map(withoutImageNotes), ...(tools === undefined ? {} : { tools }) };
   if (count) return out;
   // A main-model request that would not think is said, never passed silently (it is still forwarded: the CLI decides
   // its own requests, and this is the record that one went without reasoning).

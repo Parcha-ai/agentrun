@@ -22,8 +22,12 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.deepEqual(body.features.agents, { create: true, list: true, update: true, revisions: true });
   assert.equal(body.features.messages.steer_workflow_runs, false);
   assert.equal(body.features.timeline.live_workflow_rows, false);
-  assert.deepEqual(body.tools, ["read", "write", "edit", "ask_person"], "the tools an agentic revision may name");
-  assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit"], adapters: ["runNode"] });
+  const keyed = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"].filter((name) => !process.env[name]);
+  assert.deepEqual(body.tools.map((t) => [t.name, t.available, t.nodes, t.calls]), [["read", true, true, false], ["write", true, true, false], ["edit", true, true, false], ["ask_person", true, false, false], ["fetch_page", true, true, true], ["browser", keyed.length === 0, true, false]], "the table, in order: what a revision may name, what a workflow's model node may, and what its call node may run");
+  assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
+  assert.deepEqual(body.tools.find((t) => t.name === "browser").missing, keyed.length ? keyed : undefined, "what browser lacks here, by name");
+  assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "fetch_page", "browser"]);
+  assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect"] });
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
   assert.equal(body.features.files.upload, false);
   assert.deepEqual(body.regions, [{ id: "local", jurisdiction: null, state: "live" }]);
@@ -244,4 +248,15 @@ test("a run thinks at its effort, else its revision's thinking level, else the h
   assert.equal(thinkingOf({ AGENT_THINKING: "max" }, undefined), "max");
   assert.equal(thinkingOf({}, undefined), "medium");
   assert.equal(thinkingOf({ AGENT_THINKING: "off" }, "off"), "medium");
+});
+
+test("the tool table is closed: a name outside it is refused by name, and a tool's missing variables are named, never their values", async () => {
+  const { toolRefusal, toolsView, TOOLS } = await import("../dist/tools.js");
+  assert.ok(Object.isFrozen(TOOLS));
+  assert.equal(toolRefusal(["read", "ask_person"], {}), undefined);
+  assert.deepEqual(toolRefusal(["read", "bash", "constructor"], {}).unbound, ["bash", "constructor"], "nothing outside the table, not even a name every object has");
+  assert.deepEqual(toolRefusal(["ask_person"], {}, "nodes").unbound, ["ask_person"], "a workflow's model node cannot ask the person");
+  assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["ask_person", undefined], ["fetch_page", undefined], ["browser", ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"]]]);
+  assert.deepEqual(toolRefusal(["fetch_page", "read"], {}, "calls").unbound, ["read"], "a call node runs only a tool the table gives an effect");
+  assert.deepEqual(toolRefusal(["browser"], { BROWSERBASE_API_KEY: "fake-test-key" }).missing, { browser: ["BROWSERBASE_PROJECT_ID"] });
 });

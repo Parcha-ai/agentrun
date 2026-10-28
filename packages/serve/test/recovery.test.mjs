@@ -2,12 +2,13 @@
 // still replay, and a carry back that a busy home put off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, flowAgent, follow, scratch, storeRun } from "./support.mjs";
+import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -29,7 +30,8 @@ async function serverProcess(data) {
     await sleep(50);
   }
   const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
-  return { child, api: client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY")) };
+  // The banner prints the token only when this start made it; a later start on the same directory names its file.
+  return { child, api: client(value("AGENTRUN_BASE_URL"), (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
 
 /** Start a run of a new agent in a server process, wait until it is working, then kill the server with SIGKILL. */
@@ -143,7 +145,8 @@ test("a run store still locked when the next server reads it is read again once 
 /** A run that answered and released, shown to the next server as still running under a stand-in process that stays
  *  alive: what a server adopts when the run's process outlived the server before it. `release()` then writes the run's
  *  released record, still naming the live stand-in. */
-async function adoptedStandIn(t) {
+/** `script`: what the stand-in process runs (by default, nothing but staying alive), given `args`. */
+async function adoptedStandIn(t, script = "setInterval(() => {}, 1000)", env = {}) {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await sleep(2_500);
   process.kill(pid, "SIGTERM");
@@ -153,7 +156,7 @@ async function adoptedStandIn(t) {
   }
   const file = join(data, "runs", runId, "run.json");
   const released = JSON.parse(await readFile(file, "utf8"));
-  const standIn = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const standIn = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, ...env } });
   t.after(() => standIn.kill("SIGKILL"));
   const holder = { ...released.holder, pid: standIn.pid, serve: "http://127.0.0.1:9" };
   // Whole, through a temporary file and a rename, as a run writes it: the server reads run.json every 500 ms, and a
@@ -277,6 +280,27 @@ test("an adopted run whose process lives on 30 s after it released is read anywa
   assert.ok(lines.some((line) => line.includes(runId) && line.includes("has not exited; reading its store anyway")));
 });
 
+test("a start that needs the place of a cancelled run whose adopted process will not exit waits for it, and still answers by its deadline", { timeout: 120_000 }, async (t) => {
+  // An orphan no SIGKILL timer reaches, and which ignores SIGTERM: it holds its place for as long as it lives. It says
+  // when its SIGTERM is set, so the cancel never reaches it first.
+  const ready = join(await scratch(t), "ready");
+  const { data, runId } = await adoptedStandIn(t, "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.env.READY_FILE, ''); setInterval(() => {}, 1000)", { READY_FILE: ready });
+  for (let i = 0; !existsSync(ready); i++) {
+    assert.ok(i < 200, "the stand-in sets its SIGTERM");
+    await sleep(50);
+  }
+  // drainTimeout 2s: a start waits up to the drain, the kill's second and one more for a leaving run's place.
+  const api = await adopting(t, data, runId, { maxRuns: 1, drainTimeout: "2s" });
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  const asked = Date.now();
+  const answer = await Promise.race([api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } }), sleep(15_000).then(() => "still waiting")]);
+  const waited = Date.now() - asked;
+  assert.notEqual(answer, "still waiting", "the start answered, never waiting on a process that will not go");
+  assert.equal(answer.status, 429, JSON.stringify(answer.body));
+  assert.ok(waited >= 3_000, `it waited for the place being given back: ${waited} ms`);
+  assert.ok(waited < 8_000, `and answered by its deadline, never hanging on a process that will not go: ${waited} ms`);
+});
+
 test("Idempotency-Key answers outlive a restart for the retention capabilities state", async (t) => {
   const data = join(await scratch(t), "agents");
   const one = await startServe({ data, port: 0, faux: FAUX });
@@ -337,4 +361,144 @@ test("one failed save of the kept keys neither fails its create nor stops the sa
   assert.deepEqual(slots.sort(), ["save-1", "save-2"], "the next save lands, and carries the key the failed one missed");
   const replay = await api("POST", "/agents", agent("save-a"), { "idempotency-key": "save-1" });
   assert.equal(replay.headers.get("idempotent-replayed"), "true");
+});
+
+/** Servers that start through `start` are closed before the test's scratch directory goes: t.after hooks run in the
+ *  order they were added, and this one is added first. On a failure, a server whose runs still work would otherwise
+ *  outlive its directory and keep the file from ending. */
+function servers(t) {
+  const open = new Set();
+  t.after(() => Promise.all([...open].map((server) => server.close())));
+  return async (options) => {
+    const server = await startServe(options);
+    open.add(server);
+    return { ...server, close: () => (open.delete(server), server.close()) };
+  };
+}
+
+/** Start a slow run of a new agent `id`, wait until its turn works, and stop it. */
+async function stopWhileWorking(api, id) {
+  const { run_id } = await startRun(api, id, "Take your time.");
+  await untilState(api, run_id, ["working", "working"]);
+  assert.equal((await api("POST", `/runs/${run_id}/stop`)).body.stopped, true);
+  await follow(api, run_id, ["input_required"]);
+  return run_id;
+}
+
+const stateOf = async (api, runId) => {
+  const { body } = await api("GET", `/runs/${runId}`);
+  return [body.status, body.state];
+};
+
+async function untilState(api, runId, want, tries = 200) {
+  for (let i = 0; ; i++) {
+    const now = await stateOf(api, runId);
+    if (now.join() === want.join()) return;
+    assert.ok(i < tries, `the run reaches ${want.join("/")}: last ${now.join("/")}`);
+    await sleep(50);
+  }
+}
+
+test("a stopped run is still input_required and idle after a restart that ended its process: a follow-up goes on, a cancel cancels", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  const one = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const first = client(one.baseUrl, one.token);
+  const followed = await stopWhileWorking(first, "slow");
+  const cancelled = await stopWhileWorking(first, "slower");
+  const { run_id: asked } = await startRun(first, "regions", "Pick a region.", { tools: ["ask_person"] });
+  await follow(first, asked, ["input_required"]);
+  await one.close();
+  const two = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(two.baseUrl, two.token);
+  assert.deepEqual(await stateOf(api, followed), ["input_required", "idle"]);
+  assert.deepEqual(await stateOf(api, cancelled), ["input_required", "idle"]);
+  assert.deepEqual(await stateOf(api, asked), ["input_required", "waiting"], "a run that asks still waits");
+  const next = await api("POST", `/runs/${followed}/messages`, { content: "go on" });
+  assert.equal(next.body.mode, "follow_up");
+  await follow(api, followed, ["completed"]);
+  assert.equal((await api("GET", `/runs/${followed}`)).body.result.final_answer, "On go on: done.");
+  assert.equal((await api("POST", `/runs/${cancelled}/cancel`)).status, 202);
+  await follow(api, cancelled, ["cancelled"]);
+  assert.equal(storeRun(data, cancelled).state, "stopped");
+});
+
+test("a stopped run whose live process the next server adopts is input_required and idle; a follow-up after that is no longer stopped", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  const crash = async (server, runId) => {
+    server.child.kill("SIGKILL");
+    await new Promise((resolve) => server.child.once("exit", resolve));
+    const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+    assert.ok(alive(holder.pid), "the run's process outlived its server");
+    t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  };
+  const adopted = async (api, runId) => {
+    for (let i = 0; (await stateOf(api, runId))[0] === "queued"; i++) {
+      assert.ok(i < 200, "the adopted run's rows arrive");
+      await sleep(50);
+    }
+    return stateOf(api, runId);
+  };
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  const runId = await stopWhileWorking(first.api, "slow");
+  await crash(first, runId);
+  const second = await serverProcess(data);
+  t.after(() => second.child.kill("SIGKILL"));
+  assert.deepEqual(await adopted(second.api, runId), ["input_required", "idle"]);
+  assert.equal((await second.api("POST", `/runs/${runId}/messages`, { content: "Take your time again." })).body.mode, "follow_up");
+  await untilState(second.api, runId, ["working", "working"]);
+  await crash(second, runId);
+  const third = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(third.baseUrl, third.token);
+  assert.deepEqual(await adopted(api, runId), ["working", "working"], "the follow-up ended the stop");
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  await follow(api, runId, ["cancelled"]);
+});
+
+test("a reply that answers only once its turn is stopped leaves the run stopped, before and after a restart; a follow-up completes it", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  const one = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const first = client(one.baseUrl, one.token);
+  const { run_id } = await startRun(first, "late", "Answer when stopped.");
+  await untilState(first, run_id, ["working", "working"]);
+  assert.equal((await first("POST", `/runs/${run_id}/stop`)).body.stopped, true);
+  const stopped = await follow(first, run_id, ["input_required"]);
+  assert.equal(stopped.last.state, "idle");
+  // pi-ai ends a reply that resolves after its abort as an aborted message, which leaves no row; were it to keep the
+  // answer, this run would be the one decide() must not complete.
+  assert.deepEqual(stopped.rows.filter((r) => r.kind === "final_answer" || r.kind === "text_block"), []);
+  await one.close();
+  const two = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(two.baseUrl, two.token);
+  assert.deepEqual(await stateOf(api, run_id), ["input_required", "idle"]);
+  assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
+  await follow(api, run_id, ["completed"]);
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+});
+
+test("a stop saved before its abort reached the run is finished by the next server: the adopted turn is aborted, so a follow-up runs at once", { timeout: 60_000 }, async (t) => {
+  const start = servers(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serverProcess(data);
+  t.after(() => first.child.kill("SIGKILL"));
+  const { run_id } = await startRun(first.api, "slow", "Take your time.");
+  await untilState(first.api, run_id, ["working", "working"]);
+  first.child.kill("SIGKILL");
+  await new Promise((resolve) => first.child.once("exit", resolve));
+  const { holder } = JSON.parse(await readFile(join(data, "runs", run_id, "run.json"), "utf8"));
+  assert.ok(alive(holder.pid), "the run's process outlived its server");
+  t.after(() => alive(holder.pid) && process.kill(holder.pid, "SIGKILL"));
+  // The server died after it saved the stop and before its abort reached the run: the turn still works.
+  const meta = join(data, "runs", run_id, "serve.json");
+  await writeFile(meta, `${JSON.stringify({ ...JSON.parse(await readFile(meta, "utf8")), stopped_after: 1 })}\n`);
+  const next = await start({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  const api = client(next.baseUrl, next.token);
+  await untilState(api, run_id, ["input_required", "idle"]);
+  // Behind a turn still running (60 s), the follow-up would wait past follow's 30 s.
+  assert.equal((await api("POST", `/runs/${run_id}/messages`, { content: "go on" })).body.mode, "follow_up");
+  await follow(api, run_id, ["completed"], { deadlineMs: 20_000 });
+  assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
 });

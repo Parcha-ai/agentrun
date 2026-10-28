@@ -2,7 +2,7 @@
 // orphan, and a crash-looping run would pile them up. The pinned binary, hosted by a separate node process that stops
 // mid-turn (SIGKILL, so no abort or close runs); then its children are looked for.
 //
-// Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing or different binary fails.
+// Linux only. Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing or different binary fails.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
@@ -15,7 +15,8 @@ import { verifyCodexBinary } from '../dist/verify.js';
 
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;
-const skip = problem && process.env.AGENTRUN_CODEX_REQUIRE_BINARY !== '1' ? problem : false;
+// The process table is read from /proc, which only Linux has.
+const skip = process.platform !== 'linux' ? 'the orphan checks read /proc, which only Linux has' : problem && process.env.AGENTRUN_CODEX_REQUIRE_BINARY !== '1' ? problem : false;
 const PARENT = fileURLToPath(new URL('./orphan-parent.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-orphan-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));

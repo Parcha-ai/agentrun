@@ -9,16 +9,20 @@ import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore } from "./types.js";
+import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
-export type HarnessRunner = (request: NodeRequest) => Promise<unknown>;
+/** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
+ *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
+ *  `drainMs`, on an adapter that can drain), and then it stops, failing `aborted`; its session resumes from its records
+ *  when the node runs again. A node started after `stop` fails `aborted` at once. Resolves once every node has stopped. */
+export type HarnessRunner = ((request: NodeRequest) => Promise<unknown>) & { stop(options?: { drainMs?: number }): Promise<void> };
 
 /** The tool the runner injects; a host tool may not take its name. */
 export const SUBMIT_TOOL = "submit";
 /** The records the runner keeps beside the adapter's own, in each session. */
 /** `request` is written before a paid request leaves, `turn` when it has answered with its usage: a request a crash cut off
  *  keeps its `request` and has no `turn`. */
-export const RUNNER_RECORDS = { request: "runner.request", turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
+export const RUNNER_RECORDS = { request: "runner.request", response: "runner.response", turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
 
 /** What the host is asked before each paid request. A `refuse` ends the node, final. */
 export type BeforeRequest = (request: {
@@ -27,6 +31,10 @@ export type BeforeRequest = (request: {
   turn: number; maxTurns: number | null;
   /** The node's `budget_usd`, if it set one, and what its session has spent so far (null when a price was unknown). */
   budgetUsd?: number; spentUsd: number | null;
+  /** This session's paid requests admitted and not yet answered (in this process), oldest first: a budget holds each
+   *  one's worst case until it answers, since `spentUsd` counts answered requests only. Requests are admitted one at a
+   *  time, so each check sees every request admitted before it. */
+  inFlight: readonly { turn: number; model: string }[];
 }) => void | { refuse: string } | Promise<void | { refuse: string }>;
 
 export interface HarnessRunnerOptions {
@@ -63,6 +71,175 @@ const positive = (value: number, name: string): number => {
  *  refused answer, a misconfigured model) would be sent turns forever, on microtasks no timer can interrupt. */
 export const NO_PROGRESS_TURNS = 3;
 
+/** What a paid request tells a host, beside its session's key and label. */
+export type ModelPortEvent = { type: "request_start"; turn: number; model: string } | { type: "request_end"; turn: number; usage: ModelUsage };
+
+export interface ModelPortOptions {
+  /** The session's key: what `beforeRequest` and every event carry. */
+  key: string;
+  label?: string;
+  executionPath?: string;
+  /** The most paid requests (turns) the session may make in this attempt; null (the default) for no limit. */
+  maxTurns?: number | null;
+  budgetUsd?: number;
+  /** Asked before every paid request; a `refuse` ends the attempt. */
+  beforeRequest?: BeforeRequest;
+  onEvent?: (event: ModelPortEvent & { key: string; label: string; executionPath?: string }) => void;
+  /** The session's records, as already read (default: read from the writer). */
+  records?: readonly SessionRecord[];
+  /** How a record is written (default: the writer's append, which a newer open fences). */
+  append?: (records: SessionRecord[]) => Promise<void>;
+  /** The attempt has stopped: the error a new paid request is refused with. */
+  stopped?: () => Error | undefined;
+  /** A pause is draining the attempt: the error a new paid request is refused with, while the attempt itself goes on. A
+   *  request is refused if the pause began before its record is written, even while the host's check of it was running. */
+  draining?: () => Error | undefined;
+  /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
+  stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string) => Error;
+}
+
+/** A session's booking of paid model requests: the adapter's model port, and what it has counted. */
+export interface ModelBooking {
+  /** The port the adapter's session reports every paid request to (`SessionIO.models`). */
+  readonly models: ModelPort;
+  /** Paid requests that left in this session, one a crash cut off included. */
+  turns(): number;
+  /** What they cost; null once one's price is unknown. */
+  spentUsd(): number | null;
+  /** Books, once, each paid request a crash cut off (a `runner.request` with no `runner.turn`): a `runner.turn` marked
+   *  `cut` at an unknown price, and a `request_end` saying so. A booked request is answered, so this is idempotent.
+   *  Call it before the session sends anything. */
+  bookCut(): Promise<void>;
+}
+
+/** The runner's booking of paid model requests, for a host that drives an adapter session itself (a chat run): the same
+ *  records (`runner.request` before a request leaves, `runner.turn` with its cost when it answers), the same turn limit
+ *  and `beforeRequest`, the same events. `createHarnessRunner` is built on it. */
+export async function modelPortFor(writer: SessionWriter, options: ModelPortOptions): Promise<ModelBooking> {
+  return bookingFor(writer, { ...options, records: options.records ?? (await writer.read()) });
+}
+
+function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records: readonly SessionRecord[] }): ModelBooking {
+  const node = { key: options.key, label: options.label ?? options.key, ...(options.executionPath === undefined ? {} : { executionPath: options.executionPath }) };
+  const limit = options.maxTurns ?? null;
+  const append = options.append ?? ((records: SessionRecord[]) => writer.append(records));
+  const emit = (event: ModelPortEvent) => options.onEvent?.({ ...event, ...node });
+  // A turn is a paid request that left: counted from the records written before each one left, so a request a crash cut
+  // off still counts against the turn cap. What it cost is unknown, so the session's spend is too from then on.
+  const inherited = options.records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r, i) => (r.data as { turn?: number }).turn ?? i + 1);
+  let turns = inherited.length;
+  // Which of them were answered: each runner.turn names its own turn (one written before turns were named answers the
+  // earliest still open, as answers then came in order).
+  const answered = new Set<number>();
+  let spentUsd: number | null = 0;
+  for (const r of options.records) {
+    if (r.kind !== RUNNER_RECORDS.turn) continue;
+    const data = r.data as { turn?: number; usd?: number | null };
+    answered.add(data.turn ?? inherited.find((t) => !answered.has(t)) ?? 0);
+    spentUsd = spentUsd === null || data.usd === null ? null : spentUsd + (data.usd ?? 0);
+  }
+  if (inherited.some((t) => !answered.has(t))) spentUsd = null;
+  // The ids each request's response gave it, kept as its headers arrived: a request cut off after them reached the provider.
+  const responses = new Map<number, Record<string, string>>();
+  for (const r of options.records) {
+    if (r.kind !== RUNNER_RECORDS.response) continue;
+    const data = r.data as { turn?: number; providerIds?: Record<string, string> };
+    if (typeof data.turn === "number" && data.providerIds) responses.set(data.turn, data.providerIds);
+  }
+  // This process's requests in flight, oldest first: the turn each was admitted as, and its model.
+  const open: { turn: number; model: string }[] = [];
+  // Admissions run one at a time (the turn limit, the host's check and the durable write), so two requests asked for at
+  // once can't both pass a limit only one fits; the requests themselves still run side by side once admitted.
+  let admitting: Promise<unknown> = Promise.resolve();
+  // A paid request whose cost couldn't be recorded stops the booking itself, whether or not the host gave it a stop.
+  let failed: Error | undefined;
+  const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
+    options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
+  const admit = async (model: string): Promise<ModelTicket> => {
+    const stopped = options.stopped?.() ?? failed;
+    if (stopped) throw stopped;
+    const pausing = options.draining?.();
+    if (pausing) throw pausing;
+    if (limit !== null && turns >= limit) throw end("turn_limit");
+    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })) });
+    if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
+    // A stop or a pause that came while the host was checking: nothing was written for this request, so it is refused, not
+    // sent. After the write below it is committed (refusing it then would leave a recorded request that was never sent).
+    const late = options.stopped?.() ?? failed ?? options.draining?.();
+    if (late) throw late;
+    // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
+    // run one at a time), so a write that fails refuses the request and costs no turn.
+    const turn = turns + 1;
+    await append([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
+    turns = turn;
+    open.push({ turn, model });
+    emit({ type: "request_start", turn, model });
+    return { turn };
+  };
+  const models: ModelPort = {
+    beforeRequest: ({ model }: { model: string }) => {
+      const admitted = admitting.then(() => admit(model));
+      admitting = admitted.catch(() => {});
+      return admitted;
+    },
+    responded: async (ids: Record<string, string>, ticket?: ModelTicket) => {
+      const turn = ticket?.turn ?? open[0]?.turn ?? turns;
+      await append([{ kind: RUNNER_RECORDS.response, data: { turn, providerIds: ids } }]);
+    },
+    afterRequest: async (usage: ModelUsage, ticket?: ModelTicket) => {
+      // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
+      const turn = ticket?.turn ?? open[0]?.turn ?? turns;
+      const at = open.findIndex((f) => f.turn === turn);
+      if (at >= 0) open.splice(at, 1);
+      spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
+      try {
+        await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }]);
+      } catch (error) {
+        // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
+        if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        throw error;
+      }
+      answered.add(turn);
+      emit({ type: "request_end", turn, usage });
+    },
+  };
+  // One booking of the cut requests at a time: a call made while one is writing waits for it, never books them again.
+  let cutting: Promise<void> | undefined;
+  const bookCut = async () => {
+    // A paid request a crash cut off kept its runner.request and has no runner.turn: the provider may have billed it.
+    // Each is booked once, as cut, at an unknown price, and the host is told as for any answered request, so its ledger
+    // shows the possible spend instead of nothing. Booked, it is answered: a later attempt never books it again.
+    // Only requests an earlier process admitted: one this process has in flight is not cut.
+    const numbers = inherited.filter((t) => !answered.has(t));
+    if (numbers.length === 0) return;
+    // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
+    // still have reached the provider before any answer; both are booked at an unknown price.
+    const cutOf = (turn: number): SessionRecord["data"] => {
+      const providerIds = responses.get(turn);
+      return providerIds ? { usd: null, cut: true, turn, providerIds } : { usd: null, cut: true, turn };
+    };
+    await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: cutOf(turn) })));
+    for (const turn of numbers) answered.add(turn);
+    spentUsd = null;
+    for (const turn of numbers) {
+      const providerIds = responses.get(turn);
+      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(providerIds ? { providerIds } : {}) } });
+    }
+  };
+  return {
+    models,
+    turns: () => turns,
+    spentUsd: () => spentUsd,
+    bookCut() {
+      cutting ??= bookCut().catch((error) => {
+        cutting = undefined;
+        throw error;
+      });
+      return cutting;
+    },
+  };
+}
+
 const NUDGE = "You finished without an accepted submission. Call submit with the complete result; plain text does not deliver it.";
 
 export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunnerOptions): HarnessRunner {
@@ -76,8 +253,11 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     registered.set(tool.name, tool);
   }
   const store = options.store;
+  /** The nodes running now, each by how it is paused; and whether the runner was stopped. */
+  const running = new Map<Promise<unknown>, (drainMs: number) => Promise<void>>();
+  let halted = false;
 
-  return async (request) => {
+  const runNode = async (request: NodeRequest, pause: (drain: (drainMs: number) => Promise<void>) => void): Promise<unknown> => {
     // Without a step there is no durable identity: a fresh session of the runner's own, never one derived from the
     // label, which map items and loops repeat.
     const key = request.step ? `step:${request.step.sessionId}` : `call:${randomUUID()}`;
@@ -86,7 +266,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const refuse = (message: string, turns = 0, submissions = 0) => new HarnessRunError("refused", turns, submissions, { message });
 
     const signals = [options.signal, request.signal].filter((s): s is AbortSignal => Boolean(s));
-    if (signals.some((s) => s.aborted)) throw new HarnessRunError("aborted", 0, 0);
+    if (halted || signals.some((s) => s.aborted)) throw new HarnessRunError("aborted", 0, 0);
     if (request.maxTurns !== undefined) {
       positive(request.maxTurns, "maxTurns");
       if (maxTurns !== null && request.maxTurns > maxTurns) throw refuse(`Node "${request.label}" asks max_turns ${request.maxTurns}, above this host's cap of ${maxTurns} turns`);
@@ -107,21 +287,22 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const validator = Compile(request.schema as never);
     const parameters = submitParameters(request.schema);
     const envelope = Compile(parameters as never);
-    // A turn is a paid request that left: counted from the records written before each one left, so a request a crash cut
-    // off still counts against the turn cap. What it cost is unknown, so the session's spend is too from then on.
-    let turns = earlier.filter((r) => r.kind === RUNNER_RECORDS.request).length;
     let submissions = earlier.filter((r) => r.kind === RUNNER_RECORDS.submit).length;
-    const answered = earlier.filter((r) => r.kind === RUNNER_RECORDS.turn);
-    let spentUsd: number | null = answered.length < turns ? null : answered.reduce<number | null>((sum, r) => {
-      const usd = (r.data as { usd?: number | null }).usd;
-      return sum === null || usd === null ? null : sum + (usd ?? 0);
-    }, 0);
+    // The session's paid requests, counted and booked by its model port (modelPortFor), made once `append` exists below.
+    let booking!: ModelBooking;
+    const turnsSoFar = () => booking?.turns() ?? 0;
     let accepted = false;
     let submission: unknown;
     let lastTool: string | undefined;
     let stopped: HarnessRunError | undefined;
+    // A pause in progress: nothing new starts, and the node stops once its session has drained.
+    let draining = false;
+    // Calls the session announced (tool_start) before the pause: they are in flight, not new, and run on through a drain.
+    // A stop with no drain (drainMs 0) lets nothing run on, announced or not.
+    const announced = new Set<string>();
+    let immediate = false;
     const failure = (reason: HarnessRunError["reason"], message?: string) =>
-      new HarnessRunError(reason, turns, submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
+      new HarnessRunError(reason, turnsSoFar(), submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
 
     const controller = new AbortController();
     let rejectStopped!: (error: unknown) => void;
@@ -143,6 +324,15 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         throw error;
       }
     };
+    booking = bookingFor(writer, {
+      ...node, maxTurns: limit, records: earlier, append,
+      ...(request.budgetUsd === undefined ? {} : { budgetUsd: request.budgetUsd }),
+      ...(options.beforeRequest ? { beforeRequest: options.beforeRequest } : {}),
+      onEvent: (event) => emit(event),
+      stopped: () => stopped,
+      draining: () => (draining ? failure("aborted", "harness node pausing: no new paid request") : undefined),
+      stop: (reason, message) => { stop(failure(reason, message)); return stopped!; },
+    });
 
     const submit: HostTool = {
       name: SUBMIT_TOOL,
@@ -151,7 +341,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       replay: "safe",
       async call(args) {
         if (accepted) return { text: "Already accepted; end your turn." };
-        if (stopped) return { text: "This session has stopped.", isError: true };
+        // A stop with no drain takes no answer, though one inside a drain is kept (it is the end of a paid response).
+        if (stopped || (draining && immediate)) return { text: "This session has stopped.", isError: true };
         submissions += 1;
         await append([{ kind: RUNNER_RECORDS.submit, data: { n: submissions } }]);
         const candidate = (args as { value?: unknown } | null)?.value;
@@ -179,7 +370,10 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...tool,
       call: (args, context) => {
         if (accepted || stopped) return Promise.reject(new Error("the session has stopped; tool execution refused"));
-        return tool.call(args, context);
+        // A stop with no drain runs nothing more; a drain lets a call announced before it run on.
+        if (draining && immediate) return Promise.reject(new Error("the session has stopped; this call was not run"));
+        if (draining && !announced.has(context.callId)) return Promise.reject(new Error("the session is pausing; this call was not run"));
+        return tool.call(args, options.sessionDir ? { ...context, sessionDir: options.sessionDir } : context);
       },
     });
 
@@ -199,35 +393,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...adapter.check(spec),
     ];
     if (problems.length) throw refuse(problems.join("; "));
-    const models = {
-      beforeRequest: async ({ model }: { model: string }) => {
-        if (stopped) throw stopped;
-        if (limit !== null && turns >= limit) {
-          stop(failure("turn_limit"));
-          throw stopped;
-        }
-        const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(request.budgetUsd === undefined ? {} : { budgetUsd: request.budgetUsd }), spentUsd });
-        if (verdict && "refuse" in verdict) {
-          stop(failure("refused", verdict.refuse));
-          throw stopped;
-        }
-        // Durable before the request leaves: admitted, then sent.
-        await append([{ kind: RUNNER_RECORDS.request, data: { turn: turns + 1, model } }]);
-        turns += 1;
-        emit({ type: "request_start", turn: turns, model });
-      },
-      afterRequest: async (usage: ModelUsage) => {
-        spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
-        try {
-          await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
-        } catch (error) {
-          // A paid request whose cost can't be kept: the node stops, saying so, rather than spend on uncounted.
-          if (!stopped) stop(failure("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`));
-          throw error;
-        }
-        emit({ type: "request_end", turn: turns, usage });
-      },
-    };
+    const models = booking.models;
 
     let session: Awaited<ReturnType<AgentAdapter["open"]>> | undefined;
     let opening: Promise<Awaited<ReturnType<AgentAdapter["open"]>>> | undefined;
@@ -236,7 +402,22 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     // A stop that landed while the store was read: a listener added to an aborted signal never fires.
     if (signals.some((s) => s.aborted)) onAbort();
     const timer = timeoutMs === null ? undefined : setTimeout(() => stop(failure("timeout")), timeoutMs);
+    // A pause: nothing new starts, the session drains its calls in flight (an adapter that can't drain stops at once),
+    // then the node stops. One that arrived before this node could be paused stops it here.
+    pause(async (drainMs) => {
+      immediate = drainMs === 0;
+      draining = true;
+      if (session) await session.interrupt({ drainMs }).catch(() => {});
+      stop(failure("aborted"));
+    });
+    if (halted) {
+      draining = true;
+      stop(failure("aborted"));
+    }
     try {
+      if (stopped) throw stopped;
+      // A paid request a crash cut off is booked once, as cut, at an unknown price, before this attempt sends anything.
+      await bounded(booking.bookCut());
       if (stopped) throw stopped;
       session = await bounded(opening = adapter.open(spec, {
         writer,
@@ -244,7 +425,10 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         signal: controller.signal,
         ...(options.sessionDir ? { dir: options.sessionDir(key) } : {}),
         onEvent: (event) => {
-          if (event.type === "tool_start") lastTool = event.name.slice(0, 64);
+          if (event.type === "tool_start") {
+            lastTool = event.name.slice(0, 64);
+            if (!draining) announced.add(event.callId);
+          }
           emit(event);
         },
       }));
@@ -259,19 +443,19 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       let sends = 0;
       let idle = 0;
       const progressed = (before: number) => {
-        idle = accepted || turns > before ? 0 : idle + 1;
+        idle = accepted || turnsSoFar() > before ? 0 : idle + 1;
         if (idle >= NO_PROGRESS_TURNS && !accepted) stop(failure("no_progress", `harness node stopped: no_progress, ${idle} turns in a row made no paid request and delivered nothing`));
       };
       if (session.state === "open_turn") {
-        const before = turns;
+        const before = turnsSoFar();
         sends += 1;
         await bounded(session.recover());
         await turnOf();
         progressed(before);
       }
       let prompt = session.state === "new" ? request.user : NUDGE;
-      while (!accepted && !stopped && (limit === null || turns < limit) && sends < sendLimit) {
-        const before = turns;
+      while (!accepted && !stopped && !draining && (limit === null || turnsSoFar() < limit) && sends < sendLimit) {
+        const before = turnsSoFar();
         sends += 1;
         await bounded(session.send(prompt));
         await turnOf();
@@ -279,10 +463,11 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         prompt = NUDGE;
       }
       if (accepted) return submission;
+      if (draining) stop(failure("aborted"));
       if (stopped) throw stopped;
-      if (limit !== null && turns >= limit) throw failure("turn_limit");
+      if (limit !== null && turnsSoFar() >= limit) throw failure("turn_limit");
       // The sends ran out first: say so, since the turns reported are below the limit.
-      throw failure("turn_limit", `harness node stopped: turn_limit, ${sends} turns sent (the cap on sends) made ${turns} paid requests and ${submissions} submissions`);
+      throw failure("turn_limit", `harness node stopped: turn_limit, ${sends} turns sent (the cap on sends) made ${turnsSoFar()} paid requests and ${submissions} submissions`);
     } catch (error) {
       if (accepted) return submission;
       if (stopped) throw stopped;
@@ -303,4 +488,22 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       }
     }
   };
+
+  const run = (request: NodeRequest): Promise<unknown> => {
+    let drain = async (_drainMs: number) => {};
+    const node = runNode(request, (pause) => { drain = pause; });
+    running.set(node, (drainMs) => drain(drainMs));
+    void node.then(() => running.delete(node), () => running.delete(node));
+    return node;
+  };
+  return Object.assign(run, {
+    async stop(stopOptions: { drainMs?: number } = {}) {
+      const drainMs = stopOptions.drainMs ?? 0;
+      if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("drainMs must be a non-negative number of milliseconds");
+      halted = true;
+      const nodes = [...running];
+      await Promise.all(nodes.map(([, drain]) => drain(drainMs)));
+      await Promise.allSettled(nodes.map(([node]) => node));
+    },
+  });
 }

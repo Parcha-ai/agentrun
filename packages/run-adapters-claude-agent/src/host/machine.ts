@@ -41,9 +41,13 @@ export interface LocalMachineOptions {
   proxy: {
     hooks: ModelProxyHooks;
     tools: readonly string[];
+    /** The CLI's own tools the session has (`Skill`, with skills), offered beside its tools. */
+    builtins?: readonly string[];
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
     auth?: AnthropicPolicyOptions["auth"];
+    /** Headers the host adds to every forwarded request (a gateway's spend tags). */
+    headers?: ModelProxyOptions["headers"];
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
@@ -150,6 +154,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         model: route.models.model,
         ...(route.models.smallModel ? { smallModel: route.models.smallModel } : {}),
         tools: options.proxy.tools,
+        ...(options.proxy.builtins?.length ? { builtins: options.proxy.builtins } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
         onThinkingDisabled: ({ model: main }) => options.proxy.log?.("claude-agent: thinking.disabled", { model: main }),
@@ -159,6 +164,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(options.proxy.price ? { price: options.proxy.price } : {}),
+      ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       onResponse: ({ path, status }) => {
         if (path !== "/v1/messages/count_tokens" || counted) return;

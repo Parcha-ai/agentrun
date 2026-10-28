@@ -6,7 +6,7 @@
 // AgentRun's own SessionStore (drive.ts). Field names follow the code that calls them, so a copied file runs unchanged
 // apart from its imports. The kernel is written fresh, except two declarations matched to upstream so the copied files
 // compile against them: EffectRecord here and EffectFailure in errors.ts.
-import type { JsonValue, SessionWriter } from "../types.js";
+import type { JsonValue, SessionWriter, ToolImage } from "../types.js";
 
 export type ReplayPolicy = "safe" | "never";
 export type SubmissionKind = "prompt" | "steer" | "followUp" | "withdraw";
@@ -119,7 +119,15 @@ export interface HostTool<Input = any> {
   /** Where the tool must run, and what it needs: passed to the effect's intent. */
   requires?: string;
   needs?: string[];
-  execute(input: Input, io: HostToolIO): Promise<string>;
+  /** Its answer: the text, or the text with the images it shows. Recorded as the call's outcome, so a call answered
+   *  from the record answers with the same images. */
+  execute(input: Input, io: HostToolIO): Promise<string | ToolOutput>;
+}
+
+/** A tool's answer with images. */
+export interface ToolOutput {
+  text: string;
+  images?: readonly ToolImage[];
 }
 
 export interface HostToolIO {
