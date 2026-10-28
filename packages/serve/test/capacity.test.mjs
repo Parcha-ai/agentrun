@@ -233,9 +233,11 @@ test("compose and render.yaml check /v2/health", async () => {
 
 test("a cancel settles a run whose carry back cannot be written: cancelled, final, priced; the store gets it once it can", { skip: process.getuid?.() === 0 && "root writes a directory of mode 555", timeout: 90_000 }, async (t) => {
   const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [50] }, settleRetryMs: 200 });
-  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
-  const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: "Take your time." } });
-  await follow(api, run.run_id, ["working"]);
+  // The run's request has answered (it asked the person and waits), so its cost is known when it is cancelled. A
+  // request a cancel cuts reads unknown instead (spend-cap.test.mjs, "a run cancelled while its request answers ...").
+  assert.equal((await api("POST", "/agents", agent("busy", { tools: ["ask_person"] }))).status, 201);
+  const { body: run } = await api("POST", "/agents/busy/runs", { input: { content: "Pick a region." } });
+  await follow(api, run.run_id, ["input_required"]);
   // The store's directory turns read-only: its next write cannot make its journal, as on a full disk.
   await chmod(data, 0o555);
   try {
