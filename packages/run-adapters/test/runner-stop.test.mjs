@@ -300,7 +300,12 @@ for (const [label, stopWith] of [['stop()', (runner) => runner.stop()], ['stop({
 
 test("an immediate stop at submit's tool_start takes no answer: the node ends aborted, not delivered", async () => {
   let stopping;
-  const { adapter, outcomes } = announcing({ onSend: (call) => call('submit', 'c-submit', { value: { answer: 'too late' } }) });
+  // The adapter's interrupt waits for the submit in flight, as a session that lets its calls finish does, so only the
+  // immediate stop's own rule can refuse it (the node is not stopped yet when the submit is checked).
+  const { adapter, outcomes } = announcing({
+    onSend: (call) => call('submit', 'c-submit', { value: { answer: 'too late' } }),
+    onInterrupt: async () => { await until(() => outcomes.length >= 1, 'the submit'); return 'interrupted after the submit'; },
+  });
   const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup], onEvent: (e) => { if (e.type === 'tool_start') stopping ??= runner.stop(); } });
   const node = ask(runner).then((value) => ({ value }), (error) => ({ error }));
   await until(() => outcomes.length === 1, 'the submit');
