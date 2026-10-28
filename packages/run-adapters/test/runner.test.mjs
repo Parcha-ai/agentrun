@@ -600,3 +600,56 @@ test("the host sees the requests in flight, so a budget holds each one's worst c
   assert.deepEqual(await booking.models.beforeRequest({ model: 'main' }), { turn: 2 });
   assert.deepEqual(seen[2], []);
 });
+
+// The booking's writes can fail. Each case below is one way a failed or stalled write once let a session spend
+// uncounted, lose a turn to nothing, hang past its cancellation, or book a cut request twice.
+
+test("modelPortFor with no stop of its own: a paid request whose cost can't be recorded stops the booking, and no later request is admitted", async () => {
+  const inner = await memorySessionStore().open('chat:costfail');
+  let failTurn = true;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
+  const booking = await modelPortFor(writer, { key: 'chat:costfail' });
+  const ticket = await booking.models.beforeRequest({ model: 'm' });
+  await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
+  await assert.rejects(booking.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'model_error' && /could not be recorded/.test(e.message), 'the next paid request is refused');
+  assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
+});
+
+test("a request whose admission record can't be written is refused and costs no turn: the next one is admitted as turn 1, within a limit of 1", async () => {
+  const inner = await memorySessionStore().open('chat:reqfail');
+  let failRequest = true;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (failRequest && records.some((r) => r.kind === RUNNER_RECORDS.request)) { failRequest = false; throw new Error('write failed'); } await inner.append(records); } };
+  const booking = await modelPortFor(writer, { key: 'chat:reqfail', maxTurns: 1 });
+  await assert.rejects(booking.models.beforeRequest({ model: 'm' }), /write failed/);
+  assert.equal(booking.turns(), 0, 'the refused request is no turn');
+  assert.deepEqual(await booking.models.beforeRequest({ model: 'm' }), { turn: 1 });
+  assert.deepEqual((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => r.data.turn), [1], 'the saved turn numbers have no gap');
+});
+
+test('bookCut called twice at once books a cut request once, with one request_end', async () => {
+  const store = memorySessionStore();
+  const key = 'chat:cuttwice';
+  const first = await modelPortFor(await store.open(key), { key });
+  await first.models.beforeRequest({ model: 'm' });
+  // The next process, whose writes take a moment: both bookCut calls start before either write lands.
+  const inner = await store.open(key);
+  const writer = { key, read: () => inner.read(), append: async (records) => { await new Promise((resolve) => setTimeout(resolve, 20)); await inner.append(records); } };
+  const ends = [];
+  const second = await modelPortFor(writer, { key, onEvent: (e) => { if (e.type === 'request_end') ends.push(e.turn); } });
+  await Promise.all([second.bookCut(), second.bookCut()]);
+  assert.deepEqual((await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).map((r) => r.data.turn), [1], 'booked once');
+  assert.deepEqual(ends, [1], 'the host is told once');
+});
+
+test("a resumed node whose store stalls while booking a cut request still stops at its timeout, and opens no session", async () => {
+  const inner = memorySessionStore();
+  const key = 'step:s1';
+  // An earlier process admitted a paid request and was cut off before its answer.
+  await (await inner.open(key)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: 'm' } }]);
+  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, read: () => w.read(), append: (records) => (records.some((r) => r.data?.cut) ? new Promise(() => {}) : w.append(records)) }; } };
+  const adapter = plannedAdapter([]);
+  const started = Date.now();
+  await assert.rejects(createHarnessRunner(adapter, { store, timeoutMs: 200 })(stepRequest()), (e) => e instanceof HarnessRunError && e.reason === 'timeout');
+  assert.ok(Date.now() - started < 5_000, `stopped at its timeout (${Date.now() - started} ms)`);
+  assert.equal(adapter.opened.length, 0, 'no session was opened');
+});
