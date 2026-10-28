@@ -1,7 +1,11 @@
-// A host's sessions directory may sit inside a git repository. Codex looks for git state above its working directory and
-// writes what it finds (the branch, the commit, the remote) into its session's records, which the adapter mirrors into
-// the session store; none of a repository above the session may reach the store or the provider. The pinned binary,
+// A host's sessions directory may sit inside a git repository. None of that repository (its branch, commit or remote)
+// may reach the session's records, which the adapter mirrors into the session store, or the provider. The pinned binary,
 // through the adapter, with a scripted provider behind the session's proxy. No network.
+//
+// This passes with and without the ceiling. Codex 0.164.0 records git state in a session's metadata under `codex exec`,
+// but on the app-server path the adapter runs it records none and leaves the repository untouched. The child's
+// GIT_CEILING_DIRECTORIES (asserted in test/machine.test.mjs) keeps it that way; this test guards the outcome against a
+// Codex release that starts recording it.
 //
 // Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing or different binary fails.
 import assert from 'node:assert/strict';
