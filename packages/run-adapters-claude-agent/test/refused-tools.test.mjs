@@ -28,6 +28,8 @@ test("a tool the session doesn't have is refused by the CLI, kept in the store, 
     { tool: { name: 'mcp__browser__navigate', input: { url: 'https://example.com' } } },
     { tool: { name: 'WebFetch', input: { url: 'https://example.com', prompt: 'x' } } },
     { tool: { name: 'mcp__hands__lookup', input: { q: 'x' } } },
+    // The session's own tool answering an error: a call that ran, shown once, never as one the CLI turned down.
+    { tool: { name: 'mcp__hands__broken', input: {} } },
     { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } },
   ];
   let main = 0;
@@ -35,10 +37,12 @@ test("a tool the session doesn't have is refused by the CLI, kept in the store, 
   t.after(() => provider.close());
   const store = memorySessionStore();
   const events = [];
-  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions') });
+  const logged = [];
+  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions'), log: (message, detail) => logged.push({ message, ...detail }) });
   const lookup = { name: 'lookup', description: 'Look.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => ({ text: 'found' }) };
-  const runNode = createHarnessRunner(adapter, { store, tools: [lookup], maxTurns: 20, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
-  assert.deepEqual(await runNode({ kind: 'agent', label: 'refused', system: ['Answer.'], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['lookup'] }), { answer: 'ok' });
+  const broken = { name: 'broken', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'the backend is down', isError: true }) };
+  const runNode = createHarnessRunner(adapter, { store, tools: [lookup, broken], maxTurns: 20, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'refused', system: ['Answer.'], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['lookup', 'broken'] }), { answer: 'ok' });
 
   // Shown: each refused call is a tool call that failed, by its name, with the call id the model used.
   const ends = events.filter((e) => e.type === 'tool_end');
@@ -48,6 +52,14 @@ test("a tool the session doesn't have is refused by the CLI, kept in the store, 
     assert.ok(ends.some((e) => e.callId === start.callId && e.name === name && e.isError === true), `${name} is shown as failed`);
   }
   assert.ok(ends.some((e) => e.name === 'lookup' && e.isError === false), "the session's own tool still runs");
+  // The model's input is on the refused call's start, as it gave it.
+  assert.deepEqual(events.find((e) => e.type === 'tool_start' && e.name === 'browser_navigate')?.args, { url: 'https://example.com' });
+  // A session tool that answered an error ran: one start and one failed end, never also a turned-down call.
+  assert.deepEqual(events.filter((e) => e.name === 'broken').map((e) => [e.type, e.isError]), [['tool_start', undefined], ['tool_end', true]]);
+  // One log line per turned-down call, naming the tool and the CLI's reason; none for the tool that ran and failed.
+  const turnedDown = logged.filter((l) => /turned down a call/.test(l.message));
+  assert.deepEqual(turnedDown.map((l) => l.name), ['browser_navigate', 'mcp__browser__navigate', 'WebFetch']);
+  for (const l of turnedDown) assert.match(l.reason, new RegExp(`No such tool available: ${l.name.replace(/[$^.*+?()[\]{}|\\]/g, '\\$&')}`));
   // Kept: the CLI's refusal is in the session's store.
   const records = JSON.stringify(await Promise.all(store.keys().map((k) => store.read(k))));
   for (const name of ['browser_navigate', 'mcp__browser__navigate', 'WebFetch']) assert.ok(records.includes(`No such tool available: ${name}`), `${name}'s refusal is in the store`);
