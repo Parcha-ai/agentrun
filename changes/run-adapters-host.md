@@ -9,3 +9,4 @@ kind: feature
 - `close()` admits and sends nothing more: a request that was waiting on the runner when the proxy closed is refused and released, booked once at nothing.
 - A body's `__proto__` key is parsed as an own field; the parsed object's prototype never changes.
 - A client that reads slowly holds the provider back: the proxy reads no more of an answer until what it wrote has drained, and each wait leaves no listener behind on the response.
+- A client that leaves once it has read a successful answer's usage, while the provider still holds the stream open (Codex does, at its completion event), is booked at that usage; one that leaves before any usage is in what was read stays an unknown cost.
