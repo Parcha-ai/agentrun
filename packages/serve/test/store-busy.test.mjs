@@ -7,6 +7,7 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
 import { agent, follow, scratch, serve } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -110,4 +111,19 @@ test("an edit whose commit meets a reader of the agent store waits for it, then 
   assert.equal(answer.body.definition.instructions, "Answer briefly.");
   assert.ok(answer.took >= 900, `it waited for the reader: ${answer.took} ms`);
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the edit waited`);
+});
+
+test("the agent home's own busy (a home held past its deadline) answers 409 home_busy with retry_after_ms, never 500", async (t) => {
+  const { api } = await serve(t);
+  // The store's createAgent throws pi-durable-agent's AgentHomeError("busy"), as a home another writer holds past its
+  // deadline does: the same module the server runs.
+  const probe = await scratch(t);
+  const store = openStore(probe);
+  const proto = Object.getPrototypeOf(store);
+  store.close();
+  const createAgent = proto.createAgent;
+  proto.createAgent = function () { throw new AgentHomeError("busy", "the agent home is held by another writer"); };
+  t.after(() => void (proto.createAgent = createAgent));
+  const answer = await api("POST", "/agents", agent("held-home"));
+  assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
 });

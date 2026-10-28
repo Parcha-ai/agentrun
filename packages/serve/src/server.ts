@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
-import { agentView, Agents, etagOf, homeBusy, revisionView, sqliteBusy, type AgentEntry } from "./agents.js";
+import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
@@ -686,8 +686,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
       // A store still busy past a request's wait is home_busy, whichever read or write met it.
-      const known = error instanceof ApiError ? error : sqliteBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError) && !sqliteBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
+      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
+      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
       send(res, known.status, known.body(requestId), known.headers);
     };
     let url: URL;

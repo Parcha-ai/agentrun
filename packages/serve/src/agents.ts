@@ -36,12 +36,16 @@ export async function whenFree<T>(act: () => T | Promise<T>, delaysMs: readonly 
   }
 }
 
+/** A store another writer holds: SQLite's busy or locked, or the agent home's own `busy` (a home held past its deadline, or a
+ *  store a stopped writer left mid-write). Every answer of the server maps it the same way: home_busy. */
+export const storeBusy = (error: unknown) => sqliteBusy(error) || (error instanceof AgentHomeError && error.code === "busy");
+
 /** The answer to a request the agent store stayed busy for. */
 export const homeBusy = () => new ApiError("home_busy", "the agent store is busy with another write; try again", { retry_after_ms: 500 });
 
 /** A store error as the request's answer: a busy store is retryable, a refusal names the field it refused. */
 export function storeError(error: unknown, field = "definition"): never {
-  if (sqliteBusy(error) || (error instanceof AgentHomeError && error.code === "busy")) throw homeBusy();
+  if (storeBusy(error)) throw homeBusy();
   if (error instanceof AgentHomeError && error.code === "invalid") throw invalid([{ field, reason: "invalid", message: error.message }]);
   if (error instanceof AgentHomeError && error.code === "missing") throw new ApiError("not_found", error.message);
   if (error instanceof AgentHomeError && error.code === "stale") throw new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
