@@ -1,5 +1,6 @@
 // Structural checks of request bodies against the contract's schemas, as field issues (`422 input_invalid`).
 import { type InputIssue, invalid } from "./errors.js";
+import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -12,7 +13,7 @@ export const isObject = (value: unknown): value is Json => typeof value === "obj
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "skills", "tools"];
+const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "thinking", "harness", "skills", "tools"];
 /** Why a field a definition may have elsewhere has no place in an agent store's revision. */
 const NOT_KEPT: Record<string, string> = {
   input_schema: "The agent store keeps no input_schema: an agentic run takes {content}, and a workflow checks its input against its own schema.",
@@ -58,6 +59,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     if (d.workflow !== undefined) out.push(issue(`${at}.model`, "not_allowed", "A workflow revision keeps no model: its model nodes run on this host's default.", `Remove ${at}.model.`));
     else if (typeof d.model !== "string" || !MODEL_REF.test(d.model)) out.push(issue(`${at}.model`, "bad_format", `${at}.model is "provider/model-id"`));
   }
+  if (d.harness !== undefined && !(HARNESSES as readonly unknown[]).includes(d.harness)) out.push(issue(`${at}.harness`, "not_an_option", `${at}.harness is one of ${HARNESSES.join(", ")}`));
   if (d.thinking !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.thinking`, "not_allowed", "A workflow revision keeps no thinking level: each model node carries its own.", `Remove ${at}.thinking.`));
     else if (!(THINKING_LEVELS as readonly unknown[]).includes(d.thinking)) out.push(issue(`${at}.thinking`, "not_an_option", `${at}.thinking is one of ${THINKING_LEVELS.join(", ")}: thinking is never off`));
