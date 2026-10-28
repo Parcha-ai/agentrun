@@ -144,18 +144,21 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   // Admissions run one at a time (the turn limit, the host's check and the durable write), so two requests asked for at
   // once can't both pass a limit only one fits; the requests themselves still run side by side once admitted.
   let admitting: Promise<unknown> = Promise.resolve();
+  // A paid request whose cost couldn't be recorded stops the booking itself, whether or not the host gave it a stop.
+  let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
   const admit = async (model: string): Promise<ModelTicket> => {
-    const stopped = options.stopped?.();
+    const stopped = options.stopped?.() ?? failed;
     if (stopped) throw stopped;
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
-    // Durable before the request leaves: admitted, then sent.
+    // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
+    // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    turns = turn;
     await append([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
+    turns = turn;
     open.push({ turn, model });
     emit({ type: "request_start", turn, model });
     return { turn };
@@ -180,37 +183,46 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }]);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
-        if (!options.stopped?.()) end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
         throw error;
       }
       answered.add(turn);
       emit({ type: "request_end", turn, usage });
     },
   };
+  // One booking of the cut requests at a time: a call made while one is writing waits for it, never books them again.
+  let cutting: Promise<void> | undefined;
+  const bookCut = async () => {
+    // A paid request a crash cut off kept its runner.request and has no runner.turn: the provider may have billed it.
+    // Each is booked once, as cut, at an unknown price, and the host is told as for any answered request, so its ledger
+    // shows the possible spend instead of nothing. Booked, it is answered: a later attempt never books it again.
+    // Only requests an earlier process admitted: one this process has in flight is not cut.
+    const numbers = inherited.filter((t) => !answered.has(t));
+    if (numbers.length === 0) return;
+    // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
+    // still have reached the provider before any answer; both are booked at an unknown price.
+    const cutOf = (turn: number): SessionRecord["data"] => {
+      const providerIds = responses.get(turn);
+      return providerIds ? { usd: null, cut: true, turn, providerIds } : { usd: null, cut: true, turn };
+    };
+    await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: cutOf(turn) })));
+    for (const turn of numbers) answered.add(turn);
+    spentUsd = null;
+    for (const turn of numbers) {
+      const providerIds = responses.get(turn);
+      emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(providerIds ? { providerIds } : {}) } });
+    }
+  };
   return {
     models,
     turns: () => turns,
     spentUsd: () => spentUsd,
-    async bookCut() {
-      // A paid request a crash cut off kept its runner.request and has no runner.turn: the provider may have billed it.
-      // Each is booked once, as cut, at an unknown price, and the host is told as for any answered request, so its ledger
-      // shows the possible spend instead of nothing. Booked, it is answered: a later attempt never books it again.
-      // Only requests an earlier process admitted: one this process has in flight is not cut.
-      const numbers = inherited.filter((t) => !answered.has(t));
-      if (numbers.length === 0) return;
-      // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
-      // still have reached the provider before any answer; both are booked at an unknown price.
-      const cutOf = (turn: number): SessionRecord["data"] => {
-        const providerIds = responses.get(turn);
-        return providerIds ? { usd: null, cut: true, turn, providerIds } : { usd: null, cut: true, turn };
-      };
-      await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: cutOf(turn) })));
-      for (const turn of numbers) answered.add(turn);
-      spentUsd = null;
-      for (const turn of numbers) {
-        const providerIds = responses.get(turn);
-        emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(providerIds ? { providerIds } : {}) } });
-      }
+    bookCut() {
+      cutting ??= bookCut().catch((error) => {
+        cutting = undefined;
+        throw error;
+      });
+      return cutting;
     },
   };
 }
@@ -366,7 +378,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     try {
       if (stopped) throw stopped;
       // A paid request a crash cut off is booked once, as cut, at an unknown price, before this attempt sends anything.
-      await booking.bookCut();
+      await bounded(booking.bookCut());
+      if (stopped) throw stopped;
       session = await bounded(opening = adapter.open(spec, {
         writer,
         models,
