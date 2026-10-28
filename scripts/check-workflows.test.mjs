@@ -47,7 +47,7 @@ test('the same key in two different maps is fine', () => {
   assert.deepEqual(workflowProblems('jobs:\n  a:\n    env: { X: 1 }\n  b:\n    env: { X: 1 }\n', 'ok.yml'), []);
 });
 
-test('the script fails on a directory holding such a workflow, naming it, and passes on a clean one', () => {
+test('the script exits 1 on a directory holding such a workflow and names only that file', () => {
   const bad = join(ROOT, 'bad', '.github', 'workflows');
   mkdirSync(bad, { recursive: true });
   writeFileSync(join(bad, 'ci.yml'), TWO_ENVS);
