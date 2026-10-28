@@ -215,6 +215,26 @@ test("every archil call in the package's source is one the wrapper takes, with e
   assert.deepEqual([...new Set(taken)].sort(), [...new Set(calls.map((c) => c[0]))].sort());
 });
 
+test("every mountpoint the package's source builds is <mountRoot>/runs/<segment> under a mount root it is given", () => {
+  const files = readdirSync(SRC, { recursive: true }).map(String).filter((f) => f.endsWith(".ts"));
+  const found: string[] = [];
+  const wrong: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(join(SRC, f), "utf8");
+    // A path built on a mount root continues with runPath(...) or "runs", or is the wrapper's own .stray holding.
+    for (const m of text.matchAll(/\bjoin\(\s*([\w.]*[mM]ountRoot)\s*,\s*([^,)]+)/g)) {
+      found.push(`${f}: join(${m[1]}, ${m[2]}`);
+      if (!/^(runPath\(|"runs"$|"\.stray"$)/.test(m[2].trim())) wrong.push(`${f}: join(${m[1]}, ${m[2]}...)`);
+    }
+    // A mount root handed on is the caller's own, never one derived from it.
+    for (const m of text.matchAll(/\bmountRoot:\s*([^,}\n]+)/g)) {
+      if (/join\(|`|\+/.test(m[1])) wrong.push(`${f}: mountRoot: ${m[1].trim()}`);
+    }
+  }
+  assert.ok(found.length >= 4, `found ${found.length} paths built on a mount root`);
+  assert.deepEqual(wrong, [], "a mountpoint or mount root outside <mountRoot>/runs/<segment>");
+});
+
 // ---- the mount root is root's, so only root names entries under runs/ --------------------------------------------------
 
 /** Every verb, over the rig's paths, as the claim would call it (the cleanup verbs on the unlisted runs/r2). */
