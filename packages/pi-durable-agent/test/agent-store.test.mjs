@@ -35,6 +35,22 @@ test("a revision's id is the hash of {agent, parent, kind, body}: the same four 
   store.close();
 });
 
+test("a revision keeps the harness it names, in its body and so its id; one that names none keeps none and its id is unchanged; a harness that is not an id is refused before a write", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "H" });
+  const plain = await store.commitRevision(agent.id, A);
+  assert.equal("harness" in plain.body, false, "no harness named, none kept");
+  const claude = await store.commitRevision(agent.id, { ...A, harness: "claude-agent" });
+  assert.equal(claude.body.harness, "claude-agent");
+  assert.notEqual(claude.id, plain.id, "the harness is part of the body, so of the id");
+  assert.equal(store.readRevision(claude.id).body.harness, "claude-agent", "read back as written");
+  const flow = await store.commitRevision(agent.id, { ...WF, harness: "codex" });
+  assert.equal(flow.body.harness, "codex");
+  for (const harness of ["", "Claude", "claude agent", 3]) await assert.rejects(store.commitRevision(agent.id, { ...A, harness }), refused("invalid", /harness/), String(harness));
+  assert.equal(store.listRevisions(agent.id).length, 3);
+  store.close();
+});
+
 test("a revision is written once: the database refuses an UPDATE, and a row whose content was changed does not pass the id check", async () => {
   const dir = await scratch();
   const store = openStore(dir);
@@ -121,6 +137,30 @@ test("the reader opens the file read-only, writes nothing, and gives a run's sto
   assert.throws(() => openStoreReader(nowhere), refused("missing", /^there is no store\.sqlite in that folder$/));
   assert.throws(() => openStoreReader(nowhere), (error) => !error.message.includes(nowhere) && !error.message.includes(path.basename(dir)));
   reader.close();
+});
+
+test("busyTimeoutMs 0: a store another connection holds throws SQLite's busy error at once, never 'exists'; an id taken is still 'exists'", async () => {
+  const dir = await scratch();
+  const store = openStore(dir, { busyTimeoutMs: 0 });
+  const reader = openStoreReader(dir, { busyTimeoutMs: 0 });
+  store.createAgent({ name: "Taken", id: "taken" });
+  const holder = new DatabaseSync(path.join(dir, "store.sqlite"), { timeout: 0 });
+  holder.exec("BEGIN EXCLUSIVE");
+  const busy = (error) => error?.code === "ERR_SQLITE_ERROR" && (error.errcode & 0xff) === 5;
+  const from = Date.now();
+  assert.throws(() => store.createAgent({ name: "B" }), busy);
+  assert.throws(() => reader.listAgents(), busy);
+  assert.ok(Date.now() - from < 1_000, `it threw at once: ${Date.now() - from} ms`);
+  holder.exec("ROLLBACK");
+  holder.close();
+  assert.equal(store.createAgent({ name: "B", id: "b" }).id, "b");
+  assert.throws(() => store.createAgent({ name: "Taken", id: "taken" }), refused("exists"));
+  for (const busyTimeoutMs of [-1, 1.5, "0"]) {
+    assert.throws(() => openStore(dir, { busyTimeoutMs }), refused("invalid"));
+    assert.throws(() => openStoreReader(dir, { busyTimeoutMs }), refused("invalid"));
+  }
+  reader.close();
+  store.close();
 });
 
 test("importHome turns a beta.24 home into one agent with one agentic revision, set as current; twice is the same revision", async () => {

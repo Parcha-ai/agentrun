@@ -42,7 +42,7 @@ import {
   type RunRecord,
 } from "../src/status.ts";
 import { openArchilStore, StoreFencedError } from "../src/store.ts";
-import { entryCommitter, FaultyDatabase, SQLITE_IOERR_FSYNC, sqliteError } from "./_support.ts";
+import { entryCommitter, FaultyDatabase, sessionFailed, SQLITE_IOERR_FSYNC, sqliteError } from "./_support.ts";
 import { alive, ctx, fakeClaim, killQuietly, localClaimDir, localRef, removeWhileWritten, scratchRoot, scriptedHarness, scriptedReply, startCommand, startCommandIn, waitGone, type FakeClaim } from "./_run-support.ts";
 
 const SQLITE_ERROR = 1;
@@ -898,12 +898,16 @@ describe("fences during the run", () => {
       };
       const t = setup(dir.root, { options: { persist, lease: { heartbeatMs: 20, expiryMs: 60_000, marginMs: 1_000, checkMs: 10 } } });
       const run = await t.open();
+      const root = await run.harness.root(ctx, { agent: t.agent });
       pid = await startCommand(run, t.agent);
       fail = true;
       await until(() => t.fenced.length === 1);
       assert.ok(t.fenced[0] instanceof FencedError);
       assert.equal(exitCodeFor(t.fenced[0]), 75);
       assert.match(t.fenced[0].message, /run\.json/);
+      // The fence itself, or the Session a refused commit of the run's own work already failed with it.
+      const refused = (error: unknown) => error === t.fenced[0] || sessionFailed(error);
+      await assert.rejects(run.harness.commit((tx) => tx.appendEntry(root.id, { kind: "after.fence" }), ctx), refused, "the store takes no commit after the fence");
       assert.deepEqual(t.claim.log.slice(-3), ["markFenced", "cleanup", "onFenced"], "commands are killed before onFenced");
       assert.ok(await waitGone(pid), "the command died");
       assert.equal(run.fenced, true);

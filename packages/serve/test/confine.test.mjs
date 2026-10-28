@@ -33,8 +33,8 @@ async function probed(api, data, agent, probe, workflow = false) {
   return { runId: run.body.run_id, done: async () => (await follow(api, run.body.run_id, ["completed"]), answers(data, run.body.run_id)) };
 }
 
-test("read, write and edit reach nothing outside work/: the tokens, the store, another run, /proc, a planted link, the data directory, /tmp, and anything under the agent's directory (its learning repository, the clones of it, and the per-run learning states)", async (t) => {
-  const { api, data } = await serve(t, { faux: PROBE });
+test("read, write and edit reach nothing outside work/: the tokens, the owner's password hash and session key, the store, another run, /proc, a planted link, the data directory, /tmp, and anything under the agent's directory (its learning repository, the clones of it, and the per-run learning states)", async (t) => {
+  const { api, data } = await serve(t, { faux: PROBE, accounts: true, openSetup: true });
   assert.equal((await api("POST", "/agents", { definition: { id: "probe", name: "probe", instructions: "Probe.", tools: ["read", "write", "edit"] } })).status, 201);
   // Another run of the same agent, with a secret in its own work/.
   const other = await probed(api, data, "probe", []);
@@ -55,12 +55,17 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   await writeFile(otherTmp, "another run's temporary secret");
   const outside = join(data, "..", "outside.txt");
   const go = join(data, "..", "go");
-  const before = { token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8") };
+  const keys = async () => ({ token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8"), owner: await readFile(join(data, "owner.json"), "utf8"), session: await readFile(join(data, ".session-secret"), "utf8") });
+  const before = await keys();
   const attempts = [
     ["read", { path: "../../.token" }],
     ["read", { path: "../../../.token" }],
     ["read", { path: join(data, ".token") }],
     ["read", { path: "../../../.door-token" }],
+    ["read", { path: "../../../owner.json" }],
+    ["read", { path: "../../../.session-secret" }],
+    ["read", { path: join(data, "owner.json") }],
+    ["write", { path: "../../../owner.json", content: "{}" }],
     ["read", { path: "../../../store.sqlite" }],
     ["read", { path: `../../${other.runId}/work/secret.txt` }],
     ["read", { path: secret }],
@@ -116,7 +121,7 @@ test("read, write and edit reach nothing outside work/: the tokens, the store, a
   assert.deepEqual(said.slice(attempts.length).map((a) => [a.tool, a.error, a.text]), [["write", false, "Successfully wrote to inside.txt"], ["read", false, "inside"], ["read", false, "note"]], "the same run reads and writes inside work/, and reads its own tmp/");
   assert.equal(await readFile(join(data, "runs", run.runId, "work", "inside.txt"), "utf8"), "inside");
   // Nothing outside changed, and nothing was made there.
-  assert.deepEqual({ token: await readFile(join(data, ".token"), "utf8"), door: await readFile(join(data, ".door-token"), "utf8") }, before);
+  assert.deepEqual(await keys(), before);
   assert.equal(await readFile(secret, "utf8"), "another run's secret");
   assert.equal(await exists(join(data, "evil.txt")), false);
   assert.equal(await exists(outside), false);

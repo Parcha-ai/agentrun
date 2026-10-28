@@ -11,7 +11,7 @@ This package is held: it is built and tested in this repository and not publishe
 
 ## Quick start (no key, no network)
 
-Node 22.19 or later. In a checkout of this repository:
+Node 22.19 or later on 22, or 24.2 or later. In a checkout of this repository:
 
 ```sh
 npm ci --ignore-scripts && npm run build
@@ -27,11 +27,12 @@ It prints where it listens and, at the start that made it, the token:
 agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentrun/agents)
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
-Open http://127.0.0.1:7340/?token=ar_local_...
+Open http://127.0.0.1:7340/
+Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
 
-The last line opens [the page](#the-page). For a client, export the two lines before it, then make an agent, start a
-run, and read its timeline until a page says `final`:
+`Open` is [the page](#the-page), which takes [your password](#your-password). For a client, export the two lines before
+it, then make an agent, start a run, and read its timeline until a page says `final`:
 
 ```sh
 H="authorization: Bearer $AGENTRUN_API_KEY"
@@ -54,12 +55,14 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--port N` | `7340` | The port. `0` is any free port. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
+| `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
-it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>` and `?token=<in DIR/.token>`, to read it there. The link
-encodes the token, and the page also takes one whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
+it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
+link carries the token (`?token=<in DIR/.token>` on a later start); it encodes the token, and the page also takes one
+whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
 use it.
 
@@ -75,12 +78,21 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 ```
 
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
-`wrong_link_token`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
+`wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 
 ## In a container
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
+
+1. `docker run` it (below).
+2. Open the page and set your password.
+3. Sign in with it on any browser; the token in the log stays for scripts and the CLI.
+
+On a fresh server with no `AGENTRUN_PUBLIC_URL`, whoever reaches the page first sets the password, so set it right after
+`docker run`, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code the server
+prints still guards it.
+
 With no checkout:
 
 ```sh
@@ -103,16 +115,19 @@ docker compose -f packages/serve/docker/compose.yaml up --build -d
 docker compose -f packages/serve/docker/compose.yaml logs agentrun
 ```
 
-The banner's `Open` line is in the log of the start that made the token. On a stop the server gives a busy run 6 s
+The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (`127.0.0.1:7340`, or `AGENTRUN_PORT`, which the printed link follows), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, and
-every route but `GET /v2/capabilities` still needs the token.
+every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
+`render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
-`/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
-`https://<service>.onrender.com/?token=<the token>`, as it is or URL-encoded: a `+` in it works either way. Set
+`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab. With no
+`AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
+code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
+the address people open before the first start; without it, whoever opens the page first sets the password. Set
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
 
@@ -126,6 +141,33 @@ it as if it had no agents.
 To keep those agents and their runs, keep the earlier version on that data directory. To start this version, give it a
 new data directory (a new volume), or move the old homes out of the one you have. Then create the agents again, here or
 through `POST /v2/agents`. Their earlier runs stay readable where you moved them, with the earlier version.
+
+## Capacity and health
+
+Each run is a process of its own, about 67 MiB of private memory (measured with the faux model; an independent test of
+the image measured 20 runs at 1.22 GiB), beside the server's own 100 MiB or so. So the server caps the runs it holds at
+once (each run with a live process: working, or waiting for an answer), by default
+
+    max_concurrent_runs = max(1, floor((memory − 128 MiB) / 72 MiB))
+
+where memory is the container's limit when it has one (cgroup), else the machine's: 5 runs on a 512 MB instance, 12 on
+1 GB, 112 on 8 GB. `--max-runs N` or `AGENTRUN_MAX_RUNS` sets it instead; capabilities report it in
+`limits.max_concurrent_runs`. Over it, `POST /agents/{id}/runs` is `429 rate_limited` with `retry-after` and nothing
+starts: there is no queue, so the client tries again once a run ends. A message to a run already going is never
+refused. A data directory serves one AgentRun Server at a time: two servers on a shared disk are not supported (each
+counts only its own runs, and a run could be relaunched twice).
+
+`GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
+when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
+and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`, or
+`disk: "cannot_check"` when the free space cannot be read) otherwise.
+It names no path, size or version. One route serves as both liveness and readiness: any answer says the server is up,
+and a 200 says it can work, and the platforms here take one path.
+
+A run whose end the agent store cannot take (a full disk) still ends: a cancel makes it `cancelled`, with its cost from
+its rows, and the server writes the end to the store again every 30 s until it lands; a restart before then reads the
+run as the store last had it. A run whose process was killed is opened again on its next message at once: a heartbeat
+of a process that is gone is not trusted.
 
 ## Models
 
@@ -172,8 +214,10 @@ it is never off, and a model node that names its own thinking level keeps it.
 
 | Route | Here |
 | --- | --- |
+| `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
+| `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` and the operations it answers `501` marked `x-agentrun-serve-unsupported`; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
-| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model`, `thinking` and `learning` (agentic only; `learning` is this server's own, and an edit without it keeps it: [learning](#learning)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
+| `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model`, `thinking` and `learning` (agentic only; `learning` is this server's own, and an edit without it keeps it: [learning](#learning)), `harness` ([harnesses](#harnesses)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
@@ -182,7 +226,7 @@ it is never off, and a model node that names its own thinking level keeps it.
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, and `archived=true` lists only archived ones. A failed run's summary carries its `error`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error and cost (`basis: estimate`; $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop. A finished run is `409 not_continuable`; a workflow run takes none (`501`). |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (`429` when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable`; a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
@@ -192,6 +236,20 @@ Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` an
 feature, and capabilities declare each one false. No run waits out `input_wait_s` here (`null`), and runs carry no
 browser sign-ins (`sign_ins: false`). `limits.max_cost_usd` is the highest cap a run may name: `null` here, as any cap
 above $0 is taken; it does not mean caps are unsupported ([spend cap](#spend-cap)).
+
+## Harnesses
+
+A definition names the harness that runs it: `pi` (the default, and what a definition that names none gets),
+`claude-agent` or `codex`; any other is `422 input_invalid` on `definition.harness`. Every answer names it. An edit
+(`PUT /agents/{id}/definition`) that names no harness keeps the agent's, as it keeps its skill files; name `pi` to move it
+back.
+`GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`. A definition naming a
+harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
+`409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
+
+`definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
+`GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
+`serve/1`), and lists them in `info.x-agentrun-serve.fields`.
 
 ## Archiving
 
@@ -236,12 +294,33 @@ data directory, with this server's own views beside it:
   `POST /v2/runs/{id}/messages`. The live view leaves out the run's own start and end rows, as the stored view does.
   Once it is final, the page reads it from the store.
 
-The link sets a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
+With accounts on (the default) the page takes the owner's session cookie ([your password](#your-password)), and a
+`?token=` link sets no cookie: the token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the link sets a cookie
+(`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
 and sends the browser to the same address without the token. The cookie's value is derived from the token, never the
 token itself, and it lasts until the browser closes. Without it, `/` is a page that says to open the link. The page's
 data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: for a `GET`, and for any other method
 only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
 `Authorization` header is checked on that header alone.
+
+## Your password
+
+AgentRun Server is for one person, who signs in to the page with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
+no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
+more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
+the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days;
+**Sign out everywhere** ends every session on every browser. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
+new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
+`agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
+/opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
+browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.
+
+A browser's writes must come from the page's own origin. Serve the image on another address or port behind a proxy, and
+set `AGENTRUN_PUBLIC_URL` to the address people open. Behind a proxy every sign-in comes from the proxy's address, so the
+limit is one for everyone: ten wrong tries in 15 minutes, from anyone, keep the owner out until the window passes (the
+token still works for scripts meanwhile). Serve it over https where you can: on plain http a browser sends the session
+cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
 ## A run's life
 
@@ -321,7 +400,8 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   run called an external tool, meaning any tool but `read`, `write`, `edit`, `ask_person` and `learn`.
 - The server records each proposal in `DATA/agents/<id>/learning/runs/<run id>.json` (`proposed`, `empty` or
   `refused`). At start it proposes every ended run of a learning agent that has no record yet, so a server that stopped
-  between a carry back and its proposal loses nothing. The commit's `Run-Id` trailer makes a second proposal of the
+  between a carry back and its proposal loses nothing. That pass waits for an agent store another writer holds, and
+  says so in the log; if the store stays busy, the next start proposes what is left. The commit's `Run-Id` trailer makes a second proposal of the
   same run add nothing. A proposal that fails (a push the repository refuses) is logged; the run has ended as it would
   have, and the next start proposes it. A run that learned nothing leaves no branch.
 - The guard refuses a note that holds a value of one of the server's secrets: the variables whose names end in `KEY`,

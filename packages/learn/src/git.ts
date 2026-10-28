@@ -88,6 +88,8 @@ export async function checkBranch(input: CheckBranchInput): Promise<BranchCheck>
   const hooksInRepo = hooks ? await insideRepo(cwd, hooks) : undefined;
   const lockedPaths = [...(rest.lockedPaths ?? []), ...(hooksInRepo ? [hooksInRepo] : [])];
   const raw = (await git(cwd, ["diff-tree", "-r", "-z", "--no-renames", "--no-abbrev", forkPoint, head])).split("\0");
+  // Counted before any body is read: over the cap, the checker reads nothing more.
+  const over = Math.floor(raw.length / 2) > CAPS.changes;
   const changes: Change[] = [];
   for (let at = 0; at + 1 < raw.length; at += 2) {
     const [, mode, sha, letter] = /^:\d+ (\d+) [0-9a-f]+ ([0-9a-f]+) ([A-Z])/.exec(raw[at]!) ?? [];
@@ -95,13 +97,14 @@ export async function checkBranch(input: CheckBranchInput): Promise<BranchCheck>
     const status = STATUS[letter ?? ""];
     if (!status) throw new Error(`git diff-tree gave an entry this checker does not read: ${JSON.stringify(raw[at])}`);
     if (status === "deleted") changes.push({ path, status });
-    else if (mode !== "100644" || isLocked(path, lockedPaths) || isGitFile(path) || !placeOf(path) || changes.length >= CAPS.changes) changes.push({ path, status, mode: mode! });
+    else if (over || mode !== "100644" || isLocked(path, lockedPaths) || isGitFile(path) || !placeOf(path)) changes.push({ path, status, mode: mode! });
     else {
       const size = Number(await git(cwd, ["cat-file", "-s", sha!]));
       changes.push(size > CAPS.file ? { path, status, mode, size } : { path, status, mode, size, bytes: await blob(cwd, sha!) });
     }
   }
-  const headFiles = changes.length > CAPS.changes ? [] : (await git(cwd, ["ls-tree", "-r", "-z", "--name-only", head])).split("\0").filter(Boolean);
+  // --full-tree: the whole tree's paths from its root, whichever folder of the work tree the checker runs in.
+  const headFiles = over ? [] : (await git(cwd, ["ls-tree", "-r", "-z", "--full-tree", "--name-only", head])).split("\0").filter(Boolean);
   const checked = checkRun({ ...rest, ...(runBase ? { runBase } : {}), branch: branch ?? "", changes, forkPoint, headFiles, lockedPaths });
   return { ...named, forkPoint, ...checked };
 }

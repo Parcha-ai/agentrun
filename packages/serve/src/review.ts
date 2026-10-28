@@ -66,7 +66,7 @@ export class Review {
   private async reviewNow(agentId: string, runId: string, from?: RunState): Promise<RunState | undefined> {
     const state = from ?? (await readRunState(this.options.data, agentId, runId));
     if (!state || !REVIEWABLE.has(state.state)) return state;
-    const mode = learningOf(this.options.agents.get(agentId)?.revision);
+    const mode = learningOf((await this.options.agents.get(agentId))?.revision);
     // Still waiting on the same thing: the state stands as it is, unwritten.
     const wait = async (next: RunState["state"], reason: string) => (state.state === next && state.reason === reason ? state : this.write(agentId, runId, { ...state, state: next, reason }));
     if (mode === "off") return wait("off", "learning is off for this agent");

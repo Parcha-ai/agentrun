@@ -4,7 +4,6 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
 import { carryBack, createAgentHome, setPrompts, startRun } from "../../dist/index.js";
 
 export const at = (minute, second = 0) => Date.UTC(2026, 9, 22, 14, minute, second);
@@ -63,7 +62,7 @@ export async function buildSampleHome(dir) {
   return home;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (import.meta.main) {
   const dir = path.resolve(process.argv[2] ?? "");
   if (!process.argv[2]) throw new Error("usage: node test/fixtures/serve-sample.mjs <dir>");
   mkdirSync(dir, { recursive: true });

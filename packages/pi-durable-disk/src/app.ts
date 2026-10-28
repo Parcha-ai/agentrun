@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Harness } from "@earendil-works/pi-durable";
 import type { RunRef } from "./claim.ts";
+import type { DoorHook } from "./door.ts";
 import { PdaError } from "./errors.ts";
 import type { DurableRun, OpenDurableRunOptions } from "./run.ts";
 
@@ -34,6 +35,11 @@ export type AppOptions = OpenDurableRunOptions["harness"] & {
   root?: Parameters<Harness["root"]>[1];
   /** Record a parking run's wake (park.ts `ParkOptions.wake`); default run.json `sleeping` with `wakeAt`. */
   wake?(run: DurableRun, at: number | null): Promise<void>;
+  /**
+   * A harness of the app's own behind `serve`'s door, instead of pi's root conversation: see "The door hook" in the
+   * README. Absent, the door is pi's.
+   */
+  door?: DoorHook;
 };
 
 /**
