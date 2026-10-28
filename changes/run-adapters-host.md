@@ -8,4 +8,4 @@ kind: feature
 - A request that cannot be sent (no provider credential, one that could not be read, or credential headers the policy could not build) is refused before the runner is asked: it is never admitted or booked, and spends no turn. (It was admitted, then booked at nothing.)
 - `close()` admits and sends nothing more: a request that was waiting on the runner when the proxy closed is refused and released, booked once at nothing.
 - A body's `__proto__` key is parsed as an own field; the parsed object's prototype never changes.
-- A client that reads slowly holds the provider back: the proxy reads no more of an answer until what it wrote has drained.
+- A client that reads slowly holds the provider back: the proxy reads no more of an answer until what it wrote has drained, and each wait leaves no listener behind on the response.

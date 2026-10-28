@@ -323,7 +323,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       if (upstream.body) {
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
           // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
-          if (!res.write(chunk)) await new Promise<void>((resolve) => { res.once("drain", resolve); res.once("close", resolve); });
+          if (!res.write(chunk)) {
+            // One wait, and nothing left behind: whichever comes first takes both listeners off.
+            await new Promise<void>((resolve) => {
+              const done = () => { res.off("drain", done); res.off("close", done); resolve(); };
+              res.on("drain", done);
+              res.on("close", done);
+            });
+          }
           // The usage is at the start, the end, or both: keep those, not the whole answer.
           const text = decoder.decode(chunk, { stream: true });
           length += text.length;

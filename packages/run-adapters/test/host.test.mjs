@@ -299,6 +299,12 @@ test("a client that reads slowly holds the provider back: the proxy reads no mor
   let pulled = 0;
   const body = new ReadableStream({ pull(controller) { if (pulled >= TOTAL) return controller.close(); pulled += 1; controller.enqueue(new Uint8Array(CHUNK).fill(120)); } }, { highWaterMark: 0 });
   const { p, hooks } = await proxy(t, { fetch: async () => new Response(body, { headers: { 'content-type': 'text/event-stream' } }) });
+  // Each wait for the client to drain leaves nothing behind: a long answer that waits hundreds of times must not pile
+  // listeners up on the response (Node warns past ten).
+  const warnings = [];
+  const onWarning = (w) => warnings.push(w.name);
+  process.on('warning', onWarning);
+  t.after(() => process.off('warning', onWarning));
   const { hostname, port } = new URL(p.url);
   let received = 0;
   const done = new Promise((resolve, reject) => {
@@ -317,6 +323,8 @@ test("a client that reads slowly holds the provider back: the proxy reads no mor
   });
   await done;
   assert.equal(received, CHUNK * TOTAL, 'the whole answer reaches the client once it reads');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(warnings.filter((name) => name === 'MaxListenersExceededWarning'), [], 'no listeners piled up on the response');
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(hooks.after.length, 1, 'booked once');
 });
