@@ -309,6 +309,15 @@ export class AgentStore extends AgentStoreReader {
     if (done.changes === 0) throw new AgentHomeError(this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId) ? "exists" : "missing", "that run is unknown or has already ended");
   }
 
+  /** Opens a completed run again, for a follow-up: running, with no end; its cost and summary stay until the next
+   *  carryBack. Only a completed run opens again. */
+  reopenRun(runId: string): void {
+    const done = this.db.prepare("UPDATE runs SET state = 'running', ended_at = NULL WHERE id = ? AND state = 'completed'").run(checkId(runId, "run"));
+    if (done.changes > 0) return;
+    if (!this.db.prepare("SELECT 1 FROM runs WHERE id = ?").get(runId)) throw new AgentHomeError("missing", "that run is unknown");
+    throw invalid("only a completed run opens again");
+  }
+
   /** A beta.24 agent home becomes one agent with one agentic revision (its definition and skills). Its run directories are not copied. */
   async importHome(homeDir: string): Promise<Agent> {
     const state = await readAgentHome(await openAgentHome(homeDir));
