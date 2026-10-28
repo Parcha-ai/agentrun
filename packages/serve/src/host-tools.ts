@@ -33,7 +33,9 @@ export function fileTools(run: DurableRun, names: readonly string[], context: Co
         const env = await run.env({ conversationId: ROOT_CONVERSATION_ID, read: undefined as never }, context);
         const api = { env, output: (chunk: string | Uint8Array) => void out.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8")), outputWindow: undefined, diagnostic: () => {} };
         const result = await tool.execute(args as never, api as never, withAbortSignal(signal, context)).catch((error: Error) => ({ content: [{ type: "text", text: error.message }], isError: true }));
-        const answer = { text: textOf(result.content) || out.join(""), isError: result.isError === true };
+        // pi 1.1 names the result's blocks `content`, pi 1.2 and later `output`.
+        const given = result as unknown as { content?: unknown; output?: unknown; isError?: boolean };
+        const answer = { text: textOf(given.content ?? given.output) || out.join(""), isError: given.isError === true };
         results.set(callId, answer);
         return answer;
       },
