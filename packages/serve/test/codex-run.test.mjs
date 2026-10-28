@@ -5,9 +5,10 @@
 import assert from "node:assert/strict";
 import { copyFile, readdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fileURLToPath } from "node:url";
 import { agent, follow, scratch, serve } from "./support.mjs";
 
@@ -109,13 +110,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
 });
 
 /** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = (pid) => {
-  try {
-    return !/^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8"));
-  } catch {
-    return false;
-  }
-};
+const alive = processAlive;
 
 test("a codex run whose process dies while its request is in flight leaves no Codex process behind", { timeout: 120_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const gw = await gateway(t);

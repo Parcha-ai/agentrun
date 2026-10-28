@@ -3,3 +3,4 @@
 export { matchRoute, parseStrict, providerIdsOf, ProxyRefusal, sameKey, startModelProxy } from "./proxy.js";
 export type { ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRoute, ProxyUsage } from "./proxy.js";
 export { serialWriter } from "./serial.js";
+export { processAlive } from "./alive.js";

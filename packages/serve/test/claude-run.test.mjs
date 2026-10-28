@@ -6,10 +6,11 @@
 // request is in flight resumes on the next process, books the cut request once as unknown, and leaves no CLI behind.
 // Every process the test reads is its own descendant.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
 import { agent, follow, serve } from "./support.mjs";
 
@@ -45,13 +46,7 @@ async function claudeProcess() {
 }
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
 /** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
-const alive = (pid) => {
-  try {
-    return !/^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8"));
-  } catch {
-    return false;
-  }
-};
+const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
 async function claudeServe(t, fake) {
