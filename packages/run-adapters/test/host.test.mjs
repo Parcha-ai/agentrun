@@ -580,6 +580,7 @@ test("a host's header is checked when the proxy starts: a name that is a token a
     [{ 'x-tags': 'v'.repeat(1025) }, /at most 1024/],
     [{ 'x-litellm-tags': 'job:東京' }, /one line of text an HTTP header can carry/],
     [{ 'x-tags': 'a\tb\u0007c' }, /one line of text an HTTP header can carry/],
+    [{ 'x-tags': 'a\x7fb' }, /one line of text an HTTP header can carry/],
   ]) assert.match(hostHeaderProblems(headers).join('; '), said, JSON.stringify(headers).slice(0, 60));
   await assert.rejects(startModelProxy({ policy, model: 'm', origin: 'https://x.invalid', credential: () => 'c', hooks: {}, headers: { host: 'evil' } }, KEY), /the header host is the proxy's own/);
 });
