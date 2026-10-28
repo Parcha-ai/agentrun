@@ -185,6 +185,12 @@ test('the skills are checked when the adapter is made: a plain name, a SKILL.md 
   assert.match(wrong({ name: 'Bad Name', files: { 'SKILL.md': md('Bad Name') } }), /not lowercase letters, digits and dashes/);
   assert.match(wrong({ name: 'a', files: {} }), /no SKILL.md with front matter/);
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('b') } }), /names it otherwise/);
+  // A SKILL.md saved with Windows line endings is the same skill.
+  assert.deepEqual(skillProblems([{ name: 'a', files: { 'SKILL.md': '---\r\nname: a\r\ndescription: d\r\n---\r\nbody\r\n' } }]), [], 'CRLF front matter');
+  // One path both a file and a folder can't be written: refused here, not when the session starts.
+  for (const files of [{ reference: 'x', 'reference/sources.md': 'y' }, { 'reference/sources.md': 'y', reference: 'x' }]) {
+    assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), ...files } }), /reference is both a file and a folder/, JSON.stringify(Object.keys(files)));
+  }
   // YAML may quote the name, either way, as a generator writes it.
   for (const quoted of ["'a'", '"a"']) assert.deepEqual(skillProblems([{ name: 'a', files: { 'SKILL.md': md(quoted) } }]), [], quoted);
   for (const odd of ["'a\"", "'b'"]) assert.match(wrong({ name: 'a', files: { 'SKILL.md': md(odd) } }), /names it otherwise/, odd);
