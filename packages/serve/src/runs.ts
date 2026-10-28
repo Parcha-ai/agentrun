@@ -213,7 +213,9 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (run.kind === "workflow") return { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
   if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
-  // Before the fallback for a run with no message shown: a compaction can summarize every message of a stopped run.
+  // No rows is a run not shown yet (adopted, before its first snapshot), whatever an old stop says. Rows with no
+  // message of the person's are a compaction's (it shows its summary), which can summarize every message of a stop.
+  if (!run.rows.length) return { status: "queued", state: "working" };
   if (stopped(run)) return { status: "input_required", state: "idle" };
   if (!users) return { status: "queued", state: "working" };
   if (run.working) return { status: "working", state: "working" };

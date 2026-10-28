@@ -70,4 +70,7 @@ test("the run's status follows the stop when a compaction left no message of the
   assert.deepEqual(statusOf(run({ working: true })), { status: "input_required", state: "idle" }, "its process still ending the turn");
   assert.equal(statusOf(run({ submitted: 1 })).state, "working", "a message sent since the stop is being worked on");
   assert.deepEqual(statusOf(run({ meta: { title: "t", created_at: "2026-01-01T00:00:00.000Z" }, rows: [] })), { status: "queued", state: "working" }, "a run never stopped, with no message shown yet, is queued");
+  // No rows at all is a run not shown yet (a server adopting it, before its first snapshot), not a compaction, which
+  // always shows its summary: an old stop says nothing about it until its rows arrive.
+  assert.deepEqual(statusOf(run({ rows: [] })), { status: "queued", state: "working" }, "a stopped run not shown yet is queued");
 });
