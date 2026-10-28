@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/builtins.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only; a call begun twice (the same execution delivered twice) is reserved before the first await, and the second begin waits for its outcome instead of running it again.
 import { type DriveContext, EffectFailure, EffectInterrupted, type HostToolIO, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
 import { clip, failureText, toolKey, type ToolResult } from './tools.js';
 
@@ -102,6 +102,8 @@ interface Open {
  */
 export class BuiltinCalls {
   private readonly open = new Map<string, Open>();
+  /** Each call id's first `begin`, reserved before it awaits anything. */
+  private readonly begun = new Map<string, Promise<BuiltinStart>>();
   private readonly replay: (name: string) => ReplayPolicy;
   private readonly live: boolean;
   private readonly outputChars: number;
@@ -132,9 +134,29 @@ export class BuiltinCalls {
    * the intent cannot be committed (the drive lost the session, a write
    * failed): the drive is halted, and the hook must refuse the call.
    */
-  async begin(call: BuiltinCall): Promise<BuiltinStart> {
-    if (!call.callId) throw new TypeError(`agentrun-adapters: a built-in ${call.name} call has no call id`);
-    if (this.open.has(call.callId)) return { run: true };
+  begin(call: BuiltinCall): Promise<BuiltinStart> {
+    if (!call.callId) return Promise.reject(new TypeError(`agentrun-adapters: a built-in ${call.name} call has no call id`));
+    const first = this.begun.get(call.callId);
+    if (first) return this.again(call.callId, first);
+    const start = this.beginOnce(call);
+    this.begun.set(call.callId, start);
+    // A call that will not run is done with now; one that runs is, once its outcome is in (beginOnce's `done`).
+    start.then((s) => { if (!s.run) this.begun.delete(call.callId); }, () => this.begun.delete(call.callId));
+    return start;
+  }
+
+  /** The same call begun again: never run it twice. Wait for the first begin, then for its outcome, from the log. */
+  private async again(callId: string, first: Promise<BuiltinStart>): Promise<BuiltinStart> {
+    const start = await first;
+    if (!start.run) return start;
+    await this.open.get(callId)?.done;
+    const known = this.ctx.state().effects.get(toolKey(callId));
+    if (known?.status === 'completed') return { run: false, result: { text: String(known.output ?? ''), isError: false } };
+    const error = known?.status === 'failed' && known.error ? known.error : { message: 'the call did not report its result', interrupted: true };
+    return { run: false, result: { text: failureText(error), isError: true, ...(error.interrupted ? { interrupted: true } : {}) } };
+  }
+
+  private async beginOnce(call: BuiltinCall): Promise<BuiltinStart> {
     const key = toolKey(call.callId);
     const known = this.ctx.state().effects.get(key);
     if (known?.status === 'completed') return { run: false, result: { text: String(known.output ?? ''), isError: false } };
@@ -193,7 +215,7 @@ export class BuiltinCalls {
       }
     );
     this.open.set(call.callId, { settle, done });
-    void done.finally(() => this.open.delete(call.callId));
+    void done.finally(() => { this.open.delete(call.callId); this.begun.delete(call.callId); });
     await Promise.race([committed, done]);
     if (failed !== undefined) throw failed;
     // Settled before its intent (replayed from the log by a concurrent read), or by a wrapper that never let it run: answer from the log.
@@ -216,6 +238,11 @@ export class BuiltinCalls {
    */
   async end(callId: string, result: { name?: string; input?: unknown; text: string; isError?: boolean }): Promise<void> {
     let open = this.open.get(callId);
+    // Its begin is still committing the intent: end that call, not a second one.
+    if (!open && this.begun.has(callId)) {
+      await this.begun.get(callId)!.catch(() => undefined);
+      open = this.open.get(callId);
+    }
     if (!open) {
       if (this.ctx.isMemoized(toolKey(callId))) return;
       const started = await this.begin({ callId, name: result.name ?? 'builtin', input: result.input ?? null, replay: 'safe' }).catch(() => undefined);
