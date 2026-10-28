@@ -1,6 +1,11 @@
 import { validateAnswers } from "../system-one.js";
-import type { WorkflowDeps } from "../workflow.js";
+import { EscalationSignal, type WorkflowDeps } from "../workflow.js";
+import { canonicalHash } from "./canonical-hash.js";
 import type { openRecovery, RecoveryEffectParams } from "./driver.js";
+
+/** The escalation kind of a run whose decision was asked by an earlier process and never answered there: it is routed to
+ *  review instead of being asked, and paid for, again. Its stage is `decision`. */
+export const DECISION_INTERRUPTED = "decision_interrupted";
 
 /** A recovery driver, as `openRecovery` returns it. */
 export type RecoveryDriver = Awaited<ReturnType<typeof openRecovery>>;
@@ -33,8 +38,12 @@ export type WithRecoveryOptions = {
  *  things they have no slot for are applied to the host's adapters here:
  *   - `runEffect`: each effect is admitted before it is dispatched, a completed one is answered from its receipt, and
  *     one admitted and never completed is refused;
- *   - `runJudge`: a route's answer is committed as its decision before any branch step runs, and a resume inside the
- *     branch follows it without asking again; every answer's spend is committed with the driver's state;
+ *   - `runJudge`: each request is committed (`decision.request`) before the judge is asked, and ends with one outcome:
+ *     answered, or failed in its own process (asked again as its next attempt). A later open that finds it asked and
+ *     never answered (the process died, or a cancel cut the call) books it once at an unknown cost and ends the run
+ *     escalated (`decision_interrupted`) instead of asking again. A route's answer is committed as its decision before
+ *     any branch step runs, and a resume inside the branch follows it without asking again; every answer's spend is
+ *     committed with the driver's state;
  *   - `runNode`: an LLM step's record is committed before the step runs, with two attempts, each handed to the
  *     runner as its `step`. A failed attempt is followed at once by the second, unless the runner marked the
  *     failure final; a step that spent both is refused at every later open. A process that dies inside a step spends
@@ -52,17 +61,41 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
     runJudge: runJudge && (async (params) => {
       const decided = params.kind === "route" ? driver.routeDecision(params.executionPath) : undefined;
       if (decided) return decided.result as Awaited<ReturnType<typeof runJudge>>;
-      const result = await runJudge(params);
-      const cost = typeof result.cost_usd === "number" && Number.isFinite(result.cost_usd) ? result.cost_usd : null;
-      // An answer the interpreter would refuse is spent at its price and is never a decision: the question is
-      // asked again by the next process.
-      try { validateAnswers(params.questions, result.answers); }
-      catch (error) { driver.recordQuestionSpend(cost); throw error; }
-      driver.recordQuestionSpend(cost, params.kind === "route" ? { executionPath: params.executionPath, label: params.label, result: result as Record<string, unknown>, receipts: null } : undefined);
-      // The decision is durable before the interpreter acts on the answer, and a stop taken meanwhile ends the run here.
-      await driver.flush();
-      driver.checkStop();
-      return result;
+      await driver.seam();
+      const decisionId = params.decisionId ?? canonicalHash(["decision-request", params.executionPath, params.kind, params.questions, params.state]);
+      const open = driver.admitDecision(params.executionPath, { decision_id: decisionId, kind: params.kind, label: params.label, model: null,
+        request_sha256: canonicalHash({ kind: params.kind, label: params.label, state: params.state, questions: params.questions }) });
+      if (open) {
+        // An earlier process asked and its answer never reached a receipt: never asked again, booked once at an unknown
+        // cost, and the run goes to review.
+        if (open.status === "requested") driver.decisionEnded(params.executionPath, decisionId, "interrupted", null);
+        await driver.flush();
+        throw new EscalationSignal({ kind: DECISION_INTERRUPTED, stage: "decision", executionPath: params.executionPath, label: params.label, state: driver.lastState(),
+          summary: `The decision "${params.label}" was asked by an earlier process and its answer never reached a receipt; it is not asked again.` });
+      }
+      try {
+        // The request is durable before the judge is asked.
+        await driver.flush();
+        let result: Awaited<ReturnType<typeof runJudge>>;
+        try { result = await runJudge(params); }
+        catch (error) {
+          // A cut call (a cancel, the run's failure) has no outcome: a later open finds it asked and unanswered. A call
+          // that ended on its own failed, and the next process asks again.
+          if (!driver.signal.aborted && !params.signal?.aborted) driver.decisionEnded(params.executionPath, decisionId, "failed", null);
+          throw error;
+        }
+        const cost = typeof result.cost_usd === "number" && Number.isFinite(result.cost_usd) ? result.cost_usd : null;
+        // An answer the interpreter would refuse is spent at its price and is never a decision: the question is
+        // asked again by the next process.
+        try { validateAnswers(params.questions, result.answers); }
+        catch (error) { driver.decisionEnded(params.executionPath, decisionId, "failed", cost); driver.recordQuestionSpend(cost); throw error; }
+        driver.decisionEnded(params.executionPath, decisionId, "answered", cost);
+        driver.recordQuestionSpend(cost, params.kind === "route" ? { executionPath: params.executionPath, label: params.label, result: result as Record<string, unknown>, receipts: null } : undefined);
+        // The decision is durable before the interpreter acts on the answer, and a stop taken meanwhile ends the run here.
+        await driver.flush();
+        driver.checkStop();
+        return result;
+      } finally { driver.decisionSettled(); }
     }),
     runNode: runNode && (async (params) => {
       const admit = () => driver.stepSession(params.executionPath, params.label, { attemptsAllowed: 2 });
