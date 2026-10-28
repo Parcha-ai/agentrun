@@ -97,6 +97,23 @@ test("a chat sent while a turn works, then the server and the run's process die:
   assert.equal(await answer(api, runId), "Answered the chat.", "the run's last answer is the chat's");
 });
 
+test("a message to a run working on a harness that cannot steer answers follow_up, never steer: it waits for the turn's end and is answered after it", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  const runId = await started(api, "no-steer", `Wait for ${go}, then answer the chat.`, "codex");
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+    assert.ok(i < 300, "the run works");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: "and the chat?" });
+  assert.deepEqual([sent.status, sent.body.mode], [202, "follow_up"], JSON.stringify(sent.body));
+  // The faux turn holds until its process is replaced: the next one finishes the turn, then answers the message.
+  await writeFile(go, "");
+  await killRun(data, runId);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(await answer(api, runId), "Answered the chat.");
+});
+
 /** How many of the run's store entries are of `kind` (a session's runner record, or the root's request marker). */
 function storeCount(data, runId, kind) {
   // The run's process writes the store meanwhile: a read that finds it locked tries again.

@@ -105,7 +105,7 @@ async function filesUnder(dir, at = "") {
 test("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent"), { id: "claude-agent", available: true });
+  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent"), { id: "claude-agent", available: true, steer: false });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;

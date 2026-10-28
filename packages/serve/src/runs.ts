@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
-import { FAUX_HARNESS_ENV } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_META, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
@@ -98,6 +98,8 @@ export type Run = {
   agentId: string;
   kind: RevisionKind;
   revision: string;
+  /** The harness its revision names, read at its first message. */
+  harness?: string;
   /** The revision's number among its agent's. */
   version: number;
   dir: string;
@@ -807,6 +809,13 @@ export class Runs {
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
+  /** Whether the run's harness takes a message mid-turn. */
+  private async steers(run: Run): Promise<boolean> {
+    if (run.kind !== "agentic") return true;
+    run.harness ??= ((await this.options.agents.revision(run.agentId, run.revision))?.revision.body as { harness?: string } | undefined)?.harness ?? DEFAULT_HARNESS;
+    return steersMidTurn(run.harness);
+  }
+
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
@@ -815,7 +824,10 @@ export class Runs {
     if (run.kind === "agentic" && statusOf(run).status === "completed") this.reopen(run);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
-    const mode = status === "queued" || (status === "working" && state === "working") ? "steer" : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
+    // the same run, which the contract calls follow_up, never a steer it does not do.
+    const working = status === "queued" || (status === "working" && state === "working");
+    const mode = working ? ((await this.steers(run)) ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     run.stopped = false;
     run.submitted++;

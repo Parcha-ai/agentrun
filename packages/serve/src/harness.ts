@@ -7,8 +7,12 @@ export const HARNESSES = ["pi", "claude-agent", "codex"] as const;
 export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
 
-/** One harness as capabilities lists it: whether this server runs it, and when not, why. */
-export type HarnessOffer = { id: HarnessId; available: boolean; reason?: string };
+/** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
+ *  mid-turn (`steer`), or queues it for the turn's end. */
+export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string };
+
+/** Whether a harness takes a message mid-turn: pi does; another harness's run queues it for the turn's end. */
+export const steersMidTurn = (id: string): boolean => id === DEFAULT_HARNESS;
 
 /** A module whose `script(spec)` scripts run-adapters' faux harness: with it, every harness but pi runs on that faux
  *  harness, as `--faux` runs pi on the faux model. */
@@ -16,7 +20,7 @@ export const FAUX_HARNESS_ENV = "AGENTRUN_SERVE_FAUX_HARNESS";
 
 /** What this server offers of each harness. */
 export function harnessesOf(env: NodeJS.ProcessEnv): HarnessOffer[] {
-  return HARNESSES.map((id) => (id === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV] ? { id, available: true } : { id, available: false, reason: `This server does not run ${id} yet.` }));
+  return HARNESSES.map((id) => (id === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV] ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason: `This server does not run ${id} yet.` }));
 }
 
 const offered = new WeakMap<object, Promise<HarnessOffer[]>>();
@@ -31,9 +35,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessOffer[]> {
       if (env[FAUX_HARNESS_ENV]) return harnessesOf(env);
       const { harnessReason } = await import("./adapters.js");
       return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
-        if (id === DEFAULT_HARNESS) return { id, available: true };
+        if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
         const reason = await harnessReason(id, env, undefined);
-        return reason === undefined ? { id, available: true } : { id, available: false, reason };
+        return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
       }));
     })();
     offered.set(env, offers);
