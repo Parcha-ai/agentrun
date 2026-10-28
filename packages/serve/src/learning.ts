@@ -155,10 +155,18 @@ export async function readyToRun(data: string, entry: AgentEntry, current: () =>
   if (!main) await hostCommit(data, id, () => ({ ...entry, revision, version }));
 }
 
-/** What the server recorded for a run of a learning agent once it proposed it. D extends it with what review did. */
-export type RunState = { state: "proposed" | "empty" | "refused"; branch?: string; base?: string; sha?: string; reasons?: string[] };
+/** What the server recorded for a run of a learning agent: its proposal (`proposed`, `empty`, `refused` by the guard), then
+ *  its review (learning-review.ts): `merged`, `awaiting_approval`, or waiting on this server (`no_screen`, `no_judge`) or on the
+ *  agent (`off`), with `reason` in words. */
+export type RunState = {
+  state: "proposed" | "empty" | "refused" | "merged" | "awaiting_approval" | "no_screen" | "no_judge" | "off";
+  branch?: string; base?: string; sha?: string; reasons?: string[];
+  reason?: string; merge?: string; verdict?: unknown; review_usd?: number; decided_by?: string; decision?: "approve" | "refuse"; pruned?: boolean;
+};
 
-const runStateFile = (data: string, agentId: string, runId: string) => join(agentDir(data, agentId), "learning", "runs", `${runId}.json`);
+/** Where an agent's per-run learning files are: `<run id>.json`, and review's `<run id>.plan.json`. */
+export const learningRunsDir = (data: string, agentId: string): string => join(agentDir(data, agentId), "learning", "runs");
+const runStateFile = (data: string, agentId: string, runId: string) => join(learningRunsDir(data, agentId), `${runId}.json`);
 
 export async function readRunState(data: string, agentId: string, runId: string): Promise<RunState | undefined> {
   const text = await readFile(runStateFile(data, agentId, runId), "utf8").catch(() => undefined);
@@ -190,7 +198,7 @@ export type StoreAccess = { readonly store: Pick<AgentStoreReader, "readRun" | "
  *  its outcome and cost as the carry back wrote them, and `untrusted` when it called an external tool. Undefined for a run
  *  whose revision does not learn; a run whose end is not in the store yet is refused. The `Run-Id` trailer makes a second
  *  call `already`. */
-export async function proposeFor(data: string, agents: StoreAccess, runId: string): Promise<ProposeResult | undefined> {
+export async function proposeFor(data: string, agents: StoreAccess, runId: string, secrets: () => string[]): Promise<ProposeResult | undefined> {
   const { store } = agents;
   const row = await agents.request(() => store.readRun(runId));
   if (!row || learningOf(await agents.request(() => store.readRevision(row.revision))) === "off") return undefined;
@@ -209,7 +217,7 @@ export async function proposeFor(data: string, agents: StoreAccess, runId: strin
     const target = releasedStore(storeFile);
     const result = await proposeLearning({
       repo, runId, target: target as never, outcome: outcomeOf(row.state), untrusted: externalUsed(storeFile),
-      secrets: secretsOf(process.env), caseValues: caseValuesOf(meta?.input), ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }),
+      secrets: secrets(), caseValues: caseValuesOf(meta?.input), ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }),
     });
     const base = ((await target.snapshot(SeedDoc as never)) as { sha?: string } | undefined)?.sha;
     await writeRunState(data, row.agent, runId, result.status === "proposed" || result.status === "already"
@@ -226,7 +234,7 @@ export const CATCH_UP_BUSY_MS: readonly number[] = [50, 100, 200, 500, 1_000, 2_
 /** At start: every ended run of a learning revision that has no recorded proposal is proposed, so a server that stopped
  *  between a carry back and its proposal loses nothing. The store is read when it is free (`CATCH_UP_BUSY_MS`); each
  *  wait, and a store that stays busy, is said in `log`. Returns the runs it proposed. */
-export async function catchUp(data: string, agents: StoreAccess, log: (line: string) => void, delaysMs: readonly number[] = CATCH_UP_BUSY_MS): Promise<string[]> {
+export async function catchUp(data: string, agents: StoreAccess, log: (line: string) => void, secrets: () => string[], delaysMs: readonly number[] = CATCH_UP_BUSY_MS): Promise<string[]> {
   const { store } = agents;
   const free = <T>(act: () => T | Promise<T>) =>
     whenFree(act, delaysMs, (attempt, delay) => delay !== undefined && log(`learning catch-up: the agent store is busy; trying again in ${delay} ms (${attempt + 1} of ${delaysMs.length})`));
@@ -244,7 +252,7 @@ export async function catchUp(data: string, agents: StoreAccess, log: (line: str
     try {
       if (!learns.has(row.revision)) learns.set(row.revision, learningOf(await free(() => store.readRevision(row.revision))) !== "off");
       if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
-      if (await proposeFor(data, { store, request: free }, row.id)) done.push(row.id);
+      if (await proposeFor(data, { store, request: free }, row.id, secrets)) done.push(row.id);
     } catch (error) {
       log(`run ${row.id}: not proposed: ${(error as Error).message}`);
     }

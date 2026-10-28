@@ -260,8 +260,9 @@ const result = await proposeLearning({ repo, runId, target: harness, secrets: va
 the shared layout, from the commit the run was seeded from (main, for a run that was not seeded):
 
 - the memo, `memos/<run id>.md`: the host's facts in its front matter (`run`, `base` = that commit, `harness: pi`,
-  `outcome`, `untrusted`, and `cost_usd` when the host passes `costUsd`), then four short sections naming what the run
-  proposed, with none of the model's text;
+  `outcome`, `untrusted`, and `cost_usd` when the host passes `costUsd`), then four sections: `## What happened` and
+  `## What could be better` in the agent's words when the host passes its `reflection` (else the host's own lines), and
+  `## What I learned` and `## Proposed changes`, which name what the run proposed;
 - one note per `lesson`, `fact` or `correction`, in the learning format above, its `supersedes` naming the learning a
   candidate's `id` names;
 - one more use on each active learning a `used` mark names (a second mark of the same one, or one naming no active
@@ -278,7 +279,8 @@ with a `Run-Id` trailer, pushed by sha. `@parcha/agentrun-learn`'s checker accep
 - `{ status: "proposed", sha }`: the commit was made and pushed.
 - `{ status: "already", sha }`: the branch already held a commit for this run, from this host or a restarted one with an
   empty local repository; none was made, and the push is repeated so a crash between commit and push heals.
-- `{ status: "empty" }`: the run noted nothing.
+- `{ status: "empty" }`: the run noted nothing and has no reflection to propose (a reflection alone is a proposal: its
+  branch holds just the memo).
 - `{ status: "refused", refusals }`: any guard hit refuses all of it, and nothing is committed or pushed, so no ref or
   object holds the refused value.
 
@@ -286,6 +288,13 @@ with a `Run-Id` trailer, pushed by sha. `@parcha/agentrun-learn`'s checker accep
 characters of whose strings, case and whitespace folded, appear in one is withheld: its records stay out of the proposal,
 the rest is proposed as usual, and a `proposed`, `already` or `empty` result names it in `withheld: [{ name, reason }]`,
 with a reason that names nothing the run read. `copiesRead(workflow, read)` is that check.
+
+`reflection` is the agent's reflection, `{ whatHappened, couldBeBetter }`. After the run's answer, a host sends
+`REFLECT_PROMPT` as one more message in the same conversation: the agent calls `learn` for what it learned and replies
+with the two sections, which `parseReflection(reply)` reads (undefined when either is missing or empty). A section over
+`REFLECTION_CHARS` (2000) characters, holding a heading or a `---` line, or a control or invisible character
+(`reflectionProblem`), or a reflection in which the guard finds a secret or this case's data, is not written: the
+host's lines stand, the notes are proposed as usual, and the result names it in `withheld` as `reflection`.
 
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
 has already rendered. `runBranchFiles` is the branch's writer and `readRunBranch` its reader: curation reads the run's
@@ -320,7 +329,9 @@ with nothing of it reaching the judge, when:
 Both halves of the screen are the host's; this package holds no threshold. A Pi host passes pi-browser's page judge and
 its `INJECTION_THRESHOLD` (`import { INJECTION_THRESHOLD } from "@parcha/pi-browser"`): `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
 contentType: "text/markdown", text })).injection, threshold: INJECTION_THRESHOLD }`. The screen scores every new or
-changed note, skill and draft; a score at or over `threshold` refuses that item, and so does one the screen could not judge: it threw, took longer
+changed note, skill and draft, and the memo, whose refusal refuses no candidate: the memo then lands as the host renders
+it (`hostRenderedMemo`: its checked front matter, a line saying why, host lines in the other sections and the paths it
+named that the run's branch changed, with no text of the run's and no Review it wrote); a score at or over `threshold` refuses that item, and so does one the screen could not judge: it threw, took longer
 than `screenTimeoutMs` (30 s), or answered out of shape. Then curate judges each candidate and writes the result as a
 merge commit on `main`: its second parent is the run as it lands (a commit on the run's base holding exactly what curation
 took, `Landed-Run: <run id>`), so the run's own branch is never merged and nothing curation refused becomes reachable from
@@ -328,6 +339,18 @@ main, and `git revert -m 1` takes the run back out. It carries `Curated-Run: <ru
 it touched, and is pushed without force. Its message is the verdict and every reason; the run's memo lands with them as
 its `## Review` section, and `learnings/INDEX.md` is rewritten from the active learnings. Holds and refusals are in that
 message, so a run that only held still gets its commit and is curated once.
+
+A host that asks a person before a run merges uses three more pieces. `curate({ only: [runId] })` curates just the runs
+it names and leaves every other run's branch as it is, unjudged. `curate({ hold: true })` plans each run and commits
+nothing: the report's `planned` holds each `{ run, plan, report }`, the plan in plain JSON (`HeldPlan`: the run, main as
+it was, the base, the files, the message, the trailers and the memo before its Review). `landHeld({ repo, plan,
+decision })` lands it once the person decides: `"approve"` lands it as curate would have, with the run as it lands as
+the merge's second parent; `{ refuse: reason }` lands the memo alone, its Review `curate: run <id>: refused by a person:
+<reason>` (one line, 1 to 200 characters), so the run counts as curated and is never judged again. A run already
+curated answers `already`, and a main that moved since the plan answers `stale` with nothing landed: plan it again.
+`landHeld` checks the plan's shape and guards its files as the curator before it writes anything, and a plan writes no
+run's memo but its own. That is a shape check, not an integrity check: a plan someone altered can still write any note
+text a curator may write, so the host's custody of the plan file is the control (keep it where no run's tools reach).
 
 The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
 `@parcha/agentrun-jev` is one (it comes with this package through `@parcha/agentrun-pi`; add it to your own dependencies

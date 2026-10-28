@@ -15,6 +15,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { readJson, RUN_META, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
+import { secretsOf } from "./learning.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { durationMs } from "./print.js";
@@ -202,9 +203,17 @@ export type RunsOptions = {
   log?: (event: string, fields: Record<string, string | number>) => void; afterCarryBack?: (run: Run) => void | Promise<void>;
 };
 
-/** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
- *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
-const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
+/** The server's own variables, which a run's process never gets: the API token, by name or by value, and the judge's
+ *  TYPESAFE_API_KEY. Model keys, the AGENT_MODEL variables and the rest of the environment pass; the door token goes by
+ *  file. */
+const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", "TYPESAFE_API_KEY"]);
+/** The values a run's process never gets, the one list of this server's secrets: the API token, the door token, and each
+ *  server-only variable's value. */
+export const serverSecrets = (env: NodeJS.ProcessEnv, token: string, doorToken: string): string[] =>
+  [...new Set([token, doorToken, ...[...SERVER_ONLY].map((name) => env[name] ?? "")])].filter((value) => value.trim() !== "");
+/** The one list of this host's secrets every learning write is guarded against, at propose and at review: the server's
+ *  own and every key, token, secret and password variable of `env` (learning.ts `secretsOf`). */
+export const hostSecrets = (env: NodeJS.ProcessEnv, token: string, doorToken: string): string[] => [...new Set([...serverSecrets(env, token, doorToken), ...secretsOf(env)])];
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
   Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
 

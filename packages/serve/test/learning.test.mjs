@@ -11,7 +11,7 @@ import { learningId, renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
+import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, secretsOf, withAgentRepo } from "../dist/learning.js";
 import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 /** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
@@ -51,6 +51,16 @@ function storeRevision(data, id) {
   }
 }
 /** The run's learning state once the server has proposed it after the carry back. */
+/** The run's state once review has taken up its proposal. These servers have no injection screen, so it ends as
+ *  "no_screen" (learning-review.test.mjs covers what review does with one). */
+async function reviewedOf(data, agentId, runId, deadlineMs = 20_000) {
+  for (const end = Date.now() + deadlineMs; ; await sleep(50)) {
+    const state = await readRunState(data, agentId, runId);
+    if (state?.state === "no_screen") return state;
+    assert.ok(Date.now() < end, `the run ${runId} was proposed and reviewed; last ${JSON.stringify(state)}`);
+  }
+}
+
 async function stateOf(data, agentId, runId, deadlineMs = 20_000) {
   for (const end = Date.now() + deadlineMs; ; await sleep(50)) {
     const state = await readRunState(data, agentId, runId);
@@ -96,7 +106,8 @@ test("the learn tool comes with learning: naming it while learning is off is ref
   assert.equal(named.status, 201, "naming it while learning is on is allowed");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   await follow(api, run.run_id, ["completed"]);
-  assert.equal((await stateOf(data, "calc", run.run_id)).state, "proposed", "and the run gets one learn tool");
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
+  assert.equal((await reviewedOf(data, "calc", run.run_id)).reason, "no injection screen on this server", "and the run gets one learn tool");
 });
 
 test("an agent that learns has a repository beside the store whose main holds AGENTS.md and agent.json for its current revision, one host commit per change", async (t) => {
@@ -150,8 +161,9 @@ test("a run starts from main's notes at one commit: they are in its workspace an
   assert.equal(await readFile(join(work, ".agent", "learnings", "L-0123456789ab.md"), "utf8"), renderLearning(lesson("L-0123456789ab", "Search both forms of the legal name.")));
   const bare = bareOf(data, "calc");
   const branch = `runs/${run.run_id}`;
-  const state = await stateOf(data, "calc", run.run_id);
-  assert.deepEqual(state, { state: "proposed", branch, base, sha: tip(bare, branch) }, "the server records what it proposed");
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
+  const state = await reviewedOf(data, "calc", run.run_id);
+  assert.deepEqual({ ...state }, { state: "no_screen", reason: "no injection screen on this server", branch, base, sha: tip(bare, branch) }, "the server records what it proposed, and review that it waits for a screen");
   assert.ok(branches(bare).includes(branch), `the run leaves ${branch}`);
   assert.equal(git(bare, "merge-base", branch, "main"), base, "the branch starts from the commit the run was seeded from");
   const memo = front(show(bare, branch, `memos/${run.run_id}.md`));
@@ -290,7 +302,9 @@ test("a run whose end its server never carried back is proposed once by the next
   const bare = bareOf(data, "calc");
   assert.deepEqual(branches(bare).filter((b) => b.startsWith("runs/")), [`runs/${run.run_id}`]);
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
-  assert.deepEqual({ ...(await readRunState(data, "calc", run.run_id)) }, { state: "proposed", branch: `runs/${run.run_id}`, base: state.base, sha: state.sha });
+  // The server closed after what ran behind the carry back, its review included, and has no screen: exactly "no_screen".
+  const recorded = await readRunState(data, "calc", run.run_id);
+  assert.deepEqual({ ...recorded }, { state: "no_screen", reason: "no injection screen on this server", branch: `runs/${run.run_id}`, base: state.base, sha: state.sha });
   assert.doesNotMatch(next.stderr(), /not proposed|after its carry back|catch-up/, "no error line");
 });
 
@@ -316,7 +330,7 @@ test("a proposal and the start-time catch-up of the same run at once make one co
   t.after(() => store.close());
   const reader = { store, request: async (act) => act() };
   const errors = [];
-  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id), catchUp(data, reader, (line) => errors.push(line))]);
+  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id, () => secretsOf(process.env)), catchUp(data, reader, (line) => errors.push(line), () => secretsOf(process.env))]);
   assert.deepEqual(errors, []);
   assert.deepEqual(caught, [run.run_id], "the catch-up read no record either, and proposed it too");
   const state = await readRunState(data, "calc", run.run_id);
@@ -363,7 +377,7 @@ test("a writer holding the agent store makes the start-time catch-up and a propo
   // The catch-up meets the held store, says it is busy, and goes on once the writer lets go: here, when it says so.
   let release = hold();
   const lines = [];
-  const caught = await catchUp(data, agents, (line) => (lines.push(line), /busy/.test(line) && release()));
+  const caught = await catchUp(data, agents, (line) => (lines.push(line), /busy/.test(line) && release()), () => secretsOf(process.env));
   assert.deepEqual(caught, [run.run_id], "the catch-up proposed the run once the store was free");
   assert.ok(lines.some((line) => /busy/.test(line)), `it waited for the writer: ${JSON.stringify(lines)}`);
   assert.deepEqual(lines.filter((line) => !/busy/.test(line)), [], "and logged nothing else");
@@ -372,7 +386,7 @@ test("a writer holding the agent store makes the start-time catch-up and a propo
   // A proposal reads the store through its caller's request, which waits for the writer the same way.
   release = hold();
   const waited = { request: (act) => whenFree(act, [10, 10, 10, 10, 10], () => release()) };
-  assert.deepEqual(await proposeFor(data, { store: agents.store, request: waited.request }, run.run_id), { status: "already", sha: state.sha });
+  assert.deepEqual(await proposeFor(data, { store: agents.store, request: waited.request }, run.run_id, () => secretsOf(process.env)), { status: "already", sha: state.sha });
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
 });
 
@@ -425,9 +439,9 @@ test("a run whose end the store refuses at first is proposed once the end lands 
   assert.equal(await readRunState(data, "calc", runId), undefined, "nothing is proposed before the end lands");
   assert.equal(branches(bare).includes(`runs/${runId}`), false);
   release();
-  const state = await stateOf(data, "calc", runId);
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
+  const state = await reviewedOf(data, "calc", runId);
   assert.equal(storeRun(data, runId).state, "completed");
-  assert.equal(state.state, "proposed");
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
   assert.deepEqual(said.filter((line) => line.includes(runId) && /after its carry back|not proposed/.test(line)), [], "the hook ran once, after the end was written");
 });
@@ -452,10 +466,10 @@ test("a server that stops while a run's end waits to be written proposes nothing
   let closingNext;
   const closeNext = () => (closingNext ??= next.close());
   t.after(closeNext);
-  const state = await stateOf(data, "calc", runId);
+  // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
+  const state = await reviewedOf(data, "calc", runId);
   await closeNext();
   assert.equal(storeRun(data, runId).state, "completed");
-  assert.equal(state.state, "proposed");
   assert.equal(git(bareOf(data, "calc"), "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
 });
 
@@ -501,7 +515,7 @@ test("the server proposes once the run's end is written, so the memo carries the
   assert.equal(Number(front(show(bare, branch, `memos/${run.run_id}.md`)).cost_usd), ended.costUsd, "the cost the carry back wrote");
   const store = openStoreReader(data);
   t.after(() => store.close());
-  assert.deepEqual(await proposeFor(data, { store, request: async (act) => act() }, run.run_id), { status: "already", sha });
+  assert.deepEqual(await proposeFor(data, { store, request: async (act) => act() }, run.run_id, () => secretsOf(process.env)), { status: "already", sha });
   assert.equal(tip(bare, branch), sha);
   assert.equal(git(bare, "log", "--format=%H", `main..${branch}`), sha, "one commit for the run");
 });
@@ -537,8 +551,8 @@ test("a push that fails ends the run as it would have; the next start proposes i
     const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
     const closeNext = once(next);
     api = client(next.baseUrl, next.token);
-    const state = await stateOf(data, "calc", run.run_id);
-    assert.equal(state.state, "proposed");
+    // No injection screen on this server, so its review leaves the run waiting: exactly "no_screen".
+    const state = await reviewedOf(data, "calc", run.run_id);
     await closeNext();
     const at = (await stat(stateFile)).mtimeMs;
     if (start === 1) assert.equal(at, written, "a run with a recorded proposal is not proposed again");

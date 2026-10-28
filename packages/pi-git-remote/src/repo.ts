@@ -115,6 +115,9 @@ export type Repo = {
   /** Sends a commit to `branch` on the remote: by sha, never forced, never running a hook on either side. A remote that
    *  moved is a `conflict`; a remote that refuses the ref is `refused`. */
   push(sha: string, branch: string): Promise<void>;
+  /** Deletes `branch` on the remote and here, only while the remote holds it at `expected` (a full sha): a branch that
+   *  moved past it is a `conflict` and stays. False when the remote has no such branch. Never runs a hook on either side. */
+  deleteBranch(branch: string, expected: string): Promise<boolean>;
   /** Merges `from` into `into` here: a fast-forward when possible, else a merge commit from merge-tree. A conflict
    *  changes nothing. Local only; `push` it after. */
   merge(from: string, into: string): Promise<MergeResult>;
@@ -568,13 +571,19 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     return commitTree(tree, [parent], message);
   }
 
+  /** One `git push` of `refspec` to the push URL, porcelain, with no hook on either side; `lease` guards a delete. */
+  async function pushRefspec(refspec: string, lease?: string) {
+    const credential = await credentialFor();
+    const result = await git(["push", "--porcelain", "--no-verify", ...packArgs("receive"), ...(lease ? [lease] : []), remote.pushUrl ?? remote.url, refspec],
+      { allowFail: true, ...(credential ? { credential } : {}) });
+    return { result, credential };
+  }
+
   async function push(sha: string, branchName: string): Promise<void> {
     const branch = checkBranch(branchName);
     if (typeof sha !== "string" || !SHA.test(sha)) throw refused("push takes a full commit sha");
     if (!(await revParse(sha))) throw new GitRemoteError("missing", `no commit ${sha} here`);
-    const credential = await credentialFor();
-    const result = await git(["push", "--porcelain", "--no-verify", ...packArgs("receive"), remote.pushUrl ?? remote.url, `${sha}:refs/heads/${branch}`],
-      { allowFail: true, ...(credential ? { credential } : {}) });
+    const { result, credential } = await pushRefspec(`${sha}:refs/heads/${branch}`);
     if (result.code !== 0) {
       const line = result.stdout.toString("utf8").split("\n").find((l) => l.startsWith("!\t")) ?? "";
       if (line.includes("[rejected]")) throw new GitRemoteError("conflict", `the remote's ${branch} moved: ${sha} is not a fast-forward of it`);
@@ -585,6 +594,28 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
       throw new GitRemoteError("git", `git push failed (${result.code}): ${result.stderr.trim()}`);
     }
     await fetchAll();
+  }
+
+  async function deleteBranch(branchName: string, expected: string): Promise<boolean> {
+    const branch = checkBranch(branchName);
+    if (typeof expected !== "string" || !SHA.test(expected)) throw refused("deleteBranch takes the full sha the branch is expected at");
+    await fetchAll();
+    const dropLocal = () => git(["update-ref", "-d", `refs/heads/${branch}`, expected], { allowFail: true });
+    const tip = await remoteTipOf(branch);
+    if (tip === undefined) {
+      await dropLocal();
+      return false;
+    }
+    const { result, credential } = await pushRefspec(`:refs/heads/${branch}`, `--force-with-lease=refs/heads/${branch}:${expected}`);
+    if (result.code !== 0) {
+      const line = result.stdout.toString("utf8").split("\n").find((l) => l.startsWith("!\t")) ?? "";
+      if (line.includes("[rejected]")) throw new GitRemoteError("conflict", `the remote's ${branch} moved past ${expected}`);
+      if (line.includes("[remote rejected]")) throw refused(`the remote refused deleting ${branch}: ${scrub(line.split("\t").at(-1)!, credential)}`);
+      throw new GitRemoteError("git", `git push failed (${result.code}): ${result.stderr.trim()}`);
+    }
+    await dropLocal();
+    await fetchAll();
+    return true;
   }
 
   /** The tree `git merge-tree --write-tree` makes of `args`; a conflict throws `conflict` naming its paths. */
@@ -675,6 +706,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     commitTo: serial(commitTo),
     makeCommit: serial(makeCommit),
     push: serial(push),
+    deleteBranch: serial(deleteBranch),
     merge: serial(merge),
     revert: serial(revert),
     log: serial(log),

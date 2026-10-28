@@ -18,8 +18,9 @@ import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
+import { type LearningOptions, Review } from "./learning-review.js";
 import { durationMs, logLine } from "./print.js";
-import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { type CarryBackRetry, hostSecrets, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
@@ -80,11 +81,21 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** Review's injection screen (the browser lane's page judge and its threshold) and, for tests, its judge. Without a
+   *  screen, or a judge (Jev on TYPESAFE_API_KEY), no learning merges, and each run's learning state says why. */
+  learning?: LearningOptions;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
 /** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; close(): Promise<void> };
+/** `learning` reviews, approves and refuses a learning run's proposal; `settled` is the start-time pass. */
+export type ServeLearning = {
+  review(agentId: string, runId: string): Promise<unknown>;
+  approve(agentId: string, runId: string, principal: string): Promise<{ status: string }>;
+  refuse(agentId: string, runId: string, principal: string, reason: string): Promise<{ status: string }>;
+  settled(): Promise<void>;
+};
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; learning: ServeLearning; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -252,7 +263,18 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A new agent learns where this host can keep its learning repository.
   const agents = new Agents(data, (await learningBlocker(env)) === undefined ? "auto" : "off");
   // Once a learning run's end is written, what it learned is proposed as its branch.
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  // One list of secrets for every learning write, at propose and at review.
+  const secrets = () => hostSecrets(env, token, doorToken);
+  const review = new Review({
+    data, agents, env, secrets, ...options.learning,
+    ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}),
+  });
+  // Then review curates it, in the same queue.
+  const proposeThenReview = async (run: Run) => {
+    const proposed = await proposeFor(data, agents, run.id, secrets);
+    if (proposed?.status === "proposed" || proposed?.status === "already") await review.run(run.agentId, run.id);
+  };
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: proposeThenReview, ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -276,7 +298,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
   // Ended runs of learning agents that were never proposed: a server that stopped between a carry back and its proposal.
   // A host commit that failed is made again by the agent's next save or run.
-  const caughtUp = catchUp(data, agents, (line) => void process.stderr.write(`agentrun-serve: ${line}\n`))
+  // Then review takes up every run proposed or waiting, and deletes merged branches it had not deleted yet.
+  const caughtUp = catchUp(data, agents, (line) => void process.stderr.write(`agentrun-serve: ${line}\n`), secrets)
+    .then(() => review.startPass())
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: learning catch-up: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
@@ -816,8 +840,16 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     token,
     tokenFile,
     tokenMade: stored?.made ?? false,
+    learning: {
+      review: (agentId, runId) => review.run(agentId, runId),
+      approve: (agentId, runId, principal) => review.approve(agentId, runId, principal),
+      refuse: (agentId, runId, principal, reason) => review.refuse(agentId, runId, principal, reason),
+      settled: () => caughtUp,
+    },
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
+      // A review waiting on the judge lets go first: its run waits for the next start.
+      review.close();
       await runs.close();
       await caughtUp;
       await new Promise((done) => (server.close(done), server.closeAllConnections()));

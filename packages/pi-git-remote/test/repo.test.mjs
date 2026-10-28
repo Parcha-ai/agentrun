@@ -203,6 +203,32 @@ test("makeCommit writes a commit of exactly its files on a parent and moves no r
   await assert.rejects(repo.makeCommit({ parent: main, files: { ".git/config": "x" }, message: "x" }), (e) => e instanceof GitRemoteError);
 });
 
+test("deleteBranch deletes a remote branch only at the commit it is expected at, here and on the remote", async () => {
+  const root = await scratch();
+  const { dir, remote } = await seededRemote(root, { "keep.md": "keep\n" });
+  const repo = await openRepo({ dir: path.join(root, "host"), remote });
+  assert.equal(typeof repo.deleteBranch, "function");
+  const run = await repo.commitTo("runs/r1", { files: { "memos/r1.md": "x\n" }, message: "r1", trailers: { [RUN_ID_TRAILER]: "r1" } });
+  await repo.push(run.sha, "runs/r1");
+  const other = await openRepo({ dir: path.join(root, "other"), remote });
+  const moved = await other.commitTo("runs/r2", { files: { "memos/r2.md": "x\n" }, message: "r2", trailers: { [RUN_ID_TRAILER]: "r2" } });
+  await other.push(moved.sha, "runs/r2");
+  const later = await other.commitTo("runs/r2", { files: { "memos/r2.md": "y\n" }, message: "r2 again", trailers: { [RUN_ID_TRAILER]: "r2b" } });
+  await other.push(later.sha, "runs/r2");
+
+  await assert.rejects(repo.deleteBranch("runs/r2", moved.sha), { code: "conflict" }, "a branch that moved past the expected commit is kept");
+  assert.equal(await repo.resolve("runs/r2"), later.sha);
+  assert.ok((await refsOf(dir))["refs/heads/runs/r2"], "the remote still has it");
+
+  assert.equal(await repo.deleteBranch("runs/r1", run.sha), true);
+  assert.equal((await refsOf(dir))["refs/heads/runs/r1"], undefined, "gone from the remote");
+  assert.equal(await repo.resolve("runs/r1"), undefined, "and from this handle, local branch included");
+  assert.deepEqual((await repo.branches("runs/")).map((b) => b.name), ["runs/r2"]);
+  assert.equal(await repo.deleteBranch("runs/r1", run.sha), false, "a second delete finds nothing to delete");
+  await assert.rejects(repo.deleteBranch("runs/r1", "main"), (e) => e instanceof GitRemoteError, "the expected commit is a full sha");
+  await assert.rejects(repo.deleteBranch("../x", run.sha), (e) => e instanceof GitRemoteError);
+});
+
 test("merge fast-forwards, makes a merge commit when both sides moved, and reports a conflict without moving anything", async () => {
   const root = await scratch();
   const { dir, remote, seeder } = await seededRemote(root, { "notes.md": "1\n2\n3\n4\n5\n6\n" });

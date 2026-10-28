@@ -28,6 +28,7 @@ async function everyOperation(repo, other, root) {
   const reverted = await repo.revert(feature.sha, MAIN);
   await repo.push(reverted.sha, MAIN);
   assert.equal(await repo.read("notes.txt", reverted.sha), NOTES.replace("line 6", "line 6 (main)"));
+  assert.equal(await repo.deleteBranch("feature", feature.sha), true);
   return { feature, merged, reverted };
 }
 

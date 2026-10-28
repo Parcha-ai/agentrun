@@ -407,8 +407,24 @@ its runs are refused with `409 agent_not_runnable` until git is there.
 - The guard refuses a note that holds a value of one of the server's secrets: the variables whose names end in `KEY`,
   `TOKEN`, `SECRET` or `PASSWORD`. A credential inside a variable named otherwise (a `..._URL` such as
   `postgres://user:password@host/db`) is not among them.
-- Nothing merges into `main` yet. A run's branch stays a proposal until review and merge exist, and those wait for an
-  injection screen on this server.
+- Then the server reviews the proposal, in the same queue, through a clone of its own, `DATA/agents/<id>/curator`:
+  `@parcha/pi-agent-learn`'s curate, with the checker on the tools this server binds (`read`, `write`, `edit`), the
+  injection screen, and the judge. The agent's current revision at review time decides how: a run proposed under
+  `approve` merges by itself if the agent was switched to `auto` before its review, and a plan already held stays held. `auto` merges what passes into `main`, a
+  merge whose second parent is the run as it lands, and `approve` holds the plan in `<run id>.plan.json` until a person
+  approves or refuses it (`learning.approve` and `learning.refuse` on the server, each naming who decided; a plan that
+  `main` moved under is planned again). A merged branch is deleted while it is still at the commit proposed.
+- The screen is a host's (`learning.screen` in `startServe`'s options: a page judge and its threshold), and the judge is
+  Jev on `TYPESAFE_API_KEY`, which no run's process gets. With no screen or no judge, nothing is curated: the branch
+  waits, the run's state says `no injection screen on this server` or `no judge on this server`, and the next start
+  reviews it once both are there. A run whose agent no longer learns is left too (`off`). A run awaiting approval is
+  never curated without a person, at start or after. A judge call that does not answer in 2 minutes, or one still out
+  when the server closes, is let go: nothing is curated, and the run waits as `no_judge` (`the judge did not answer`)
+  for the next start, so a hung judge never holds shutdown.
+- Propose and review guard every write against one list of this host's secrets: the server's token, the door token,
+  `TYPESAFE_API_KEY`, and every variable whose name ends in `KEY`, `TOKEN`, `SECRET` or `PASSWORD`.
+- The run's state records the review: `merged` with the merge and the verdict, `awaiting_approval`, and the judge's cost
+  in `review_usd`, the agent's learning cost: a run's own cost never moves once it ended.
 
 ## Spend cap
 
