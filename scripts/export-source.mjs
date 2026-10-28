@@ -126,11 +126,12 @@ const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ic
 /** A PDF is exported only when one line of ASSETS.md names it with its SHA-256: each one is a document someone reviewed, not a type. */
 const assetsLines = (await readFile(join(root, 'ASSETS.md'), 'utf8').catch(() => '')).split('\n');
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
-function excluded(path) {
+function excluded(path, file) {
   const parts = path.split('/');
-  // A review record is a file the author writes as `<n>.review.json`; a module or directory named review is source.
+  // A review file is a file named `<name>.review.<ext>` (the author's `<n>.review.json`). Only files match: a module or
+  // directory named review, and a directory named like a review file, are source.
   return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
-    /^.+\.review\.json$/.test(parts.at(-1)) ||
+    (file && /^.+\.review\.[^/]+$/.test(parts.at(-1))) ||
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
 }
 const forbidden = [
@@ -167,7 +168,7 @@ function scan(path, content) {
 async function collect(relative = '') {
   for (const entry of (await readdir(join(root, relative), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
     const path = relative ? `${relative}/${entry.name}` : entry.name;
-    if (excluded(path)) continue;
+    if (excluded(path, entry.isFile())) continue;
     if (!relative && !(entry.isDirectory() ? allowedDirectories.has(entry.name) : allowedRootFiles.has(entry.name))) continue;
     if (entry.isSymbolicLink()) throw new Error(`Source export refuses symlink: ${path}`);
     if (entry.isDirectory()) { await collect(path); continue; }
@@ -187,7 +188,7 @@ async function collect(relative = '') {
 }
 const receipt = {
   status: 'running', publicationReady: false, generatedAt: new Date().toISOString(), node: process.version,
-  packageLockSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.json', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files'],
+  packageLockSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.*', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files'],
   limitations: ['Heuristic scanning cannot prove the absence of every secret or private fact.', 'Binary assets are hashed and allowlisted by extension, not semantically inspected.', 'Export success does not authorize publication; source provenance, license and owner approval remain required.'],
   runtimeDependencies: { count: rows.length, packages: rows, flags: flagged, unresolvedOptional: missingOptional },
 };
