@@ -8,6 +8,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
+import { foldSession } from '@parcha/agentrun-adapters/kernel';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { codexAdapter } from '@parcha/agentrun-codex';
 
@@ -118,4 +119,93 @@ test("a crash inside a never tool's call: the next process recovers the turn, an
   const records = await store.read('step:s1');
   const ended = records.filter((r) => r.kind === 'kernel.end').map((r) => r.data);
   assert.ok(ended.some((e) => e.status === 'failed' && e.error?.interrupted === true), JSON.stringify(ended));
+});
+
+/** A Codex adapter on the stand-in for a bare session (no provider traffic): its turns follow `script`. */
+function bare(script, sessionsDir) {
+  const dir = scratch();
+  const file = join(dir, 'script.json');
+  writeFileSync(file, JSON.stringify(script));
+  return codexAdapter({
+    model: 'luna-test',
+    provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' },
+    sessionsDir: sessionsDir ?? join(dir, 'sessions'),
+    standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_SCRIPT: file } },
+  });
+}
+const MODELS = { beforeRequest: async () => {}, afterRequest: async () => {} };
+const until = async (done, what, ms = 15_000) => {
+  const end = Date.now() + ms;
+  while (!done()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
+
+test("an interrupt while a never tool's outcome is still being written: the next turn's drive folds the outcome, never takes it for abandoned", async () => {
+  let charged = 0;
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: async () => { charged += 1; return { text: 'paid' }; } };
+  const spec = { key: 'step:reopen', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const raw = await store.open(spec.key);
+  // The session's writer, with the charge's outcome append held, as a slow store holds it.
+  const charges = new Set();
+  let release;
+  let held = false;
+  const writer = { key: raw.key, read: () => raw.read(), append: async (records) => {
+    for (const r of records) if (r.kind === 'kernel.start' && r.data.name === 'tool.charge') charges.add(r.data.stepId);
+    if (!held && records.some((r) => r.kind === 'kernel.end' && charges.has(r.data.stepId))) { held = true; await new Promise((resolve) => { release = resolve; }); }
+    return raw.append(records);
+  } };
+  const session = await bare(['call charge {"amount":5}', 'hello']).open(spec, { writer, models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await session.send('pay');
+  await until(() => held, 'the charge outcome in flight');
+  // The interrupt halts the drive and the next turn opens a new one on the same writer, while the outcome is still held.
+  const next = (async () => { await session.interrupt(); await session.send('and then?'); return session.turnEnd(); })();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  release();
+  await next;
+  await session.close();
+  assert.equal(charged, 1, 'the charge ran once');
+  const outcome = [...foldSession(spec.key, await raw.read()).effects.values()].find((e) => e.name === 'tool.charge');
+  assert.equal(outcome?.status, 'completed', `the charge ran and paid, but the log says ${outcome?.status}${outcome?.error ? ` (${outcome.error.message.slice(0, 60)})` : ''}`);
+});
+
+test('the same call delivered twice runs its tool once, and both deliveries are answered with the one result', async () => {
+  for (const replay of ['never', 'safe']) {
+    let ran = 0;
+    const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay, call: async () => { ran += 1; await new Promise((resolve) => setTimeout(resolve, 30)); return { text: 'paid' }; } };
+    const spec = { key: `step:twice-${replay}`, label: 'pay', system: [], tools: [charge], context: 'fresh' };
+    const store = memorySessionStore();
+    const session = await bare(['twice charge {"amount":5}']).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+    await session.send('pay');
+    assert.equal((await session.turnEnd()).status, 'completed', replay);
+    await session.close();
+    assert.equal(ran, 1, `a ${replay} tool ran once for one call id`);
+    const calls = [...foldSession(spec.key, await store.read(spec.key)).effects.values()].filter((e) => e.name === 'tool.charge');
+    assert.deepEqual(calls.map((e) => e.status), ['completed'], replay);
+  }
+});
+
+test('a fresh box recovers a crashed never call from the session store alone, and does not run it again', async () => {
+  let charged = 0;
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:fresh-box', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const died = new AbortController();
+  const a = await bare(['call charge {"amount":5}']).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('pay');
+  await reached;
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+  // Nothing of the first process's directory survives: the store is all the next one has.
+  const b = await bare(['hello']).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn');
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 1, 'the charge ran once');
 });

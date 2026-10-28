@@ -9,7 +9,9 @@ export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "POST", path: "/v1/responses", headers: ["originator", "x-client-request-id"] },
 ]);
 
-const HOSTED_TOOL = /^(?:web_search|web_search_preview|file_search|code_interpreter|computer|computer_use|computer_use_preview|image_generation|mcp|local_shell|shell)/;
+/** Hosted tools Codex adds to every request whatever its config says (web search): dropped, never offered. Any other hosted tool is refused. */
+const DROPPED = /^(?:web_search|web_search_preview)$/;
+const HOSTED_TOOL = /^(?:file_search|code_interpreter|computer|computer_use|computer_use_preview|image_generation|mcp|local_shell|shell)/;
 /** Code mode's carriers: the tools a code-mode model calls the session's tools through. */
 const CODE_MODE: Readonly<Record<string, string>> = Object.freeze({ exec: "custom", wait: "function" });
 
@@ -30,8 +32,11 @@ function ownTools(tools: unknown, allowed: ReadonlySet<string>, carriers: boolea
     const { type: rawType, name: rawName, tools: inner } = (tool ?? {}) as { type?: unknown; name?: unknown; tools?: unknown };
     const type = String(rawType ?? "");
     const name = String(rawName ?? "");
-    if (type === "namespace" && carriers) {
-      out.push({ ...(tool as object), tools: ownTools(inner, allowed, true) });
+    if (DROPPED.test(type)) continue;
+    if (type === "namespace") {
+      // A namespace holds the tools of a built-in family (or code mode's own): only the session's own ones stay, and an empty one goes.
+      const kept = ownTools(inner, allowed, carriers);
+      if (carriers || kept.length) out.push({ ...(tool as object), tools: kept });
       continue;
     }
     if (HOSTED_TOOL.test(type) || (type !== "function" && type !== "custom")) throw new ProxyRefusal(403, `a ${type.slice(0, 40) || "typeless"} tool is not offered to this session's model`);

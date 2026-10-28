@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/test/fake-app-server.mjs at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: FAKE_CODEX_SCRIPT, a script in place of each turn's text; comments.
+// Changed by Parcha, 2026-10-27: FAKE_CODEX_SCRIPT, a script in place of each turn's text; `twice <tool> <json>`, one call delivered twice; comments.
 /**
  * A fake `codex app-server --stdio`, for the tests that need no network. It
  * speaks the subset of the protocol the harness uses and keeps a rollout
@@ -23,7 +23,7 @@
  *   and exits (its VM, or Codex's own shutdown, would take it).
  *
  * Its "model" is a script: `call <tool> <json args>` calls the tool and
- * reports the result; `shell <command>` runs a built-in command the way
+ * reports the result (`twice` asks for the same call twice at once); `shell <command>` runs a built-in command the way
  * Codex does (an `exec_command` call in the rollout, `item/started` for a
  * `commandExecution`, an approval request that blocks, then a login shell,
  * `item/completed` with its output);
@@ -337,9 +337,9 @@ async function runTurn(turnId, clientId, text) {
     last = 'Recovered from the log. I will check the actual state before repeating anything.';
     await say(turnId, last);
   } else {
-    const call = /^call\s+(\w+)\s*([\s\S]*)$/.exec(trimmed);
+    const call = /^(call|twice)\s+(\w+)\s*([\s\S]*)$/.exec(trimmed);
     if (call) {
-      const [, tool, rawArgs] = call;
+      const [, verb, tool, rawArgs] = call;
       let args = {};
       try {
         args = rawArgs ? JSON.parse(rawArgs) : {};
@@ -349,7 +349,9 @@ async function runTurn(turnId, clientId, text) {
       const callLine = () => write('response_item', { type: 'function_call', name: tool, arguments: JSON.stringify(args), call_id: callId });
       if (!lag) callLine();
       notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
-      const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
+      const params = { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args };
+      // `twice`: the same call asked again at once, as a redelivery does; both are answered, and the tool answers one.
+      const result = verb === 'twice' ? (await Promise.all([request('item/tool/call', params), request('item/tool/call', params)]))[0] : await request('item/tool/call', params);
       if (lag) callLine();
       const out = result.contentItems?.map((c) => c.text).join('') ?? '';
       write('response_item', { type: 'function_call_output', call_id: callId, output: out });

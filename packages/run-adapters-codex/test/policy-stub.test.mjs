@@ -52,7 +52,7 @@ test('the provider gets the session model, no stored response, clamped output, i
 
 test('a provider-hosted tool (web search, file search, code interpreter, computer use, MCP, a shell) is never offered to the model', async () => {
   const { p, forwarded } = await proxy();
-  for (const type of ['web_search', 'web_search_preview', 'file_search', 'code_interpreter', 'computer_use_preview', 'image_generation', 'mcp', 'local_shell', 'shell', '', 'other']) {
+  for (const type of ['file_search', 'code_interpreter', 'computer_use_preview', 'image_generation', 'mcp', 'local_shell', 'shell', '', 'other']) {
     assert.equal((await send(p.url, { model: 'luna-test', tools: [{ type: 'function', name: 'lookup' }, { type }] })).status, 403, type);
   }
   assert.equal((await send(p.url, { tools: {} })).status, 400);
@@ -79,4 +79,22 @@ test('usage comes back once a response completes, cached tokens included', async
   const policy = codexPolicy({ model: 'm', tools: [] });
   assert.deepEqual(policy.usageOf(sse({ input_tokens: 5, input_tokens_details: { cached_tokens: 3 }, output_tokens: 1 })), { input: 5, cacheRead: 3, output: 1 });
   assert.equal(policy.usageOf('data: {"delta":"hi"}\n\n'), undefined);
+});
+
+test("Codex's own web search and built-in tool families are dropped from a request, and the request still goes through", async () => {
+  const { p, forwarded } = await proxy();
+  const own = { type: 'function', name: 'lookup' };
+  const r = await send(p.url, {
+    input: 'hi',
+    tools: [
+      { type: 'web_search', external_web_access: true },
+      { type: 'web_search_preview' },
+      { type: 'function', name: 'exec_command' },
+      { type: 'function', name: 'request_user_input' },
+      { type: 'namespace', name: 'multi_agent_v1', tools: [{ type: 'function', name: 'spawn_agent' }] },
+      own,
+    ],
+  });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(forwarded[0].body.tools, [own]);
 });
