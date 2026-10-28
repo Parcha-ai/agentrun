@@ -499,7 +499,7 @@ test("modelPortFor, alone (a chat run's session): the runner's records and event
   await first.models.beforeRequest({ model: 'm' });
   await first.models.afterRequest({ input: 10, output: 2, cacheRead: 0, usd: 0.5 });
   await first.models.beforeRequest({ model: 'm' });
-  assert.deepEqual(await runnerRecords(), [[RUNNER_RECORDS.request, { turn: 1, model: 'm' }], [RUNNER_RECORDS.turn, { usd: 0.5 }], [RUNNER_RECORDS.request, { turn: 2, model: 'm' }]], "the runner's own records");
+  assert.deepEqual(await runnerRecords(), [[RUNNER_RECORDS.request, { turn: 1, model: 'm' }], [RUNNER_RECORDS.turn, { turn: 1, usd: 0.5 }], [RUNNER_RECORDS.request, { turn: 2, model: 'm' }]], "the runner's own records: each answer names its turn");
   assert.deepEqual([first.turns(), first.spentUsd()], [2, 0.5]);
 
   // The next process: the cut request counts as a turn, the spend is unknown, and it is booked once, as cut.
@@ -523,4 +523,33 @@ test("modelPortFor, alone (a chat run's session): the runner's records and event
   const before = (await store.read(key)).length;
   await assert.rejects(refusing.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'refused');
   assert.equal((await store.read(key)).length, before);
+});
+
+test('requests in flight together are each booked under the turn they were admitted as: answers in reverse, and a cut one booked by its own turn', async () => {
+  const store = memorySessionStore();
+  const key = 'chat:overlap';
+  const ends = [];
+  const port = async () => modelPortFor(await store.open(key), { key, onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.usd, e.usage.cut ?? false]); } });
+  const turnsOf = async () => (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => [r.data.turn, r.data.usd, r.data.cut ?? false]);
+
+  // Two in flight, answered in reverse: each answer names its own turn, once.
+  const a = await port();
+  const t1 = await a.models.beforeRequest({ model: 'main' });
+  const t2 = await a.models.beforeRequest({ model: 'small' });
+  await a.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.02 }, t2);
+  await a.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.01 }, t1);
+  assert.deepEqual(ends, [[2, 0.02, false], [1, 0.01, false]]);
+  assert.deepEqual(await turnsOf(), [[2, 0.02, false], [1, 0.01, false]]);
+
+  // Two more in flight; the later one answers, the earlier is cut by a crash: only the cut one is booked, by its turn.
+  const t3 = await a.models.beforeRequest({ model: 'main' });
+  const t4 = await a.models.beforeRequest({ model: 'small' });
+  await a.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.04 }, t4);
+  assert.deepEqual([t3?.turn, t4?.turn], [3, 4]);
+  ends.length = 0;
+  const b = await port();
+  await b.bookCut();
+  await (await port()).bookCut();
+  assert.deepEqual(ends, [[3, null, true]], 'turn 3 booked as cut, once, and turn 4 not again');
+  assert.deepEqual((await turnsOf()).filter(([, , cut]) => cut), [[3, null, true]]);
 });

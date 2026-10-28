@@ -69,10 +69,11 @@ export interface ModelUsageReport extends ProxyUsage {
 }
 
 export interface ModelProxyHooks {
-  /** Before a paid request leaves; a throw refuses it. */
-  beforeRequest(request: { model: string }): Promise<void>;
-  /** When a request's response has completed, with its usage. */
-  afterRequest(usage: ModelUsageReport): Promise<void>;
+  /** Before a paid request leaves; a throw refuses it. What it returns (a ticket) is handed back to this request's
+   *  `afterRequest`, since requests may be in flight together. */
+  beforeRequest(request: { model: string }): Promise<unknown>;
+  /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
+  afterRequest(usage: ModelUsageReport, ticket?: any): Promise<void>;
 }
 
 export interface ModelProxyOptions {
@@ -282,8 +283,10 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       return refuse(res, 500, "the provider's credential headers could not be built", req);
     }
     if (closing) return refuse(res, 503, "the model proxy is closing", req);
+    // This request's own admission, handed back to its booking (requests may be in flight together).
+    let ticket: unknown;
     try {
-      if (!route.free) await hooks.beforeRequest({ model: asked });
+      if (!route.free) ticket = await hooks.beforeRequest({ model: asked });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
@@ -293,7 +296,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       refuse(res, 503, "the model proxy is closing", req);
       if (!route.free) {
         try {
-          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 });
+          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket);
         } catch (error) {
           say(`model proxy (${policy.id}): afterRequest threw; the request was not sent and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }
@@ -389,7 +392,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
     }
     try {
-      await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) });
+      await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) }, ticket);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }

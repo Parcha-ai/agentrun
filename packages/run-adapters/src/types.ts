@@ -85,8 +85,16 @@ export interface ModelUsage {
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be
  *  refused there (a turn cap, the host's budget); its usage is reported when it completes. */
 export interface ModelPort {
-  beforeRequest(request: ModelRequest): Promise<void>;
-  afterRequest(usage: ModelUsage): Promise<void>;
+  /** Admits a paid request, or throws to refuse it. It may return the request's ticket, which names the turn it was admitted as. */
+  beforeRequest(request: ModelRequest): Promise<ModelTicket | void>;
+  /** Books a completed request. `ticket` is what its own `beforeRequest` returned: requests may be in flight together, so
+   *  an answer is booked under the turn it was admitted as, not the latest one. */
+  afterRequest(usage: ModelUsage, ticket?: ModelTicket): Promise<void>;
+}
+
+/** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
+export interface ModelTicket {
+  turn: number;
 }
 
 /** What the host lends a session. */
