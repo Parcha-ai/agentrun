@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { ChildProcess } from 'node:child_process';
+import { ChildProcess, execFileSync } from 'node:child_process';
 import { Server, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,16 +26,20 @@ export const leftOpen = () => {
   const owned = new Set([process.stdin, process.stdout, process.stderr, ...handles.flatMap((handle) => (handle instanceof ChildProcess ? handle.stdio : handle instanceof Socket && handle.server ? [handle] : []))]);
   return handles.filter((handle) => handle instanceof ChildProcess || handle instanceof Server || (handle instanceof Socket && !owned.has(handle)));
 };
-/** The processes `pid` started, and theirs, from /proc (none where there is no /proc). */
+/** Every process and its parent: from /proc, or from `ps` where there is no /proc (macOS); none when neither answers. */
+const parentsOf = () => {
+  if (existsSync('/proc/self/stat')) return readdirSync('/proc').filter((name) => /^\d+$/.test(name)).flatMap((name) => { try { return [[Number(name), Number(readFileSync(`/proc/${name}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[1])]]; } catch { return []; } });
+  try { return execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n').map((line) => line.trim().split(/\s+/).map(Number)); } catch { return []; }
+};
+/** The processes `pid` started, and theirs. */
 const descendants = (pid) => {
-  let rows = [];
-  try { rows = readdirSync('/proc').filter((name) => /^\d+$/.test(name)).flatMap((name) => { try { return [[Number(name), Number(readFileSync(`/proc/${name}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[1])]]; } catch { return []; } }); } catch { /* no /proc */ }
+  const rows = parentsOf();
   const found = [];
   for (let parents = [pid]; parents.length;) { const next = rows.filter(([, parent]) => parents.includes(parent)).map(([child]) => child); found.push(...next); parents = next; }
   return found;
 };
 /** A child is killed with what it started: its process group when it leads one (spawned detached), which also holds what it started whose parent has exited,
- *  else each process still under it in /proc (none without /proc). */
+ *  else each process still under it. */
 const killWithItsOwn = (child) => {
   try { process.kill(-child.pid, 'SIGKILL'); return []; } catch { /* not a group leader */ }
   const under = descendants(child.pid);
