@@ -12,7 +12,7 @@ import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter, toolImageProblems, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
+import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
 
 const required = process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY === '1';
 let problem;
@@ -30,6 +30,22 @@ test("a tool's images are checked: one of the API's four types, at most the size
   assert.match(toolImageProblems('shot', [{ mimeType: 'image/png', data: 'A'.repeat(101) }], 100), /shot's image 1 is 101 bytes of base64, more than 100/);
   assert.match(toolImageProblems('shot', [{ mimeType: 'image/png', data: 'not base64!' }]), /shot's image 1 is not base64/);
   assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, maxImageBytes: 11 * 1024 * 1024 }), /maxImageBytes/);
+});
+
+test("an image over the adapter's size is the call's error, by the tool's name and the image, and the session goes on", async (t) => {
+  process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
+  t.after(() => { delete process.env.AGENTRUN_CLAUDE_AGENT_STANDIN; });
+  const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
+  t.after(() => provider.close());
+  const adapter = claudeAgentAdapter({ model: 'claude-test', provider: { origin: provider.url, credential: () => 'k' }, sessionsDir: join(mkdtempSync(join(ROOT, 'cap-')), 's'), standIn: { command: process.execPath }, maxImageBytes: 100, sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 5, script: ['call shot {}', 'call submit {"value":{"answer":"ok"}}'] }) });
+  const shot = { name: 'shot', description: 'A screenshot.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'the page', images: [{ mimeType: 'image/png', data: 'A'.repeat(200) }] }) };
+  const events = [];
+  const store = memorySessionStore();
+  const runNode = createHarnessRunner(adapter, { store, tools: [shot], onEvent: (e) => events.push(e) });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'cap', system: [], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['shot'] }), { answer: 'ok' });
+  assert.ok(events.some((e) => e.type === 'tool_end' && e.name === 'shot' && e.isError === true), 'the call failed');
+  const records = JSON.stringify(await Promise.all(store.keys().map((k) => store.read(k))));
+  assert.match(records, /the tool shot's image 1 is 200 bytes of base64, more than 100/, 'by the tool and the image, in the call\'s recorded outcome');
 });
 
 /** The tool_result blocks of a request, by the call each answers. */
