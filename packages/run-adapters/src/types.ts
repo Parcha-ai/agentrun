@@ -19,7 +19,9 @@ export interface HostTool {
   inputSchema: Record<string, unknown>;
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
-  call(args: unknown, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; isError?: boolean }>;
+  /** `sessionDir` is the runner's own, when it has one: a tool that runs a node of its own (the delegate) gives its child a
+   *  private directory the same way, by the child's key. */
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean }>;
 }
 
 /** One durable record of a session, in the order it was appended. */

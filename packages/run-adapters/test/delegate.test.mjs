@@ -3,7 +3,7 @@
 // replay, the deadline share, one child at a time, and the events nested under the lead's call.
 import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
-import { DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
+import { createHarnessRunner, DELEGATE_RESULT_SCHEMA, DELEGATE_TOOL, delegateProblems, delegateTool, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
 
 const test = (name, fn) => nodeTest(name, { timeout: 30_000 }, fn);
@@ -201,4 +201,21 @@ test("a child tool list the runner would refuse is refused when the tool is made
   assert.match(delegateProblems({ agents: { a: { description: 'd', system: 's', tools: ['fetch', 'fetch'] } }, tools: LEAD_TOOLS }).join('; '), /the agent a names the tool fetch twice/);
   assert.match(delegateProblems({ agents: { a: { description: 'd', system: 's', tools: ['submit'] } }, tools: [...LEAD_TOOLS, tool('submit')] }).join('; '), /the agent a names submit, which the runner gives every child itself/);
   assert.throws(() => delegateTool({ agents: { a: { description: 'd', system: 's', tools: ['fetch', 'fetch'] } }, tools: LEAD_TOOLS, adapter: fauxAdapter({ script: () => [] }), store: memorySessionStore(), parentKey: 'step:lead' }), /names the tool fetch twice/);
+});
+
+test("a lead whose runner gives sessions private directories gives its children theirs, each by its own key", async () => {
+  const dirs = [];
+  const faux = fauxAdapter({ script: (spec) => (spec.label.startsWith('delegate:') ? [{ submit: ANSWER }] : [{ call: 'delegate', args: { agent: 'checker', task: 'Check it.' } }, { submit: { answer: 'done' } }]) });
+  // An adapter that, like the Claude Agent adapter with no sessionsDir of its own, needs the directory the host lends.
+  const adapter = { ...faux, open: (spec, io) => { if (!io.dir) throw new Error('a session needs a private directory'); dirs.push([spec.key, io.dir]); return faux.open(spec, io); } };
+  const store = memorySessionStore();
+  const delegate = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store, parentKey: 'step:lead' });
+  const runLead = createHarnessRunner(adapter, { store, tools: [...LEAD_TOOLS, delegate], sessionDir: (key) => `/sessions/${key}` });
+  const result = await runLead({ kind: 'agent', label: 'lead', system: [], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, step: { sessionId: 'lead', attempt: 0, earlierSessionIds: [] } });
+  assert.deepEqual(result, { answer: 'done' });
+  assert.equal(dirs.length, 2, JSON.stringify(dirs));
+  const child = dirs.find(([key]) => key.includes('/delegate:'));
+  assert.ok(child, JSON.stringify(dirs));
+  assert.equal(child[1], `/sessions/${child[0]}`, "the child's directory is the lead's runner's, by the child's own key");
+  assert.notEqual(child[1], dirs.find(([key]) => !key.includes('/delegate:'))[1]);
 });

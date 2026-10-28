@@ -120,7 +120,7 @@ export function delegateTool(options: DelegateOptions): HostTool {
     },
     // A child is durable under its own key: run again after a crash, it answers from its record or resumes its session.
     replay: "safe",
-    call: (args, { callId, signal }) => serial.run(async () => {
+    call: (args, { callId, signal, sessionDir }) => serial.run(async () => {
       const { agent: name, task, context } = (args ?? {}) as { agent?: unknown; task?: unknown; context?: unknown };
       // An own entry only: a name like `constructor` is not an agent.
       const agent = typeof name === "string" && Object.hasOwn(options.agents, name) ? options.agents[name] : undefined;
@@ -143,6 +143,8 @@ export function delegateTool(options: DelegateOptions): HostTool {
         store: options.store,
         tools: agent.tools.map((t) => byName.get(t)!),
         signal,
+        // The lead's runner's private directories, if it has them: the child's is its own, by its own key.
+        ...(sessionDir ? { sessionDir } : {}),
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
         ...(options.beforeRequest ? { beforeRequest: options.beforeRequest } : {}),

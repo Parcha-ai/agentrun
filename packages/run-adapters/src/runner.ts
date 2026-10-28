@@ -346,7 +346,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...tool,
       call: (args, context) => {
         if (accepted || stopped) return Promise.reject(new Error("the session has stopped; tool execution refused"));
-        return tool.call(args, context);
+        return tool.call(args, options.sessionDir ? { ...context, sessionDir: options.sessionDir } : context);
       },
     });
 
