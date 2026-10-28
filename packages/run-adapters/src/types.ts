@@ -123,11 +123,14 @@ export interface SessionIO {
   onEvent(event: AdapterEvent): void;
 }
 
-/** An event of a session, as the adapter reports it. The runner adds the node it belongs to. */
+/** An event of a session, as the adapter reports it. The runner adds the node it belongs to. A call's `tool_end` is sent
+ *  only once its outcome is durable in the session's records, so a host never shows a result its store does not have;
+ *  `result` is the text recorded, when the adapter reports it. A call stopped before its outcome was recorded gets no
+ *  `tool_end`: its turn's `turn_end` closes it. */
 export type AdapterEvent =
   | { type: "text"; delta: string }
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
-  | { type: "tool_end"; callId: string; name: string; isError: boolean }
+  | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string }
   | { type: "turn_end"; status: TurnStatus };
 
 /** An event as a host receives it: the adapter's, the runner's own, and the node each belongs to. */
@@ -148,8 +151,11 @@ export interface AdapterSession {
   recover(): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
-  /** Stop the turn in flight; calls it left open end interrupted. */
-  interrupt(): Promise<void>;
+  /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
+   *  calls in flight run on until their outcomes are recorded, for at most `drainMs`, before the turn stops; the host
+   *  refuses new calls and paid requests meanwhile (the runner's `stop` does). An adapter that cannot drain stops at
+   *  once, as with no `drainMs`. */
+  interrupt(options?: { drainMs?: number }): Promise<void>;
   /** Stop the harness's processes and let go of the session. */
   close(): Promise<void>;
 }
