@@ -1,5 +1,5 @@
 Patch: 003-pinned-binary
-Reason: the install and the tests run the Codex build this package pins, and the binary lookup also reports the platform package's version so the pin can be checked
+Reason: the install and the tests run the Codex build this package pins, and the binary lookup also reports the platform package's version so the pin can be checked; dropping it fails the build (verify.ts imports findCodex, which only this patch adds), so the compiler is its pin
 Upstream: ours
 Pins: test/pins.test.mjs
 ---

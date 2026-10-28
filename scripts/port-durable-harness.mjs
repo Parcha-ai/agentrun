@@ -159,6 +159,14 @@ export function header({ upstreamPath, importsRewritten, patches }) {
   ].join('\n') + '\n';
 }
 
+/** A generated file without its three header lines (after the shebang when there is one): what the patches and the table made.
+ *  The Changed-by line names the patches, so two outputs differ in it whenever their patch lists do. */
+export function bodyOf(text) {
+  const lines = text.split('\n');
+  const start = lines[0].startsWith('#!') ? 1 : 0;
+  return [...lines.slice(0, start), ...lines.slice(start + 3)].join('\n');
+}
+
 /** `text` with its header: after the first line when that is a shebang. */
 function withHeader(text, options) {
   const head = header(options);
@@ -234,7 +242,7 @@ function pristineReader(dir, upstream, problems) {
 }
 
 /** The whole port of one package directory: every manifest's output and the problems. */
-export async function portPackage(dir, { drop = [], cascade = false } = {}) {
+export async function portPackage(dir, { drop = [], cascade = false, onDropped } = {}) {
   const { upstream, manifests } = await loadPort(dir);
   const files = new Map();
   const problems = [];
@@ -246,7 +254,7 @@ export async function portPackage(dir, { drop = [], cascade = false } = {}) {
     for (const [path, text] of done.files) files.set(path, text);
     // With `cascade`, a later patch written against a dropped one's text is dropped too, and named: a mutant of the first.
     problems.push(...(cascade ? done.problems.filter((p) => !/^patch .* does not apply/.test(p)) : done.problems));
-    if (cascade) for (const name of done.failed) console.error(`dropped with it: ${name} (written against the dropped patch's text)`);
+    if (cascade) for (const name of done.failed) onDropped?.(name);
   }
   return { files, problems, manifests };
 }
@@ -263,12 +271,11 @@ export async function checkPort(dir) {
   }
   for (const manifest of manifests) {
     for (const patch of manifest.patches) {
-      // A later patch written against this one's text no longer applies without it: that is loud, by name, and it counts
-      // as the patch mattering. Only a patch whose absence leaves every output byte as it is changes nothing.
-      const without = await portPackage(dir, { drop: [patch.name] }).catch((error) => ({ error }));
-      if (without.error) continue;
-      const same = [...files].every(([path, text]) => without.files.get(path) === text);
-      if (same) out.push(`patch ${patch.name} changes nothing: dropping it leaves the output as it is`);
+      // Dropped with whatever is written against its text (a later patch that no longer applies without it goes too): when
+      // that leaves every output byte as it is, the patch changes nothing, alone or with the patch that reverts it.
+      const without = await portPackage(dir, { drop: [patch.name], cascade: true });
+      const same = [...files].every(([path, text]) => bodyOf(without.files.get(path) ?? '') === bodyOf(text));
+      if (same) out.push(`patch ${patch.name} changes nothing: dropping it (with any patch written against it) leaves the output as it is`);
     }
   }
   return out;
@@ -342,7 +349,7 @@ if (import.meta.main) {
     console.log(`Port: in ${dirs.map((d) => relative(packages, d)).join(', ')} the committed files are exactly what the pristine copies, the patches and the import table make.`);
   } else {
     for (const each of dirs) {
-      const { files, problems } = await portPackage(each, { drop: drop ? [drop] : [], cascade });
+      const { files, problems } = await portPackage(each, { drop: drop ? [drop] : [], cascade, onDropped: (name) => console.error(`dropped with it: ${name} (written against the dropped patch's text)`) });
       if (problems.length) fail(problems.map((p) => `${relative(packages, each)}: ${p}`));
       const base = outDir ?? each;
       for (const [path, text] of files) {
