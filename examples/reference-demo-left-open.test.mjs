@@ -20,6 +20,7 @@ test('a file that leaves a child (with one of its own), a server and a pipe held
   const write = (name) => `require("node:fs").writeFileSync(process.env.${name}, String(c.pid))`;
   writeFileSync(planted, `
     import { spawn } from 'node:child_process';
+    import { existsSync } from 'node:fs';
     import { createServer } from 'node:net';
     import { after, test } from 'node:test';
     import ${JSON.stringify(new URL('./reference-demo-helpers.mjs', import.meta.url).href)};
@@ -51,10 +52,11 @@ test('a file that leaves a child (with one of its own), a server and a pipe held
   pids.push(...[subPid, heldPid].filter(Boolean));
   assert.equal(code, 1, `the planted file's run ended failed, not hung: ${out.slice(-2000)}`);
   assert.ok(Date.now() - started < 60_000);
-  assert.match(out, /ok 1 - passes, and leaves three things open/, 'its test passed');
+  // The planted test passes: the file fails only because the guard says so.
+  assert.match(out, /^ok 1 - passes, and leaves three things open$/m, 'its test passed');
   const named = out.match(/left open after the file's last test, now closed: (.*)/)?.[1] ?? '';
   assert.match(named, new RegExp(`child \\d+ \\(-e .* still-running\\) and 1 it started \\(${subPid}\\)`), `the child, by pid and argv, and the one it started: ${named}`);
   assert.equal(named.match(/server \{"address":"127\.0\.0\.1"/g)?.length, 1, `the server left open, and not the one the file's own after() closed: ${named}`);
-  assert.match(named, /a pipe still held open/, 'the pipe a child\'s child kept');
+  assert.equal(named.match(/a pipe still held open/g)?.length, 1, `the one pipe a child's child kept, and not the child's own stdio: ${named}`);
   assert.equal(processAlive(subPid), false, 'the child\'s own child was killed with it');
 });

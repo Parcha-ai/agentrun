@@ -18,11 +18,12 @@ import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, 
 
 export const ORIGINAL = { ...process.env };
 
-/** What keeps a test file's process alive once its tests are done: a child process, a server, or a pipe a child's own child still holds open after the child exited. */
+/** What keeps a test file's process alive once its tests are done: a child process, a server, or a socket nothing else owns (a pipe a child's own child still holds
+ *  open after the child exited, a connection the file made). */
 export const leftOpen = () => {
   const handles = process._getActiveHandles();
-  // A child's own stdio is named with the child.
-  const owned = new Set([process.stdin, process.stdout, process.stderr, ...handles.flatMap((handle) => (handle instanceof ChildProcess ? handle.stdio : []))]);
+  // A child's own stdio is named with the child, and a server's accepted connections with the server.
+  const owned = new Set([process.stdin, process.stdout, process.stderr, ...handles.flatMap((handle) => (handle instanceof ChildProcess ? handle.stdio : handle instanceof Socket && handle.server ? [handle] : []))]);
   return handles.filter((handle) => handle instanceof ChildProcess || handle instanceof Server || (handle instanceof Socket && !owned.has(handle)));
 };
 /** The processes `pid` started, and theirs, from /proc (none where there is no /proc). */
@@ -33,7 +34,8 @@ const descendants = (pid) => {
   for (let parents = [pid]; parents.length;) { const next = rows.filter(([, parent]) => parents.includes(parent)).map(([child]) => child); found.push(...next); parents = next; }
   return found;
 };
-/** A child is killed with what it started: its process group when it leads one (spawned detached), else each process under it. */
+/** A child is killed with what it started: its process group when it leads one (spawned detached), which also holds what it started whose parent has exited,
+ *  else each process still under it in /proc (none without /proc). */
 const killWithItsOwn = (child) => {
   try { process.kill(-child.pid, 'SIGKILL'); return []; } catch { /* not a group leader */ }
   const under = descendants(child.pid);
@@ -55,9 +57,17 @@ export function closeLeftOpen() {
       const argv = handle.spawnargs.slice(1).join(' ');
       return `child ${handle.pid} (${argv.length > 160 ? `${argv.slice(0, 100)} ... ${argv.slice(-50)}` : argv})${under.length ? ` and ${under.length} it started (${under.join(', ')})` : ''}`;
     }
-    if (handle instanceof Server) { const address = JSON.stringify(handle.address()); handle.closeAllConnections?.(); handle.close(); return `server ${address}`; }
+    if (handle instanceof Server) {
+      const address = JSON.stringify(handle.address());
+      // A net server's close() waits for its connections: they are ended here.
+      const connections = process._getActiveHandles().filter((socket) => socket instanceof Socket && socket.server === handle);
+      for (const socket of connections) socket.destroy();
+      handle.close();
+      return `server ${address}${connections.length ? ` with ${connections.length} connection${connections.length > 1 ? 's' : ''}` : ''}`;
+    }
+    const to = handle.remoteAddress ? `a socket to ${handle.remoteAddress}:${handle.remotePort}` : 'a pipe still held open';
     handle.destroy();
-    return 'a pipe still held open';
+    return to;
   });
   console.error(`left open after the file's last test, now closed: ${names.join('; ')}`);
   process.exitCode = 1;
