@@ -655,3 +655,38 @@ test("a resumed node whose store stalls while booking a cut request still stops 
   assert.ok(Date.now() - started < 5_000, `stopped at its timeout (${Date.now() - started} ms)`);
   assert.equal(opened, 0, 'no session was opened');
 });
+
+test('a bookCut whose write fails can be called again: the next call books the cut request, once', async () => {
+  const store = memorySessionStore();
+  const key = 'chat:cutretry';
+  await (await modelPortFor(await store.open(key), { key })).models.beforeRequest({ model: 'm' });
+  const inner = await store.open(key);
+  let failOnce = true;
+  const writer = { key, read: () => inner.read(), append: async (records) => { if (failOnce) { failOnce = false; throw new Error('store hiccup'); } await inner.append(records); } };
+  const booking = await modelPortFor(writer, { key });
+  await assert.rejects(booking.bookCut(), /store hiccup/);
+  await booking.bookCut();
+  assert.deepEqual((await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).map((r) => r.data.turn), [1], 'booked once, by the second call');
+});
+
+test('a node stopped while it books a cut request opens no session', async () => {
+  const inner = memorySessionStore();
+  const key = 'step:s1';
+  await (await inner.open(key)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: 'm' } }]);
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let booking = false;
+  // The cut booking's write waits until released; the node is stopped meanwhile, then the write lands.
+  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, read: () => w.read(), append: async (records) => { if (records.some((r) => r.data?.cut)) { booking = true; await held; } return w.append(records); } }; } };
+  let opened = 0;
+  const planned = plannedAdapter([]);
+  const adapter = { ...planned, open: (...args) => { opened += 1; return planned.open(...args); } };
+  const stop = new AbortController();
+  const running = createHarnessRunner(adapter, { store, signal: stop.signal, timeoutMs: null })(stepRequest());
+  await until(() => booking, 'the cut booking under way');
+  stop.abort(new Error('stopped'));
+  await assert.rejects(running, (e) => e instanceof HarnessRunError && e.reason === 'aborted');
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(opened, 0, 'no session was opened, before or after the write landed');
+});
