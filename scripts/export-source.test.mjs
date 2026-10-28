@@ -159,6 +159,21 @@ test('formal model sources are archived and scanned as text; an unreviewed file 
   await assert.rejects(f.run(), /Unreviewed source-export file type: spec\/model\/Model\.toolbox/);
 });
 
+test('a recorded event stream (.sse) is archived and scanned as text: a machine path planted in one stops the export', async t => {
+  const f = await fixture(t);
+  const path = 'packages/x/test/fixtures/answer.sse';
+  await f.write(path, 'event: message_start\ndata: {"type":"message_start"}\n\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`));
+  assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text');
+  const machinePath = ['', 'home', 'someone', 'secret.txt'].join('/');
+  await f.write(path, `event: message_start\ndata: {"path":"${machinePath}"}\n\n`);
+  await assert.rejects(f.run(), /Source export blocked/);
+  const blocked = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(blocked.findings.some(finding => finding.path === path));
+});
+
 test('a PDF is archived only when one line of ASSETS.md names it with its SHA-256', async t => {
   const f = await fixture(t);
   const pdf = '%PDF-1.4\n% fixture\n%%EOF\n';
