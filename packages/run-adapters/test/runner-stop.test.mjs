@@ -249,3 +249,78 @@ test('when a stop and a pause both come while the host checks a paid request, th
   assert.equal((await asked).message, 'the node timed out');
   assert.deepEqual((await store.read('chat:both')).filter((r) => r.kind === 'runner.request'), []);
 });
+
+/** An adapter whose turn announces calls (tool_start, through the runner) and then makes them, as a harness does. */
+function announcing({ onSend, onInterrupt }) {
+  const outcomes = [];
+  let endTurn;
+  const adapter = {
+    id: 'announcing', version: '0.0.0', capabilities: () => ({ fork: false }), check: () => [],
+    async open(spec, io) {
+      const call = async (name, callId, args = {}) => {
+        io.onEvent({ type: 'tool_start', callId, name, args });
+        const tool = spec.tools.find((t) => t.name === name);
+        return tool.call(args, { callId, signal: new AbortController().signal }).then((r) => (r.isError ? `refused: ${r.text}` : `ran: ${r.text}`), (e) => `refused: ${e.message}`);
+      };
+      let turn;
+      return {
+        state: 'new',
+        async send() {
+          turn = new Promise((resolve) => { endTurn = resolve; });
+          void (async () => { if (onSend) outcomes.push(await onSend(call)); })();
+        },
+        async recover() {},
+        turnEnd: () => turn,
+        async interrupt() {
+          if (onInterrupt) outcomes.push(await onInterrupt(call));
+          endTurn?.({ status: 'interrupted' });
+        },
+        async close() {},
+      };
+    },
+  };
+  return { adapter, outcomes };
+}
+
+for (const [label, stopWith] of [['stop()', (runner) => runner.stop()], ['stop({ drainMs: 0 })', (runner) => runner.stop({ drainMs: 0 })]]) {
+  test(`an immediate stop, ${label}, from the host's onEvent at a tool's tool_start runs nothing more: the call is refused as stopped, and the tool never runs`, async () => {
+    let runs = 0;
+    const counted = { ...lookup, call: async () => { runs += 1; return { text: 'found' }; } };
+    let stopping;
+    const { adapter, outcomes } = announcing({ onSend: (call) => call('lookup', 'c-now') });
+    const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [counted], onEvent: (e) => { if (e.type === 'tool_start') stopping ??= stopWith(runner); } });
+    const node = ask(runner).catch((error) => error);
+    await until(() => outcomes.length === 1, 'the call');
+    await stopping;
+    assert.equal((await node).reason, 'aborted');
+    assert.match(outcomes[0], /^refused: the session has stopped/);
+    assert.equal(runs, 0, 'the tool never ran');
+  });
+}
+
+test("an immediate stop at submit's tool_start takes no answer: the node ends aborted, not delivered", async () => {
+  let stopping;
+  const { adapter, outcomes } = announcing({ onSend: (call) => call('submit', 'c-submit', { value: { answer: 'too late' } }) });
+  const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup], onEvent: (e) => { if (e.type === 'tool_start') stopping ??= runner.stop(); } });
+  const node = ask(runner).then((value) => ({ value }), (error) => ({ error }));
+  await until(() => outcomes.length === 1, 'the submit');
+  await stopping;
+  const outcome = await node;
+  assert.equal(outcome.error?.reason, 'aborted', JSON.stringify(outcome));
+  assert.match(outcomes[0], /^refused: This session has stopped/);
+});
+
+test('a call announced after a drain began is a new call: refused as pausing, and the tool never runs', async () => {
+  let runs = 0;
+  const counted = { ...lookup, call: async () => { runs += 1; return { text: 'found' }; } };
+  let started;
+  const turnStarted = new Promise((resolve) => { started = resolve; });
+  const { adapter, outcomes } = announcing({ onSend: async () => { started(); return 'sent'; }, onInterrupt: (call) => call('lookup', 'c-during') });
+  const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [counted] });
+  const node = ask(runner).catch((error) => error);
+  await turnStarted;
+  await runner.stop({ drainMs: 1000 });
+  assert.equal((await node).reason, 'aborted');
+  assert.match(outcomes.find((o) => o !== 'sent'), /^refused: the session is pausing/);
+  assert.equal(runs, 0);
+});

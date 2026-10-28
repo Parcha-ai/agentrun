@@ -297,8 +297,10 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     let stopped: HarnessRunError | undefined;
     // A pause in progress: nothing new starts, and the node stops once its session has drained.
     let draining = false;
-    // Calls the session announced (tool_start) before the pause: they are in flight, not new, and run on through it.
+    // Calls the session announced (tool_start) before the pause: they are in flight, not new, and run on through a drain.
+    // A stop with no drain (drainMs 0) lets nothing run on, announced or not.
     const announced = new Set<string>();
+    let immediate = false;
     const failure = (reason: HarnessRunError["reason"], message?: string) =>
       new HarnessRunError(reason, turnsSoFar(), submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
 
@@ -339,7 +341,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       replay: "safe",
       async call(args) {
         if (accepted) return { text: "Already accepted; end your turn." };
-        if (stopped) return { text: "This session has stopped.", isError: true };
+        // A stop with no drain takes no answer, though one inside a drain is kept (it is the end of a paid response).
+        if (stopped || (draining && immediate)) return { text: "This session has stopped.", isError: true };
         submissions += 1;
         await append([{ kind: RUNNER_RECORDS.submit, data: { n: submissions } }]);
         const candidate = (args as { value?: unknown } | null)?.value;
@@ -367,6 +370,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...tool,
       call: (args, context) => {
         if (accepted || stopped) return Promise.reject(new Error("the session has stopped; tool execution refused"));
+        // A stop with no drain runs nothing more; a drain lets a call announced before it run on.
+        if (draining && immediate) return Promise.reject(new Error("the session has stopped; this call was not run"));
         if (draining && !announced.has(context.callId)) return Promise.reject(new Error("the session is pausing; this call was not run"));
         return tool.call(args, context);
       },
@@ -400,6 +405,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     // A pause: nothing new starts, the session drains its calls in flight (an adapter that can't drain stops at once),
     // then the node stops. One that arrived before this node could be paused stops it here.
     pause(async (drainMs) => {
+      immediate = drainMs === 0;
       draining = true;
       if (session) await session.interrupt({ drainMs }).catch(() => {});
       stop(failure("aborted"));

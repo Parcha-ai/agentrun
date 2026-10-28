@@ -230,3 +230,23 @@ test("a pause the host starts on a tool's tool_start lets that tool run to its r
   const ends = records.filter((r) => r.kind === 'kernel.end' && steps.has(r.data.stepId)).map((r) => r.data);
   assert.deepEqual(ends.map((e) => e.status), ['completed'], JSON.stringify(ends).slice(0, 300));
 });
+
+test("an immediate stop the host starts on a tool's tool_start runs nothing more: the tool never runs and the node ends aborted", async (t) => {
+  const search = paidSearch(200);
+  const { adapter } = await claude(t, { script: ['call search {"q":"v"}'], sessionsDir: join(scratch(), 'sessions') });
+  let stopping;
+  const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [search.tool], onEvent: (e) => { if (e.type === 'tool_start' && e.name === 'search') stopping ??= runner.stop(); } });
+  const outcome = await runner({ ...request, step: { sessionId: 'stop-on-search', attempt: 0, earlierSessionIds: [] } }).then((value) => ({ value }), (error) => ({ error }));
+  await stopping;
+  assert.equal(outcome.error?.reason, 'aborted');
+  assert.equal(search.runs, 0, 'the search never ran');
+});
+
+test("an immediate stop the host starts on submit's tool_start takes no answer: the node ends aborted", async (t) => {
+  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"not taken"}}'], sessionsDir: join(scratch(), 'sessions') });
+  let stopping;
+  const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [], onEvent: (e) => { if (e.type === 'tool_start' && e.name === 'submit') stopping ??= runner.stop(); } });
+  const outcome = await runner({ ...request, tools: [], step: { sessionId: 'stop-on-submit', attempt: 0, earlierSessionIds: [] } }).then((value) => ({ value }), (error) => ({ error }));
+  await stopping;
+  assert.equal(outcome.error?.reason, 'aborted', JSON.stringify(outcome).slice(0, 200));
+});
