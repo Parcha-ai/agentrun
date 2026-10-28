@@ -2,7 +2,7 @@
 // line and column. YAML loaders differ on a duplicate (GitHub's takes one of them), so the second is never silently lost.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -47,16 +47,26 @@ test('the same key in two different maps is fine', () => {
   assert.deepEqual(workflowProblems('jobs:\n  a:\n    env: { X: 1 }\n  b:\n    env: { X: 1 }\n', 'ok.yml'), []);
 });
 
-test('the script exits 1 on a directory holding such a workflow and names only that file', () => {
+test('the script exits 1 on a directory holding such workflows, .yml or .yaml, and names only those files', () => {
   const bad = join(ROOT, 'bad', '.github', 'workflows');
   mkdirSync(bad, { recursive: true });
   writeFileSync(join(bad, 'ci.yml'), TWO_ENVS);
-  writeFileSync(join(bad, 'ok.yaml'), 'on: push\njobs: {}\n');
-  assert.throws(() => execFileSync(process.execPath, [SCRIPT, bad], { encoding: 'utf8', stdio: 'pipe' }), (e) => e.status === 1 && /ci\.yml:10:5: the key env appears twice in one map/.test(e.stderr) && !/ok\.yaml/.test(e.stderr));
+  writeFileSync(join(bad, 'nightly.yaml'), 'on: push\nname: a\nname: b\n');
+  writeFileSync(join(bad, 'ok.yml'), 'on: push\njobs: {}\n');
+  writeFileSync(join(bad, 'notes.txt'), 'name: a\nname: b\n');
+  assert.throws(() => execFileSync(process.execPath, [SCRIPT, bad], { encoding: 'utf8', stdio: 'pipe' }), (e) => {
+    assert.equal(e.status, 1);
+    assert.match(e.stderr, /ci\.yml:10:5: the key env appears twice in one map/);
+    assert.match(e.stderr, /nightly\.yaml:3:1: the key name appears twice in one map/, 'a .yaml workflow is checked too');
+    assert.doesNotMatch(e.stderr, /ok\.yml|notes\.txt/);
+    return true;
+  });
 });
 
 // The repository's own workflows: this test runs with the release tests in CI, so a duplicate key never lands.
-test("this repository's workflows have no duplicate key and all parse", () => {
+test("this repository's workflows, every one of them, have no duplicate key and all parse", () => {
+  const workflows = readdirSync(fileURLToPath(new URL('../.github/workflows/', import.meta.url))).filter((name) => /\.ya?ml$/.test(name));
+  assert.ok(workflows.length > 0);
   const out = execFileSync(process.execPath, [SCRIPT], { encoding: 'utf8' });
-  assert.match(out, /workflows checked: \d+ files, no duplicate key/);
+  assert.equal(out, `workflows checked: ${workflows.length} files, no duplicate key\n`);
 });
