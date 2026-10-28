@@ -24,15 +24,26 @@ export default function reply(context, faux) {
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
-    // A node that says whether anything it can reach holds the decision key: this process's environment, as its tools
-    // get it, and the environment the kernel shows it.
-    if (JSON.stringify(context).includes("Report the canary")) {
+    // A node that says whether anything it can reach holds the decision key: this process's environment (as its tools
+    // get it), the environment the kernel shows, the descriptor the server hands the key on, and a program it starts.
+    // "..., once <file> exists." holds it until the test has made that file.
+    const canary = JSON.stringify(context);
+    if (canary.includes("Report the canary")) {
       if (answered) return faux.message("Submitted.");
+      const gate = /Report the canary once (\S+?) exists\./.exec(canary)?.[1];
       return (async () => {
-        const [{ CANARY }, { readFile }] = await Promise.all([import("./faux-jev.mjs"), import("node:fs/promises")]);
+        const [{ CANARY }, { readFile }, { existsSync }, { spawnSync }] = await Promise.all([import("./faux-jev.mjs"), import("node:fs/promises"), import("node:fs"), import("node:child_process")]);
+        if (gate) await untilExists(gate);
         const environ = await readFile("/proc/self/environ", "utf8").catch(() => "");
-        const leaked = Object.values(process.env).some((v) => v?.includes(CANARY)) || environ.includes(CANARY);
-        return faux.message(faux.toolCall("submit", { leaked, key_set: process.env.TYPESAFE_API_KEY !== undefined }), { stopReason: "toolUse" });
+        const fd = process.env.AGENTRUN_SERVE_DECISION_KEY_FD;
+        const sub = spawnSync("sh", ["-c", `${fd ? `[ -e /proc/$$/fd/${fd} ] && echo FD_OPEN; ` : ""}env`], { encoding: "utf8" });
+        return faux.message(faux.toolCall("submit", {
+          leaked: Object.values(process.env).some((v) => v?.includes(CANARY)) || environ.includes(CANARY),
+          key_set: process.env.TYPESAFE_API_KEY !== undefined,
+          fd_open: fd ? existsSync(`/proc/self/fd/${fd}`) : false,
+          sub_leaked: sub.stdout.includes(CANARY),
+          sub_fd_open: sub.stdout.includes("FD_OPEN"),
+        }), { stopReason: "toolUse" });
       })();
     }
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
