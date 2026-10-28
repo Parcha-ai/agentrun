@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { processAlive } from '@parcha/agentrun-adapters/host';
 import { reap } from './reference-demo-helpers.mjs';
 
 test('a file that leaves a child (with one of its own), a server and a pipe held by a child\'s child open fails naming each, and its process exits in seconds; what its own after() closes is not named', { timeout: 120_000 }, async (t) => {
@@ -55,5 +56,5 @@ test('a file that leaves a child (with one of its own), a server and a pipe held
   assert.match(named, new RegExp(`child \\d+ \\(-e .* still-running\\) and 1 it started \\(${subPid}\\)`), `the child, by pid and argv, and the one it started: ${named}`);
   assert.equal(named.match(/server \{"address":"127\.0\.0\.1"/g)?.length, 1, `the server left open, and not the one the file's own after() closed: ${named}`);
   assert.match(named, /a pipe still held open/, 'the pipe a child\'s child kept');
-  assert.throws(() => process.kill(subPid, 0), { code: 'ESRCH' }, 'the child\'s own child was killed with it');
+  assert.equal(processAlive(subPid), false, 'the child\'s own child was killed with it');
 });
