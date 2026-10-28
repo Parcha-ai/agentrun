@@ -56,8 +56,9 @@ function wrapper(cgroup: string, opts: { rootLink?: boolean; mpLink?: boolean; u
     .replace("/proc/self/cgroup", cgroupFile);
   assert.notEqual(script, source);
   const path = stub("archil-scoped", script.replace(/^#!\/bin\/sh\n/, ""));
+  // Bounded, with stdin closed after `input`: a wrapper that should have refused and waits instead fails by name.
   const run = (args: string[], input: string, env: Record<string, string> = {}) => {
-    const r = spawnSync(path, args, { input, encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", ...env } });
+    const r = spawnSync(path, args, { input, encoding: "utf8", timeout: 15_000, env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", ...env } });
     const seen = existsSync(out) ? Object.fromEntries(readFileSync(out, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)])) : null;
     const scope = existsSync(`${out}.scope`) ? readFileSync(`${out}.scope`, "utf8").trim() : null;
     rmSync(out, { force: true });
@@ -213,7 +214,7 @@ test("every archil call in the package's source is one the wrapper takes, with e
   assert.deepEqual([...new Set(taken)].sort(), [...new Set(calls.map((c) => c[0]))].sort());
 });
 
-// ---- the mount root: root's, so nobody else can swap an entry between a check and archil's use -----------------------
+// ---- the mount root is root's, so only root names entries under runs/ --------------------------------------------------
 
 /** Every verb, over the rig's paths, as the claim would call it (the cleanup verbs on the unlisted runs/r2). */
 const EVERY_VERB = (w: Rig): string[][] => [
@@ -283,6 +284,23 @@ test("prepare gives the mountpoint the group sudo's caller names, not the proces
   const r = w.run(["prepare", r3], "", { SUDO_UID: String(process.getuid!()), SUDO_GID: String(OTHER_GID) });
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual([statSync(r3).uid, statSync(r3).gid], [process.getuid!(), OTHER_GID]);
+});
+
+test("prepare hands the mountpoint to sudo's caller with exactly one chown", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const bin = mkdtempSync(join(tmpdir(), "pda-chown-"));
+  const log = join(bin, "argv");
+  // chown as the wrapper finds it on PATH: records its argv, then does the real thing.
+  writeFileSync(join(bin, "chown"), `#!/bin/sh\necho "$*" >> '${log}'\nexec /usr/bin/chown "$@"\n`);
+  chmodSync(join(bin, "chown"), 0o755);
+  try {
+    const r3 = join(w.root, "runs", "r3");
+    const r = w.run(["prepare", r3], "", { PATH: `${bin}:/usr/bin:/bin`, SUDO_UID: "4242", SUDO_GID: "4343" });
+    assert.ok(existsSync(log), `chown was never called: exit ${r.status}: ${r.stderr}`);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [`4242:4343 ${r3}`]);
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
 });
 
 test("prepare refuses without sudo's caller, over a link or a file, and outside <root>/runs/<run>", () => {
