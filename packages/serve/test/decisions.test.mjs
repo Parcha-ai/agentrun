@@ -25,8 +25,11 @@ const flow = (steps) => ({
     In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
     Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
     Probe: {
-      type: "object", required: ["leaked", "key_set", "fd_open", "sub_leaked", "sub_fd_open"],
-      properties: { leaked: { type: "boolean" }, key_set: { type: "boolean" }, fd_open: { type: "boolean" }, sub_leaked: { type: "boolean" }, sub_fd_open: { type: "boolean" } },
+      type: "object", required: ["leaked", "key_set", "fd_open", "sub_leaked", "sub_fd_open", "node_leaked", "node_fd_open"],
+      properties: {
+        leaked: { type: "boolean" }, key_set: { type: "boolean" }, fd_open: { type: "boolean" }, sub_leaked: { type: "boolean" }, sub_fd_open: { type: "boolean" },
+        node_leaked: { type: "boolean" }, node_fd_open: { type: "boolean" },
+      },
     },
   },
   input: { schemaId: "In" },
@@ -34,7 +37,7 @@ const flow = (steps) => ({
   root: { node: "chain", steps },
 });
 /** What a run that cannot reach the key reports. */
-const CLEAN = { leaked: false, key_set: false, fd_open: false, sub_leaked: false, sub_fd_open: false };
+const CLEAN = { leaked: false, key_set: false, fd_open: false, sub_leaked: false, sub_fd_open: false, node_leaked: false, node_fd_open: false };
 const QUESTION = "State of Delaware. Certificate of Incorporation of Example Widgets, Inc.";
 
 /** The canary as the decision key and a file for the fake Jev's calls, in this process's environment for test `t`. */
@@ -90,7 +93,7 @@ test("the decision key never reaches a run's tools, model or programs: not in it
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "completed", JSON.stringify(run.error));
-  assert.deepEqual(run.result.output, CLEAN, "the model node's process, and a program it starts, see neither the key nor its descriptor");
+  assert.deepEqual(run.result.output, CLEAN, "the model node's process, and an sh and a node -e it starts, see neither the key nor its descriptor");
   assert.deepEqual((await seen()).map((c) => c.authorized), [true], "and the judge did get the key");
   assert.deepEqual(await filesHolding(data, CANARY), [], "no file of the data directory holds the key");
   assert.equal(process.env.TYPESAFE_API_KEY, CANARY, "the server's own environment is as it was");

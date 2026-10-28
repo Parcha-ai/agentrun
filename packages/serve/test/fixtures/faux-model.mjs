@@ -37,12 +37,18 @@ export default function reply(context, faux) {
         const environ = await readFile("/proc/self/environ", "utf8").catch(() => "");
         const fd = process.env.AGENTRUN_SERVE_DECISION_KEY_FD;
         const sub = spawnSync("sh", ["-c", `${fd ? `[ -e /proc/$$/fd/${fd} ] && echo FD_OPEN; ` : ""}env`], { encoding: "utf8" });
+        // And a Node program, as a tool's effect would start one: what its environment holds and whether it got the
+        // descriptor (Node opens 3 to about 20 for itself, so the handed descriptor is the one to look for).
+        const node = spawnSync(process.execPath, ["-e", `process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && v.includes(${JSON.stringify(CANARY)})), fd_open: ${fd ? `require("fs").existsSync("/proc/self/fd/${fd}")` : "false"} }))`], { encoding: "utf8" });
+        const nodeSaw = JSON.parse(node.stdout || "{}");
         return faux.message(faux.toolCall("submit", {
           leaked: Object.values(process.env).some((v) => v?.includes(CANARY)) || environ.includes(CANARY),
           key_set: process.env.TYPESAFE_API_KEY !== undefined,
           fd_open: fd ? existsSync(`/proc/self/fd/${fd}`) : false,
           sub_leaked: sub.stdout.includes(CANARY),
           sub_fd_open: sub.stdout.includes("FD_OPEN"),
+          node_leaked: nodeSaw.leaked !== false,
+          node_fd_open: nodeSaw.fd_open !== false,
         }), { stopReason: "toolUse" });
       })();
     }
