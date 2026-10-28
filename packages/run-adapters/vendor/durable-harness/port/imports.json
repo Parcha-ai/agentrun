@@ -1,7 +1,15 @@
 {
   "relative": {
     "from": ".ts",
-    "to": ".js"
+    "to": ".js",
+    "landings": {
+      "packages/harness-claude-code/src/spawn.ts": {
+        "harness-claude-code": "src/spawn.ts"
+      },
+      "packages/harness-claude-code/src/index.ts": {
+        "harness-claude-code": "src/harness.ts"
+      }
+    }
   },
   "modules": {
     "node:crypto": {
@@ -13,7 +21,8 @@
     "harness-world": {
       "to": {
         "harness-process": "src/kernel/index.ts",
-        "harness-codex": "src/host/kernel.ts"
+        "harness-codex": "src/host/kernel.ts",
+        "harness-claude-code": "src/host/kernel.ts"
       },
       "symbols": {
         "BLOB_PIECE_CHARS": "BLOB_PIECE_CHARS",
@@ -36,7 +45,8 @@
         "sha256Hex": "sha256Hex",
         "writeBlob": "writeBlob",
         "Harness": {
-          "harness-codex": "Harness"
+          "harness-codex": "Harness",
+          "harness-claude-code": "Harness"
         },
         "QUEUE_PREFIX": "gap",
         "UNAVAILABLE_STEP": {
@@ -60,14 +70,16 @@
     },
     "harness-world-process": {
       "to": {
-        "harness-codex": "src/host/process.ts"
+        "harness-codex": "src/host/process.ts",
+        "harness-claude-code": "src/host/process.ts"
       },
       "symbols": {
         "AcquireMachine": {
           "harness-codex": "AcquireMachine"
         },
         "BuiltinCalls": {
-          "harness-codex": "BuiltinCalls"
+          "harness-codex": "BuiltinCalls",
+          "harness-claude-code": "BuiltinCalls"
         },
         "BuiltinStart": {
           "harness-codex": "BuiltinStart"
@@ -82,16 +94,20 @@
           "harness-codex": "GatewayLedger"
         },
         "gatewayCredential": {
-          "harness-codex": "gatewayCredential"
+          "harness-codex": "gatewayCredential",
+          "harness-claude-code": "gatewayCredential"
         },
         "gatewayHandler": {
-          "harness-codex": "gatewayHandler"
+          "harness-codex": "gatewayHandler",
+          "harness-claude-code": "gatewayHandler"
         },
         "gatewayUrl": {
-          "harness-codex": "gatewayUrl"
+          "harness-codex": "gatewayUrl",
+          "harness-claude-code": "gatewayUrl"
         },
         "isBrandedMachine": {
-          "harness-codex": "isBrandedMachine"
+          "harness-codex": "isBrandedMachine",
+          "harness-claude-code": "isBrandedMachine"
         },
         "LineChannel": {
           "harness-codex": "LineChannel"
@@ -100,37 +116,46 @@
           "harness-codex": "MachineTail"
         },
         "ModelSteps": {
-          "harness-codex": "ModelSteps"
+          "harness-codex": "ModelSteps",
+          "harness-claude-code": "ModelSteps"
         },
         "Mutex": {
           "harness-codex": "Mutex"
         },
         "NativeJournal": {
-          "harness-codex": "NativeJournal"
+          "harness-codex": "NativeJournal",
+          "harness-claude-code": "NativeJournal"
         },
         "placeSubmissions": {
-          "harness-codex": "placeSubmissions"
+          "harness-codex": "placeSubmissions",
+          "harness-claude-code": "placeSubmissions"
         },
         "recoveryNote": {
-          "harness-codex": "recoveryNote"
+          "harness-codex": "recoveryNote",
+          "harness-claude-code": "recoveryNote"
         },
         "restartEvent": {
-          "harness-codex": "restartEvent"
+          "harness-codex": "restartEvent",
+          "harness-claude-code": "restartEvent"
         },
         "SessionMachine": {
-          "harness-codex": "SessionMachine"
+          "harness-codex": "SessionMachine",
+          "harness-claude-code": "SessionMachine"
         },
         "SessionProcess": {
-          "harness-codex": "SessionProcess"
+          "harness-codex": "SessionProcess",
+          "harness-claude-code": "SessionProcess"
         },
         "settleAbandonedModelSteps": {
-          "harness-codex": "settleAbandonedModelSteps"
+          "harness-codex": "settleAbandonedModelSteps",
+          "harness-claude-code": "settleAbandonedModelSteps"
         },
         "ToolResult": {
           "harness-codex": "ToolResult"
         },
         "toolBridge": {
-          "harness-codex": "toolBridge"
+          "harness-codex": "toolBridge",
+          "harness-claude-code": "toolBridge"
         },
         "toolKey": {
           "harness-codex": "toolKey"
@@ -139,7 +164,38 @@
           "harness-codex": "transcriptOf"
         },
         "TranscriptEntry": {
-          "harness-codex": "TranscriptEntry"
+          "harness-codex": "TranscriptEntry",
+          "harness-claude-code": "TranscriptEntry"
+        },
+        "CLAUDE_ROUTES": {
+          "harness-claude-code": "CLAUDE_ROUTES"
+        },
+        "GatewayCap": {
+          "harness-claude-code": "GatewayCap"
+        },
+        "GatewayHandler": {
+          "harness-claude-code": "GatewayHandler"
+        },
+        "JournalRecord": {
+          "harness-claude-code": "JournalRecord"
+        },
+        "ProviderTool": {
+          "harness-claude-code": "ProviderTool"
+        },
+        "journalLedger": {
+          "harness-claude-code": "journalLedger"
+        },
+        "openTurn": {
+          "harness-claude-code": "openTurn"
+        },
+        "replayBy": {
+          "harness-claude-code": "replayBy"
+        },
+        "waitForSubmissions": {
+          "harness-claude-code": "waitForSubmissions"
+        },
+        "zodShapeFromJsonSchema": {
+          "harness-claude-code": "zodShapeFromJsonSchema"
         }
       }
     },
@@ -184,6 +240,24 @@
       "keep": true
     },
     "node:child_process": {
+      "keep": true
+    },
+    "node:http": {
+      "keep": true
+    },
+    "node:net": {
+      "keep": true
+    },
+    "node:fs/promises": {
+      "keep": true
+    },
+    "node:os": {
+      "keep": true
+    },
+    "node:url": {
+      "keep": true
+    },
+    "@anthropic-ai/claude-agent-sdk": {
       "keep": true
     }
   }

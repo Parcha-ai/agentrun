@@ -106,7 +106,8 @@ export function manifestEntries(manifest) {
 /** What `value` says for upstream package `target`: a string for every package, or an object keyed by package. */
 const forTarget = (value, target) => (value !== null && typeof value === 'object' ? value[target] : value);
 
-export function rewriteImports(text, { table, file, manifestFiles, problems, outDir, target }) {
+export function rewriteImports(text, { table, file, entries, problems, outDir, target }) {
+  const selfTo = entries.find((e) => e.from === file).to;
   let rewritten = false;
   // A dynamic import or require is not rewritten: it is allowed only for a module the table keeps as it is.
   for (const call of text.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)) {
@@ -118,9 +119,13 @@ export function rewriteImports(text, { table, file, manifestFiles, problems, out
     const at = `${file}: ${keyword} from ${spec}`;
     if (spec.startsWith('.')) {
       if (!spec.endsWith(table.relative.from)) { problems.push(`${at}: a relative import that does not end in ${table.relative.from}`); return whole; }
-      const target = posix.normalize(posix.join(posix.dirname(file), spec));
-      if (!manifestFiles.includes(target)) { problems.push(`${at}: ${target} is not a file of this manifest`); return whole; }
-      return whole.replace(`${quote}${spec}${quote}`, `${quote}${spec.slice(0, -table.relative.from.length)}${table.relative.to}${quote}`);
+      const resolved = posix.normalize(posix.join(posix.dirname(file), spec));
+      // A file of this manifest lands where the manifest puts it; any other upstream file lands where the table says for this
+      // package (a file written for AgentRun in its place), or the import fails by name.
+      const landing = entries.find((e) => e.from === resolved)?.to ?? forTarget(table.relative.landings?.[resolved], target);
+      if (landing === undefined) { problems.push(`${at}: ${resolved} is not a file of this manifest, and the import table has no landing for it`); return whole; }
+      const there = posix.relative(posix.dirname(selfTo), landing).slice(0, -posix.extname(landing).length) + table.relative.to;
+      return whole.replace(`${quote}${spec}${quote}`, `${quote}${there.startsWith('.') ? there : `./${there}`}${quote}`);
     }
     const entry = table.modules[spec];
     if (!entry) { problems.push(`${at}: module ${spec} is not in the import table`); return whole; }
@@ -202,7 +207,7 @@ export async function portManifest({ manifest, read, table, patches, drop = [], 
     const files = new Map();
     for (const { from: path, to } of entries) {
       const patched = (await readFile(join(root, path), 'utf8'));
-      const { text, rewritten } = rewriteImports(patched, { table, file: path, manifestFiles: paths, problems, outDir: posix.dirname(to), target: manifest.package });
+      const { text, rewritten } = rewriteImports(patched, { table, file: path, entries, problems, outDir: posix.dirname(to), target: manifest.package });
       files.set(to, withHeader(text, { upstreamPath: path, importsRewritten: rewritten, patches: touched.get(path) }));
     }
     return { files, problems, failed };
