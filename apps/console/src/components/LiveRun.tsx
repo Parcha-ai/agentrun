@@ -5,6 +5,8 @@ import { type Capabilities, type Client, ClientError, follow } from "@/lib/clien
 import { NO_MESSAGES } from "@/lib/runState";
 import type { ApiError, Run, RunFile, TimelineRow } from "@/lib/v2";
 
+const asApiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: true });
+
 /** A run from the live server: its record, its timeline followed from the cursor, its files, and stop, cancel and
  *  messages. A write's acceptance is not its effect: the page shows what the run and its timeline say afterwards. */
 export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: string; caps: Capabilities | null; agentName: (id: string) => string }) {
@@ -15,33 +17,37 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const [busy, setBusy] = useState<"stop" | "cancel" | null>(null);
   const [follows, setFollows] = useState(0);
   const status = useRef<string>("");
+  const toolResults = useRef(0);
 
   const refresh = async () => {
     try {
       const [r, f] = await Promise.all([v2.getRun(runId), v2.listFiles(runId)]);
       setRun(r); setFiles(f.files);
-    } catch (e) { setError(e instanceof ClientError ? e.toApiError() : { code: "network", message: String(e), retryable: true }); }
+    } catch (e) { setError(asApiError(e)); }
   };
   useEffect(() => { void refresh(); }, [runId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const ctl = new AbortController();
     follow(v2, runId, {
       signal: ctl.signal,
-      onRows: setRows,
+      // A tool round can write files while the run stays working: re-read them when a new tool result lands.
+      onRows: (r) => { setRows(r); const n = r.filter((x) => x.kind === "tool_result").length; if (n > toolResults.current) { toolResults.current = n; void v2.listFiles(runId).then((f) => setFiles(f.files)).catch(() => {}); } },
       // A page names the run's status and state: when they move, the run record (result, error, cost) and files move too.
       onPage: (p) => { const s = `${p.status}/${p.state}`; if (s !== status.current) { status.current = s; void refresh(); } },
-    }).catch((e) => { if (!ctl.signal.aborted) setError(e instanceof ClientError ? e.toApiError() : { code: "network", message: String(e), retryable: true }); });
+    }).catch((e) => { if (!ctl.signal.aborted) setError(asApiError(e)); });
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (what: "stop" | "cancel") => {
     setBusy(what);
-    try { await v2[what](runId); } catch (e) { if (e instanceof ClientError) setError(e.toApiError()); }
+    try { await v2[what](runId); setError(null); } catch (e) { setError(asApiError(e)); }
     setBusy(null); await refresh(); setFollows((n) => n + 1);
   };
   const message = async (text: string) => {
-    try { await v2.sendMessage(runId, text, crypto.randomUUID()); } catch (e) { if (e instanceof ClientError) setError(e.toApiError()); }
+    let ok = true;
+    try { await v2.sendMessage(runId, text, crypto.randomUUID()); setError(null); } catch (e) { setError(asApiError(e)); ok = false; }
     await refresh(); setFollows((n) => n + 1);
+    return ok;
   };
 
   if (!run) return error ? <div className="p-8"><RunError title="The server refused the request" error={error} /></div> : <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the run...</p>;
