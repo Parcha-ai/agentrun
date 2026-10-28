@@ -28,7 +28,7 @@ Here the run starts on this machine (host A, a systemd unit) and moves to a Dayt
   grants the archil wrapper to that uid:
 
   ```
-  #<your uid> ALL=(root) NOPASSWD: /usr/local/sbin/archil-scoped, /usr/bin/fusermount -u /mnt/pda/planned-move/runs/*
+  #<your uid> ALL=(root) NOPASSWD: /usr/local/sbin/archil-scoped
   ```
 
 ## Run it
