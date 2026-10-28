@@ -553,3 +553,50 @@ test('requests in flight together are each booked under the turn they were admit
   assert.deepEqual(ends, [[3, null, true]], 'turn 3 booked as cut, once, and turn 4 not again');
   assert.deepEqual((await turnsOf()).filter(([, , cut]) => cut), [[3, null, true]]);
 });
+
+test("two paid requests asked for at once are admitted one after the other: the second waits for the first's durable write, then each has its own turn and its own record", async () => {
+  const inner = await memorySessionStore().open('chat:together');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let held = 0;
+  // The session's writer, with the first append held open.
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { held += 1; if (held === 1) await gate; await inner.append(records); } };
+  const starts = [];
+  const asked = [];
+  const booking = await modelPortFor(writer, { key: 'chat:together', beforeRequest: (r) => { asked.push(r.turn); }, onEvent: (e) => { if (e.type === 'request_start') starts.push(e.turn); } });
+  const both = Promise.all([booking.models.beforeRequest({ model: 'main' }), booking.models.beforeRequest({ model: 'small' })]);
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.equal(held, 1, 'the second admission has not reached the writer while the first is inside its write');
+  assert.deepEqual(asked, [1], 'nor asked the host');
+  release();
+  const tickets = await both;
+  assert.deepEqual(tickets.map((t) => t.turn), [1, 2]);
+  assert.deepEqual(asked, [1, 2]);
+  assert.deepEqual((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => [r.data.turn, r.data.model]), [[1, 'main'], [2, 'small']]);
+  assert.deepEqual(starts, [1, 2]);
+});
+
+test('two paid requests asked for at once never pass the turn limit together: with one turn left, the second is refused', async () => {
+  const store = memorySessionStore();
+  await assert.rejects(createHarnessRunner(plannedAdapter([{ both: true }]), { store, maxTurns: 1 })(stepRequest()), (error) => error instanceof HarnessRunError && error.reason === 'turn_limit');
+  assert.equal((await store.read('step:s1')).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'one paid request left');
+});
+
+test("the host sees the requests in flight, so a budget holds each one's worst case until it answers (two at once, each 0.6 of the cap: the second is refused)", async () => {
+  const cap = 1, worst = 0.6;
+  const seen = [];
+  // The host's rule: what is spent, plus the worst case of every request still in flight, plus this one's, within the cap.
+  const beforeRequest = (r) => {
+    seen.push(r.inFlight.map((f) => [f.turn, f.model]));
+    if ((r.spentUsd ?? Infinity) + r.inFlight.length * worst + worst > cap) return { refuse: 'over the cap' };
+  };
+  const booking = await modelPortFor(await memorySessionStore().open('chat:cap'), { key: 'chat:cap', beforeRequest });
+  const [first, second] = await Promise.allSettled([booking.models.beforeRequest({ model: 'main' }), booking.models.beforeRequest({ model: 'small' })]);
+  assert.deepEqual(first, { status: 'fulfilled', value: { turn: 1 } });
+  assert.ok(second.status === 'rejected' && second.reason instanceof HarnessRunError && second.reason.reason === 'refused', String(second.reason));
+  assert.deepEqual(seen, [[], [[1, 'main']]]);
+  // Answered, the first is no longer held: a third request fits (0.3 spent + 0.6).
+  await booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.3 }, first.value);
+  assert.deepEqual(await booking.models.beforeRequest({ model: 'main' }), { turn: 2 });
+  assert.deepEqual(seen[2], []);
+});
