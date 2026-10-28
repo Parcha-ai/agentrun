@@ -1,6 +1,6 @@
 // Decision providers: the models a workflow's judge, pick, sift, route and ask nodes ask, through the DSL's `runJudge`.
-// Jev (TypeSafe's System One) is the one this server runs, when its environment names Jev's key: TYPESAFE_API_KEY, or
-// OPENROUTER_API_KEY for Jev through OpenRouter.
+// Jev (TypeSafe's System One) is the one this server runs, when its environment names Jev's key: TYPESAFE_API_KEY (the
+// route to use), or OPENROUTER_API_KEY for Jev through OpenRouter.
 //
 // The TypeSafe key never enters a run's environment, which the run's tools and its model's provider read
 // (`ToolHost.env`, a call node's effect). The server drops the variable from the run's process and hands the value over
@@ -15,16 +15,19 @@ export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
 /** The adapter a workflow's typed questions run through. */
 export const DECISION_ADAPTER = "runJudge";
-/** The descriptor a run's process reads the TypeSafe key from: the first one after stdin, stdout and stderr. */
-export const DECISION_KEY_FD = 3;
+/** The descriptor a run's process reads the TypeSafe key from. Node takes 3 to about 20 for itself at start, and a
+ *  low number is handed out again as soon as it is closed. A high one stays free, so "closed once read" holds and
+ *  can be checked. */
+export const DECISION_KEY_FD = 63;
 /** Set on a run's process the server hands the TypeSafe key: the descriptor's number, never the key. */
 export const DECISION_KEY_FD_ENV = "AGENTRUN_SERVE_DECISION_KEY_FD";
 /** Under --faux only: a module whose default export is the fetch Jev's runner sends through, in place of TypeSafe's
  *  API (the tests' fake). */
 export const FAUX_JEV_ENV = "AGENTRUN_SERVE_FAUX_JEV";
 
-/** One decision provider as capabilities lists it: whether this server runs it, and when not, why. */
-export type DecisionOffer = { id: "jev"; available: boolean; reason?: string };
+/** One decision provider as capabilities lists it: whether this server runs it, when not why, and what to know when
+ *  it runs in a way the operator should hear of. */
+export type DecisionOffer = { id: "jev"; available: boolean; reason?: string; note?: string };
 
 const isSet = (value: string | undefined) => typeof value === "string" && value.trim() !== "";
 
@@ -38,8 +41,13 @@ export function jevRoute(env: NodeJS.ProcessEnv): "typesafe" | "openrouter" | un
 export const jevMissing = `This server's environment does not set ${JEV_KEY_ENV} (or ${JEV_OPENROUTER_KEY_ENV}, for Jev through OpenRouter), which a workflow's judge, pick, sift, route and ask nodes need.`;
 
 /** What this server offers of each decision provider. */
+/** Why the OpenRouter route is worth a note: its key is also the model gateway's, which a run's process holds. */
+export const jevGatewayNote = `The Jev key is the model gateway key on this server (${JEV_OPENROUTER_KEY_ENV}), which a run's processes hold in their environment for its model nodes. Set ${JEV_KEY_ENV} to keep the decision key out of them.`;
+
 export function decisionsOf(env: NodeJS.ProcessEnv): DecisionOffer[] {
-  return [jevRoute(env) ? { id: "jev", available: true } : { id: "jev", available: false, reason: jevMissing }];
+  const route = jevRoute(env);
+  if (route === "typesafe") return [{ id: "jev", available: true }];
+  return [route === "openrouter" ? { id: "jev", available: true, note: jevGatewayNote } : { id: "jev", available: false, reason: jevMissing }];
 }
 
 /** The TypeSafe key the server handed the run's process, read once and the descriptor closed; undefined when none was. */

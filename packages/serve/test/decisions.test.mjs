@@ -52,12 +52,12 @@ async function startFlow(api, steps) {
   return started.body.run_id;
 }
 
-/** The run's process, once it serves: its pid from run.json. */
+/** The run's process, once it serves its door (after its app, which reads the key, has returned): its pid. */
 async function processOf(data, runId, not) {
   for (let i = 0; ; i++) {
     const record = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8").catch(() => "{}"));
     const pid = record.holder?.pid;
-    if (record.status === "running" && pid && pid !== not && existsSync(`/proc/${pid}`)) return pid;
+    if (record.status === "running" && record.holder?.serve && pid && pid !== not && existsSync(`/proc/${pid}`)) return pid;
     assert.ok(i < 400, "the run's process serves");
     await sleep(50);
   }

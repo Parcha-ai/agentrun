@@ -671,10 +671,10 @@ export class Runs {
     const child = spawn(process.execPath, [
       "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
-    ], { stdio: ["ignore", "ignore", log, ...(handsKey ? ["pipe" as const] : [])], env });
+    ], { stdio: ["ignore", "ignore", log, ...(handsKey ? [...Array<"ignore">(DECISION_KEY_FD - 3).fill("ignore"), "pipe" as const] : [])], env });
     closeSync(log);
     if (handsKey) {
-      const pipe = child.stdio[DECISION_KEY_FD] as Writable | null;
+      const pipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[DECISION_KEY_FD];
       // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
       pipe?.on("error", () => undefined);
       pipe?.end(decisionKey);
