@@ -25,8 +25,9 @@ const verified = verifyCodexBinary(installed);
 const skip = verified instanceof Error && env.AGENTRUN_CODEX_REQUIRE_BINARY !== "1" ? verified.message : false;
 const target = codexTarget();
 
-// The check runs from the tree's own directory and drops CODEX_BIN itself, so only the tree's Codex can answer.
-const check = (root) => spawnSync("sh", [CHECK, root], { cwd: dirname(root), encoding: "utf8" });
+// The check runs from the tree's own directory and drops CODEX_BIN itself, so only the tree's Codex can answer (a test
+// below sets it to prove that).
+const check = (root, extra = {}) => spawnSync("sh", [CHECK, root], { cwd: dirname(root), env: { ...env, ...extra }, encoding: "utf8" });
 
 /** Lays the adapter (its package.json and built dist), the launcher and this platform's package into `root`, the way npm
  *  does. `binary` is what sits at the platform package's binary path: the installed pinned one (a link), a script, or
@@ -120,6 +121,14 @@ for (const [what, codex, named] of [
     assert.match(result.stderr, named);
   });
 }
+
+// A CODEX_BIN the build inherits (or an operator sets) that names the pinned binary elsewhere must not stand in for the
+// tree's own: the tree's wrong Codex is still refused.
+test("the image check refuses a tree's wrong Codex even when CODEX_BIN names the pinned binary elsewhere", { skip }, async (t) => {
+  const result = check(await tree(t, kept, {}, { binary: "#!/bin/sh\necho codex-cli 0.164.0\n" }), { CODEX_BIN: installed?.path });
+  assert.equal(result.status, 1, `exit ${result.status}: ${result.stdout}`);
+  assert.match(result.stderr, /CodexPinMismatch \(CODEX_PIN_MISMATCH, binary_sha256\)/);
+});
 
 test("the image check refuses a tree without the Codex adapter to check its CLI with", async (t) => {
   const result = check(await tree(t, kept, {}, null));
