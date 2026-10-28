@@ -263,7 +263,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         if (e?.type === "tool_refused" && typeof e.callId === "string" && typeof e.name === "string") {
           io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
           io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: true });
-          options.log?.("claude-agent: the CLI refused a call", { name: e.name, reason: e.reason });
+          options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
         }
       };
       // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
