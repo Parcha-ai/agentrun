@@ -59,12 +59,15 @@ test("a door submission recorded through the drive while one of its effects is i
 });
 
 /** A store whose commits the run's lease refuses once `fence` is set, as a run whose lease lapsed sees them. */
+/** A run's store whose commits its lease can refuse. Closing it ends one process's use of the store, not the store: the
+ *  next process's Harness opens the same records (pi 1.2 and later close a Harness's storage when a commit fails). */
 class LeasedStorage extends MemoryStorage {
   fence = null;
   async commit(writes, context) {
     if (this.fence) throw this.fence;
     return super.commit(writes, context);
   }
+  async close() {}
 }
 
 const keyEntries = async (harness, key) => {
