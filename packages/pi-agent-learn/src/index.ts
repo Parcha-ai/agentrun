@@ -19,7 +19,7 @@ export { parseReflection, REFLECT_PROMPT, type Reflection, REFLECTION_CHARS, ref
 export { type ProposeFilesOptions, type ProposeOptions, type ProposeResult, type ProposeTarget, proposeFiles, proposeLearning, type UsesSource, type Withheld, type WorkflowRecords } from "./propose.js";
 export {
   curate, CURATE_CAPS, type CurateCaps, type CurateItem, type CurateOptions, type CurateReport, type CurateRepo, type Cut, DEFAULT_THRESHOLDS, type InjectionScreen, type Judge,
-  type Question, QUESTIONS, type RetireOptions, type RetireResult, retireLearning, type RunReport, type RunsRepo, type Thresholds,
+  type HeldPlan, landHeld, type LandHeldOptions, type LandHeldResult, type PlannedRun, type Question, QUESTIONS, type RetireOptions, type RetireResult, retireLearning, type RunReport, type RunsRepo, type Thresholds,
 } from "./curate.js";
 export {
   type Admission, type AdmitRevision, admitRevision, applyDecision, type Applied, type Decision, type DecisionOptions, type Folded, foldUses,

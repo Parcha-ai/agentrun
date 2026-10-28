@@ -338,6 +338,18 @@ it touched, and is pushed without force. Its message is the verdict and every re
 its `## Review` section, and `learnings/INDEX.md` is rewritten from the active learnings. Holds and refusals are in that
 message, so a run that only held still gets its commit and is curated once.
 
+A host that asks a person before a run merges uses three more pieces. `curate({ only: [runId] })` curates just the runs
+it names and leaves every other run's branch as it is, unjudged. `curate({ hold: true })` plans each run and commits
+nothing: the report's `planned` holds each `{ run, plan, report }`, the plan in plain JSON (`HeldPlan`: the run, main as
+it was, the base, the files, the message, the trailers and the memo before its Review). `landHeld({ repo, plan,
+decision })` lands it once the person decides: `"approve"` lands it as curate would have, with the run as it lands as
+the merge's second parent; `{ refuse: reason }` lands the memo alone, its Review `curate: run <id>: refused by a person:
+<reason>` (one line, 1 to 200 characters), so the run counts as curated and is never judged again. A run already
+curated answers `already`, and a main that moved since the plan answers `stale` with nothing landed: plan it again.
+`landHeld` checks the plan's shape and guards its files as the curator before it writes anything, and a plan writes no
+run's memo but its own. That is a shape check, not an integrity check: a plan someone altered can still write any note
+text a curator may write, so the host's custody of the plan file is the control (keep it where no run's tools reach).
+
 The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
 `@parcha/agentrun-jev` is one (it comes with this package through `@parcha/agentrun-pi`; add it to your own dependencies
 to import it, and it reads its key, `TYPESAFE_API_KEY`, from the environment as its README says), and a test passes a
