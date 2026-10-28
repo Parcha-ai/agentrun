@@ -187,12 +187,16 @@ function releasedStore(file: string) {
 export type StoreAccess = { readonly store: Pick<AgentStoreReader, "readRun" | "readRevision" | "listRuns">; request<T>(act: () => T | Promise<T>): Promise<T> };
 
 /** What the ended run `runId` learned, proposed as `runs/<run id>` from the commit it was seeded from, with the host's memo:
- *  its outcome and cost as the carry back wrote them, and `untrusted` when it called an external tool. Undefined while the
- *  run has not ended, and for a run whose revision does not learn. The `Run-Id` trailer makes a second call `already`. */
+ *  its outcome and cost as the carry back wrote them, and `untrusted` when it called an external tool. Undefined for a run
+ *  whose revision does not learn; a run whose end is not in the store yet is refused. The `Run-Id` trailer makes a second
+ *  call `already`. */
 export async function proposeFor(data: string, agents: StoreAccess, runId: string): Promise<ProposeResult | undefined> {
   const { store } = agents;
   const row = await agents.request(() => store.readRun(runId));
-  if (!row || row.state === "running" || learningOf(await agents.request(() => store.readRevision(row.revision))) === "off") return undefined;
+  if (!row || learningOf(await agents.request(() => store.readRevision(row.revision))) === "off") return undefined;
+  // Only an ended run is proposed: its outcome and cost are the carry back's. A call before the end is written is a
+  // caller's mistake, said, never a silent no-op.
+  if (row.state === "running") throw new Error(`the run ${runId} has not ended in the agent store yet, so it is not proposed`);
   const dir = join(data, "runs", runId);
   const storeFile = join(dir, "store", "run.sqlite");
   if (!existsSync(storeFile)) {
