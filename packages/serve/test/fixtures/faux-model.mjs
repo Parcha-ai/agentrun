@@ -24,6 +24,17 @@ export default function reply(context, faux) {
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
+    // A node that says whether anything it can reach holds the decision key: this process's environment, as its tools
+    // get it, and the environment the kernel shows it.
+    if (first.includes("Report the canary")) {
+      if (answered) return faux.message("Submitted.");
+      return (async () => {
+        const [{ CANARY }, { readFile }] = await Promise.all([import("./faux-jev.mjs"), import("node:fs/promises")]);
+        const environ = await readFile("/proc/self/environ", "utf8").catch(() => "");
+        const leaked = Object.values(process.env).some((v) => v?.includes(CANARY)) || environ.includes(CANARY);
+        return faux.message(faux.toolCall("submit", { leaked, key_set: process.env.TYPESAFE_API_KEY !== undefined }), { stopReason: "toolUse" });
+      })();
+    }
     if ((browse || read) && results === 0) return faux.message(faux.toolCall(read ? "browser_read" : "snapshot", {}), { stopReason: "toolUse" });
     if ((browse || read) && results === 1) return faux.message(faux.toolCall("submit", { answer: 42 }), { stopReason: "toolUse" });
     if (answered) return faux.message("Submitted.");
