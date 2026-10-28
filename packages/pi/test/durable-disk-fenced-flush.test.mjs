@@ -1,8 +1,8 @@
 // A run on a durable disk whose lease is fenced while a step's attempt is out. `fenced` is not final, so the recovery
-// driver admits the step's next attempt in this stale process; what keeps it from acting is the driver's flush before
-// the attempt, which commits through the run's Harness over the lease's observed storage. That flush must be refused
-// with the fence, and the node runner must not be called again: whether the lease was fenced by a failed heartbeat
-// write, or the watchdog finds it lapsed at the commit.
+// driver admits the step's next attempt in this stale process. Its flush before the attempt commits through the run's
+// Harness over the lease's observed storage, so it is refused with the fence; the driver's seam after it would stop the
+// attempt too. The node runner must not be called again: whether the lease was fenced by a failed heartbeat write, or
+// lapsed while the process was stuck.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { rename, writeFile } from 'node:fs/promises';
@@ -126,7 +126,8 @@ test('a step\'s next attempt after its lease was fenced by a failed heartbeat wr
 
 test('a step\'s next attempt after its lease lapsed while the process was stuck: the flush before it is refused with the fence, and the runner is not called', { timeout: 60000 }, async () => {
   // The first attempt holds this thread past the lease, as a FUSE request that never answers does: no heartbeat and no
-  // self-fence timer runs meanwhile, and the watchdog thread records the lapse. The next commit finds it.
+  // self-fence timer runs meanwhile, and the watchdog thread records the lapse. The lease finds it at its next check or
+  // at the flush's commit, whichever runs first: either fences, and the flush is refused.
   const seen = await runFenced({
     lease: { heartbeatMs: 100, expiryMs: 3_000, marginMs: 1_000, checkMs: 50 },
     fence: async () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4_500); },
