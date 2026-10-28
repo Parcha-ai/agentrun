@@ -73,6 +73,20 @@ test("a run whose code throws is code_error and a run past the batch timeout is 
   assert.deepEqual(chromeOf(dir), [], "the release ended the local Chrome");
 });
 
+test("run code written as an async arrow function runs and returns its value, and browser_read reads the page it opened in the same session", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
+  const { capable: ok, site, env, read } = await rig(t);
+  if (!ok) return;
+  const script = [["run", { code: 'async () => {\n  return "hello world";\n}' }],
+    ["run", { code: `async () => {\n  await page.goto(${JSON.stringify(`${site.base}/a`)}, { waitUntil: "domcontentloaded" });\n  return { title: await page.title(), url: page.url() };\n}` }],
+    ["browser_read", { what: "markdown" }]];
+  const run = await child({ ...env, MODE: "second", SCRIPT: JSON.stringify(script) });
+  assert.equal(run.code, 0, run.err.slice(-1500));
+  const results = read().results;
+  assert.equal(results[0].text, "hello world");
+  assert.deepEqual(JSON.parse(results[1].text), { title: "Page A", url: `${site.base}/a` });
+  assert.match(results[2].text, /forty-two/, `browser_read reads page A, not a fresh browser: ${results[2].text.slice(0, 300)}`);
+});
+
 test("after a goto that never commits, browser_read and screenshot name the page the browser shows", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
   const { capable: ok, site, env, read, dir } = await rig(t);
   if (!ok) return;
