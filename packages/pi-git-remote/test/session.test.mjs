@@ -258,12 +258,12 @@ test("a push that failed does not make the saved state the pushed one: contents 
   await writeFile(note, "B\n");
   await checkout.end();
   await writeFile(note, "C\n");
-  // The remote can be read but not written: the commit is made here, the push fails.
-  execFileSync("chmod", ["-R", "a-w", path.join(bare, "objects")]);
+  // The remote can be read but refuses any pack, for root too: the commit is made here, the push fails.
+  execFileSync("git", ["--git-dir", bare, "config", "receive.maxInputSize", "1"]);
   try {
     await assert.rejects(checkout.end());
   } finally {
-    execFileSync("chmod", ["-R", "u+w", path.join(bare, "objects")]);
+    execFileSync("git", ["--git-dir", bare, "config", "--unset", "receive.maxInputSize"]);
   }
   await writeFile(note, "B\n");
   const retry = await checkout.end();
