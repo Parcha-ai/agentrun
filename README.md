@@ -30,7 +30,8 @@ your machine or your own server, or with us when hosted AgentRun opens.
    With the key in your environment, `-e OPENROUTER_API_KEY` passes it on and it never sits on the command line. A credit
    limit on the key caps what your agents can spend. Open the link it prints; the volume `agentrun` keeps every agent and
    run. For a provider's own key, pass `-e AGENT_MODEL=anthropic/claude-sonnet-5-5 -e ANTHROPIC_API_KEY` instead; any
-   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`.
+   OpenAI Responses gateway works through `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_API_KEY`. A gateway on this machine's
+   loopback is out of the container's reach: see [A gateway on this machine](packages/serve/README.md#a-gateway-on-this-machine).
 
 2. **About $7 a month**: deploy it to Render in one click: a Starter instance with a 1 GB disk, always on, with a URL. Each run takes its own memory, so its 512 MB holds a few runs at a time. Render's free instance works for a try, but it has no disk, so it loses every run when it sleeps or restarts.
 
