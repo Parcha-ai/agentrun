@@ -111,6 +111,8 @@ export type Run = {
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
   orphan?: number;
+  /** Adopted with a saved stop: its first snapshot is checked once, and a turn still working is aborted. */
+  finishStop?: boolean;
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
@@ -297,7 +299,11 @@ export class Runs {
       if (row.costUsd !== undefined) run.costUsd = row.costUsd;
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
-    } else if (record && this.doorOf(record)) this.adoptProcess(run, record);
+    } else if (record && this.doorOf(record)) {
+      // A server that died between saving a stop and its abort reaching the run leaves the turn working.
+      run.finishStop = run.meta.stopped_after !== undefined;
+      this.adoptProcess(run, record);
+    }
     this.refresh(run);
     return run;
   }
@@ -513,6 +519,10 @@ export class Runs {
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
         this.take(run, reducer.rows());
+        if (event === "snapshot" && run.finishStop) {
+          run.finishStop = false;
+          if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
+        }
       }
     }
   }
