@@ -9,6 +9,7 @@ import { closeSync, openSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
@@ -81,8 +82,8 @@ type RunMeta = {
   error?: { code: string; message: string };
   /** A workflow run's output, once it completed. */
   output?: unknown;
-  /** The person's last message when the run's turn was stopped, by its timeline row's id (its store entry's, so a
-   *  compaction or any rewrite of the messages shown never moves it): it stays stopped until they send another. */
+  /** Where the run stood when its turn was stopped: the person's last message, by its timeline row's id (its store
+   *  entry's), or the root conversation's place 0 before any. It stays stopped until a message newer than that is shown. */
   stopped_at?: string;
   /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
   stopped_after?: number;
@@ -191,13 +192,19 @@ export function costView(rows: readonly TimelineEvent[], stored: number | undefi
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
 const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
-/** Whether the turn a stop ended is still where the run stands: no message from the person since. Keyed on the stopped
- *  message's id, never a count of the messages shown, which a compaction changes. */
-export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number }, rows: readonly TimelineEvent[]): boolean =>
-  meta.stopped_at !== undefined ? meta.stopped_at === lastUserMessage(rows) : meta.stopped_after !== undefined && meta.stopped_after === usersOf(rows);
+// A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
+// order rows across conversations and the conversation is no part of the order.
+const placeOf = (id: string) => Number(id.slice(id.lastIndexOf(":") + 1));
+/** Whether the turn a stop ended is still where the run stands: no message shown is newer than the stop's. By order,
+ *  never by a count or by the stopped message itself, which a compaction can take off the rows. */
+export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number }, rows: readonly TimelineEvent[]): boolean => {
+  if (meta.stopped_at === undefined) return meta.stopped_after !== undefined && meta.stopped_after === usersOf(rows);
+  const at = placeOf(meta.stopped_at);
+  return !rows.some((r) => r.kind === "user_message" && placeOf(r.id) > at);
+};
 const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
-/** What a stop keeps of where the run stands: the person's last message, by its id. */
-export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at?: string; stopped_after?: number } => ({ stopped_at: lastUserMessage(rows) });
+/** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
+export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {

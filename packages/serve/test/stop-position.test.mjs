@@ -1,6 +1,6 @@
 // A stopped run stays stopped until the person sends another message, whatever happens to the messages it shows: the
-// stop is kept as the stopped message's id, so a compaction (fewer messages shown) or a rewrite of the list never moves
-// it in either direction.
+// stop is kept as the stopped message's place in the store, and the run reads stopped while no message shown is newer,
+// so a compaction (fewer messages shown, the stopped one among them or not) never moves it in either direction.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stopMark, stoppedAt } from "../dist/runs.js";
@@ -33,4 +33,31 @@ test("a run stopped by an older server, with only the count kept, reads as it di
   assert.equal(stoppedAt({ stopped_after: 2 }, rows), true);
   assert.equal(stoppedAt({ stopped_after: 1 }, rows), false);
   assert.equal(stoppedAt({}, rows), false, "never stopped");
+});
+
+test("a compaction that takes the stopped message itself off the rows leaves the run stopped while nothing newer is shown", () => {
+  const atStop = [user("1:3"), answer("1:4"), user("1:9")];
+  const meta = stopMark(atStop);
+  // The cut fell inside the stopped turn: its message is summarized, only the older one and the turn's tail are shown.
+  const compacted = [user("1:3"), { id: "1:14", kind: "phase", summary: "Summarized older context" }, answer("1:12")];
+  assert.equal(stoppedAt(meta, compacted), true, "the stopped message is gone and nothing newer is shown");
+  assert.equal(stoppedAt(meta, [{ id: "1:14", kind: "phase", summary: "Summarized older context" }]), true, "no message shown at all");
+  assert.equal(stoppedAt(meta, [...compacted, user("1:16")]), false, "a message since the stop");
+});
+
+test("a stop before any message of the person's is kept, and reads stopped", () => {
+  const meta = stopMark([]);
+  assert.equal(typeof meta.stopped_at, "string", "a place is kept, never nothing");
+  assert.equal(stoppedAt(meta, []), true);
+  assert.equal(stoppedAt(meta, [answer("1:4")]), true, "no message of the person's since");
+  assert.equal(stoppedAt(meta, [user("1:5")]), false, "a message since the stop");
+});
+
+test("messages order by their store entry, whatever conversation shows them", () => {
+  // The store mints conversation and entry ids from one counter: a subagent's conversation (40) can have a number above
+  // a root message (1:90) that came after the subagent's task (40:45).
+  const atSubagent = [user("1:3"), user("40:45")];
+  assert.equal(stoppedAt(stopMark(atSubagent), [...atSubagent, user("1:90")]), false, "the root message is newer than the task");
+  const atRoot = [user("1:3"), user("40:45"), user("1:90")];
+  assert.equal(stoppedAt(stopMark(atRoot), atRoot), true, "the task is older than the stopped message");
 });
