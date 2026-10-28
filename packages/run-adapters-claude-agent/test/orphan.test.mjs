@@ -76,7 +76,12 @@ async function crash(t, point) {
       if (JSON.parse(value)[want] !== undefined) return;
     }
   };
-  await Promise.race([ready(), new Promise((_, reject) => setTimeout(() => reject(new Error(`not ${point} within 60 s: ${stderr.slice(-400)}`)), 60_000))]);
+  let timer;
+  try {
+    await Promise.race([ready(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`not ${point} within 60 s: ${stderr.slice(-400)}`)), 60_000); })]);
+  } finally {
+    clearTimeout(timer);
+  }
   tree = descendants(proc.pid);
   const seen = tree.map((pid) => `${pid} ${argvOf(pid).slice(0, 2).join(' ')}`);
   // A model request or a tool call is inside a turn, so the CLI runs; between turns the session has none running.

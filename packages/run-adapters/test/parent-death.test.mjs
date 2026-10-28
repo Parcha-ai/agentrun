@@ -3,7 +3,7 @@
 // SIGKILLed, so it runs no close; its child ignores the end of its stdin, as the pinned Claude Agent CLI does. The
 // process tree is read from /proc, so the behaviour tests run on Linux.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
@@ -73,7 +73,9 @@ test('the watch goes in front of the child: setpriv sets the parent-death signal
   assert.deepEqual(parentWatched(child, 'pdeathsig'), { command: SETPRIV, args: ['--pdeathsig', 'KILL', '--', '/pinned/cli', '--x', 'y'] });
   assert.deepEqual(parentWatched(child, 'shim'), { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), '--', '/pinned/cli', '--x', 'y'] });
   assert.ok(existsSync(PARENT_WATCH_SHIM), 'the shim ships beside it');
-  if (linux && existsSync(SETPRIV)) assert.equal(parentWatchHere(), 'pdeathsig', 'Linux with util-linux setpriv uses the kernel');
+  // What this machine's setpriv can do, read here apart from parentWatchHere: an older one lacks --pdeathsig.
+  const canPdeathsig = linux && existsSync(SETPRIV) && execFileSync(SETPRIV, ['--help'], { encoding: 'utf8' }).includes('--pdeathsig');
+  assert.equal(parentWatchHere(), canPdeathsig ? 'pdeathsig' : 'shim', 'a setpriv with --pdeathsig uses the kernel; any other machine, the shim');
 });
 
 for (const how of ['pdeathsig', 'shim']) {
