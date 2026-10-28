@@ -32,7 +32,10 @@ function refusedBeforeDisk(skills: ReadonlyMap<string, ReadonlySet<string>>, ski
 
 /** The file's text, read without following a link anywhere in its path; throws a reason a model can read. */
 function readNoFollow(root: string, skill: string, path: string): string {
-  const dir = realpathSync(join(root, skill));
+  // The root is resolved (its own path may pass through a link, as /tmp does on some machines); the skill's directory under
+  // it is not: a link there would make its target the trusted base.
+  const dir = join(realpathSync(root), skill);
+  if (lstatSync(dir).isSymbolicLink()) throw new Error(`the skill ${skill}'s directory is a link, which is not followed`);
   let at = dir;
   for (const part of path.split("/")) {
     at = join(at, part);

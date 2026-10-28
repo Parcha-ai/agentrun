@@ -65,3 +65,28 @@ test('no link is followed: a listed file that is a link, or a listed path throug
     assert.ok(result.isError && /link/.test(result.text) && !result.text.includes('NOT FOR THE MODEL'), `${path}: ${result.text}`);
   }
 });
+
+test("a skill whose own directory is a link is refused: the link's target never becomes the trusted base, though it holds a listed file", async () => {
+  const base = mkdtempSync(join(ROOT, 'linked-dir-'));
+  const root = join(base, 'skills');
+  const outside = join(base, 'outside');
+  mkdirSync(root, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, 'SKILL.md'), 'OUTSIDE THE SKILLS ROOT\n');
+  symlinkSync(outside, join(root, 'research'));
+  const tool = readSkillFileTool(root, [{ name: 'research', files: ['SKILL.md'] }]);
+  const result = await call(tool, { skill: 'research', path: 'SKILL.md' });
+  assert.equal(result.isError, true, JSON.stringify(result));
+  assert.match(result.text, /link/);
+  assert.ok(!result.text.includes('OUTSIDE'), 'nothing of the target was read');
+});
+
+test("a skills root reached through a link (as /tmp is on some machines) still reads", async () => {
+  const base = mkdtempSync(join(ROOT, 'linked-root-'));
+  const real = join(base, 'real');
+  mkdirSync(join(real, 'research'), { recursive: true });
+  writeFileSync(join(real, 'research', 'SKILL.md'), 'inside\n');
+  symlinkSync(real, join(base, 'skills'));
+  const tool = readSkillFileTool(join(base, 'skills'), [{ name: 'research', files: ['SKILL.md'] }]);
+  assert.deepEqual(await call(tool, { skill: 'research', path: 'SKILL.md' }), { text: 'inside\n' });
+});

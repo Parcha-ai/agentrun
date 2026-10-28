@@ -56,11 +56,16 @@ export function skillProblems(skills: readonly ClaudeAgentSkill[]): string[] {
     seen.add(name);
     const files = skill.files ?? {};
     const md = files["SKILL.md"];
-    const front = typeof md === "string" ? /^---\n([\s\S]*?)\n---\n/.exec(md)?.[1] : undefined;
+    const front = typeof md === "string" ? /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(md)?.[1] : undefined;
     if (front === undefined) problems.push(`the skill ${name} has no SKILL.md with front matter`);
     else {
       if (!new RegExp(`^name:\\s*(['"]?)${name}\\1\\s*$`, "m").test(front)) problems.push(`the skill ${name}'s SKILL.md names it otherwise`);
       if (!/^description:\s*\S/m.test(front)) problems.push(`the skill ${name}'s SKILL.md has no description`);
+    }
+    // A path that is another's folder (reference, and reference/sources.md) can't be written as both.
+    const paths = new Set(Object.keys(files));
+    for (const folder of new Set([...paths].flatMap((path) => path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))))) {
+      if (paths.has(folder)) problems.push(`the skill ${name}'s ${folder} is both a file and a folder`);
     }
     for (const [path, text] of Object.entries(files)) {
       if (!SKILL_PATH.test(path) || path.split("/").some((part) => part === "." || part === "..")) problems.push(`the skill ${name}'s file ${JSON.stringify(path.slice(0, 80))} is not a plain relative path`);
