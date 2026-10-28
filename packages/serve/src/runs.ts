@@ -802,6 +802,9 @@ export class Runs {
   async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
     await this.takePlace();
     try {
+      // Read again: the place may have been waited for, and the agent archived meanwhile.
+      const now = await this.options.agents.get(entry.agent.id);
+      if (now?.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${entry.agent.id} is archived: unarchive it to run it.`, { details: { archived_at: now.agent.archivedAt } });
       return await this.start(entry, revision, version, options);
     } finally {
       this.starting--;
@@ -880,6 +883,10 @@ export class Runs {
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
     await this.takePlace();
     try {
+      // Read again: the place may have been waited for, and the run (or its agent) archived meanwhile.
+      const now = this.store.readRun(run.id);
+      if (now?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
+      if (now?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
       try {
         this.store.reopenRun(run.id);
       } catch (error) {
