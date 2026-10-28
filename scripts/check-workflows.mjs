@@ -19,7 +19,7 @@ export function workflowProblems(text, file) {
   });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
   const dir = resolve(process.argv[2] ?? join(root, '.github', 'workflows'));
   const files = readdirSync(dir).filter((name) => /\.ya?ml$/.test(name)).sort();
