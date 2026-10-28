@@ -54,30 +54,42 @@ interface Position { pointer: string; path: string; node: Record<string, unknown
 
 const esc = (key: string) => key.replace(/~/g, "~0").replace(/\//g, "~1");
 
-/** Every schema position of `schema`, depth first, with `$defs` and union branches. */
+/** The schema positions directly below `node`, in the order they are visited. */
+function childrenOf({ pointer, path, node, inAllOf }: Position): Position[] {
+  const out: Position[] = [];
+  const add = (sub: unknown, at: string, readable: string, allOf = inAllOf): void => {
+    if (isObject(sub)) out.push({ pointer: at, path: readable, node: sub, inAllOf: allOf });
+  };
+  for (const key of SCHEMA_MAPS) {
+    const map = node[key];
+    if (isObject(map)) for (const [name, sub] of Object.entries(map)) add(sub, `${pointer}/${key}/${esc(name)}`, key === "properties" ? `${path ? `${path}.` : ""}${name}` : `${path ? `${path}.` : ""}${key}.${name}`);
+  }
+  for (const key of SCHEMA_LISTS) {
+    const list = node[key];
+    if (Array.isArray(list)) list.forEach((sub, i) => add(sub, `${pointer}/${key}/${i}`, `${path}${path ? " " : ""}(${key} ${i + 1})`, inAllOf || key === "allOf"));
+  }
+  for (const key of SCHEMA_ONES) {
+    const sub = node[key];
+    if (isObject(sub)) add(sub, `${pointer}/${key}`, key === "items" ? `${path}[]` : `${path}${path ? "." : ""}(${key})`);
+    else if (Array.isArray(sub)) sub.forEach((s, i) => add(s, `${pointer}/${key}/${i}`, `${path}[${i}]`));
+  }
+  for (const key of ["not", "if", "then", "else"]) add(node[key], `${pointer}/${key}`, `${path}${path ? "." : ""}(${key})`);
+  if (Array.isArray(node.prefixItems)) node.prefixItems.forEach((s, i) => add(s, `${pointer}/prefixItems/${i}`, `${path}[${i}]`));
+  if (isObject(node.patternProperties)) for (const [name, sub] of Object.entries(node.patternProperties)) add(sub, `${pointer}/patternProperties/${esc(name)}`, `${path}.(${name})`);
+  return out;
+}
+
+/** Every schema position of `schema`, depth first, with `$defs` and union branches. A loop with its own stack, so no
+ *  depth of schema overflows the call stack. */
 function positions(schema: unknown): Position[] {
   const out: Position[] = [];
-  const visit = (node: unknown, pointer: string, path: string, inAllOf: boolean): void => {
-    if (!isObject(node)) return;
-    out.push({ pointer, path, node, inAllOf });
-    for (const key of SCHEMA_MAPS) {
-      const map = node[key];
-      if (isObject(map)) for (const [name, sub] of Object.entries(map)) visit(sub, `${pointer}/${key}/${esc(name)}`, key === "properties" ? `${path ? `${path}.` : ""}${name}` : `${path ? `${path}.` : ""}${key}.${name}`, inAllOf);
-    }
-    for (const key of SCHEMA_LISTS) {
-      const list = node[key];
-      if (Array.isArray(list)) list.forEach((sub, i) => visit(sub, `${pointer}/${key}/${i}`, `${path}${path ? " " : ""}(${key} ${i + 1})`, inAllOf || key === "allOf"));
-    }
-    for (const key of SCHEMA_ONES) {
-      const sub = node[key];
-      if (isObject(sub)) visit(sub, `${pointer}/${key}`, key === "items" ? `${path}[]` : `${path}${path ? "." : ""}(${key})`, inAllOf);
-      else if (Array.isArray(sub)) sub.forEach((s, i) => visit(s, `${pointer}/${key}/${i}`, `${path}[${i}]`, inAllOf));
-    }
-    for (const key of ["not", "if", "then", "else"]) visit(node[key], `${pointer}/${key}`, `${path}${path ? "." : ""}(${key})`, inAllOf);
-    for (const key of ["prefixItems"]) if (Array.isArray(node[key])) (node[key] as unknown[]).forEach((s, i) => visit(s, `${pointer}/${key}/${i}`, `${path}[${i}]`, inAllOf));
-    if (isObject(node.patternProperties)) for (const [name, sub] of Object.entries(node.patternProperties)) visit(sub, `${pointer}/patternProperties/${esc(name)}`, `${path}.(${name})`, inAllOf);
-  };
-  visit(schema, "", "", false);
+  if (!isObject(schema)) return out;
+  const stack: Position[] = [{ pointer: "", path: "", node: schema, inAllOf: false }];
+  for (let here = stack.pop(); here; here = stack.pop()) {
+    out.push(here);
+    const below = childrenOf(here);
+    for (let i = below.length - 1; i >= 0; i -= 1) stack.push(below[i]!);
+  }
   return out;
 }
 

@@ -239,3 +239,23 @@ test('Codex drops `$schema` whatever it names, so a dialect marker the harnesses
   await session.close();
   assert.equal(seen[0].tools.find((t) => t.name === 'draft').parameters.$schema, undefined, 'Codex forwarded it without $schema');
 });
+
+test('a schema of any depth is walked without a stack overflow: described and refused like any other, and check() never throws', () => {
+  const deep = (depth, leaf) => { let node = leaf; for (let i = 0; i < depth; i += 1) node = { type: 'object', properties: { n: node } }; return node; };
+  // 100,000 deep with a constraint at the bottom: described, in the same line a shallow one would give.
+  const schema = deep(100_000, { type: 'integer', minimum: 1 });
+  const lines = describeDropped(schema);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /: integer, at least 1$/);
+  assert.ok(describedDescription('Deep.', schema).endsWith('at least 1'), 'describedDescription on a deep schema does not throw');
+  assert.deepEqual(codexSchemaProblems('t', deep(100_000, { not: {} })).length, 1, 'a refusal at the bottom is found');
+  // Through check(): the shared check's problem at "/", not a throw.
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (inputSchema) => ({ key: 'step:deep', label: 'x', system: [], tools: [{ name: 'deep', description: 'd', inputSchema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  const problems = codex.check(spec(deep(5_000, { type: 'string' })));
+  assert.ok(problems.length >= 1 && problems.every((p) => p.startsWith('deep: /')), JSON.stringify(problems).slice(0, 200));
+  // An exception inside the check is a problem at "/", naming the tool.
+  const hostile = { type: 'object', get properties() { throw new Error('boom'); } };
+  assert.deepEqual(codex.check(spec(hostile)).filter((p) => p.startsWith('deep: /')).length >= 1, true);
+  assert.match(codex.check(spec(hostile)).join('\n'), /deep: \/: .*(boom|could not be checked)/);
+});

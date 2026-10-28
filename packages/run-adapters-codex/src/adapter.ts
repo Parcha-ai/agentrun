@@ -125,9 +125,14 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         // What no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in
         // the tool's schema: refused here, by name, not found out mid-turn. A place the first already refused is not
         // refused again by the second.
-        const shared = toolSchemaProblems(tool.name, tool.inputSchema);
-        const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
-        problems.push(...shared, ...codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1])));
+        // Nothing in it may throw: a tool whose schema cannot be checked is a problem at "/", naming the tool.
+        try {
+          const shared = toolSchemaProblems(tool.name, tool.inputSchema);
+          const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
+          problems.push(...shared, ...codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1])));
+        } catch (error) {
+          problems.push(`${tool.name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`);
+        }
       }
       if (checked !== undefined) {
         codeMode ??= (options.readCodeModeModels ?? readCodeModeModels)(checked);
