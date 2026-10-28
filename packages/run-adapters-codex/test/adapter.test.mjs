@@ -1,7 +1,7 @@
 // The Codex adapter behind createHarnessRunner, as a DSL host runs it, on the stand-in app-server (fake-app-server.mjs)
 // with its model requests going through the session's real proxy to a scripted provider. No network, no Codex binary.
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -11,6 +11,8 @@ import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { foldSession } from '@parcha/agentrun-adapters/kernel';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
+import { findCodex } from '../dist/binary.js';
+import { verifyCodexBinary } from '../dist/verify.js';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
 const FAKE = fileURLToPath(new URL('./fake-app-server.mjs', import.meta.url));
@@ -242,4 +244,36 @@ test("a never tool's intent is in the log before the tool runs, so a crash in th
   assert.equal((await session.turnEnd()).status, 'completed');
   await session.close();
   assert.equal(logged, 1, 'the intent was durable before the tool ran');
+});
+
+const pinned = !(verifyCodexBinary(findCodex()) instanceof Error);
+
+test('a session runs exactly the binary that was checked when the adapter was made, whatever CODEX_BIN says by then', { skip: !pinned && 'the pinned Codex binary is not installed here', timeout: 60_000 }, async () => {
+  const dir = scratch();
+  const marker = join(dir, 'impostor-ran');
+  const impostor = join(dir, 'codex');
+  writeFileSync(impostor, `#!/bin/sh\ntouch ${marker}\nexit 1\n`);
+  chmodSync(impostor, 0o755);
+  const before = process.env.CODEX_BIN;
+  delete process.env.CODEX_BIN;
+  try {
+    const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'http://127.0.0.1:9', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
+    // The host changes CODEX_BIN after the adapter was made: the next session must not run what was never checked.
+    process.env.CODEX_BIN = impostor;
+    const spec = { key: 'step:binary', label: 'x', system: [], tools: [], context: 'fresh' };
+    const store = memorySessionStore();
+    let ended;
+    try {
+      const session = await codex.open(spec, { writer: await store.open(spec.key), models: MODELS, signal: AbortSignal.timeout(40_000), onEvent: () => {} });
+      await session.send('hello');
+      ended = await session.turnEnd().catch((error) => ({ status: 'failed', error: String(error) }));
+      await session.close();
+    } catch (error) {
+      ended = { status: 'failed', error: String(error) };
+    }
+    assert.ok(ended, 'the turn ended');
+    assert.equal(existsSync(marker), false, 'the unchecked binary ran');
+  } finally {
+    if (before === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = before;
+  }
 });

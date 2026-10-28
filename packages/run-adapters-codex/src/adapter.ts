@@ -12,6 +12,7 @@ import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agen
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION } from "./binary.js";
+import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
@@ -84,7 +85,7 @@ const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.da
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
-  if (!options.standIn) verifyCodex();
+  const checked = options.standIn ? undefined : verifyCodex().path;
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
@@ -139,7 +140,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           }),
         },
       };
-      const harness = codexHarness(harnessOptions);
+      const harness = checked === undefined ? codexHarness(harnessOptions) : withCheckedBinary(checked, () => codexHarness(harnessOptions));
 
       const live = (event: unknown) => {
         const mapped = adapterEvent(event);

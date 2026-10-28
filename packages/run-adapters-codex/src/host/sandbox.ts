@@ -1,7 +1,6 @@
 // The session-machine names the copied Codex harness imports, for a local machine. Written for AgentRun.
 import type { DriveContext } from "./kernel.js";
 import type { AcquireMachine, GatewayHandler, SessionMachine } from "./process.js";
-import { codexBinary } from "../binary.js";
 
 /** Acquire the session's machine for this drive, with the model route its proxy serves. */
 export async function attachInDrive(ctx: DriveContext, acquire: AcquireMachine, options: { model?: GatewayHandler; deadline?: number } = {}): Promise<SessionMachine> {
@@ -14,11 +13,22 @@ export async function acknowledgeInDrive(_ctx: DriveContext, _key?: string): Pro
 /** The pinned Codex binary, as the harness names it. */
 export interface PinnedCli { dir: string; bin: string }
 export const CODEX_CLI: PinnedCli = Object.freeze({ dir: "", bin: "codex" });
-/** The binary to run: CODEX_BIN, else the pinned package's native binary (never a launcher on PATH). */
+/** The binary the harness being made runs: the one the adapter checked against the pins when it was made. */
+let checked: string | undefined;
+/** Make a harness (`make`, which reads the binary once, synchronously) that runs `path`, the binary the adapter checked
+ *  against the pins when it was made. CODEX_BIN is read once, there, so a session never runs a binary that was not checked. */
+export function withCheckedBinary<T>(path: string, make: () => T): T {
+  checked = path;
+  try {
+    return make();
+  } finally {
+    checked = undefined;
+  }
+}
+/** The binary to run: the checked one (`withCheckedBinary`). A harness made any other way runs nothing unchecked. */
 export const cliPath = (_cli: PinnedCli): string => {
-  const found = codexBinary();
-  if (!found) throw new Error("agentrun-codex: no Codex binary: install @openai/codex at the pinned version, or set CODEX_BIN");
-  return found;
+  if (!checked) throw new Error("agentrun-codex: the Codex harness is made through the adapter, which checks its binary against the pins first");
+  return checked;
 };
 
 /** A sandbox's Files manifest. A local session's files are its workspace, which the host shows itself. */
