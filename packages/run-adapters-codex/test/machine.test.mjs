@@ -2,7 +2,7 @@
 // may write and tail. No network.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -107,7 +107,17 @@ test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs 
   assert.equal(out.out, '1');
 });
 
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** Whether `pid` is a live process: signalable and, on Linux, not a zombie (under a PID 1 that does not reap orphans, a
+ *  killed grandchild stays a zombie, and kill(pid, 0) succeeds on it). */
+const alive = (pid) => {
+  try { process.kill(pid, 0); } catch { return false; }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
+  } catch (error) {
+    return error?.code !== 'ENOENT';
+  }
+};
 const gone = async (pid) => { for (let i = 0; i < 200 && alive(pid); i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); return !alive(pid); };
 /** Start a child that forks a grandchild (a sleep in the background) and reports its pid; returns both pids. */
 async function forking(machine, signal) {
