@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
-import { stat as statAsync } from "node:fs/promises";
+import { statfs as statfsAsync } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Delegation, Disk } from "disk";
@@ -373,7 +373,7 @@ test("durability across a daemon kill: no barrier, syncfs, archil sync (3 rounds
 // daemon is SIGKILLed once the kernel counts the stat as waiting on the connection. Read as live, the dead mount was
 // UNMOUNT_FAILED; it must be cleaned. A rescue resumes and kills the daemon within 15 s whatever happens, so a stat left
 // waiting on a stopped daemon can never hold the suite.
-test("a dead daemon's connection torn down under the deciding stat (ECONNABORTED): unmountClaim cleans the dead mount", { skip: !LIVE }, async () => {
+test("a dead daemon's connection torn down under the deciding statfs (ECONNABORTED): unmountClaim cleans the dead mount", { skip: !LIVE }, async () => {
   const id = await newRun("abort-race");
   const a = await claimAt(id, A, "abort-race");
   const pid = daemonPid(a.root);
@@ -389,20 +389,21 @@ test("a dead daemon's connection torn down under the deciding stat (ECONNABORTED
     const baseline = waiting();
     const seen: string[] = [];
     let setup = "";
-    const stat = async (path: string) => {
-      const pending = statAsync(path);
+    // statfs decides (isDead asks it first, since a stat may be answered from cached attributes): it is held here.
+    const statfs = async (path: string) => {
+      const pending = statfsAsync(path);
       pending.then(() => seen.push("ok"), (e: NodeJS.ErrnoException) => seen.push(e.code ?? String(e)));
       const until = performance.now() + 5_000;
       while (waiting() <= baseline && performance.now() < until) await sleep(5);
-      if (waiting() <= baseline) setup = `the deciding stat never reached the kernel (waiting stayed ${baseline})`;
+      if (waiting() <= baseline) setup = `the deciding statfs never reached the kernel (waiting stayed ${baseline})`;
       if (!signal("KILL")) setup ||= "kill -9 of the stopped daemon failed";
       return pending;
     };
     claims.delete(a);
-    const via = await unmountClaim(a.root, { timeoutMs: { unmount: 3_000 }, fs: { stat } }).catch((e: Error) => `threw: ${e.message}`);
-    ledger.unmounted(a.root, `${via} (daemon SIGKILLed under the deciding stat)`);
+    const via = await unmountClaim(a.root, { timeoutMs: { unmount: 3_000 }, fs: { statfs } }).catch((e: Error) => `threw: ${e.message}`);
+    ledger.unmounted(a.root, `${via} (daemon SIGKILLed under the deciding statfs)`);
     assert.equal(setup, "", setup);
-    assert.deepEqual(seen, ["ECONNABORTED"], "the deciding stat was in flight at the abort");
+    assert.deepEqual(seen, ["ECONNABORTED"], "the deciding statfs was in flight at the abort");
     assert.equal(via, "fusermount");
     assert.ok(!archilMounts().includes(a.root), "the dead mount is gone");
   } finally {
