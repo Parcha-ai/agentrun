@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { capabilities, ERROR_STATUS, startServe } from "../dist/index.js";
 import { EFFORT_ENV, thinkingOf } from "../dist/model.js";
-import { agent, answerFlow, client, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { agent, answerFlow, client, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, no upload limit", async (t) => {
   withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);

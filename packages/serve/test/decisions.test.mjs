@@ -106,7 +106,10 @@ test("a run resumed by the next server is handed the key again: its judge gets i
   const gate = join(dir, "go");
   const first = await startServe({ data, port: 0, faux: FAUX, fauxJev: FAUX_JEV, drainTimeout: "5s" });
   let closing;
-  const closeFirst = () => (closing ??= first.close());
+  const closeFirst = () => {
+    closing ??= first.close();
+    return closing;
+  };
   t.after(closeFirst);
   const runId = await startFlow(client(first.baseUrl, first.token), [probe(gate), judge]);
   const before = await processOf(data, runId);

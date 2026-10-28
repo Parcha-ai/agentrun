@@ -127,7 +127,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
         runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(runJudge ? { runJudge: runJudge as never } : {}),
         recordDecision: decisions.recordDecision,
       }, { durableNodes: true });
-      return { deps: { ...deps, recovery: { ...deps.recovery!, decision: decisions.decision } } };
+      const { recovery } = deps;
+      if (!recovery) throw new Error("the workflow's recovery gave the run no recovery hooks");
+      return { deps: { ...deps, recovery: { ...recovery, decision: decisions.decision } } };
     },
   });
   registry.install(nodes.extension as unknown as Extension);
