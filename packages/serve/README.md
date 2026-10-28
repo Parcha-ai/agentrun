@@ -400,7 +400,8 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   run called an external tool, meaning any tool but `read`, `write`, `edit`, `ask_person` and `learn`.
 - The server records each proposal in `DATA/agents/<id>/learning/runs/<run id>.json` (`proposed`, `empty` or
   `refused`). At start it proposes every ended run of a learning agent that has no record yet, so a server that stopped
-  between a carry back and its proposal loses nothing. The commit's `Run-Id` trailer makes a second proposal of the
+  between a carry back and its proposal loses nothing. That pass waits for an agent store another writer holds, and
+  says so in the log; if the store stays busy, the next start proposes what is left. The commit's `Run-Id` trailer makes a second proposal of the
   same run add nothing. A proposal that fails (a push the repository refuses) is logged; the run has ended as it would
   have, and the next start proposes it. A run that learned nothing leaves no branch.
 - The guard refuses a note that holds a value of one of the server's secrets: the variables whose names end in `KEY`,

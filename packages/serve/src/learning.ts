@@ -17,7 +17,7 @@ import type { AgentStoreReader, LearningMode, Revision, RunRow } from "@parcha/p
 import type { AppContext, BeforeResume } from "@parcha/pi-durable-disk";
 import type { ProposeResult } from "@parcha/pi-agent-learn";
 import type { GitIdentity, Repo } from "@parcha/pi-git-remote";
-import { type AgentEntry, definitionOf } from "./agents.js";
+import { type AgentEntry, definitionOf, whenFree } from "./agents.js";
 import { readJson, RUN_META } from "./files.js";
 import { isObject } from "./validate.js";
 
@@ -191,8 +191,8 @@ export type StoreAccess = { readonly store: Pick<AgentStoreReader, "readRun" | "
  *  run has not ended, and for a run whose revision does not learn. The `Run-Id` trailer makes a second call `already`. */
 export async function proposeFor(data: string, agents: StoreAccess, runId: string): Promise<ProposeResult | undefined> {
   const { store } = agents;
-  const row = store.readRun(runId);
-  if (!row || row.state === "running" || learningOf(store.readRevision(row.revision)) === "off") return undefined;
+  const row = await agents.request(() => store.readRun(runId));
+  if (!row || row.state === "running" || learningOf(await agents.request(() => store.readRevision(row.revision))) === "off") return undefined;
   const dir = join(data, "runs", runId);
   const storeFile = join(dir, "store", "run.sqlite");
   if (!existsSync(storeFile)) {
@@ -215,18 +215,32 @@ export async function proposeFor(data: string, agents: StoreAccess, runId: strin
   });
 }
 
+/** How long the start-time catch-up waits for a busy agent store, step by step: it answers no request, so it waits
+ *  longer than one does, and past the last step leaves the rest to the next start. */
+export const CATCH_UP_BUSY_MS: readonly number[] = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000];
+
 /** At start: every ended run of a learning revision that has no recorded proposal is proposed, so a server that stopped
- *  between a carry back and its proposal loses nothing. Returns the runs it proposed. */
-export async function catchUp(data: string, agents: StoreAccess, log: (line: string) => void): Promise<string[]> {
+ *  between a carry back and its proposal loses nothing. The store is read when it is free (`CATCH_UP_BUSY_MS`); each
+ *  wait, and a store that stays busy, is said in `log`. Returns the runs it proposed. */
+export async function catchUp(data: string, agents: StoreAccess, log: (line: string) => void, delaysMs: readonly number[] = CATCH_UP_BUSY_MS): Promise<string[]> {
   const { store } = agents;
+  const free = <T>(act: () => T | Promise<T>) =>
+    whenFree(act, delaysMs, (attempt, delay) => delay !== undefined && log(`learning catch-up: the agent store is busy; trying again in ${delay} ms (${attempt + 1} of ${delaysMs.length})`));
   const learns = new Map<string, boolean>();
   const done: string[] = [];
-  for (const row of store.listRuns()) {
+  let rows: Awaited<ReturnType<typeof store.listRuns>>;
+  try {
+    rows = await free(() => store.listRuns());
+  } catch (error) {
+    log(`learning catch-up: the agent store stayed busy (${(error as Error).message}); the next start proposes what is left`);
+    return done;
+  }
+  for (const row of rows) {
     if (row.state === "running") continue;
-    if (!learns.has(row.revision)) learns.set(row.revision, learningOf(store.readRevision(row.revision)) !== "off");
-    if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
     try {
-      if (await proposeFor(data, agents, row.id)) done.push(row.id);
+      if (!learns.has(row.revision)) learns.set(row.revision, learningOf(await free(() => store.readRevision(row.revision))) !== "off");
+      if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
+      if (await proposeFor(data, { store, request: free }, row.id)) done.push(row.id);
     } catch (error) {
       log(`run ${row.id}: not proposed: ${(error as Error).message}`);
     }
