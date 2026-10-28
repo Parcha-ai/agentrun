@@ -1,0 +1,39 @@
+{
+  "repo": "github.com/vercel-labs/durable-harness",
+  "commit": "ea8aa4060cf4fb8cd39737ce8ab21c4e0f40c741",
+  "license": "Apache-2.0",
+  "copyright": "Copyright 2026 Vercel Inc.",
+  "notice": null,
+  "files": {
+    "src/app-server.ts": {
+      "upstream": "packages/harness-codex/src/app-server.ts",
+      "blob": "df53e6b9cb8db8e195d179564150129104e36129",
+      "sha256": "b31185e4c330adc5c83dddf29bdc86b5729241adb2321a53a552f0a172623cb7"
+    },
+    "src/rollout.ts": {
+      "upstream": "packages/harness-codex/src/rollout.ts",
+      "blob": "975fb055c93c62b379a78a0c337af033460ce1ec",
+      "sha256": "af9494d6e8c00841113b98fabe89a75f1d4ee1b6fe7e741f67d0221b978e2aec"
+    },
+    "src/config.ts": {
+      "upstream": "packages/harness-codex/src/config.ts",
+      "blob": "fc464abd83f3139ddfcddfede325fb5ba60055d5",
+      "sha256": "6c19fb4de4c5f58b66457d1e83f986429109e1187cede279a56663a1441ec9d4"
+    },
+    "src/binary.ts": {
+      "upstream": "packages/harness-codex/src/binary.ts",
+      "blob": "7b70dfaca4b6299db7e82cd0a609bac069a6a49c",
+      "sha256": "cc3682c425c428359334911dd9cb6acda81b10d90a95a46f20bd2cd6464b891a"
+    },
+    "src/harness.ts": {
+      "upstream": "packages/harness-codex/src/harness.ts",
+      "blob": "346548455036be098f2cf3c39b30f31f6bcbfba4",
+      "sha256": "4585716a2b31127a59440f59ec695d046efe41f0fe6c157df621a08fd898e6ae"
+    },
+    "test/fake-app-server.mjs": {
+      "upstream": "packages/harness-codex/test/fake-app-server.mjs",
+      "blob": "2b907d5a61c50b2d44d6e380972e9e2bb1e8e3e7",
+      "sha256": "23cf1b2e62d58634f9af6542c1fe56ad0b04d1d1b67a03e9f04d5d4cd81456da"
+    }
+  }
+}

@@ -1,6 +1,7 @@
 // The port, checked offline: this tree is exactly what the port makes, and each planted break goes red by name.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -138,6 +139,68 @@ test('--pin reports an upgrade in three parts: the pristine diff, the table agai
   assert.match(report.patches.join('\n'), /patch 002-message-prefix does not apply/, 'and the patch whose line moved');
 });
 
+test('the Codex port is what the pristine files, the Codex patches and the one import table make, with the header after the shebang', { skip: !existsSync(join(root, 'packages', 'run-adapters-codex', PORT_DIR)) && 'the Codex package is not in this tree' }, async () => {
+  const codex = join(root, 'packages', 'run-adapters-codex');
+  assert.deepEqual(await checkPort(codex), []);
+  const { files } = await portPackage(codex);
+  const fake = files.get('test/fake-app-server.mjs').split('\n');
+  assert.equal(fake[0], '#!/usr/bin/env node');
+  assert.match(fake[1], /^\/\/ Copyright 2026 Vercel Inc\./);
+  assert.equal(fake[3], '// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments');
+  assert.match(files.get('src/harness.ts').split('\n')[2], /^\/\/ Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments$/);
+  for (const patch of await readPatches(join(codex, PORT_DIR), 'harness-codex')) {
+    const without = await portPackage(codex, { drop: [patch.name], cascade: true });
+    assert.ok([...files].some(([path, text]) => bodyOf(without.files.get(path) ?? '') !== bodyOf(text)), `${patch.name} changes the output`);
+  }
+  const target = await copyOf(table((t) => { t.modules['harness-world-process'].symbols.ModelSteps = { 'harness-claude-code': 'ModelSteps' }; return t; }));
+  const codexCopy = join(scratch, 'codex-copy');
+  await cp(codex, codexCopy, { recursive: true, filter: (path) => !/\/(?:node_modules|dist)(?:\/|$)/.test(path) });
+  await cp(join(target, PORT_DIR, 'imports.json'), join(scratch, 'imports-no-codex.json'));
+  const manifest = join(codexCopy, PORT_DIR, 'harness-codex.json');
+  await writeFile(manifest, (await readFile(manifest, 'utf8')).replace(/"table": "[^"]*"/, `"table": ${JSON.stringify(join(scratch, 'imports-no-codex.json'))}`));
+  assert.match((await portPackage(codexCopy)).problems.join('\n'), /harness\.ts: import from harness-world-process: symbol ModelSteps is not in the import table for harness-world-process/, 'a symbol the table holds for another package only is unknown for this one');
+});
+
+test('the command line exits 1 when a committed byte is not the port\'s, naming the file on stderr, and 0 on a clean tree', async () => {
+  const run = (dir) => spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), '--check', dir], { cwd: root, encoding: 'utf8' });
+  const clean = run(packageDir);
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stdout, /the committed files are exactly what the pristine copies, the patches and the import table make/);
+  const changed = await copyOf(edit('src/process/tools.ts', (text) => `${text} `));
+  const red = run(changed);
+  assert.equal(red.status, 1, 'a changed byte is a non-zero exit, so CI\'s gate is red');
+  assert.match(red.stderr, /src\/process\/tools\.ts: differs from the port's output/);
+  const broken = await copyOf(table((t) => { delete t.modules['node:crypto']; return t; }));
+  assert.equal(run(broken).status, 1, 'a port that fails (not a byte difference) exits 1 too');
+});
+
+test('a patch that changes nothing is named: one a later patch reverts, and one that rewrites a line to itself', async () => {
+  // Patch 006 changes a line of tail.ts's comment; 007 changes it back: together they leave the output as it was.
+  const pristine = (await readFile(join(packageDir, 'vendor/durable-harness/upstream/packages/harness-process/src/tail.ts'), 'utf8')).split('\n');
+  const at = pristine.findIndex((line, i) => i >= 4 && line.startsWith(' * ') && line.trim().length > 12);
+  // One changed line with git's three lines of context on each side.
+  const hunk = (from, to) => `diff --git a/packages/harness-process/src/tail.ts b/packages/harness-process/src/tail.ts\n--- a/packages/harness-process/src/tail.ts\n+++ b/packages/harness-process/src/tail.ts\n@@ -${at - 2},7 +${at - 2},7 @@\n${pristine.slice(at - 3, at).map((l) => ` ${l}`).join('\n')}\n-${from}\n+${to}\n${pristine.slice(at + 1, at + 4).map((l) => ` ${l}`).join('\n')}\n`;
+  const patchFile = (name, from, to) => `Patch: ${name}\nReason: a test patch\nUpstream: ours\nPins: comments only\n---\n${hunk(from, to)}`;
+  const changed = pristine[at].replace('*', '*  ');
+  // The comment line sits inside the 002 patch's context only when it is within three lines of it; either way the patches
+  // below are the last two, applied to the text the earlier ones left.
+  const reverted = await copyOf(async (dir) => {
+    const text = (await readFile(join(dir, 'vendor/durable-harness/upstream/packages/harness-process/src/tail.ts'), 'utf8')).split('\n');
+    const line = text.findIndex((l) => l === pristine[at]);
+    assert.ok(line >= 0);
+    await writeFile(join(dir, patchPath('006-widen')), patchFile('006-widen', pristine[at], changed));
+    await writeFile(join(dir, patchPath('007-narrow')), patchFile('007-narrow', changed, pristine[at]));
+  });
+  const problems = (await checkPort(reverted)).join('\n');
+  assert.match(problems, /patch 006-widen changes nothing/);
+  assert.doesNotMatch(problems, /patch 007-narrow changes nothing/, 'the reverting patch alone does change the output (it leaves the first applied)');
+  // A patch that rewrites a line to itself applies and changes nothing.
+  const same = await copyOf(async (dir) => {
+    await writeFile(join(dir, patchPath('006-same')), patchFile('006-same', pristine[at], pristine[at]));
+  });
+  assert.match((await checkPort(same)).join('\n'), /patch 006-same changes nothing/);
+});
+
 /** A copy of another package that reads a changed copy of the one import table (its manifest names the copy). */
 async function withTable(pkg, change, manifestName) {
   const dir = join(scratch, `pkg${made += 1}`);
@@ -149,7 +212,7 @@ async function withTable(pkg, change, manifestName) {
   return dir;
 }
 
-test('the Claude port: its relative imports land where the manifest or the table says, and a module the table lacks fails by name', async () => {
+test('the Claude port: its relative imports land where the manifest or the table says, and a module the table lacks fails by name', { skip: !existsSync(join(root, 'packages', 'run-adapters-claude-agent', PORT_DIR)) && 'the Claude package is not in this tree' }, async () => {
   const claude = join(root, 'packages', 'run-adapters-claude-agent');
   assert.deepEqual(await checkPort(claude), []);
   const { files } = await portPackage(claude);
