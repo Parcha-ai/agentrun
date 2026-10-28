@@ -98,3 +98,26 @@ test("a follow-up sent while a completed run's end is still being written waits 
   const { rows } = await follow(api, run_id, ["completed"]);
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "go on"]);
 });
+
+test("a follow-up to a completed run whose end the store has not taken yet is 503 unavailable, to try again; once the end is written it continues the run", { timeout: 60_000 }, async (t) => {
+  // One carry back try, then a try every 2 s: with the store held, the run ends here before its row does.
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [50] }, settleRetryMs: 2_000 });
+  const { run_id } = await startRun(api, "calc", "What is six times seven?");
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
+  store.exec("BEGIN IMMEDIATE");
+  await follow(api, run_id, ["completed"]);
+  store.exec("ROLLBACK");
+  store.close();
+  assert.equal(storeRun(data, run_id).state, "running", "its end is not in the store yet");
+  const early = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  assert.deepEqual([early.status, early.body.error?.code, early.body.error?.retryable], [503, "unavailable", true], JSON.stringify(early.body));
+  assert.equal(typeof early.body.error.retry_after_ms, "number");
+  for (let i = 0; storeRun(data, run_id).state !== "completed"; i++) {
+    assert.ok(i < 100, "the end is written on a later try");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const next = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  await follow(api, run_id, ["completed"]);
+});
