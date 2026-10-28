@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { LiveRun } from "@/components/LiveRun";
+import { Operator } from "@/components/Operator";
+import { Playground, type StartResult } from "@/components/Playground";
+import type { Agent } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
-import { type Capabilities, ClientError, createClient } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
 import type { Run } from "@/lib/v2";
 
 type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean };
@@ -16,6 +19,8 @@ function route(): Where {
   m = h.match(/^#\/agents\/([^/?]+)$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
+  if (h.startsWith("#/playground")) return { section: "playground" };
+  if (h.startsWith("#/start")) return { section: "operator" };
   m = h.match(/^#\/runs\?agent=([^&]+)$/);
   return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
 }
@@ -59,10 +64,34 @@ export function App() {
   const agentName = (id: string) => names[id] ?? id;
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: string[]; features?: { thinking?: string[] }; models?: { default?: string } } | null;
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: c?.tools ?? [], thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
-  const nav = (s: Section) => { if (s === "runs") go("#/runs"); if (s === "agents") go("#/agents"); };
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", operator: "#/start" }[s]);
+  // The agents both start screens pick from, every page of them.
+  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
+  const [pick, setPick] = useState<string | null>(null);
+  useEffect(() => {
+    if (where.section !== "playground" && where.section !== "operator") return;
+    allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents).then((a) => { setAgents(a); setPick((p) => p ?? a[0]?.agent_id ?? null); }).catch((e) => setError(String(e)));
+  }, [v2, where.section]);
+  useEffect(() => { if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then(setRevs).catch(() => setRevs([])); }, [v2, pick]);
+  const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
+    const t0 = performance.now();
+    try {
+      const r = await v2.startRun(agentId, body, key);
+      return { status: r.status, ms: Math.round(performance.now() - t0), body: r.run, runId: r.run.run_id };
+    } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      return e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
+    }
+  };
+  const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   return (
     <Shell active={where.section} onNavigate={nav}>
-      {where.section === "agents"
+      {where.section === "operator"
+        ? agents && <Operator agents={agents} error={error} onStart={async (agentId, text, key) => { const r = await send(agentId, { input: { content: text } }, key); if (r.runId) { go(`#/runs/${encodeURIComponent(r.runId)}`); return null; } return (r.body as { error?: { message?: string } }).error?.message ?? `The server answered ${r.status}.`; }} />
+        : where.section === "playground"
+        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)} />
+        : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} /> : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}

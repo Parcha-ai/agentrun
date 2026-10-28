@@ -17,3 +17,12 @@ runs not yet relaunched) and one 15 seconds later (`run.working.working.*`: the 
 current `If-Match` (200, new ETag) and one with a stale one (412), the revisions, setting an earlier revision current,
 archive and unarchive, an invalid harness (422 with its `fields`), and a run on a harness the server does not run (409
 `agent_not_runnable`).
+
+`start.*` are run starts, recorded the same way:
+- an agentic run (202, `Location`);
+- the same request again with the same `Idempotency-Key` (the same run);
+- that key with another body (409 `idempotency_mismatch`);
+- a run pinned to an earlier revision;
+- a workflow run with its typed input;
+- a workflow input its schema refuses (422);
+- a start with no key.

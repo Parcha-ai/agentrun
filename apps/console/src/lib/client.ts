@@ -26,7 +26,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   }
   /** A request and its response's ETag (an agent's current revision, for the next If-Match). `text`: the body as text
    *  whatever its type (a run's file is its bytes, never parsed). */
-  async function callTagged<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<{ body: T; etag: string | null }> {
+  async function callTagged<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<{ body: T; etag: string | null; status: number }> {
     const res = await f(`${base}${path}`, {
       method,
       signal,
@@ -41,7 +41,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       throw err;
     }
     const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
-    return { body: out, etag: res.headers.get("etag") };
+    return { body: out, etag: res.headers.get("etag"), status: res.status };
   }
   const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
@@ -68,6 +68,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
+    startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number }, idempotencyKey: string) => {
+      const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
+      return { run: r.body, status: r.status };
+    },
     getTimeline: (id: string, { after, waitMs, signal }: { after?: number; waitMs?: number; signal?: AbortSignal } = {}) => {
       const q = new URLSearchParams();
       if (after !== undefined) q.set("after", String(after));
