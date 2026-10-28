@@ -126,9 +126,11 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
 
 /** Why `harness` cannot run here, or undefined when it can: its package and pins, its provider, and the adapter's own
  *  check of the default model. */
-export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds | undefined): Promise<string | undefined> {
+export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined): Promise<string | undefined> {
   if (env[FAUX_HARNESS_ENV]) return undefined;
-  if (!needs) return "This server has no default model.";
+  // With no default model (each agent names its own), the harness is checked on a model of its own provider: whether it
+  // is installed, pinned and has its endpoint. Whether an agent's model fits it is that agent's.
+  const needs = given ?? { model: { provider: harness === "claude-agent" ? "anthropic" : "openai", modelId: "default" }, models: { getModel: () => undefined } };
   try {
     const adapter = await adapterFor(harness, env, needs);
     const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
