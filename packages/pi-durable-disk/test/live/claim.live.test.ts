@@ -17,7 +17,7 @@ import { acquire, ARCHIL_SCOPED, createRunDir, findDelegations, mintMountToken, 
 import { ClaimError, exitCodeFor, FencedError, HeldError } from "../../src/errors.ts";
 
 const BASE = "/mnt/pda/p1";
-const A = `${BASE}/a`; // user-owned mount root
+const A = `${BASE}/a`; // host A's mount root
 const B = `${BASE}/b-root`; // root-owned mount root: mountpoints are created and removed through sudo
 const C = `${BASE}/c`; // a sibling run's holder
 const RESULTS = join(LEDGER, "..", "P1-live-results.json");
@@ -114,10 +114,8 @@ before(async () => {
   results.disk = disk.id;
   results.client = spawnSync("/usr/bin/archil", ["--version"], { encoding: "utf8" }).stdout.split("\n")[0];
   assert.deepEqual(archilMounts().filter((m) => m.startsWith(`${BASE}/`)), [], "no P1 mounts left from an earlier run");
-  spawnSync("sudo", ["mkdir", "-p", BASE, B]);
-  spawnSync("sudo", ["chown", `${process.getuid!()}:${process.getgid!()}`, BASE]);
-  mkdirSync(A, { recursive: true });
-  mkdirSync(C, { recursive: true });
+  // Every mount root and its runs/ are root's, 0755: the archil wrapper refuses any other (only root may name entries there).
+  spawnSync("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, ...[A, B, C].flatMap((r) => [r, `${r}/runs`])]);
 });
 
 /** Delete everything under `prefix`: files first, then directory markers deepest first (a directory with children
@@ -536,7 +534,8 @@ async function seededAcquire(id: string, mountRoot: string, seed: (mp: string) =
 test("P6's control as a test: archil refuses a mountpoint holding one unrelated file; acquire moves it to .stray, mounts, and the run stays clean", { skip: !LIVE }, async () => {
   const id = await newRun("stray-a");
   const mp = `${A}/runs/${id}`;
-  mkdirSync(mp, { recursive: true });
+  // As the wrapper's prepare makes it: root makes the run's mountpoint and hands it to the run user.
+  spawnSync("sudo", ["-n", "install", "-d", "-o", String(process.getuid!()), "-g", String(process.getgid!()), "-m", "0755", mp]);
   writeFileSync(join(mp, "unrelated.txt"), "x\n");
   // The control: archil itself over the seeded directory, through the wrapper as the claim calls it.
   const direct = spawnSync("sudo", ["-n", ARCHIL_SCOPED, "mount", `${scratchDiskId()}:/runs/${id}`, mp, "--region", REGION], { input: `${await token("stray-control")}\n`, encoding: "utf8", timeout: 120_000 });
@@ -555,7 +554,7 @@ test("P6's control as a test: archil refuses a mountpoint holding one unrelated 
   assert.equal(r.objects.some((k) => k.includes("unrelated")), false, "the run on the disk never got the file");
   assert.equal(r.logged.length, 1);
   assert.deepEqual([r.logged[0].run, r.logged[0].entries], [id, 1]);
-  results.stray = { control: { exit: direct.status, refusal: refusal.replace(mp, "<mp>").slice(0, 200) }, userOwnedRoot: { entries: r.claim.stray?.entries, mountMs: r2(r.claim.timings.mountMs), seen: r.seen, objects: r.objects } };
+  results.stray = { control: { exit: direct.status, refusal: refusal.replace(mp, "<mp>").slice(0, 200) }, rootA: { entries: r.claim.stray?.entries, mountMs: r2(r.claim.timings.mountMs), seen: r.seen, objects: r.objects } };
 });
 
 test("the same under a root-owned mount root: the mountpoint made through sudo, its leftovers moved aside as root", { skip: !LIVE }, async () => {

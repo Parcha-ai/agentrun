@@ -299,9 +299,9 @@ before(async () => {
   results.client = sh("/usr/bin/archil", ["--version"]).stdout.split("\n")[0];
   assert.deepEqual(archilMounts(), [], "no P5 mounts left from an earlier run");
   assert.equal(sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p5-*"]).stdout.trim(), "", "no pda-p5 units left from an earlier run");
-  sh("sudo", ["-n", "mkdir", "-p", BASE]);
-  sh("sudo", ["-n", "chown", `${process.getuid!()}:${process.getgid!()}`, BASE]);
-  for (const d of [A, B, C, OUT]) mkdirSync(d, { recursive: true, mode: 0o755 });
+  // Every mount root and its runs/ are root's, 0755: the archil wrapper refuses any other (only root may name entries there).
+  sh("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, ...[A, B, C].flatMap((r) => [r, `${r}/runs`])]);
+  mkdirSync(OUT, { recursive: true, mode: 0o755 });
   tokenDirExisted = sh("sudo", ["-n", "test", "-d", "/run/pi-durable-disk"]).status === 0;
   if (!tokenDirExisted) ledger.file("/run/pi-durable-disk", "the token directory localHost creates on demand (root 0700, tmpfs); removed in after if empty");
   sh("chmod", ["755", OUT]);

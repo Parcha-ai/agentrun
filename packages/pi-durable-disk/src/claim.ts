@@ -569,6 +569,10 @@ async function unmountWith(host: Host, mountpoint: string): Promise<Unmounted> {
   return via;
 }
 
+/**
+ * The run's mountpoint, `<mountRoot>/runs/<run>`. A root-owned `<mountRoot>/runs` (which the wrapper requires) refuses
+ * this user's mkdir: through sudo, the wrapper's `prepare` makes it, owned by this user. Never a bare `sudo mkdir`.
+ */
 async function ensureMountpoint(host: Host, dir: string): Promise<void> {
   try {
     await mkdir(dir, { recursive: true });
@@ -577,7 +581,7 @@ async function ensureMountpoint(host: Host, dir: string): Promise<void> {
     const code = (err as { code?: unknown }).code;
     if (!host.sudo || (code !== "EACCES" && code !== "EPERM")) throw new ClaimError("MOUNT_FAILED", `cannot create ${dir}`, { cause: err });
   }
-  const r = await sh([host.sudo, "-n", "mkdir", "-p", dir], host.timeoutMs.cli);
+  const r = await archil(host, ["prepare", dir]);
   if (!ok(r)) throw new ClaimError("MOUNT_FAILED", `cannot create ${dir}: ${detail(r)}`);
 }
 

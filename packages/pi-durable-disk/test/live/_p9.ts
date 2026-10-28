@@ -269,7 +269,8 @@ printf '%s\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}, /usr/bin/fusermount -
 sudo -n chmod 0440 /etc/sudoers.d/pi-durable-disk
 sudo -n visudo -cf /etc/sudoers.d/pi-durable-disk >/dev/null
 sudo -n install -d -m 0755 /mnt/pda ${MOUNT_ROOT}
-sudo -n install -d -o pda -g pda -m 0755 ${MOUNT_ROOT}/runs ${APP_OUT}
+sudo -n install -d -o root -g root -m 0755 ${MOUNT_ROOT}/runs
+sudo -n install -d -o pda -g pda -m 0755 ${APP_OUT}
 step setup
 printf 'archil\t%s\n' "$(archil --version 2>&1 | head -1)"
 printf 'node\t%s\n' "$(${NODE} --version)"
@@ -330,7 +331,7 @@ export function snapshotDockerfile(commit: string, options: { readonly demo?: bo
     `RUN groupadd --gid ${PDA_ID} pda && useradd --uid ${PDA_ID} --gid ${PDA_ID} --create-home --shell /bin/bash pda`,
     `RUN set -eu; install -d -m 0755 ${PACKAGE_DIR}; curl -fsSLo ${PACKAGE_DIR}/package.json https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/package.json; curl -fsSLo ${ARCHIL_WRAPPER} https://raw.githubusercontent.com/Parcha-ai/agentrun/${commit}/packages/pi-durable-disk/bin/archil-scoped; env PATH=/opt/node24/bin:/usr/bin:/bin HOME=/root ${PACKAGE_INSTALL.join(" ")} --prefix ${PACKAGE_DIR}; ${DEPS_HASH} ${PACKAGE_DIR}/package.json > ${DEPS_STAMP}; ${dropCache}chown -R root:root ${PACKAGE_DIR}; chmod -R a+rX,go-w ${PACKAGE_DIR}`,
     ...(options.demo ? [demoClosureRun(commit)] : []),
-    `RUN set -eu; chown root:root ${ARCHIL_WRAPPER}; chmod 0755 ${ARCHIL_WRAPPER}; printf '%s\\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}, /usr/bin/fusermount -u ${MOUNT_ROOT}/runs/*' > /etc/sudoers.d/pi-durable-disk; chmod 0440 /etc/sudoers.d/pi-durable-disk; visudo -cf /etc/sudoers.d/pi-durable-disk; install -d -m 0755 /mnt/pda ${MOUNT_ROOT}; install -d -o pda -g pda -m 0755 ${MOUNT_ROOT}/runs ${APP_OUT}`,
+    `RUN set -eu; chown root:root ${ARCHIL_WRAPPER}; chmod 0755 ${ARCHIL_WRAPPER}; printf '%s\\n' 'pda ALL=(root) NOPASSWD: ${ARCHIL_WRAPPER}, /usr/bin/fusermount -u ${MOUNT_ROOT}/runs/*' > /etc/sudoers.d/pi-durable-disk; chmod 0440 /etc/sudoers.d/pi-durable-disk; visudo -cf /etc/sudoers.d/pi-durable-disk; install -d -m 0755 /mnt/pda ${MOUNT_ROOT}; install -d -o root -g root -m 0755 ${MOUNT_ROOT}/runs; install -d -o pda -g pda -m 0755 ${APP_OUT}`,
     "USER daytona",
     "",
   ].join("\n");

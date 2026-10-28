@@ -8,8 +8,8 @@
 # Root runs archil only in the shapes the claim uses, each with exact arguments, and refuses anything else (an unknown
 # verb, an extra, missing or reordered flag, any argument holding a newline) with exit 2:
 #   mount [--force] <disk>:/<path> <root>/runs/<run> --region <region>
-#   unmount <root>/runs/<run>        checkin <root>/runs/<run>        delegations --json <root>/runs/<run>
-# and the cleanup verbs below. <disk> and <region> are one safe token each, <path> a relative path of safe segments
+#   unmount <root>/runs/<run>    checkin <root>/runs/<run>    sync <root>/runs/<run>    delegations --json <root>/runs/<run>
+# and `prepare` and the cleanup verbs below. <disk> and <region> are one safe token each, <path> a relative path of safe segments
 # (never "." or ".."). A mountpoint passes the same checks as the cleanup verbs' (a plain <root>/runs/<run>, no link in
 # <root> or <root>/runs); `mount`'s must be a real directory there, not a link, and the other three name a fuse.archil
 # mount the mount table lists at exactly that path.
@@ -35,9 +35,14 @@
 # with "an older Archil process is still running". It SIGKILLs the daemons whose argument vector is this archil's `mount`
 # naming exactly that mountpoint, and refuses while a mount is listed there (a live mount's daemon is never stale).
 #
-# The run's user may own <root>, so root never follows a link there: <root> and <root>/runs must be their own real
-# paths, the holding directory (.released or .stray) a real directory owned by root (made 0700 when absent), and the
-# destination new (never one that exists).
+# `prepare <root>/runs/<run>` makes the run's mountpoint, 0755 and owned by the user sudo ran this for (SUDO_UID), so that
+# user can mount over it and write under it, but never rename entries in <root>/runs. An existing directory there is
+# left as it is.
+#
+# Root acts on paths under <root>, so for every verb <root> and <root>/runs must be their own real paths, owned by root
+# and writable by no one else, and every directory above them root's and writable by no one else unless sticky (as
+# /tmp), so a path checked here is still the path archil uses: the mountpoint is pinned against a race with its owner. The holding directory
+# (.released or .stray) must be a real directory owned by root (made 0700 when absent), and the destination new.
 set -eu
 ARCHIL=/usr/bin/archil
 MOUNT=/usr/bin/mount
@@ -45,6 +50,7 @@ MOUNTS=/proc/self/mounts
 PROC=/proc
 KILL=kill
 OWNER=0
+TRUST=0
 
 listed() { awk -v m="$1" -v t="$2" '$2 == m && (t == "" || $3 == t) { f = 1 } END { exit !f }' "$MOUNTS"; }
 
@@ -58,6 +64,23 @@ run_path() {
   root=${mp%/runs/*}
   for p in "$root" "$root/runs"; do
     [ "$(realpath -e "$p" 2>/dev/null)" = "$p" ] || { echo "archil-scoped: $p is not its own real path (a link, or missing)" >&2; exit 2; }
+  done
+  guarded
+}
+
+# <root> and <root>/runs owned by root and writable by no one else; each directory above them root's and writable by no
+# one else unless sticky. A mode is octal (stat %a), so $((0$m & 022)) is its group and other write bits.
+guarded() {
+  for p in "$root/runs" "$root"; do
+    u=$(stat -c %u "$p") m=$(stat -c %a "$p")
+    [ "$u" = "$TRUST" ] && [ $((0$m & 022)) -eq 0 ] || { echo "archil-scoped: $p must be owned by root and writable by no one else" >&2; exit 2; }
+  done
+  p=$root
+  while [ "$p" != / ]; do
+    p=${p%/*}
+    [ -n "$p" ] || p=/
+    u=$(stat -c %u "$p") m=$(stat -c %a "$p")
+    { [ "$u" = 0 ] || [ "$u" = "$TRUST" ]; } && { [ $((0$m & 022)) -eq 0 ] || [ $((0$m & 01000)) -ne 0 ]; } || { echo "archil-scoped: $p, above $root, must be root's and not writable by others" >&2; exit 2; }
   done
 }
 
@@ -128,6 +151,15 @@ stale() {
   echo "archil-scoped: killed stale archil daemon(s) of $mp:$pids"
 }
 
+prepare() {
+  run_path "$1"
+  case "${SUDO_UID:-}:${SUDO_GID:-}" in *[!0-9:]* | :* | *:) refuse "prepare is for a caller through sudo (no numeric SUDO_UID and SUDO_GID)" ;; esac
+  if [ -L "$mp" ] || { [ -e "$mp" ] && [ ! -d "$mp" ]; }; then refuse "$mp exists and is not a directory"; fi
+  if [ -d "$mp" ]; then echo "archil-scoped: $mp exists"; return; fi
+  { mkdir -m 0755 "$mp" && chown "$SUDO_UID:$SUDO_GID" "$mp"; } || { echo "archil-scoped: cannot create $mp" >&2; exit 6; }
+  echo "archil-scoped: made $mp"
+}
+
 stray() {
   run_path "$1" "$2"
   if [ -L "$mp" ] || [ ! -d "$mp" ] || [ "$(realpath -e "$mp")" != "$mp" ]; then
@@ -172,7 +204,7 @@ for a in "$@"; do
 done
 
 case "${1:-}" in
-  unmount | checkin)
+  unmount | checkin | sync)
     [ "$#" -eq 2 ] || refuse "usage: archil-scoped $1 <root>/runs/<run>"
     archil_mount "$2"
     exec "$ARCHIL" "$1" "$mp"
@@ -183,6 +215,11 @@ case "${1:-}" in
     exec "$ARCHIL" delegations --json "$mp"
     ;;
   mount) ;;
+  prepare)
+    [ "$#" -eq 2 ] || refuse "usage: archil-scoped prepare <root>/runs/<run>"
+    prepare "$2"
+    exit 0
+    ;;
   retire | stray)
     [ "$#" -eq 3 ] || { echo "usage: archil-scoped $1 <root>/runs/<run> <tag>" >&2; exit 2; }
     "$1" "$2" "$3"
