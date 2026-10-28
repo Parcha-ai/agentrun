@@ -1,0 +1,79 @@
+{
+  "name": "@parcha/agentrun-claude-agent",
+  "version": "0.1.0-beta.27",
+  "private": true,
+  "description": "The Claude Agent SDK as an AgentRun harness: the host's tools as its only tools, its model behind a loopback proxy, durable in AgentRun's own store.",
+  "keywords": [
+    "agentrun",
+    "agent",
+    "harness",
+    "claude-agent",
+    "durable"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "vendor/durable-harness/UPSTREAM.json"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "@parcha/agentrun-adapters": "0.1.0-beta.27",
+    "@parcha/agentrun-dsl": "0.1.0-beta.27"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.286",
+    "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    },
+    "zod": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/run-adapters-claude-agent"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.286"
+  }
+}
