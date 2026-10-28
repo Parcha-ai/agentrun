@@ -463,3 +463,16 @@ test('a stop that lands while the session store is being read rejects aborted at
     assert.equal(adapter.opened.length, 0, `${via}: no session was opened`);
   }
 });
+
+test('the submit tool carries no criteria, and a submission is checked against the node schema as written', async () => {
+  // The local $ref only resolves in the original document: a check compiled from the envelope's relocated copy would
+  // refuse this valid submission.
+  const schemas = { Out: { type: 'object', required: ['label'], additionalProperties: false, properties: { label: { $ref: '#/definitions/Label' } },
+    definitions: { Label: { type: 'string', enum: ['bug', 'docs'], criteria: { bug: 'Broken.', docs: 'Documentation.' } } } } };
+  const seen = [];
+  const adapter = fauxAdapter({ script: (spec) => { seen.push(spec.tools.find((t) => t.name === 'submit').inputSchema); return [{ submit: { label: 'bug' } }]; } });
+  const result = await runWorkflow(doc(agent(), schemas), {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore() }) });
+  assert.deepEqual(result.output, { label: 'bug' });
+  assert.equal(JSON.stringify(seen[0]).includes('"criteria"'), false);
+  assert.equal(adapter.requests, 1, 'accepted at the first submit');
+});
