@@ -259,3 +259,21 @@ test('a schema of any depth is walked without a stack overflow: described and re
   assert.deepEqual(codex.check(spec(hostile)).filter((p) => p.startsWith('deep: /')).length >= 1, true);
   assert.match(codex.check(spec(hostile)).join('\n'), /deep: \/: .*(boom|could not be checked)/);
 });
+
+test('a cyclic schema (an object that contains itself, which only code can build) is refused by the shared check first, and Codex\'s own walk never sees it', async () => {
+  // Run in a child with a small heap and a time limit: a walk that reaches the cycle never ends and runs out of memory.
+  const { spawnSync } = await import('node:child_process');
+  const script = `
+    process.env.AGENTRUN_CODEX_STANDIN = '1';
+    const { codexAdapter } = await import('@parcha/agentrun-codex');
+    const cyclic = { type: 'object', properties: {} }; cyclic.properties.self = cyclic;
+    const codex = codexAdapter({ model: 'm', provider: { origin: 'https://p.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+    const problems = codex.check({ key: 's', label: 'x', system: [], tools: [{ name: 'cyc', description: 'd', inputSchema: cyclic, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+    process.stdout.write(JSON.stringify(problems));`;
+  const run = spawnSync(process.execPath, ['--max-old-space-size=200', '--input-type=module', '-e', script], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 20_000 });
+  assert.equal(run.status, 0, `the check ended: ${String(run.stderr).slice(0, 200)} (signal ${run.signal})`);
+  const problems = JSON.parse(run.stdout);
+  assert.equal(problems.length, 1, run.stdout);
+  assert.match(problems[0], /^cyc: \/: /);
+  assert.match(problems[0], /JSON/);
+});

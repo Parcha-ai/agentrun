@@ -128,8 +128,11 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         // Nothing in it may throw: a tool whose schema cannot be checked is a problem at "/", naming the tool.
         try {
           const shared = toolSchemaProblems(tool.name, tool.inputSchema);
+          // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build)
+          // is not walked again: Codex's rules would never reach the end of a cycle.
+          const wholly = shared.some((problem) => problem.startsWith(`${tool.name}: /:`));
           const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
-          problems.push(...shared, ...codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1])));
+          problems.push(...shared, ...(wholly ? [] : codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1]))));
         } catch (error) {
           problems.push(`${tool.name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`);
         }
