@@ -4,7 +4,7 @@
 //     closed table in tools.ts;
 //   - workflow: the revision's workflow, started with startWorkflowRevision of @parcha/pi-durable-agent/workflow on
 //     agentrun-pi's durable workflow task, each model node on the host's model of its tier with the tools it names of the
-//     table's node tools. When the
+//     table's node tools, and its typed questions on Jev when the server hands this process Jev's key. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 import { readFile } from "node:fs/promises";
@@ -14,12 +14,14 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
+import { jevJudgeOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
 import { nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
 
-/** The workflow adapters this host gives a run: model nodes, and calls `via: "tool"` to the table's tools. */
+/** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
+ *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
 export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
@@ -92,12 +94,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
-  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, nodeRunner, taskScope }, { inspectWorkflow }, { workspaceFiles }, { startWorkflowRevision }] = await Promise.all([
+  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope }, { inspectWorkflow }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, runJudge] = await Promise.all([
     import("@earendil-works/chord/context"),
     import("@parcha/agentrun-pi/durable"),
     import("@parcha/agentrun-dsl"),
     import("@parcha/agentrun-dsl/recovery"),
     import("@parcha/pi-durable-agent/workflow"),
+    // The judge's runner, holding the decision key the server handed this process: in no environment a tool reads.
+    jevJudgeOf(process.env),
   ]);
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
@@ -115,7 +119,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(where.work) }),
-    run: ({ runtime, context }) => ({ adapters: { runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never }, durableNodes: true }),
+    run: ({ key, runtime, context, driver }) => {
+      // Each typed question's receipt is a row of the run's store before its answer acts, and a resumed run takes an
+      // answered one instead of asking again.
+      const decisions = decisionRecovery({ key, runtime, context });
+      const deps = withRecovery(driver, {
+        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(runJudge ? { runJudge: runJudge as never } : {}),
+        recordDecision: decisions.recordDecision,
+      }, { durableNodes: true });
+      return { deps: { ...deps, recovery: { ...deps.recovery!, decision: decisions.decision } } };
+    },
   });
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);

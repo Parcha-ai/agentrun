@@ -26,7 +26,7 @@ export default function reply(context, faux) {
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
     // A node that says whether anything it can reach holds the decision key: this process's environment, as its tools
     // get it, and the environment the kernel shows it.
-    if (first.includes("Report the canary")) {
+    if (JSON.stringify(context).includes("Report the canary")) {
       if (answered) return faux.message("Submitted.");
       return (async () => {
         const [{ CANARY }, { readFile }] = await Promise.all([import("./faux-jev.mjs"), import("node:fs/promises")]);

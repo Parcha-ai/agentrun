@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
@@ -16,6 +17,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
+import { DECISION_KEY_FD, DECISION_KEY_FD_ENV, FAUX_JEV_ENV, JEV_KEY_ENV } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -135,8 +137,10 @@ export type Run = {
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
-  /** The cost the store recorded when it carried the run back. */
-  costUsd?: number;
+  /** The cost the store recorded when it carried the run back; null when it recorded none (unknown). */
+  costUsd?: number | null;
+  /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
+  decisionCost?: number | null;
   relaunches: number;
   settled: boolean;
   settling?: Promise<void>;
@@ -190,9 +194,14 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
-export function costView(rows: readonly TimelineEvent[], stored: number | undefined): number | null {
+export function costView(rows: readonly TimelineEvent[], stored: number | null | undefined, decisions?: number | null): number | null {
   const usage = usageOf(rows);
-  if (!usage) return stored ?? 0;
+  // A workflow run's decisions, once its end is read: their cost joins its model nodes', and one unknown makes it unknown.
+  if (decisions !== undefined) {
+    const models = usage ? (usage.usage?.usd ?? null) : 0;
+    return models === null || decisions === null ? null : models + decisions;
+  }
+  if (!usage) return stored === undefined ? 0 : stored;
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
@@ -243,7 +252,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -339,7 +348,8 @@ export class Runs {
     if (row.state !== "running") {
       run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
-      if (row.costUsd !== undefined) run.costUsd = row.costUsd;
+      // An ended run the store kept no cost for has an unknown cost, never $0.
+      run.costUsd = row.costUsd ?? null;
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else if (record && this.doorOf(record)) {
@@ -643,19 +653,32 @@ export class Runs {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
-      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}) } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // The decision key is never in a run's environment, which its tools and its model's provider read: a workflow run's
+    // process gets it once on an inherited pipe, for its judge's runner alone (decisions.ts).
+    delete env[JEV_KEY_ENV];
+    delete env[DECISION_KEY_FD_ENV];
+    const decisionKey = run.kind === "workflow" ? process.env[JEV_KEY_ENV] : undefined;
+    const handsKey = typeof decisionKey === "string" && decisionKey.trim() !== "";
+    if (handsKey) env[DECISION_KEY_FD_ENV] = String(DECISION_KEY_FD);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
       "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
-    ], { stdio: ["ignore", "ignore", log], env });
+    ], { stdio: ["ignore", "ignore", log, ...(handsKey ? ["pipe" as const] : [])], env });
     closeSync(log);
+    if (handsKey) {
+      const pipe = child.stdio[DECISION_KEY_FD] as Writable | null;
+      // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
+      pipe?.on("error", () => undefined);
+      pipe?.end(decisionKey);
+    }
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
@@ -745,6 +768,10 @@ export class Runs {
     if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
     else if (state === "escalated") run.error = { code: "escalated", message: summary, retryable: false };
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    // Its decisions' receipts carry their cost: a receipt whose cost is unknown leaves the run's unknown, never $0.
+    const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
+    const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
+    if (receipts.length) run.decisionCost = receipts.every((cost) => typeof cost === "number") ? (receipts as number[]).reduce((a, b) => a + b, 0) : null;
     return { outcome: STATUS_OF[state], state, summary };
   }
 
@@ -752,7 +779,7 @@ export class Runs {
    *  writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     const answer = answerOf(run.rows);
-    const cost = costOf(run.rows);
+    const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
@@ -773,7 +800,7 @@ export class Runs {
       // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
       // run as it was in the store.
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
-      run.costUsd = cost ?? 0;
+      run.costUsd = cost;
       run.endedAt ??= new Date().toISOString();
       run.outcome = outcome;
       run.finishing = undefined;
@@ -1017,7 +1044,7 @@ export class Runs {
 
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    return { usd: costView(run.rows, run.costUsd), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */

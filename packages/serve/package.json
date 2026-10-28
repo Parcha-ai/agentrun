@@ -46,6 +46,7 @@
   "dependencies": {
     "@browserbasehq/sdk": ">=2.20.0 <3",
     "@parcha/agentrun-dsl": "0.1.0-beta.28",
+    "@parcha/agentrun-jev": "0.1.0-beta.28",
     "@parcha/agentrun-pi": "0.1.0-beta.28",
     "@parcha/pi-browser": "0.1.0-beta.28",
     "@parcha/pi-durable-agent": "0.1.0-beta.28",

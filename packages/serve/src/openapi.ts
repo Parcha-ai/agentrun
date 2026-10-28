@@ -150,9 +150,19 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "serve/1",
     },
     workflows: {
-      type: "object", additionalProperties: false, required: ["nodes", "node_tools", "adapters"],
-      properties: { nodes: { type: "array", items: { type: "string" } }, node_tools: { type: "array", items: { type: "string" } }, adapters: { type: "array", items: { type: "string" } } },
-      description: "What a workflow revision's run gets: the model nodes it runs, the tools they may name, the adapters it binds.",
+      type: "object", additionalProperties: false, required: ["nodes", "node_tools", "adapters", "decisions"],
+      properties: {
+        nodes: { type: "array", items: { type: "string" } }, node_tools: { type: "array", items: { type: "string" } }, adapters: { type: "array", items: { type: "string" } },
+        decisions: {
+          type: "object", additionalProperties: false, required: ["providers"],
+          description: "The decision providers a workflow's typed questions (judge, pick, sift, route, ask) run on, and whether this server runs each; when not, why. `runJudge` is among `adapters` once one runs.",
+          properties: {
+            providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev"] }, available: { type: "boolean" }, reason: { type: "string" } } } },
+          },
+          "x-agentrun-serve": "decisions/1",
+        },
+      },
+      description: "What a workflow revision's run gets: the model nodes it runs, the tools they may name, the adapters it binds, and the decision providers its typed questions run on.",
       "x-agentrun-serve": "serve/1",
     },
     links: { type: "object", additionalProperties: false, required: ["openapi"], properties: { openapi: { type: "string" } }, description: "This document's address.", "x-agentrun-serve": "serve/1" },

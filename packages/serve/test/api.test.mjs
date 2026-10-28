@@ -27,7 +27,10 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   assert.deepEqual(body.tools.find((t) => t.name === "browser").missing, keyed.length ? keyed : undefined, "what browser lacks here, by name");
   assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "fetch_page", "browser"]);
-  assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect"] });
+  // Typed questions run on Jev where this host sets its key (decisions.test.mjs): `runJudge` is an adapter only then.
+  const jev = Boolean(process.env.TYPESAFE_API_KEY?.trim() || process.env.OPENROUTER_API_KEY?.trim());
+  assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect", ...(jev ? ["runJudge"] : [])], decisions: undefined });
+  assert.deepEqual(body.workflows.decisions.providers.map((p) => [p.id, p.available]), [["jev", jev]]);
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
   assert.equal(body.features.files.upload, false);
   assert.deepEqual(body.regions, [{ id: "local", jurisdiction: null, state: "live" }]);
