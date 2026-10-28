@@ -11,7 +11,11 @@ import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
 import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore } from "./types.js";
 
-export type HarnessRunner = (request: NodeRequest) => Promise<unknown>;
+/** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
+ *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
+ *  `drainMs`, on an adapter that can drain), and then it stops, failing `aborted`; its session resumes from its records
+ *  when the node runs again. A node started after `stop` fails `aborted` at once. Resolves once every node has stopped. */
+export type HarnessRunner = ((request: NodeRequest) => Promise<unknown>) & { stop(options?: { drainMs?: number }): Promise<void> };
 
 /** The tool the runner injects; a host tool may not take its name. */
 export const SUBMIT_TOOL = "submit";
@@ -76,8 +80,11 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     registered.set(tool.name, tool);
   }
   const store = options.store;
+  /** The nodes running now, each by how it is paused; and whether the runner was stopped. */
+  const running = new Map<Promise<unknown>, (drainMs: number) => Promise<void>>();
+  let halted = false;
 
-  return async (request) => {
+  const runNode = async (request: NodeRequest, pause: (drain: (drainMs: number) => Promise<void>) => void): Promise<unknown> => {
     // Without a step there is no durable identity: a fresh session of the runner's own, never one derived from the
     // label, which map items and loops repeat.
     const key = request.step ? `step:${request.step.sessionId}` : `call:${randomUUID()}`;
@@ -86,7 +93,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const refuse = (message: string, turns = 0, submissions = 0) => new HarnessRunError("refused", turns, submissions, { message });
 
     const signals = [options.signal, request.signal].filter((s): s is AbortSignal => Boolean(s));
-    if (signals.some((s) => s.aborted)) throw new HarnessRunError("aborted", 0, 0);
+    if (halted || signals.some((s) => s.aborted)) throw new HarnessRunError("aborted", 0, 0);
     if (request.maxTurns !== undefined) {
       positive(request.maxTurns, "maxTurns");
       if (maxTurns !== null && request.maxTurns > maxTurns) throw refuse(`Node "${request.label}" asks max_turns ${request.maxTurns}, above this host's cap of ${maxTurns} turns`);
@@ -120,6 +127,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     let submission: unknown;
     let lastTool: string | undefined;
     let stopped: HarnessRunError | undefined;
+    // A pause in progress: nothing new starts, and the node stops once its session has drained.
+    let draining = false;
     const failure = (reason: HarnessRunError["reason"], message?: string) =>
       new HarnessRunError(reason, turns, submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
 
@@ -179,6 +188,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...tool,
       call: (args, context) => {
         if (accepted || stopped) return Promise.reject(new Error("the session has stopped; tool execution refused"));
+        if (draining) return Promise.reject(new Error("the session is pausing; this call was not run"));
         return tool.call(args, context);
       },
     });
@@ -202,6 +212,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const models = {
       beforeRequest: async ({ model }: { model: string }) => {
         if (stopped) throw stopped;
+        if (draining) throw failure("aborted", "harness node pausing: no new paid request");
         if (limit !== null && turns >= limit) {
           stop(failure("turn_limit"));
           throw stopped;
@@ -236,6 +247,17 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     // A stop that landed while the store was read: a listener added to an aborted signal never fires.
     if (signals.some((s) => s.aborted)) onAbort();
     const timer = timeoutMs === null ? undefined : setTimeout(() => stop(failure("timeout")), timeoutMs);
+    // A pause: nothing new starts, the session drains its calls in flight (an adapter that can't drain stops at once),
+    // then the node stops. One that arrived before this node could be paused stops it here.
+    pause(async (drainMs) => {
+      draining = true;
+      if (session) await session.interrupt({ drainMs }).catch(() => {});
+      stop(failure("aborted"));
+    });
+    if (halted) {
+      draining = true;
+      stop(failure("aborted"));
+    }
     try {
       if (stopped) throw stopped;
       session = await bounded(opening = adapter.open(spec, {
@@ -270,7 +292,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         progressed(before);
       }
       let prompt = session.state === "new" ? request.user : NUDGE;
-      while (!accepted && !stopped && (limit === null || turns < limit) && sends < sendLimit) {
+      while (!accepted && !stopped && !draining && (limit === null || turns < limit) && sends < sendLimit) {
         const before = turns;
         sends += 1;
         await bounded(session.send(prompt));
@@ -279,6 +301,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         prompt = NUDGE;
       }
       if (accepted) return submission;
+      if (draining) stop(failure("aborted"));
       if (stopped) throw stopped;
       if (limit !== null && turns >= limit) throw failure("turn_limit");
       // The sends ran out first: say so, since the turns reported are below the limit.
@@ -303,4 +326,22 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       }
     }
   };
+
+  const run = (request: NodeRequest): Promise<unknown> => {
+    let drain = async (_drainMs: number) => {};
+    const node = runNode(request, (pause) => { drain = pause; });
+    running.set(node, (drainMs) => drain(drainMs));
+    void node.then(() => running.delete(node), () => running.delete(node));
+    return node;
+  };
+  return Object.assign(run, {
+    async stop(stopOptions: { drainMs?: number } = {}) {
+      const drainMs = stopOptions.drainMs ?? 0;
+      if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("drainMs must be a non-negative number of milliseconds");
+      halted = true;
+      const nodes = [...running];
+      await Promise.all(nodes.map(([, drain]) => drain(drainMs)));
+      await Promise.allSettled(nodes.map(([node]) => node));
+    },
+  });
 }

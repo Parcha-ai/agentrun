@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only.
+// Changed by Parcha, 2026-10-27/28: imports from AgentRun's kernel; message prefixes; comments name Codex only; a call's images come back as recorded; a failed call's `tool_end` carries the text recorded, as a completed one's does.
 import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
 import type { ToolImage } from '../types.js';
 
@@ -118,8 +118,9 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
         return { text: String(text), isError: false, ...(images?.length ? { images } : {}) };
       } catch (err) {
         if (err instanceof EffectFailure) {
-          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true });
-          return { text: failureText(err.error, options.partialChars), isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
+          const text = failureText(err.error, options.partialChars);
+          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text });
+          return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
         }
         ctx.halt?.(err);
         throw err;

@@ -176,7 +176,41 @@ export function toolImageProblems(tool: string, images: readonly ToolImage[], ma
   return undefined;
 }
 
-function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number): KernelTool {
+/** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause starts none, and waits for
+ *  these to have their outcomes recorded. */
+class CallsInFlight {
+  draining = false;
+  private readonly open = new Set<string>();
+  private readonly waiters = new Set<() => void>();
+  begin(callId: string) {
+    this.open.add(callId);
+  }
+  /** The call's outcome is recorded, or it never will be (the drive stopped). */
+  end(callId: string) {
+    if (this.open.delete(callId) && this.open.size === 0) for (const done of [...this.waiters]) done();
+  }
+  clear() {
+    this.open.clear();
+    for (const done of [...this.waiters]) done();
+  }
+  /** Every call in flight has its outcome recorded, or `ms` passed. */
+  idle(ms: number): Promise<void> {
+    if (this.open.size === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.waiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.waiters.add(done);
+    });
+  }
+}
+
+/** The kernel's tool for a host tool. The host hears of the call (`tool_start`) once its intent is in the session's
+ *  records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
+function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
   return {
     name: tool.name,
     description: tool.description,
@@ -186,22 +220,16 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number): Kerne
       // The effect's step is `tool:<the CLI's tool_use id>#<attempt>`: the host sees the CLI's call id.
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
-      let isError = true;
-      try {
-        const result = await tool.call(input, { callId, signal: effect.signal });
-        isError = result.isError === true;
-        if (result.isError) throw new Error(result.text);
-        if (!result.images?.length) return result.text;
-        // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
-        const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
-        if (wrong) {
-          isError = true;
-          throw new Error(wrong);
-        }
-        return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
-      } finally {
-        io.onEvent({ type: "tool_end", callId, name: tool.name, isError });
-      }
+      calls.begin(callId);
+      // A pause began before this call: it is recorded as not run, and the session resumes with that.
+      if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
+      const result = await tool.call(input, { callId, signal: effect.signal });
+      if (result.isError) throw new Error(result.text);
+      if (!result.images?.length) return result.text;
+      // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
+      const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
+      if (wrong) throw new Error(wrong);
+      return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
     },
   };
 }
@@ -248,11 +276,19 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
       if (!dir) throw new Error("agentrun-claude-agent: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
 
+      const calls = new CallsInFlight();
       const acquire = localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
-          hooks: io.models,
+          // A pause makes no new paid request.
+          hooks: {
+            ...io.models,
+            beforeRequest: async (...request: Parameters<typeof io.models.beforeRequest>) => {
+              if (calls.draining) throw new Error("agentrun-claude-agent: the session is pausing; no new model request");
+              return io.models.beforeRequest(...request);
+            },
+          },
           tools: spec.tools.map((t) => t.name),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
@@ -273,7 +309,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // The runner's turn cap and the host's beforeRequest bound the spend.
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
         },
-        tools: spec.tools.map((tool) => kernelTool(tool, io, maxImageBytes)),
+        tools: spec.tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
@@ -289,8 +325,14 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: unknown; name?: unknown; isError?: unknown; result?: unknown };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // The tool bridge's `tool_end` comes once the call's outcome is in the session's records: only then does the host
+        // hear the call ended, with the text recorded.
+        if (e?.type === "tool_end" && typeof e.callId === "string" && typeof e.name === "string") {
+          calls.end(e.callId);
+          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}) });
+        }
       };
       // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
       // once the halted drive's last writes are in (serial.ts).
@@ -338,6 +380,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       return {
         get state() { return state; },
         async send(text) {
+          if (calls.draining) throw new Error("agentrun-claude-agent: the session is pausing; no new turn");
           await ready();
           await drive.submit({ id: randomUUID(), kind: "prompt", text });
           void run();
@@ -351,9 +394,20 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           if (!running) throw new Error("agentrun-claude-agent: no turn is in flight");
           return running;
         },
-        async interrupt() {
-          drive.halt?.(new Error("interrupted"));
-          await running?.catch(() => {});
+        async interrupt(interruptOptions = {}) {
+          const drainMs = interruptOptions.drainMs ?? 0;
+          if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("agentrun-claude-agent: drainMs must be a non-negative number of milliseconds");
+          // A pause: no new call, request or turn; the calls in flight run on until their outcomes are recorded.
+          calls.draining = true;
+          try {
+            if (drainMs > 0) await calls.idle(drainMs);
+            drive.halt?.(new Error("interrupted"));
+            await running?.catch(() => {});
+          } finally {
+            // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
+            calls.clear();
+            calls.draining = false;
+          }
         },
         async close() {
           if (closed) return;
