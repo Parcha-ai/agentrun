@@ -1,12 +1,13 @@
 // The session's local machine, attacked from the side Codex sits on: the child's environment, and the directories it
 // may write and tail. No network.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { CODEX_ROUTES, gatewayHandler, isBrandedMachine } from '../dist/host/process.js';
-import { childEnv, localMachine } from '../dist/host/machine.js';
+import { childEnv, confined, localMachine } from '../dist/host/machine.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -30,7 +31,7 @@ test("a child's environment is the allowlist and what the harness names: no host
     for await (const l of child.lines()) { line = l; break; }
     await child.exited;
     const seen = JSON.parse(line);
-    assert.deepEqual(Object.keys(seen.env).sort(), ['HOME', 'LANG', 'PATH', 'SESSION_KEY', 'TZ']);
+    assert.deepEqual(Object.keys(seen.env).sort(), ['GIT_CEILING_DIRECTORIES', 'HOME', 'LANG', 'PATH', 'SESSION_KEY', 'TZ']);
     assert.equal(seen.cwd, machine.root, 'Codex works in an empty directory of the session, never the host workspace');
   } finally {
     await machine.close();
@@ -58,4 +59,50 @@ test("the machine writes and tails only inside the session's own directories, an
     await machine.close();
   }
   await assert.rejects(machine.spawn({ command: process.execPath }), /closed/);
+});
+
+/** A session's machine under `dir`, with `confine`; returns a run of one child to its exit. */
+async function machineAt(t, dir, confine) {
+  const acquire = localMachine({ dir, ...(confine ? { confine } : {}), env: { PATH: process.env.PATH }, proxy: { hooks, tools: [] } });
+  const machine = await acquire({ ctx: { runId: 'r1' }, model: gatewayHandler(route) });
+  t.after(() => machine.close());
+  const run = async (command, args) => {
+    const proc = await machine.spawn({ command, args, env: {} });
+    let out = '';
+    (async () => { for await (const line of proc.lines()) out += line; })();
+    const { code } = await proc.exited;
+    return { code, out };
+  };
+  return { machine, run };
+}
+
+test("a session's git never finds a repository above the session, in a parent the model could write", async (t) => {
+  const parent = mkdtempSync(join(ROOT, 'ceiling-'));
+  execFileSync('git', ['init', '-q', parent]);
+  const { run } = await machineAt(t, join(parent, 'sessions', 's1'));
+  const found = await run('git', ['rev-parse', '--show-toplevel']);
+  assert.notEqual(found.code, 0, `git found the repository ${found.out.trim()}`);
+  const env = await run(process.execPath, ['-e', 'process.stdout.write(process.env.GIT_CEILING_DIRECTORIES ?? "")']);
+  assert.equal(env.out, join(parent, 'sessions', 's1'));
+});
+
+test("the host's confinement wraps a child's command and arguments, never its environment, and may only add in front", async (t) => {
+  const seen = [];
+  const { run } = await machineAt(t, scratch(), (c) => { seen.push(c); return { command: '/usr/bin/env', args: ['--', c.command, ...c.args] }; });
+  const code = 'process.stdout.write(JSON.stringify(Object.keys(process.env).sort()))';
+  const out = await run(process.execPath, ['-e', code]);
+  assert.equal(out.code, 0);
+  assert.deepEqual(seen, [{ command: process.execPath, args: ['-e', code] }]);
+  assert.deepEqual(JSON.parse(out.out), ['GIT_CEILING_DIRECTORIES', 'PATH'], "the environment is the machine's, untouched by the confinement");
+  const child = { command: '/pinned/codex', args: ['--x', 'y'] };
+  assert.deepEqual(confined(child, (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] })), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', '/pinned/codex', '--x', 'y'] });
+  for (const bad of [(c) => ({ command: c.command, args: c.args }), () => ({ command: '/usr/bin/env', args: [] }), (c) => ({ command: '/bin/sh', args: ['-c', 'x', '/other', ...c.args] }), (c) => ({ command: '/usr/bin/env', args: [c.command, ...c.args, '--more'] }), () => undefined]) {
+    assert.throws(() => confined(child, bad), /confinement must start the child's own command/);
+  }
+});
+
+test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs set', { skip: !existsSync('/usr/bin/setpriv') && 'no setpriv here' }, async (t) => {
+  const { run } = await machineAt(t, scratch(), (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] }));
+  const out = await run(process.execPath, ['-e', 'process.stdout.write(require("fs").readFileSync("/proc/self/status", "utf8").match(/^NoNewPrivs:\\s*(\\d)/m)[1])']);
+  assert.equal(out.out, '1');
 });

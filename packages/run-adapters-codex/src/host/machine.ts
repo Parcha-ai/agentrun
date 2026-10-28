@@ -3,6 +3,8 @@
 //    and an empty working directory (`work`), never the host's workspace: a tool-less Codex has nothing to read there.
 //  - A child's environment is an allowlist: PATH, LANG and TZ from this process, plus what the harness names (its homes,
 //    and the per-session proxy key). Nothing else is inherited, so no provider key, token or host secret reaches it.
+//  - A child's git stops at the session's directory (GIT_CEILING_DIRECTORIES), and the host may start every child under its
+//    own confinement, in front of the command.
 //  - Each child runs in its own process group, which kill() and close() end whole.
 //  - The model proxy (@parcha/agentrun-adapters/host, with the Codex policy) starts with the machine and stops with it.
 import { spawn as spawnChild } from "node:child_process";
@@ -24,6 +26,8 @@ const STDERR_TAIL = 8 * 1024;
 export interface LocalMachineOptions {
   /** The session's own directory. The machine makes its private directories in it and deletes only those. */
   dir: string;
+  /** Start every child of the session (Codex) under the host's confinement. */
+  confine?: ConfineChild;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
    *  from the harness. */
   proxy: {
@@ -36,6 +40,28 @@ export interface LocalMachineOptions {
   };
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
+}
+
+/** A command and its arguments, as the machine starts it. */
+export interface ChildCommand {
+  command: string;
+  args: string[];
+}
+
+/** The host's confinement of a child: the same command and arguments, started under the host's own (a
+ *  `setpriv --no-new-privs` prefix, say). It may only add in front: what it returns must end with the command and its
+ *  arguments unchanged, and it never sees or changes the child's environment. */
+export type ConfineChild = (child: Readonly<ChildCommand>) => ChildCommand;
+
+/** The command `confine` makes of `child`, refused unless it ends with the child's command and arguments unchanged. */
+export function confined(child: ChildCommand, confine: ConfineChild | undefined): ChildCommand {
+  if (!confine) return child;
+  const out = confine({ command: child.command, args: [...child.args] });
+  const argv = [out?.command, ...(Array.isArray(out?.args) ? out.args : [])];
+  const tail = argv.slice(argv.length - child.args.length - 1);
+  const kept = argv.length > child.args.length + 1 && tail.length === child.args.length + 1 && tail.every((a, i) => a === (i === 0 ? child.command : child.args[i - 1]));
+  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-codex: the host's confinement must start the child's own command and arguments, after its own");
+  return { command: out.command, args: out.args };
 }
 
 /** The child's environment: the allowlist from `from`, then what the caller names. */
@@ -56,10 +82,13 @@ function inside(base: string, rel: string): string {
   return path;
 }
 
-function start(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string): SessionProcess {
-  const child = spawnChild(options.command, options.args ?? [], {
+/** Start a child of the session. Its git stops at `ceiling` (the session's directory): it never looks for a repository
+ *  above the session, in a parent the model could write, whose branch and remote would otherwise reach the records. */
+function start(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling: string, confine?: ConfineChild): SessionProcess {
+  const run = confined({ command: options.command, args: options.args ?? [] }, confine);
+  const child = spawnChild(run.command, run.args, {
     cwd: options.cwd ?? cwd,
-    env: childEnv(from, options.env),
+    env: { ...childEnv(from, options.env), GIT_CEILING_DIRECTORIES: ceiling },
     detached: true,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -146,7 +175,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-codex: the session machine is closed");
-        const proc = start(spawnOptions, from, root);
+        const proc = start(spawnOptions, from, root, base, options.confine);
         children.add(proc);
         void proc.exited.then(() => children.delete(proc));
         return proc;

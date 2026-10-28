@@ -14,7 +14,7 @@ import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION } from "./binary.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
-import { localMachine } from "./host/machine.js";
+import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 
 /** A name app-server accepts for a dynamic tool. */
@@ -31,6 +31,9 @@ export interface CodexAdapterOptions {
   /** The provider's model id, or one per tier (`default` when a node names none). */
   model: string | { default: string; fast?: string; strong?: string };
   provider: CodexProvider;
+  /** Start Codex under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may only
+   *  add in front of the pinned binary and its arguments, and never touches its environment. */
+  confine?: ConfineChild;
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 32 000. */
@@ -121,6 +124,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           ...(options.standIn?.env ? { env: options.standIn.env } : {}),
           acquire: localMachine({
             dir,
+            ...(options.confine ? { confine: options.confine } : {}),
             proxy: {
               hooks: io.models,
               tools: spec.tools.map((t) => t.name),
