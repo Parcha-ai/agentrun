@@ -135,7 +135,7 @@ test('an unknown agent or an empty task is an error the lead reads, and runs not
   const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead' });
   const unknown = await call(t, { agent: 'browser-bot', task: 'x' });
   assert.equal(unknown.isError, true);
-  assert.match(unknown.text, /not one of the agents \(fact-checker, data-analyst\)/);
+  assert.match(unknown.text, /not one of the agents \(checker, analyst\)/);
   assert.equal((await call(t, { agent: 'checker', task: '  ' })).isError, true);
   assert.equal(adapter.requests, 0);
 });
