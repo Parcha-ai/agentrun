@@ -204,3 +204,29 @@ test('a call a pause cut off leaves nothing to wait for: the next pause, with no
   await session.interrupt({ drainMs: 5_000 });
   assert.ok(Date.now() - began < 2_000, `the second pause waited ${Date.now() - began} ms for a call the first one cut`);
 });
+
+test("a pause the host starts on submit's tool_start lets that submit deliver: the node returns its answer, never aborted", async (t) => {
+  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"delivered as the pause began"}}'], sessionsDir: join(scratch(), 'sessions') });
+  let paused;
+  const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [], onEvent: (e) => { if (e.type === 'tool_start' && e.name === 'submit') paused ??= runner.stop({ drainMs: 10_000 }); } });
+  const outcome = await runner({ ...request, tools: [], step: { sessionId: 'pause-on-submit', attempt: 0, earlierSessionIds: [] } }).then((value) => ({ value }), (error) => ({ error }));
+  await paused;
+  assert.ok(paused, 'the pause was started from tool_start');
+  assert.deepEqual(outcome, { value: { answer: 'delivered as the pause began' } }, `delivered, not ${outcome.error?.reason}: ${outcome.error?.message}`);
+});
+
+test("a pause the host starts on a tool's tool_start lets that tool run to its recorded outcome", async (t) => {
+  const search = paidSearch(200);
+  const store = memorySessionStore();
+  const { adapter } = await claude(t, { script: ['call search {"q":"w"}'], sessionsDir: join(scratch(), 'sessions') });
+  let paused;
+  const runner = createHarnessRunner(adapter, { store, tools: [search.tool], onEvent: (e) => { if (e.type === 'tool_start' && e.name === 'search') paused ??= runner.stop({ drainMs: 10_000 }); } });
+  const outcome = await runner({ ...request, step: { sessionId: 'pause-on-search', attempt: 0, earlierSessionIds: [] } }).then((value) => ({ value }), (error) => ({ error }));
+  await paused;
+  assert.equal(outcome.error?.reason, 'aborted', 'the node paused');
+  assert.equal(search.runs, 1, 'the search the pause began on ran');
+  const records = await store.read('step:pause-on-search');
+  const steps = new Set(records.filter((r) => r.kind === 'kernel.start' && r.data.name === 'tool.search').map((r) => r.data.stepId));
+  const ends = records.filter((r) => r.kind === 'kernel.end' && steps.has(r.data.stepId)).map((r) => r.data);
+  assert.deepEqual(ends.map((e) => e.status), ['completed'], JSON.stringify(ends).slice(0, 300));
+});

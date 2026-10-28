@@ -297,6 +297,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     let stopped: HarnessRunError | undefined;
     // A pause in progress: nothing new starts, and the node stops once its session has drained.
     let draining = false;
+    // Calls the session announced (tool_start) before the pause: they are in flight, not new, and run on through it.
+    const announced = new Set<string>();
     const failure = (reason: HarnessRunError["reason"], message?: string) =>
       new HarnessRunError(reason, turnsSoFar(), submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
 
@@ -365,7 +367,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...tool,
       call: (args, context) => {
         if (accepted || stopped) return Promise.reject(new Error("the session has stopped; tool execution refused"));
-        if (draining) return Promise.reject(new Error("the session is pausing; this call was not run"));
+        if (draining && !announced.has(context.callId)) return Promise.reject(new Error("the session is pausing; this call was not run"));
         return tool.call(args, context);
       },
     });
@@ -417,7 +419,10 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         signal: controller.signal,
         ...(options.sessionDir ? { dir: options.sessionDir(key) } : {}),
         onEvent: (event) => {
-          if (event.type === "tool_start") lastTool = event.name.slice(0, 64);
+          if (event.type === "tool_start") {
+            lastTool = event.name.slice(0, 64);
+            if (!draining) announced.add(event.callId);
+          }
           emit(event);
         },
       }));

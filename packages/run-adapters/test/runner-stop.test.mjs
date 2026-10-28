@@ -232,3 +232,20 @@ test('a submit that comes inside the drain is accepted and delivered: the paid a
   const outcome = await node;
   assert.deepEqual(outcome, { value: { answer: 'finished during the pause' } }, `delivered, not ${outcome.error?.reason}`);
 });
+
+test('when a stop and a pause both come while the host checks a paid request, the refusal is the stop: a stop outranks a pause', async () => {
+  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const store = memorySessionStore();
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let stopped;
+  let pausing;
+  const booking = await modelPortFor(await store.open('chat:both'), { key: 'chat:both', beforeRequest: async () => { await held; }, stopped: () => stopped, draining: () => pausing });
+  const asked = booking.models.beforeRequest({ model: 'm' }).then(() => 'admitted', (error) => error);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  pausing = new Error('the session is pausing');
+  stopped = new Error('the node timed out');
+  release();
+  assert.equal((await asked).message, 'the node timed out');
+  assert.deepEqual((await store.read('chat:both')).filter((r) => r.kind === 'runner.request'), []);
+});
