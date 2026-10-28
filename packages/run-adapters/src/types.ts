@@ -77,6 +77,9 @@ export interface ModelUsage {
   /** Null when the price is unknown; `estimated` when it is not the provider's own figure. */
   usd: number | null;
   estimated?: boolean;
+  /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
+   *  price is null; the provider may have billed it. */
+  cut?: boolean;
 }
 
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be
