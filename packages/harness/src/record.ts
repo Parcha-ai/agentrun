@@ -274,6 +274,28 @@ export function assignMemoOrders(lines: Record<string, unknown>[], next: Map<num
   for (const line of lines) if (line.channel === 'durable' && line.order === null) { line.order = next.get(line.commit as number) ?? 0; next.set(line.commit as number, (line.order as number) + 1); }
 }
 
+/** The boxes each label names in the recording in `dir` so far: the distinct `box.created` lines, a process's (by its gen and seq) and the
+ *  supervisor's (by its seq), in its spool and its events file; a line copied from one into the other counts once. Two for one label are two
+ *  boxes with one name, which a recording never holds (H3, and H1's tool labels: a label file a crash lost while a line naming it was kept). */
+export function boxesNamed(dir: string): Map<string, Set<string>> {
+  const named = new Map<string, Set<string>>();
+  const files = [...(existsSync(spool(dir)) ? readdirSync(spool(dir)).filter((name) => name.endsWith('.jsonl')).map((name) => join(spool(dir), name)) : []), join(dir, 'events.jsonl')];
+  for (const file of files) {
+    let lines: Record<string, unknown>[];
+    try { lines = readLines(file); } catch { continue; }
+    for (const line of lines) {
+      if (line.kind !== 'box.created' || line.channel !== 'live' || (line.source !== 'transport' && line.source !== 'host')) continue;
+      const box = (line.data as { box?: unknown } | null)?.box;
+      if (typeof box !== 'string') continue;
+      const id = typeof line.gen === 'number' ? `p${line.gen}:${String(line.seq)}` : `s:${String(line.seq)}`;
+      let ids = named.get(box);
+      if (ids === undefined) named.set(box, (ids = new Set()));
+      ids.add(id);
+    }
+  }
+  return named;
+}
+
 /** Removes the spool. A writer that outlived its kill (a place that refused it, a process that has not yet seen the signal) may still be adding a file while the directory is removed, and a directory that gained an entry under the remover is not empty (ENOTEMPTY): the removal is tried again, for up to a couple of seconds, and the last error is the one thrown. This is for a straggler; the supervisor still finishes only after the runner it stopped has exited. */
 export function removeSpool(dir: string, options: { remove?: (path: string) => void; withinMs?: number } = {}): void {
   const deadline = Date.now() + (options.withinMs ?? 2000);

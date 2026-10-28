@@ -10,7 +10,7 @@ const host = (kind: string, data: Json): Line => ({ channel: 'live', source: 'ho
 const genProblems = (lines: Line[]) => validate(undefined, lines).filter((problem) => /names its process in data\.gen/.test(problem));
 
 test('every host kind whose fields name gen must carry it, and passes with it', () => {
-  assert.deepEqual([...GEN_HOST_KINDS].sort(), ['delegation', 'fenced', 'kill', 'kill.failed', 'kill.request.ignored', 'process.started', 'recording.carry.failed', 'result', 'revoke', 'run.json', 'signals.failed']);
+  assert.deepEqual([...GEN_HOST_KINDS].sort(), ['box.created', 'box.ended', 'box.exec', 'delegation', 'fenced', 'kill', 'kill.failed', 'kill.request.ignored', 'process.started', 'recording.carry.failed', 'result', 'revoke', 'run.json', 'signals.failed']);
   for (const kind of GEN_HOST_KINDS) {
     assert.match(genProblems([host(kind, { label: 'x' })]).join('\n'), new RegExp(`a supervisor line \\(${kind.replaceAll('.', '\\.')}\\) names its process`), kind);
     assert.deepEqual(genProblems([host(kind, { gen: 1, label: 'x' })]), [], `${kind} with gen`);
