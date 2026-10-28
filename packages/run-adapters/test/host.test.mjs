@@ -283,6 +283,23 @@ test('close() while a request waits for the runner: it is not sent, and it is re
   assert.deepEqual(after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }], 'the admitted request is released once');
 });
 
+test('nothing is admitted once close() has begun: a request still reading its credential then is refused, and the runner is never asked', async (t) => {
+  let release;
+  const reading = new Promise((resolve) => { release = resolve; });
+  const before = [];
+  const after = [];
+  const forwarded = [];
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => reading.then(() => 'provider-secret'), hooks: { beforeRequest: async (r) => { before.push(r); }, afterRequest: async (u) => { after.push(u); } }, fetch: async (url) => { forwarded.push(url); return new Response(sse()); } }, KEY);
+  const answer = send(p.url, { path: '/v1/test?beta=true' }).catch((error) => ({ error }));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const closing = p.close();
+  release();
+  await closing;
+  await answer;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual([before.length, after.length, forwarded.length], [0, 0, 0], 'never admitted, never booked, never sent: no turn spent');
+});
+
 test('a "__proto__" key in a body is an own field: the parsed object keeps its prototype, and no other object is touched', () => {
   const parsed = parseStrict('{"__proto__":{"polluted":true},"a":1}');
   assert.equal(Object.getPrototypeOf(parsed), Object.prototype);
