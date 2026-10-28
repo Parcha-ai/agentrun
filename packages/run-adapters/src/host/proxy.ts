@@ -103,13 +103,14 @@ const RESERVED_HEADER = /^(?:authorization|proxy-authorization|x-api-key|host|co
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
 
 /** What is wrong with headers a host would add to forwarded requests: a name that is not a token or is reserved, a value
- *  with a line break or over 1 KiB. Empty when they are fine. */
+ *  an HTTP header cannot carry (a line break or other control character, or a character beyond Latin-1, which the fetch
+ *  the proxy forwards with refuses) or over 1 KiB. Empty when they are fine. */
 export function hostHeaderProblems(headers: Readonly<Record<string, unknown>> | undefined): string[] {
   const problems: string[] = [];
   for (const [name, value] of Object.entries(headers ?? {})) {
     if (!HEADER_NAME.test(name)) problems.push(`the header name ${JSON.stringify(name.slice(0, 80))} is not a token`);
     else if (RESERVED_HEADER.test(name)) problems.push(`the header ${name} is the proxy's own (credential, transport or protocol), not a host's`);
-    if (typeof value !== "string" || /[\r\n\0]/.test(value) || value.length > 1024) problems.push(`the header ${name.slice(0, 80)}'s value must be one line of text, at most 1024 characters`);
+    if (typeof value !== "string" || /[^\t\x20-\x7e\x80-\xff]/.test(value) || value.length > 1024) problems.push(`the header ${name.slice(0, 80)}'s value must be one line of text an HTTP header can carry (Latin-1, no control characters), at most 1024 characters`);
   }
   return problems;
 }
@@ -299,12 +300,14 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     if (!credential) return refuse(res, 500, "the session has no provider credential", req);
     try {
-      // The host's own headers, over any the client sent by those names; then the credential's, over everything.
-      for (const [name, value] of Object.entries(hostHeaders)) {
+      // The host's own headers, over any the client sent by those names; then the credential's, over everything. A name
+      // replaces any other spelling of it, so no two headers of one name reach the provider combined.
+      const set = (name: string, value: string) => {
         for (const sent of Object.keys(headers)) if (sent.toLowerCase() === name.toLowerCase()) delete headers[sent];
         headers[name] = value;
-      }
-      Object.assign(headers, policy.authHeaders(credential));
+      };
+      for (const [name, value] of Object.entries(hostHeaders)) set(name, value);
+      for (const [name, value] of Object.entries(policy.authHeaders(credential))) set(name, value);
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not build the provider's credential headers`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       return refuse(res, 500, "the provider's credential headers could not be built", req);

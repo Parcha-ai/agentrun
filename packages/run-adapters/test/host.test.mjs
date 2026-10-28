@@ -456,6 +456,24 @@ test("a host's header is checked when the proxy starts: a name that is a token a
     [{ 'bad name': 'v' }, /not a token/],
     [{ 'x-tags': 'a\r\nInjected: 1' }, /one line of text/],
     [{ 'x-tags': 'v'.repeat(1025) }, /at most 1024/],
+    [{ 'x-litellm-tags': 'job:東京' }, /one line of text an HTTP header can carry/],
+    [{ 'x-tags': 'a\tb\u0007c' }, /one line of text an HTTP header can carry/],
   ]) assert.match(hostHeaderProblems(headers).join('; '), said, JSON.stringify(headers).slice(0, 60));
   await assert.rejects(startModelProxy({ policy, model: 'm', origin: 'https://x.invalid', credential: () => 'c', hooks: {}, headers: { host: 'evil' } }, KEY), /the header host is the proxy's own/);
+});
+
+test("a header value an HTTP header can carry passes the check and is forwarded as given; one it cannot is refused before the proxy starts", async (t) => {
+  assert.deepEqual(hostHeaderProblems({ 'x-tags': 'job:café\tteam' }), [], 'Latin-1 and a tab are header text');
+  await assert.rejects(startModelProxy({ policy, model: 'm', origin: 'https://x.invalid', credential: () => 'c', hooks: {}, headers: { 'x-litellm-tags': 'job:東京' } }, KEY), /x-litellm-tags's value must be one line of text an HTTP header can carry/);
+  const { p, forwarded } = await proxy(t, { headers: { 'x-tags': 'job:café' } });
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  assert.equal(Object.entries(forwarded[0].headers).find(([k]) => k.toLowerCase() === 'x-tags')?.[1], 'job:café');
+});
+
+test("the credential's header replaces a host's header of the same name in any case, so the provider gets one value, the credential", async (t) => {
+  const gateway = { ...policy, authHeaders: (credential) => ({ 'x-gateway-key': credential }) };
+  const { p, forwarded } = await proxy(t, { policy: gateway, headers: { 'X-Gateway-Key': 'host-value' } });
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
+  const keys = Object.entries(forwarded[0].headers).filter(([k]) => k.toLowerCase() === 'x-gateway-key');
+  assert.deepEqual(keys, [['x-gateway-key', 'provider-secret']]);
 });
