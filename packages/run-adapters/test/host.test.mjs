@@ -118,6 +118,18 @@ test("only the policy's routes, by their exact text: an absolute URL, a foreign 
   assert.equal(forwarded[0].url, 'https://provider.invalid/v1/test?beta=true');
 });
 
+test("a refusal names the client that called by its user-agent, cut to 120 characters, and none when it sent none", async (t) => {
+  const { p, hooks } = await proxy(t);
+  // Another local process that found the port: a keyless GET / with its own user-agent.
+  assert.equal((await send(p.url, { method: 'GET', path: '/', key: null, headers: { 'user-agent': 'Go-http-client/1.1' }, body: '' })).status, 401);
+  assert.equal((await send(p.url, { method: 'PUT', headers: { 'user-agent': `claude-cli/${'9'.repeat(200)}` } })).status, 403);
+  assert.equal((await send(p.url, { method: 'GET', path: '/', key: null, body: '' })).status, 401);
+  const refusals = hooks.logged.filter((l) => /refused/.test(l.message));
+  assert.deepEqual(refusals.map((l) => l.userAgent), ['Go-http-client/1.1', `claude-cli/${'9'.repeat(109)}`, undefined]);
+  assert.ok(!('userAgent' in refusals[2]), 'no user-agent sent, none reported');
+  assert.equal(refusals[0].status, 401);
+});
+
 test("a local route is answered by the proxy with its status alone, with or without the key, and nothing is forwarded or asked", async (t) => {
   const { p, forwarded, hooks } = await proxy(t);
   // A client's connectivity check carries no key (the Claude Agent CLI's does not): it learns only that the proxy is up.

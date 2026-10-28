@@ -241,6 +241,7 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked |
 | [`@parcha/agentrun-adapters`](packages/run-adapters/README.md) | Held, not on npm yet. The seam for agent harnesses other than Pi, starting with Codex: `createHarnessRunner` runs a DSL node on a harness adapter, durable in AgentRun's own store |
 | [`@parcha/agentrun-claude-agent`](packages/run-adapters-claude-agent/README.md) | Held, not on npm yet. The Claude Agent SDK as a harness: a DSL node runs on the Claude Agent CLI with the host's tools as its only tools, its model behind a per-session proxy |
+| [`@parcha/agentrun-codex`](packages/run-adapters-codex/README.md) | Held, not on npm yet. Codex as a harness: a DSL node runs on Codex's app-server with the host's tools as its only tools, its model behind a per-session proxy |
 
 Every published package is at one version under npm's `beta` dist-tag; `npm view @parcha/agentrun-dsl dist-tags` prints it. The status column of [Use one piece](#use-one-piece) says which packages are published. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#contracts-and-limits).
 
