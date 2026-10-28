@@ -33,6 +33,12 @@ export function toolSchemaProblems(tool: string, schema: unknown): string[] {
   if (!isPlain(schema) || schema.type !== "object") {
     return [`${tool}: /: the root must be {"type": "object"} (a tool's input is an object of arguments), not ${String(JSON.stringify(isPlain(schema) ? schema.type ?? null : schema) ?? schema).slice(0, 60)}`];
   }
+  // A schema is sent as JSON: one that is not JSON (a cycle in its objects, a BigInt) is refused before anything walks it.
+  try {
+    JSON.stringify(schema);
+  } catch (error) {
+    return [`${tool}: /: the schema is not JSON (${String((error as Error)?.message ?? error).split("\n")[0]!.slice(0, 80)}); a tool's input schema is sent as JSON`];
+  }
   const problems: string[] = [];
   const { $schema: dialect, ...body } = schema;
   if (dialect !== undefined && !(typeof dialect === "string" && DIALECTS.has(dialect.replace(/#$/, "")))) {
