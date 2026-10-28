@@ -356,6 +356,8 @@
           if (model.value.trim()) definitionOut.model = model.value.trim();
           if (thinking.value) definitionOut.thinking = thinking.value;
         }
+        // The harness the form read goes back as it was: the form has no picker for it yet.
+        if (definition.harness) definitionOut.harness = definition.harness;
         var body = { definition: definitionOut };
         if (note && note.value.trim()) body.note = note.value.trim();
         save.disabled = true;

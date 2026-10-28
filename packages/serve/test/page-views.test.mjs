@@ -191,7 +191,7 @@ test("a new workflow agent: the workflow's JSON in place of a prompt and a model
 });
 
 test("edit: the form is the current definition, a tool the server does not bind still checked; saving PUTs it to .../definition with a note, never the name or description the store keeps", async () => {
-  const definition = { name: `Calc ${HOSTILE}`, description: "Adds.", instructions: "Answer.", model: "openai/gpt-5", thinking: "low", tools: ["read", "web_fetch"] };
+  const definition = { name: `Calc ${HOSTILE}`, description: "Adds.", instructions: "Answer.", model: "openai/gpt-5", thinking: "low", harness: "claude-agent", tools: ["read", "web_fetch"] };
   let stale = false;
   const { page, api } = open("#/agents/calc/edit", {
     "v2/capabilities": CAPABILITIES,
@@ -215,7 +215,7 @@ test("edit: the form is the current definition, a tool the server does not bind 
   boxes[4].checked = false;
   buttonNamed(page, "Commit revision").click();
   await page.settle();
-  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5", thinking: "low" }, note: "Shows its work" }]], "no id, version or skills: the server numbers the revision and carries the skill files over");
+  assert.deepEqual(api.writes(), [["PUT", "v2/agents/calc/definition", { definition: { tools: ["read"], instructions: "Answer, and show the sum.", model: "openai/gpt-5", thinking: "low", harness: "claude-agent" }, note: "Shows its work" }]], "no id, version or skills: the server numbers the revision and carries the skill files over; the harness it read goes back as it was");
   assert.equal(api.calls.at(-1).headers["if-match"], `"${REV_B}"`, "the edit commits onto the revision the form read");
   assert.equal(page.window.location.hash, "#/agents/calc");
   stale = true;

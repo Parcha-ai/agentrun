@@ -134,29 +134,36 @@ test("a save whose checks run while another request changes the current revision
   const body = (extra) => checkDefinitionBody(agent("x", extra), { creating: false });
   const a = await agents.create(checkDefinitionBody(agent("x")));
   const b = await agents.commit(a, body({ instructions: "Answer briefly.", version: 2 }));
-  const current = agents.setCurrent(b, a.revision.id);
+  const current = await agents.setCurrent(b, a.revision.id);
+  /** A check that says when it starts, and ends when the test lets it. */
+  const gate = () => {
+    let started, release;
+    const running = new Promise((resolve) => (started = resolve));
+    const held = new Promise((resolve) => (release = resolve));
+    return { running, release, check: () => (started(), held) };
+  };
   // The same PUT of A again, with If-Match A; while its checks run, another request makes B current.
-  let release;
-  const held = new Promise((resolve) => { release = resolve; });
-  const saving = agents.commit(current, body(), { ifCurrent: a.revision.id, check: () => held });
-  agents.setCurrent(current, b.revision.id);
-  release();
+  const first = gate();
+  const saving = agents.commit(current, body(), { ifCurrent: a.revision.id, check: first.check });
+  await first.running;
+  await agents.setCurrent(current, b.revision.id);
+  first.release();
   await assert.rejects(saving, (error) => error.code === "precondition_failed");
-  assert.equal(agents.get("x").revision.id, b.revision.id, "B stays current");
+  assert.equal((await agents.get("x")).revision.id, b.revision.id, "B stays current");
   // A PUT of B with If-Match A, while another request makes B current: the edit is now no change, and still 412.
-  const back = agents.setCurrent(current, a.revision.id);
-  let releaseB;
-  const heldB = new Promise((resolve) => { releaseB = resolve; });
-  const savingB = agents.commit(back, body({ instructions: "Answer briefly.", version: 2 }), { ifCurrent: a.revision.id, check: () => heldB });
-  agents.setCurrent(back, b.revision.id);
-  releaseB();
+  const back = await agents.setCurrent(current, a.revision.id);
+  const second = gate();
+  const savingB = agents.commit(back, body({ instructions: "Answer briefly.", version: 2 }), { ifCurrent: a.revision.id, check: second.check });
+  await second.running;
+  await agents.setCurrent(back, b.revision.id);
+  second.release();
   await assert.rejects(savingB, (error) => error.code === "precondition_failed");
   // With no If-Match, a save naming version 3 while another request saves version 3 first: this one would be 4, so 422.
-  const two = agents.get("x");
-  let releaseC;
-  const heldC = new Promise((resolve) => { releaseC = resolve; });
-  const savingC = agents.commit(two, body({ instructions: "Answer in a word.", version: 3 }), { check: () => heldC });
+  const two = await agents.get("x");
+  const third = gate();
+  const savingC = agents.commit(two, body({ instructions: "Answer in a word.", version: 3 }), { check: third.check });
+  await third.running;
   await agents.commit(two, body({ instructions: "Answer in a sentence.", version: 3 }));
-  releaseC();
+  third.release();
   await assert.rejects(savingC, (error) => error.code === "input_invalid" && /^definition\.version is 4 /.test(error.message));
 });

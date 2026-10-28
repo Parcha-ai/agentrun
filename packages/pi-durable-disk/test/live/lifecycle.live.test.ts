@@ -228,9 +228,9 @@ before(async () => {
   results.client = sh("/usr/bin/archil", ["--version"]).stdout.split("\n")[0];
   assert.deepEqual(archilMounts(), [], "no P8 mounts left from an earlier run");
   assert.equal(sh("systemctl", ["list-units", "--all", "--plain", "--no-legend", "pda-p8-*"]).stdout.trim(), "", "no pda-p8 units left from an earlier run");
-  sh("sudo", ["-n", "mkdir", "-p", BASE]);
-  sh("sudo", ["-n", "chown", `${RUN_OWNER.uid}:${RUN_OWNER.gid}`, BASE]);
-  for (const d of [A, B, F, OUT]) mkdirSync(d, { recursive: true, mode: 0o755 });
+  // Every mount root and its runs/ are root's, 0755: the archil wrapper refuses any other (only root may name entries there).
+  sh("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, ...[A, B, F].flatMap((r) => [r, `${r}/runs`])]);
+  mkdirSync(OUT, { recursive: true, mode: 0o755 });
   sh("chmod", ["755", OUT]);
   writeFileSync(SERVE_TOKEN_FILE, `${SERVE_TOKEN}\n`, { mode: 0o600 });
   tokenDirExisted = sh("sudo", ["-n", "test", "-d", "/run/pi-durable-disk"]).status === 0;

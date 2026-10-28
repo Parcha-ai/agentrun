@@ -129,7 +129,7 @@ test("an agent is created from a definition and skills, read back with its ETag,
   assert.match(created.body.revision, /^[0-9a-f]{64}$/);
   assert.equal(created.body.revisions, 1);
   assert.equal(created.body.home_etag, `"${created.body.revision}"`, "the ETag is the current revision");
-  assert.deepEqual(created.body.definition, { id: "reporter", version: 1, name: "reporter", description: "Writes reports.", instructions: "Answer.", model: "faux/faux-1", thinking: "high", skills: ["cite"], tools: [] });
+  assert.deepEqual(created.body.definition, { id: "reporter", version: 1, name: "reporter", description: "Writes reports.", instructions: "Answer.", model: "faux/faux-1", thinking: "high", harness: "pi", skills: ["cite"], tools: [] });
   const read = await api("GET", "/agents/reporter");
   assert.equal(read.status, 200);
   assert.equal(read.headers.get("etag"), read.body.home_etag);

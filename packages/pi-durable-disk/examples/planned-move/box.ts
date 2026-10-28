@@ -96,11 +96,11 @@ sudo -n install -m 0644 /tmp/pda-upload/app.ts ${BOX.app}
 sudo -n chown -R root:root ${BOX.appDir}
 sudo -n chmod -R a+rX,go-w ${BOX.appDir}
 sudo -n install -o root -g root -m 0755 ${BOX.packageDir}/bin/archil-scoped ${BOX.archil}
-printf '%s\n' '#${uid} ALL=(root) NOPASSWD: ${BOX.archil}, /usr/bin/fusermount -u ${mountRoot}/runs/*' | sudo -n tee /etc/sudoers.d/pi-durable-disk >/dev/null
+printf '%s\n' '#${uid} ALL=(root) NOPASSWD: ${BOX.archil}' | sudo -n tee /etc/sudoers.d/pi-durable-disk >/dev/null
 sudo -n chmod 0440 /etc/sudoers.d/pi-durable-disk
 sudo -n visudo -cf /etc/sudoers.d/pi-durable-disk >/dev/null
 sudo -n install -d -m 0755 ${mountRoot}
-sudo -n install -d -o ${uid} -g ${gid} -m 0755 ${mountRoot}/runs
+sudo -n install -d -o root -g root -m 0755 ${mountRoot}/runs
 rm -rf /tmp/pda-upload
 `, 900);
   };

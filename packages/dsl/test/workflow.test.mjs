@@ -247,6 +247,40 @@ test("string-null normalization recurses into nested schemas", async () => {
   assert.equal(value.matches[1].evidence_url, "https://x.example");
 });
 
+test("string-null normalization keeps a string the field's own enum or const lists exactly", async () => {
+  const { normalizeStringNullsForSchema } = await import("../dist/workflow.js");
+  const schema = { type: "object", properties: {
+    hold: { type: ["string", "null"], enum: ["Rolling", "Fixed", "None", null] },
+    fixed: { anyOf: [{ const: "N/A" }, { type: "null" }] },
+    note: { type: ["string", "null"] },
+    nested: { type: "object", properties: { status: { anyOf: [{ type: "string", enum: ["None", "Open"] }, { type: "null" }] } } },
+  } };
+  const value = { hold: "None", fixed: "N/A", note: "None", nested: { status: "None" } };
+  normalizeStringNullsForSchema(value, schema);
+  assert.deepEqual(value, { hold: "None", fixed: "N/A", note: null, nested: { status: "None" } });
+  // Nested branches and local references, into definitions or $defs.
+  const deep = { type: "object", definitions: { Opt: { enum: ["N/A", "Open"] } }, $defs: { Lit: { const: "null" } }, properties: {
+    nested: { anyOf: [{ anyOf: [{ const: "None" }] }, { type: "null" }] },
+    referenced: { anyOf: [{ $ref: "#/definitions/Opt" }, { type: "null" }] },
+    defs: { oneOf: [{ $ref: "#/$defs/Lit" }], type: ["string", "null"] },
+    inner: { type: "object", properties: { status: { anyOf: [{ $ref: "#/definitions/Opt" }, { type: "null" }] } } },
+  } };
+  const kept = { nested: "None", referenced: "N/A", defs: "null", inner: { status: "N/A" } };
+  normalizeStringNullsForSchema(kept, deep);
+  assert.deepEqual(kept, { nested: "None", referenced: "N/A", defs: "null", inner: { status: "N/A" } });
+  // A field's own enum beside its $ref still lists the value: the reference adds to what the field lists, never replaces it.
+  const beside = { type: "object", definitions: { S: { type: ["string", "null"] } }, properties: {
+    own: { $ref: "#/definitions/S", type: ["string", "null"], enum: ["None", null] },
+    bare: { $ref: "#/definitions/S", type: ["string", "null"] },
+  } };
+  const sided = { own: "None", bare: "None" };
+  normalizeStringNullsForSchema(sided, beside);
+  assert.deepEqual(sided, { own: "None", bare: null });
+  const loose = { hold: "none" };
+  normalizeStringNullsForSchema(loose, schema);
+  assert.equal(loose.hold, null, "only the exact listed string is a value");
+});
+
 test("reference-aware probe: a wrong column name that throws under the real header is rejected at validation", () => {
   const schemas = { Out: { type: "object", properties: {} } };
   const wf = (code) => ({ v: 2, name: "t", schemas, output: { schemaId: "Out", path: "final" }, root: { node: "chain", steps: [
