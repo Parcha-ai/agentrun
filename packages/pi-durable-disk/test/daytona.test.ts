@@ -409,6 +409,14 @@ test("box: a receipt of each box the driver made: its size, when it was made and
   await g.host.stop(gh);
 });
 
+test("box: a driver built on daytonaHost under another name (driver) names its own provider, and no box of it gets Daytona's list price", async () => {
+  const w = world("hold", { driver: "other" }, { size: { cpu: 2, memory: 4, disk: 10, gpu: 0, createdAt: "2026-10-16T09:00:00.000Z" } });
+  const h = await w.host.start(REF, TOKEN);
+  assert.equal(h.driver, "other");
+  assert.deepEqual(w.host.box!(h), { provider: "other", kind: "sandbox 2 vCPU, 4 GiB memory, 10 GiB disk", from: "2026-10-16T09:00:00.000Z", to: null });
+  await w.host.stop(h);
+});
+
 test("daytonaUsdPerSecond: the list price from a box's size (the first 5 GiB of disk free); none without a size, or for a box with a GPU, which the page prices per model", () => {
   const p = DAYTONA_LIST_PRICES;
   assert.equal(daytonaUsdPerSecond({ cpu: 1, memory: 1, disk: 3 }), (p.vcpuPerHour + p.memoryGiBPerHour) / 3600);

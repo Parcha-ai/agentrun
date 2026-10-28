@@ -1,6 +1,8 @@
 // Stands in for `pi-durable-disk run` under the Daytona launcher: reads stdin to its end, appends one line per
 // incarnation to PDA_TEST_OUT (argv, token, holder, environment names, pid), then exits with the code PDA_TEST_CODES
-// names for this incarnation (comma-separated, the last one repeats; "hold" runs until SIGTERM and exits 0).
+// names for this incarnation (comma-separated, the last one repeats; "hold" runs until SIGTERM and exits 0, after a
+// drain that detaches a program when PDA_TEST_DRAIN_SPAWN is set).
+import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 
 const out = process.env.PDA_TEST_OUT;
@@ -30,7 +32,13 @@ if (code === "hold") {
   const keep = setInterval(() => {}, 1000);
   process.on("SIGTERM", () => {
     clearInterval(keep);
-    process.exit(0);
+    const spawnIn = process.env.PDA_TEST_DRAIN_SPAWN;
+    if (!spawnIn) process.exit(0);
+    // Draining: a tool the agent ran leaves a program detached in PDA_TEST_DRAIN_SPAWN (its pid goes to PDA_TEST_OUT as
+    // `drainSpawned`), and the drain goes on for PDA_TEST_DRAIN_MS before the instance exits.
+    const r = spawnSync("sh", ["-c", "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $!"], { cwd: spawnIn, encoding: "utf8" });
+    appendFileSync(out, `${JSON.stringify({ drainSpawned: Number(r.stdout.trim()) })}\n`);
+    setTimeout(() => process.exit(0), Number(process.env.PDA_TEST_DRAIN_MS ?? 500));
   });
 } else {
   process.exit(Number(code));
