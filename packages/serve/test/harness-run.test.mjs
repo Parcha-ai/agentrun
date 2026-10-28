@@ -162,3 +162,22 @@ test("pi's confinement holds for another harness's read: a link out of the works
   assert.match(read[0], /outside the workspace/, JSON.stringify(read));
   assert.doesNotMatch(read[0], /not for the agent/);
 });
+
+test("a capped run whose spend became unknown (a request cut by a crash) refuses its next request: failed, spend_cap_reached", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  assert.equal((await api("POST", "/agents", agent("capped-cut", { harness: "claude-agent", instructions: `Cut until ${go}.` }))).status, 201);
+  const run = await api("POST", "/agents/capped-cut/runs", { input: { content: "hi" }, max_cost_usd: 1 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+    assert.ok(i < 300, "the first request's tool row");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await writeFile(go, "");
+  await killRun(data, runId);
+  await follow(api, runId, ["failed"], { deadlineMs: 60_000 });
+  const ended = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
+  assert.match(ended.error.message, /spent is unknown/);
+});
