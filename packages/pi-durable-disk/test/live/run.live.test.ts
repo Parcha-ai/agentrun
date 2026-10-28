@@ -270,7 +270,7 @@ async function withClaim<T>(id: string, purpose: string, use: (claim: Claim) => 
 
 before(() => {
   if (!LIVE) return;
-  prepareBase();
+  prepareBase([ROOT_A, ROOT_B, ROOT_C]);
   mkdirSync(WORK, { recursive: true, mode: 0o755 });
 });
 
