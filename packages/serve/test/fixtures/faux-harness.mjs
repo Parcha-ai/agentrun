@@ -7,6 +7,8 @@ export function script(spec) {
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
+  // A chat whose second turn has a request of unknown price.
+  if (/Second turn unpriced\./.test(text)) return [{ say: "Answer 1.", usd: 0.001 }, { end: true, usd: 0.001 }, { say: "Answer 2.", usd: null }, { end: true, usd: 0.001 }];
   const wait = /Wait for (\S+) before the answer\./.exec(text)?.[1];
   if (wait) return [{ call: "read", args: { path: "a.txt" }, usd: 0.002 }, ...(existsSync(wait) ? [] : [{ hang: true }]), { say: "Done after the wait.", usd: 0.004 }];
   // A request admitted and never answered, until the file exists: a crash then cuts it.

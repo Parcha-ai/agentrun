@@ -119,3 +119,14 @@ test("a request booked in the session whose root entry was never written (the pr
   assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request booked before the kill counts, once, from the session's records");
   assert.equal(storeCount(data, runId, "adapter.request"), 2);
 });
+
+test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "later", "Second turn unpriced.");
+  await follow(api, runId, ["completed"]);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002);
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
+  const { rows } = await follow(api, runId, ["completed"]);
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 4 });
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
+});
