@@ -88,6 +88,8 @@ test("no injection screen: nothing is curated, main stays, the branch waits; a r
   await first.close();
   const again = await serve(t, { data: first.data, learning: { screen: SCREEN, judge: j.run } });
   assert.equal((await stateOf(again.data, "calc", runId, (s) => s.state === "merged")).state, "merged", "the start-time pass curates it");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 test("no judge: with no TYPESAFE_API_KEY the server starts, and the run's state says so", async (t) => {
@@ -177,6 +179,8 @@ test("approve survives a restart: the start-time pass never curates a held run w
   assert.equal(tip(bareOf(again.data, "calc"), "main"), main, "the start-time pass landed nothing");
   assert.equal((await readRunState(again.data, "calc", runId)).state, "awaiting_approval");
   assert.equal((await again.learning.approve("calc", runId, "token")).status, "landed");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 test("a held run is never judged again when the next run is reviewed", async (t) => {
@@ -278,6 +282,8 @@ test("a merged branch the server could not delete is deleted at the next start; 
   await again.learning.settled();
   assert.ok(!branches(bare).includes(`runs/${one}`), "the merged branch at its tip is deleted");
   assert.ok(branches(bare).includes(`runs/${two}`), "the one that moved is kept");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 test("a run whose memo the screen refuses leaves no planted marker anywhere on main", async (t) => {
