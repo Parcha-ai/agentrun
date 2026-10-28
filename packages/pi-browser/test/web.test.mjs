@@ -134,6 +134,21 @@ test("the root's INJECTION_THRESHOLD is the value the screen marks at, so a host
   assert.doesNotMatch(results[1].text, /page_guard/);
 });
 
+test("a sure injection is marked whatever the wall: an unjudged wall with a score at the threshold reads as an injection, under it as unscreened", async (t) => {
+  const root = await import("@parcha/pi-browser");
+  const unplaced = { wall: "unjudged", injection: 0.99, confidence: null };
+  assert.match(root.pageNotice(unplaced), /^page_guard: injection /);
+  assert.match(root.pageNotice({ ...unplaced, injection: 0.1 }), /^page_guard: unjudged /);
+  assert.match(root.pageNotice({ ...unplaced, injection: null }), /^page_guard: unjudged /);
+  assert.match(root.pageNotice({ ...content, injection: Number.POSITIVE_INFINITY }), /^page_guard: unjudged /, "a score that is not a finite number is no screen");
+  assert.match(root.pageNotice({ ...content, injection: Number.NaN }), /^page_guard: unjudged /);
+  assert.equal(root.pageNotice({ ...content, injection: null }), "");
+  const r = await rig(t, {}, { options: { decisions: { classifyPage: async () => unplaced } } });
+  const { results } = await r.run([[["web_fetch", { url: "https://s.example/unplaced" }]]]);
+  assert.match(results[0].text, /\npage_guard: injection .*\nevidence:/, "web_fetch marks the injection");
+  assert.doesNotMatch(results[0].text, /page_guard: unjudged/);
+});
+
 test("a host without classifyPage is asked nothing and files every page the provider returned", async (t) => {
   const r = await rig(t, { "/captcha": { body: "Verify you are human" } });
   const { results } = await r.run([[["web_fetch", { url: "https://s.example/captcha" }]]]);
@@ -897,6 +912,16 @@ test("a verdict that is not a usable score leaves the list unjudged: NaN, either
     assert.match(answer.page_guard, UNSCREENED, name);
     assert.equal(answer.results[1].snippet, "Third excerpt.", `${name}: the list is marked, not emptied`);
   }
+});
+
+test("a hit whose wall the judge could not place but whose injection it is sure of is withheld, not shown as unscreened", async (t) => {
+  const classifyPage = async (page) => (page.text.startsWith("C") ? { wall: "unjudged", injection: 0.99, confidence: null } : verdictOf(page));
+  const { answer } = await searchOf(t, [
+    { url: "https://a.example/", title: "A", snippet: "First excerpt." },
+    { url: "https://c.example/", title: "C", snippet: "Third excerpt." },
+  ], { decisions: { classifyPage } });
+  assert.deepEqual(answer.results, [{ url: "https://a.example/", title: "A", snippet: "First excerpt." }, { url: "https://c.example/", withheld: "injection" }]);
+  assert.ok(!("page_guard" in answer), "both were judged for injection: nothing is marked unjudged");
 });
 
 test("the threshold is inclusive, as for a page: a score of exactly 0.75 is withheld, one just under is shown", async (t) => {
