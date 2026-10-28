@@ -172,11 +172,12 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
- *  request). A usage row that says unknown stays unknown: what the store kept dates from before a follow-up. */
+ *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
+ *  follow-up. */
 export function costView(rows: readonly TimelineEvent[], stored: number | undefined): number | null {
   const usage = usageOf(rows);
   if (!usage) return stored ?? 0;
-  return usage.usage ? usage.usage.usd : (stored ?? null);
+  return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
