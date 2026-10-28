@@ -1,5 +1,7 @@
 # AgentRun
 
+[![Greptile: The War on Bugs](https://www.greptile.com/badge.svg)](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source)
+
 **AgentRun is an open platform to manage your agents.**
 
 Create an agent, change it, and run it. Every change is a revision you can go back to, and every run names the
