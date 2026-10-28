@@ -86,7 +86,6 @@ function rig(init: { behave?: Record<string, unknown>; sudo?: boolean; extraMoun
   const dead = new Set<string>();
   const host: ArchilHost = {
     archil: wrap("archil"),
-    fusermount: wrap("fusermount"),
     sudo: init.sudo ? wrap("sudo") : false,
     procMounts,
     proc,
@@ -496,7 +495,7 @@ test("exit codes are not evidence: the mount table decides every mount, unmount 
     const claim = await acquire(r.opts);
     r.set((s) => void (s.behave.unmountLies = true));
     await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED" && /still mounted/.test(e.message));
-    assert.equal(r.calls("fusermount").length, 0, "a live mount is never fusermounted");
+    assert.equal(r.calls("archil", "release").length, 0, "a live mount is never fusermounted");
   }
   {
     const r = disposeAfter(rig({ behave: { unmountErrButGone: true } }));
@@ -547,7 +546,7 @@ test("a dead mount at the mountpoint is cleaned with fusermount, then the orphan
   r.set((s) => void (s.mounts[r.root].alive = false));
   r.dead.add(r.root);
   await assert.rejects(acquire(r.opts), (e: unknown) => e instanceof HeldError);
-  assert.equal(r.calls("fusermount").length, 1);
+  assert.equal(r.calls("archil", "release").length, 1);
   assert.equal(r.read().mounts[r.root], undefined);
   // The supervisor revokes the orphan; the next start mounts.
   r.dead.delete(r.root);
@@ -564,13 +563,52 @@ test("a dead mount that fusermount cannot clean fails DEAD_MOUNT_CLEANUP_FAILED"
   assert.equal(r.calls("archil", "mount").length, 0);
 });
 
-test("a mountpoint that cannot be created is MOUNT_FAILED; under a root-owned root it is created through sudo", { skip: process.getuid?.() === 0 }, async () => {
+// Two holders of one run on one host, as two forks of one source are: the second must not ride on the first's live
+// mount, or the first's release unmounts it from under the second mid-read. A restart in place still reuses (default).
+test("a second holder that may not reuse a live mount of the run is refused as held, and the first's mount is untouched", async () => {
+  const r = disposeAfter(rig());
+  const first = await acquire(r.opts);
+  const second = await acquire({ ...r.opts, reuse: false }).then(
+    (c) => c,
+    (e: unknown) => e,
+  );
+  assert.ok(second instanceof HeldError, `the second holder rode on the first's mount: ${second instanceof Error ? second.message : "reused it"}`);
+  assert.ok(r.read().mounts[r.root], "the first holder's mount is untouched");
+  assert.equal(r.calls("archil", "mount").length, 1, "no second mount was made");
+  await first.release();
+});
+
+// A holder that may not reuse still cleans a DEAD mount of its run (one an earlier fork that crashed on this host left):
+// the dead-mount check comes before the refusal of a live one, or that fork would be refused as held until someone
+// cleaned the mount by hand.
+test("a holder that may not reuse cleans a dead mount of its run through release, then mounts", async () => {
+  const r = disposeAfter(rig());
+  liveMount(r);
+  r.set((s) => {
+    s.mounts[r.root].alive = false;
+    delete s.holders[TARGET]; // the server let the dead client's delegation go
+  });
+  // Dead to the claim's look, once: the mount it makes after cleaning is live.
+  let looked = false;
+  const stat = async (p: string) => {
+    if (looked) return {};
+    looked = true;
+    throw Object.assign(new Error(`ENOTCONN: stat '${p}'`), { code: "ENOTCONN" });
+  };
+  const claim = await acquire({ ...r.opts, reuse: false, host: { ...r.host, fs: { ...r.host.fs, stat } } });
+  assert.equal(claim.reused, false, "a fresh mount, not the dead one");
+  assert.equal(r.calls("archil", "release").length, 1, "the dead mount was released through the wrapper");
+  assert.ok(r.read().mounts[r.root]?.alive, "the run is mounted again");
+  await claim.release();
+});
+
+test("a mountpoint that cannot be created is MOUNT_FAILED; under a root-owned root it is made by the wrapper's prepare through sudo", { skip: process.getuid?.() === 0 }, async () => {
   for (const sudo of [false, true]) {
     const r = disposeAfter(rig({ sudo }));
     mkdirSync(r.mountRoot, { mode: 0o555 });
     await assert.rejects(acquire(r.opts), (e: unknown) => e instanceof ClaimError && e.code === "MOUNT_FAILED" && /cannot create/.test(e.message));
-    assert.deepEqual(r.calls("sudo").map((c) => c.argv), sudo ? [["-n", "mkdir", "-p", r.root]] : []);
-    assert.equal(r.calls("archil").length, 0);
+    assert.deepEqual(r.calls("sudo").map((c) => c.argv), sudo ? [["-n", r.host.archil, "prepare", r.root]] : []);
+    assert.deepEqual(r.calls("archil").map((c) => c.argv[0]), sudo ? ["prepare"] : []);
     chmodSync(r.mountRoot, 0o755);
   }
 });
@@ -801,7 +839,7 @@ test("release cleans a dead mount with fusermount after archil unmount refuses i
   claim.markFenced(Object.assign(new Error("ENOTCONN"), { code: "ENOTCONN" }));
   assert.deepEqual(await claim.release(), { via: "fusermount" });
   assert.equal(r.calls("archil", "unmount").length, 1);
-  assert.equal(r.calls("fusermount").length, 1);
+  assert.equal(r.calls("archil", "release").length, 1);
   assert.equal(r.read().mounts[r.root], undefined);
   const r2 = disposeAfter(rig());
   const c2 = await acquire(r2.opts);
@@ -828,7 +866,22 @@ test("a stat in flight when the dead daemon's connection aborts (ECONNABORTED) i
   assert.equal(await unmountClaim(r.root, { ...r.host, fs: { ...r.host.fs, stat } }), "fusermount", "read as live, this was UNMOUNT_FAILED");
   assert.deepEqual(seen, ["ECONNABORTED"], "the stat in flight at the abort decided it");
   assert.equal(r.calls("archil", "unmount").length, 1);
-  assert.equal(r.calls("fusermount").length, 1);
+  assert.equal(r.calls("archil", "release").length, 1);
+  assert.equal(r.read().mounts[r.root], undefined);
+});
+
+// The kernel answers a stat on a FUSE mount from the attributes it cached for the attribute timeout, without asking the
+// daemon: right after any process stat'ed the mount, a dead daemon's mount still stats. statfs always reaches the daemon.
+test("a dead mount whose stat is answered from the kernel's attribute cache reads as dead by its statfs: fusermount cleans it", async () => {
+  const r = disposeAfter(rig());
+  await acquire(r.opts);
+  r.set((s) => void (s.mounts[r.root].alive = false));
+  const stat = async () => ({});
+  const statfs = async (p: string) => {
+    throw Object.assign(new Error(`ENOTCONN: statfs '${p}'`), { code: "ENOTCONN" });
+  };
+  assert.equal(await unmountClaim(r.root, { ...r.host, fs: { ...r.host.fs, stat, statfs } }), "fusermount", "read as live, this was UNMOUNT_FAILED");
+  assert.equal(r.calls("archil", "release").length, 1);
   assert.equal(r.read().mounts[r.root], undefined);
 });
 
@@ -841,7 +894,7 @@ test("only the connection's own codes read as dead: a mount whose stat fails oth
       throw Object.assign(new Error(code), { code });
     };
     await assert.rejects(unmountClaim(r.root, { ...r.host, fs: { ...r.host.fs, stat } }), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED", code);
-    assert.equal(r.calls("fusermount").length, 0, code);
+    assert.equal(r.calls("archil", "release").length, 0, code);
     assert.ok(r.read().mounts[r.root], code);
   }
 });
@@ -851,7 +904,7 @@ test("a live mount that refuses to unmount is UNMOUNT_FAILED and never fusermoun
   const claim = await acquire(r.opts);
   r.set((s) => void (s.behave.unmountFail = true));
   await assert.rejects(claim.release(), (e: unknown) => e instanceof ClaimError && e.code === "UNMOUNT_FAILED");
-  assert.equal(r.calls("fusermount").length, 0);
+  assert.equal(r.calls("archil", "release").length, 0);
   assert.ok(r.read().mounts[r.root]);
   assert.equal(await unmountClaim(join(r.dir, "nothing-here"), r.host), "none");
 });
@@ -881,7 +934,7 @@ test("Sysbox: release checks in, finds no delegation left, moves the mount aside
   const retire = r.calls("archil", "retire")[0].argv;
   assert.equal(retire[1], r.root);
   assert.match(retire[2], /^[0-9a-z]+$/);
-  assert.equal(r.calls("fusermount").length, 0, "a live mount is never fusermounted");
+  assert.equal(r.calls("archil", "release").length, 0, "a live mount is never fusermounted");
   assert.equal(r.read().holders[TARGET], undefined, "the delegation went back to the server");
   assert.equal(r.read().mounts[r.root], undefined, "the path is free");
   assert.deepEqual(releasedUnder(r), [join(r.mountRoot, ".released", `${REF.id}-${retire[2]}`)]);
@@ -948,7 +1001,7 @@ test("Sysbox: a dead mount is moved aside without a checkin, at release and when
   claim.markFenced(Object.assign(new Error("ENOTCONN"), { code: "ENOTCONN" }));
   assert.deepEqual(await claim.release(), { via: "moved" });
   assert.equal(r.calls("archil", "checkin").length, 0, "a dead client has nothing to check in");
-  assert.equal(r.calls("fusermount").length, 1);
+  assert.equal(r.calls("archil", "release").length, 1);
   assert.equal(r.read().mounts[r.root], undefined);
 
   const a = disposeAfter(rig({ behave: { sysbox: true } }));

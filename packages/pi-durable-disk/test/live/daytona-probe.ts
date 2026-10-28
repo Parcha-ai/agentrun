@@ -242,7 +242,7 @@ async function claim(client: DaytonaClient): Promise<void> {
     // B: a second exclusive mount of the held directory must be refused.
     const b = await mint("b");
     secrets.push(b.token);
-    const mpB = `${MOUNT_ROOT}/.check-b/runs/${id}`;
+    const mpB = `${MOUNT_ROOT}/runs/${id}-b`; // beside the first mount, as supervise --check mounts its second
     res.mountB = facts(await sh(client, box, mountScript(diskId, id, mpB, await stageToken(client, box, "probe-b", b.token)), 180));
     if (await mounted(client, box, mpB)) res.mountBCleanup = await cleanLadder(client, box, mpB);
 

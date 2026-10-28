@@ -10,6 +10,7 @@ import type { Delegation } from "disk";
 import {
   acquire,
   createRunDir,
+  exclusiveMount,
   findDelegations,
   matchDelegations,
   pathlessResolver,
@@ -24,6 +25,7 @@ import {
   type ArchilHost,
   type Claim,
   type ControlApi,
+  type ExclusiveMount,
   type PathlessResolver,
   type RunRef,
 } from "./claim.ts";
@@ -669,7 +671,7 @@ export interface CheckOptions {
   control: CheckControl;
   disk: string;
   region: string;
-  /** Where the probe's two mounts go: `<mountRoot>/runs/<probe>` and `<mountRoot>/.check-b/runs/<probe>`. */
+  /** Where the probe's mounts go: `<mountRoot>/runs/<probe>`, and beside it `<mountRoot>/runs/<probe>-b` and `-c`. */
   mountRoot: string;
   /** Owner of the probe directory (the instance's user). */
   owner: { uid: number; gid: number };
@@ -699,6 +701,7 @@ export async function checkHost(options: CheckOptions): Promise<CheckReport> {
   const cleanup: string[] = [];
   const tokens: string[] = [];
   const claims: Claim[] = [];
+  const siblings: ExclusiveMount[] = [];
   let created = false;
   let first: Claim | null = null;
 
@@ -712,6 +715,21 @@ export async function checkHost(options: CheckOptions): Promise<CheckReport> {
     note("mount", c.root, `${ref.disk}:/${runPath(id)}`);
     return c;
   };
+  // The second and third mounts of the probe, at a mountpoint beside the first one's (which a revoked mount still takes):
+  // <mountRoot>/runs/<probe>-<tag>. A mount root is never made here; the wrapper takes only <mountRoot>/runs/<run>.
+  const sibling = async (tag: string): Promise<ExclusiveMount> => {
+    const nickname = `${opts.tokenPrefix ?? "pda-"}check-${tag}-${Date.now().toString(36)}`.slice(0, 64);
+    const t = await mintMountToken(opts.control, { nickname, ttl: "1h" });
+    tokens.push(t.identifier);
+    note("token", t.identifier, nickname);
+    const m = await exclusiveMount({ disk: ref.disk, region: ref.region, path: runPath(id) }, join(opts.mountRoot, runPath(`${id}-${tag}`)), t.token, {
+      host: opts.host,
+      probe: `${JSON.stringify({ check: id, tag, pid: process.pid })}\n`,
+    });
+    siblings.push(m);
+    note("mount", m.root, `${ref.disk}:/${runPath(id)}`);
+    return m;
+  };
   const plan: [string, () => Promise<string | undefined>][] = [
     ["create probe directory", async () => {
       await createRunDir(opts.control, id, opts.owner);
@@ -724,7 +742,7 @@ export async function checkHost(options: CheckOptions): Promise<CheckReport> {
       return `mount ${Math.round(first.timings.mountMs)} ms, verify ${Math.round(first.timings.verifyMs)} ms`;
     }],
     ["second exclusive mount is refused", async () => {
-      const err = await mount(join(opts.mountRoot, ".check-b"), "b").then(() => null, (e: unknown) => e);
+      const err = await sibling("b").then(() => null, (e: unknown) => e);
       if (err === null) throw new Error("a second client mounted the held directory");
       if (!(err instanceof HeldError)) throw err;
       return "HeldError (76)";
@@ -749,8 +767,8 @@ export async function checkHost(options: CheckOptions): Promise<CheckReport> {
       return "FencedError (75)";
     }],
     ["a new mount takes over", async () => {
-      const c = await mount(join(opts.mountRoot, ".check-b"), "c");
-      return `mount ${Math.round(c.timings.mountMs)} ms`;
+      const c = await sibling("c");
+      return `mounted at ${c.root}`;
     }],
   ];
   try {
@@ -761,6 +779,11 @@ export async function checkHost(options: CheckOptions): Promise<CheckReport> {
       if (!r.ok) break;
     }
   } finally {
+    for (const m of siblings.reverse()) {
+      const via = await m.unmount().then((v) => (v === "none" ? "released" : v), (e: unknown) => `failed: ${(e as Error).message}`);
+      cleanup.push(`unmount ${m.root}: ${via}`);
+      note("unmount", m.root, via);
+    }
     // release() unmounts even when its barrier finds the claim fenced; unmountClaim then confirms against the mount table.
     for (const c of claims.reverse()) {
       await c.release().catch(() => {});
