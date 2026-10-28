@@ -266,16 +266,30 @@ test('a cyclic schema (an object that contains itself, which only code can build
   const script = `
     process.env.AGENTRUN_CODEX_STANDIN = '1';
     const { codexAdapter } = await import('@parcha/agentrun-codex');
-    const cyclic = { type: 'object', properties: {} }; cyclic.properties.self = cyclic;
+    const cyclic = { type: 'object', properties: {}, not: {} }; cyclic.properties.self = cyclic;
     const codex = codexAdapter({ model: 'm', provider: { origin: 'https://p.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
     const problems = codex.check({ key: 's', label: 'x', system: [], tools: [{ name: 'cyc', description: 'd', inputSchema: cyclic, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
     process.stdout.write(JSON.stringify(problems));`;
   const run = spawnSync(process.execPath, ['--max-old-space-size=200', '--input-type=module', '-e', script], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 20_000 });
   assert.equal(run.status, 0, `the check ended: ${String(run.stderr).slice(0, 200)} (signal ${run.signal})`);
   const problems = JSON.parse(run.stdout);
+  // Exactly one problem, the shared check's: the `not` that Codex's rules would add a second for is never reached.
   assert.equal(problems.length, 1, run.stdout);
   assert.match(problems[0], /^cyc: \/: /);
   assert.match(problems[0], /JSON/);
+  assert.ok(!problems.some((p) => /not supported by Codex/.test(p)), 'Codex\'s walk did not run');
+});
+
+test("a schema the shared check refuses at the root is refused once, and Codex's rules do not run on it", () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (inputSchema) => ({ key: 'step:root', label: 'x', system: [], tools: [{ name: 'root', description: 'd', inputSchema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  // A root that is not an object, with a shape only Codex refuses inside it.
+  const problems = codex.check(spec({ type: 'array', items: { type: 'string' }, not: {} }));
+  assert.equal(problems.length, 1, JSON.stringify(problems));
+  assert.match(problems[0], /^root: \/: the root must be/);
+  assert.ok(!problems.some((p) => /not supported by Codex/.test(p)));
+  // The same shape under an object root is Codex's to refuse.
+  assert.match(codex.check(spec({ type: 'object', properties: { p: { not: {} } } })).join('\n'), /not supported by Codex/);
 });
 
 test('the walk itself ends on a cyclic object, without the shared check in front, for every caller', async () => {
