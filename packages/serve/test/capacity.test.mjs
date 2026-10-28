@@ -135,9 +135,9 @@ test("a message that waits on a run's settle answers 503 at its deadline, not wh
   });
   const took = Date.now() - from;
   assert.deepEqual([sent.status, sent.json.error?.code, sent.retryAfter], [503, "unavailable", "1"], JSON.stringify(sent.json));
-  // The store's write waits out its 5 s busy timeout without yielding, so the answer can trail the 2 s deadline by that;
-  // it still comes before the settle's retry, 10 s away, and the store is still held.
-  assert.ok(took < 9_000, `answered before the settle could end: ${took} ms`);
+  // The store's write waits without blocking the server, so the answer comes at the 2 s deadline, long before the
+  // settle's retry, 10 s away, and the store is still held.
+  assert.ok(took < 3_500, `answered at the deadline: ${took} ms`);
 });
 
 test("a run's first message waits for a process slower to come up than a request's deadline: the run starts, never failed", async (t) => {

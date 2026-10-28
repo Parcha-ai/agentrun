@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
-import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
+import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
@@ -292,8 +292,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     return value;
   }
 
-  function needAgent(id: string): AgentEntry {
-    const entry = ID.test(id) ? agents.get(id) : null;
+  async function needAgent(id: string): Promise<AgentEntry> {
+    const entry = ID.test(id) ? await agents.get(id) : null;
     if (!entry) throw new ApiError("not_found", `no agent ${id}`);
     return entry;
   }
@@ -366,7 +366,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
-    const entry = needAgent(agentId);
+    const entry = await needAgent(agentId);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${agentId} is archived: unarchive it to run it.`, { details: { archived_at: entry.agent.archivedAt } });
     const body = await bodyOf(req);
     return idempotent(req, `/agents/${agentId}/runs`, body, async () => {
@@ -379,7 +379,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       if (issues.length) throw invalid(issues);
       if (body.quote_id !== undefined) throw unsupported("quotes", "This server has no billing, so it takes no quotes.");
       if (Array.isArray(body.file_ids) && body.file_ids.length) throw unsupported("files.upload", "This server takes no uploads, so a run names no files.");
-      const pinned = typeof body.revision === "string" ? agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
+      const pinned = typeof body.revision === "string" ? await agents.revision(entry.agent.id, body.revision) : entry.revision && { revision: entry.revision, version: entry.version };
       if (!pinned) throw invalid([{ field: "revision", reason: "not_an_option", message: typeof body.revision === "string" ? `${body.revision} is not a revision of the agent ${entry.agent.id}` : `the agent ${entry.agent.id} has no current revision` }]);
       const { revision, version } = pinned;
       if (revision.kind === "workflow" && body.max_cost_usd !== undefined) throw invalid([{ field: "max_cost_usd", reason: "not_allowed", message: "A workflow run's spend is not capped here: its cost shows once it ends." }]);
@@ -408,13 +408,13 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (status !== null && !(STATUSES as readonly string[]).includes(status)) throw new ApiError("bad_request", `status is one of ${STATUSES.join(", ")}`);
     for (const [key, value] of Object.entries(filter)) if (value !== undefined && !ID.test(value)) throw new ApiError("bad_request", `${key} is an id`);
     const archived = archivedParam(url);
-    let rows = agents.store.listRuns(filter).filter((row) => Boolean(row.archivedAt) === archived);
+    let rows = (await agents.request(() => agents.store.listRuns(filter))).filter((row) => Boolean(row.archivedAt) === archived);
     if (status !== null) {
       const statuses = await Promise.all(rows.map((row) => runs.statusOfRow(row)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
     const versions = new Map<string, number>();
-    for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of agents.revisions(agent)) versions.set(r.id, r.version);
+    for (const agent of new Set(rows.slice(offset, offset + limit).map((row) => row.agent))) for (const r of await agents.revisions(agent)) versions.set(r.id, r.version);
     const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => runs.summaryOfRow(row, versions)));
     return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
   }
@@ -516,7 +516,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!["meter", "agent", "key", "day", "region"].includes(group)) throw new ApiError("bad_request", "group_by is meter, agent, key, day or region");
     const lines = new Map<string, { usd: number; unpriced: number }>();
     const total = { usd: 0, unpriced: 0 };
-    for (const row of agents.store.listRuns()) {
+    for (const row of await agents.request(() => agents.store.listRuns())) {
       const at = Date.parse(row.startedAt);
       if (!(at >= from && at < to)) continue;
       const live = row.state === "running" ? await runs.get(row.id) : null;
@@ -631,15 +631,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
         const archived = archivedParam(url);
-        const all = agents.list().filter((entry) => Boolean(entry.agent.archivedAt) === archived);
+        const all = (await agents.list()).filter((entry) => Boolean(entry.agent.archivedAt) === archived);
         return send(res, 200, { agents: all.slice(offset, offset + limit).map((entry) => agentView(entry)), next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getAgent": {
-        const entry = needAgent(id);
+        const entry = await needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
       case "updateDefinition": {
-        const entry = needAgent(id);
+        const entry = await needAgent(id);
         const match = req.headers["if-match"];
         if (match !== undefined && match !== etagOf(entry)) throw new ApiError("precondition_failed", `If-Match is ${match}, and the agent's current revision is ${etagOf(entry)}`);
         const body = await bodyOf(req);
@@ -651,29 +651,29 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
-        const entry = needAgent(id);
+        const entry = await needAgent(id);
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
-        const all = agents.revisions(id);
-        const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id)));
+        const all = await agents.revisions(id);
+        const page = await agents.request(() => all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row, agents.store.readRevision(row.id))));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "setCurrent": {
-        const entry = needAgent(id);
+        const entry = await needAgent(id);
         const body = await bodyOf(req);
         const extra = Object.keys(body).filter((k) => k !== "revision");
         if (extra.length) throw invalid(extra.map((k) => ({ field: k, reason: "not_allowed", message: `The body keeps no field ${k}.` })));
         const revision = body.revision;
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
-        if (!agents.revision(id, revision)) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
-        const moved = agents.setCurrent(entry, revision);
+        if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+        const moved = await agents.setCurrent(entry, revision);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
       case "archiveAgent":
       case "unarchiveAgent": {
-        needAgent(id);
-        agents.store.setArchived("agent", id, found.name === "archiveAgent");
-        const entry = needAgent(id);
+        await needAgent(id);
+        await agents.setArchived("agent", id, found.name === "archiveAgent");
+        const entry = await needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
       case "createRun": {
@@ -681,7 +681,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return send(res, answer.status, answer.body, answer.headers);
       }
       case "listRuns":
-        needAgent(id);
+        await needAgent(id);
         return send(res, 200, await runsPage(url, { agent: id }));
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
@@ -723,7 +723,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "archiveRun":
       case "unarchiveRun": {
         const run = await needRun(id);
-        agents.store.setArchived("run", run.id, found.name === "archiveRun");
+        await agents.setArchived("run", run.id, found.name === "archiveRun");
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {
@@ -757,8 +757,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     }
     const fail = (error: unknown) => {
       if (res.headersSent) return void res.end();
-      const known = error instanceof ApiError ? error : new ApiError("internal", (error as Error)?.message ?? String(error));
-      if (!(error instanceof ApiError)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
+      // A store still busy past a request's wait is home_busy, whichever read or write met it.
+      const known = error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : new ApiError("internal", (error as Error)?.message ?? String(error));
+      if (!(error instanceof ApiError) && !storeBusy(error)) process.stderr.write(`agentrun-serve: ${(error as Error)?.stack ?? String(error)}\n`);
       send(res, known.status, known.body(requestId), known.headers);
     };
     let url: URL;
