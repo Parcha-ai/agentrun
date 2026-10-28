@@ -186,7 +186,9 @@ function createProjector(options: TimelineOptions) {
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
       if (marked > 0) answered += 1;
-      const cost = obj(obj(message.usage)?.cost)?.total;
+      // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
+      // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
+      const cost = message.stopReason === "aborted" ? undefined : obj(obj(message.usage)?.cost)?.total;
       usd = typeof cost === "number" && usd !== null ? usd + cost : null;
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";
