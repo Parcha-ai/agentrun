@@ -174,7 +174,9 @@ test("every model request reaches the host with its tokens and its price: reques
     assert.ok(u.input > 0 && u.output > 0, `tokens: ${JSON.stringify(u)}`);
     assert.equal(typeof u.cacheRead, 'number');
     assert.equal(typeof u.cacheWrite, 'number');
-    assert.ok(u.usd > 0 && !u.estimated, `price: ${JSON.stringify(u)}`);
+    // The scripted provider's answer carries no cost of its own, so the host's price table prices it: a price above 0,
+    // marked estimated, with no tableUsd (that sits only beside a cost the response reported).
+    assert.ok(u.usd > 0 && u.estimated === true && u.tableUsd === undefined, `price: ${JSON.stringify(u)}`);
   }
 });
 

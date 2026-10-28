@@ -212,7 +212,8 @@ test('a recorded real answer, streamed and whole, is booked with its input, outp
   }
   const tokens = (u) => [u.input, u.output, u.cacheRead, u.cacheWrite];
   assert.deepEqual(booked.map(tokens), [[11, 15, 0, 3842], [11, 15, 3842, 0], [11, 15, 0, 3842]]);
-  for (const u of booked) assert.ok(u.usd > 0 && !u.estimated, JSON.stringify(u));
+  // A recorded answer carries no cost header, so the price table decides: above 0, marked estimated, no tableUsd.
+  for (const u of booked) assert.ok(u.usd > 0 && u.estimated === true && u.tableUsd === undefined, JSON.stringify(u));
   assert.equal(booked[0].usd, priced('', { input: 11, output: 15, cacheRead: 0, cacheWrite: 3842 }), 'the cache write is priced at its own rate');
   assert.equal(booked[1].usd, priced('', { input: 11, output: 15, cacheRead: 3842, cacheWrite: 0 }), 'the cache read is priced at its own rate');
 });
