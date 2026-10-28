@@ -49,6 +49,13 @@ test('the judge seam prices at Jev\'s public list price when the answer reports 
   const own = await priceJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 }, cost_usd: 0.5 }))({ label: 'q' });
   assert.equal(own.cost_usd, 0.5);
 });
+test('a judge answer that reports neither a price nor its usage keeps its cost unknown: it is never priced at $0', async () => {
+  const unpriced = await priceJudge(async () => ({ answers: {} }))({ label: 'q' });
+  assert.equal(unpriced.cost_usd, undefined, 'no price and no usage: the cost is not known, never 0');
+  assert.ok(!('cost_usd' in unpriced), 'and no price is invented');
+  const zero = await priceJudge(async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }))({ label: 'q' });
+  assert.equal(zero.cost_usd, 0, 'a reported usage of nothing is priced at what it is');
+});
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
