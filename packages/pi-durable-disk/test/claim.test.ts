@@ -832,6 +832,21 @@ test("a stat in flight when the dead daemon's connection aborts (ECONNABORTED) i
   assert.equal(r.read().mounts[r.root], undefined);
 });
 
+// The kernel answers a stat on a FUSE mount from the attributes it cached for the attribute timeout, without asking the
+// daemon: right after any process stat'ed the mount, a dead daemon's mount still stats. statfs always reaches the daemon.
+test("a dead mount whose stat is answered from the kernel's attribute cache reads as dead by its statfs: fusermount cleans it", async () => {
+  const r = disposeAfter(rig());
+  await acquire(r.opts);
+  r.set((s) => void (s.mounts[r.root].alive = false));
+  const stat = async () => ({});
+  const statfs = async (p: string) => {
+    throw Object.assign(new Error(`ENOTCONN: statfs '${p}'`), { code: "ENOTCONN" });
+  };
+  assert.equal(await unmountClaim(r.root, { ...r.host, fs: { ...r.host.fs, stat, statfs } }), "fusermount", "read as live, this was UNMOUNT_FAILED");
+  assert.equal(r.calls("fusermount").length, 1);
+  assert.equal(r.read().mounts[r.root], undefined);
+});
+
 test("only the connection's own codes read as dead: a mount whose stat fails otherwise is live and never fusermounted", async () => {
   for (const code of ["EIO", "EACCES", "ETIMEDOUT"]) {
     const r = disposeAfter(rig());
