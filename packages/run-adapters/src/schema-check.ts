@@ -12,6 +12,13 @@ let metaschema: Ajv2020 | undefined;
 
 const isPlain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const pointer = (path: string) => path || "/";
+const escape = (key: string) => key.replace(/~/g, "~0").replace(/\//g, "~1");
+
+/** The keywords whose value is a schema, a list of schemas, or a map of names to schemas (JSON Schema 2020-12, with the
+ *  older spellings a generator still writes). Every other keyword holds values (default, examples, const, enum, ...). */
+const SCHEMA_ONE = new Set(["items", "additionalItems", "additionalProperties", "contains", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "not", "if", "then", "else"]);
+const SCHEMA_LISTS = new Set(["allOf", "anyOf", "oneOf", "prefixItems", "items"]);
+const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"]);
 
 /** Where `schema`, the input schema of the tool `tool`, is refused on every harness, as `<tool>: <JSON pointer>: <why>`;
  *  empty when it may be used. */
@@ -30,13 +37,16 @@ export function toolSchemaProblems(tool: string, schema: unknown): string[] {
       problems.push(`${tool}: ${pointer(error.instancePath)}: ${error.message ?? "invalid"} (not valid JSON Schema 2020-12)`);
     }
   }
+  // Only where a schema sits: a "$ref" inside default, examples, const or enum is a value, and a property's name is a name.
   const walk = (node: unknown, at: string) => {
-    if (Array.isArray(node)) return node.forEach((item, i) => walk(item, `${at}/${i}`));
     if (!isPlain(node)) return;
+    const ref = node.$ref;
+    if (typeof ref === "string" && !ref.startsWith("#")) problems.push(`${tool}: ${at}/$ref: a remote $ref (${JSON.stringify(ref).slice(0, 80)}) is refused; only a local one ("#/$defs/...") is followed`);
     for (const [key, value] of Object.entries(node)) {
-      const here = `${at}/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`;
-      if (key === "$ref" && typeof value === "string" && !value.startsWith("#")) problems.push(`${tool}: ${here}: a remote $ref (${JSON.stringify(value).slice(0, 80)}) is refused; only a local one ("#/$defs/...") is followed`);
-      else walk(value, here);
+      const here = `${at}/${escape(key)}`;
+      if (SCHEMA_MAPS.has(key) && isPlain(value)) for (const [name, sub] of Object.entries(value)) walk(sub, `${here}/${escape(name)}`);
+      else if (SCHEMA_LISTS.has(key) && Array.isArray(value)) value.forEach((sub, i) => walk(sub, `${here}/${i}`));
+      else if (SCHEMA_ONE.has(key)) walk(value, here);
     }
   };
   walk(schema, "");
