@@ -202,3 +202,14 @@ test('the runner itself refuses a max_turns above its cap, naming the cap, with 
   await assert.rejects(createPiRunner(run.options)({ ...request, maxTurns: 6 }), /asks max_turns 6, above this host's cap of 5 turns/);
   assert.equal(run.seen.sessions, 0, 'no session is started');
 });
+test('the submit tool carries no criteria, and a submission is checked against the node schema as written', async () => {
+  // The local $ref only resolves in the original document: a check compiled from the envelope's relocated copy would
+  // refuse this valid submission.
+  const schema = { type: 'object', required: ['label'], additionalProperties: false, properties: { label: { $ref: '#/definitions/Label' } },
+    definitions: { Label: { type: 'string', enum: ['bug', 'docs'], criteria: { bug: 'Broken.', docs: 'Documentation.' } } } };
+  const run = scripted([{ label: 'bug' }]);
+  assert.deepEqual(await createPiRunner(run.options)({ ...request, schema }), { label: 'bug' });
+  const submit = run.seen.options.customTools.find(tool => tool.name === 'submit');
+  assert.equal(JSON.stringify(submit.parameters).includes('"criteria"'), false);
+  assert.equal(run.seen.turns, 1);
+});
