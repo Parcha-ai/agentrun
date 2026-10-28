@@ -95,6 +95,9 @@ function createProjector(options: TimelineOptions) {
   let usd: number | null = 0;
   let marked = 0;
   let inFlight = false;
+  // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
+  // answer). Earlier answers are a run's from before requests were marked.
+  let answered = 0;
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -163,6 +166,7 @@ function createProjector(options: TimelineOptions) {
       inFlight = false;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
+      if (marked > 0) answered += 1;
       const cost = obj(obj(message.usage)?.cost)?.total;
       usd = typeof cost === "number" && usd !== null ? usd + cost : null;
       if (message.stopReason === "error") {
@@ -287,9 +291,9 @@ function createProjector(options: TimelineOptions) {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
     // A settled run has nothing in flight: its last request with no entry was cut by the process that ended.
-    const cut = marked - (inFlight && !options.settled ? 1 : 0) > requests;
+    const cut = marked - (inFlight && !options.settled ? 1 : 0) > answered;
     if ((!requests && !cut) || root === undefined) return undefined;
-    const count = Math.max(requests, marked);
+    const count = requests + Math.max(0, marked - answered);
     const total = usd === null || cut ? null : Math.round(usd * 1e6) / 1e6;
     return make("usage", root, `${root}:usage`, {
       summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
