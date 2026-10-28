@@ -26,6 +26,25 @@ test('the pins are the production deployment\'s: SDK 0.3.286, whose CLI is 2.1.2
   assert.deepEqual([CLAUDE_AGENT_SDK_VERSION, CLAUDE_AGENT_CLI_VERSION], ['0.3.286', '2.1.286']);
 });
 
+// The install line names the constant, a consumer's npm resolves the peer pin, and this repository's tests (CI's real-CLI
+// suites among them) run the dev pin: a drift in any one means the CLI tested is not the CLI installed.
+test('the SDK pin is one version everywhere: the constant, the peer and dev pins, and the lock', () => {
+  const sdk = '@anthropic-ai/claude-agent-sdk';
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const lock = JSON.parse(readFileSync(new URL('../../../package-lock.json', import.meta.url), 'utf8'));
+  const workspace = lock.packages['packages/run-adapters-claude-agent'];
+  const installed = Object.entries(lock.packages).filter(([path]) => path.endsWith(`node_modules/${sdk}`));
+  assert.ok(installed.length > 0, `the lock resolves ${sdk}`);
+  const found = {
+    peer: manifest.peerDependencies[sdk],
+    dev: manifest.devDependencies[sdk],
+    lockPeer: workspace.peerDependencies[sdk],
+    lockDev: workspace.devDependencies[sdk],
+    ...Object.fromEntries(installed.map(([path, entry]) => [path, entry.version])),
+  };
+  assert.deepEqual(found, Object.fromEntries(Object.keys(found).map((key) => [key, CLAUDE_AGENT_SDK_VERSION])));
+});
+
 test("a CLI whose sha256 is not the pinned build's is refused, typed, with the pin, what was expected and what was found", () => {
   const other = cli('other', '2.1.286 (stand-in)');
   const result = verifyClaudeAgentCli(other.path, { sha256: 'f'.repeat(64), version: '2.1.286' });
