@@ -94,7 +94,9 @@ export interface DriveContext {
   effect<T>(key: string, options: EffectOptions, fn: (io: EffectIO) => Promise<T>): Promise<T>;
   isMemoized(key: string): boolean;
   pending(): Submission[];
-  /** Read records another writer appended (the door's new input) into the state. */
+  /** Re-folds this drive's records; it reads nothing. This drive is the session's only writer (a newer `open` fences
+   *  it), and door input is already folded by `submit`, which also wakes `onHint`. A fenced drive learns it on its
+   *  next append, not here. */
   refresh(): Promise<void>;
   live(event: unknown): void;
   /** Called when new input may be waiting (a submission was recorded through this drive); returns the unsubscribe. */

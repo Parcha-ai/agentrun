@@ -97,7 +97,7 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
   const key = writer.key;
   let records = await writer.read();
   let state = foldSession(key, records);
-  const append = async (written: SessionRecord[]) => {
+  const appendNow = async (written: SessionRecord[]) => {
     try {
       await writer.append(written);
     } catch (error) {
@@ -107,6 +107,14 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
     }
     records = [...records, ...written];
     state = foldSession(key, records);
+  };
+  // Appends go to the writer one at a time, in call order, so the state folds records in the order the log holds
+  // them even when a submit's input and an effect's intent are written at once and a writer resolves them out of order.
+  let queue: Promise<unknown> = Promise.resolve();
+  const append = (written: SessionRecord[]): Promise<void> => {
+    const run = queue.then(() => appendNow(written));
+    queue = run.catch(() => undefined);
+    return run;
   };
   // One drive holds the session: an intent with no outcome belongs to a process that is gone.
   const abandoned = state.effectOrder.filter((e) => e.status === "running");
@@ -124,7 +132,8 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
   const inflight = new Set<string>();
   const drive: Drive = {
     runId: key,
-    world: { store: writer },
+    // The copied code's own writes (a journal's blobs) go through the same queue as the drive's.
+    world: { store: { key: writer.key, read: () => writer.read(), append: (written) => append([...written]) } },
     config: options.config,
     attempt: options.attempt ?? 0,
     ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
@@ -135,8 +144,9 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       return status === "completed" || status === "failed";
     },
     pending: () => pendingSubmissions(state),
+    // No read: this drive is the session's only writer, so its records are the whole log, and a read that resolved
+    // after a newer append would put older state back.
     async refresh() {
-      records = await writer.read();
       state = foldSession(key, records);
     },
     live: (event) => options.live?.(event),
@@ -159,14 +169,17 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       if (known?.status === "failed") throw new EffectFailure(known.error ?? { message: "failed" });
       if (known?.status === "running" || inflight.has(k)) throw new Fatal(`agentrun-adapters: effect ${k} is already running in this drive`);
       if (signal.aborted) throw signal.reason;
+      const placing = effectOptions.placed ?? [];
+      // A withdraw already in the log beat this placement: refuse before writing anything, so no intent is left for
+      // recovery to report. One appended but not folded yet is caught after the intent, below.
+      if (placing.some((id) => state.withdrawn.has(id))) throw new Restart(`agentrun-adapters: effect ${k} would place a withdrawn submission; the drive must be rebuilt`);
       inflight.add(k);
       try {
         const attempt = known ? known.attempt + 1 : 0;
         const stepId = `${k}#${attempt}`;
-        const placing = effectOptions.placed ?? [];
         await append([{ kind: KERNEL_RECORDS.start, data: { key: k, stepId, name: effectOptions.name, replay: effectOptions.replay, input: effectOptions.input as never, placed: placing, attempt, startedAt: new Date().toISOString() } }]);
-        // A withdraw that landed first beat the placement (from a `pending()` read before it): what the caller would
-        // send next is not what the log placed, so it must rebuild instead of running.
+        // A withdraw appended while this intent was being written beat the placement: what the caller would send next
+        // is not what the log placed, so it must rebuild instead of running.
         if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-adapters: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
         const partial: unknown[] = [];
         let output: T;
