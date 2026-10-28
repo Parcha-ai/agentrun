@@ -191,7 +191,17 @@ One session at a time may save to a profile in one process. A second saver is re
 | `browser_upload` | Choose one workspace file in a file input on the page, as a person picking it would. Nothing is submitted; `run` submits the form afterwards. The pi extension lists it unless `fileTools` is false; the durable adapter lists it only when the host supplies `files` or `workspace`. | Never reruns. An upload the page does not answer fails at 60 s as possibly applied, and the identical retry is refused until the agent has looked at the page. |
 | `use_website` | Hand a task to another agent that works one website the host granted, in its own browser, and get its report. Listed only when the host passes `sites`. | A `request_id` that already finished answers its result without running again. A task that failed runs again. |
 
-`web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices). Session
+`web_search` hits carry a `snippet` when the search has one: an excerpt of the page with its markdown links reduced to
+their text, whitespace collapsed and clipped to `WEB_SEARCH_SNIPPET_MAX` (500) characters, redacted with the rest of the
+answer. A host's `searchSources` (`createWebExtension`) are tried in order before the provider's own search; one that
+throws hands the call to the next, a cancelled call is never handed on, and the answer names the source in `via`. A
+source's optional `available()` is asked at each call; one that answers false is skipped without counting as a failure.
+`fetchSources` (`FetchSource`) are readers tried the same way before the provider's own fetch, for a markdown read: a
+page one answers is filed exactly as the provider's is, under `via: <name>_fetch`, and a reader's failure never becomes
+the call's own while the provider can still be tried.
+
+`web_fetch` and `web_search` results carry their price as pi usage (the Browserbase provider's list prices; a search
+source's answer at the usage it reports, else the list search price). Session
 minutes are charged by the session meter (`core/usage.ts`, wired into custody): every session tool's result carries the
 time since the last charge, and each released session's record carries its total.
 

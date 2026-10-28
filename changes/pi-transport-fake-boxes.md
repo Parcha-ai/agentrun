@@ -1,5 +1,0 @@
----
-packages: @parcha/pi-transport
-kind: feature
----
-`fakeBoxes()` in `@parcha/pi-transport/testing`: a fake box provider for testing a host against the `Box` contract with no machine, key or network. It records every call (argv, env names, stdin bytes, files, spec, typed result) and `leaks(marker)` finds a value in anything recorded. A test scripts outcomes by rule (a typed failure, a delay, a hang, a lost end of an empty stdin, a dropped or truncated stream, a scripted exit, a box that ends mid-call, a create that fails but leaves its box findable by `list`) on a `fakeClock()` that moves only when told. Programs are functions a test registers; a box's files are in memory. Each fake box fills `Box.launcher`, so the launcher's own `launch`, `launchState` and `launchStop` run over it with a scriptable state, the restart policy, the stdin replayed to every incarnation, and the stdin and secrets recorded on the launch call only. The `modalLike()` and `daytonaLike()` presets are included; the `startedAt` and `ptraceScope` facts they report are extra until the box contract carries them.

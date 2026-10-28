@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { checkBranch, insideRepo, RefError } from "./git.js";
-import { MIN_SECRET } from "./secrets.js";
+import { MIN_SECRET, redactSecrets } from "./secrets.js";
 
 const USAGE = `usage: agentrun-learn check --base <ref> [--head <ref>] [--branch runs/<run id>] [--run-base <ref>] [--tools <file.json>] [--refuse-values-from-env NAME,...] [--json]
 
@@ -43,6 +43,9 @@ function refuseValues(spec: string | undefined): string[] {
   return values;
 }
 
+/** The secrets an error line is redacted with, once they are read. */
+let printed: readonly string[] = [];
+
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === "--help" || argv[0] === "-h" || argv[0] === "help") {
     console.log(USAGE);
@@ -60,6 +63,8 @@ async function main(argv: string[]): Promise<number> {
   });
   if (!values.base) throw new UsageError("--base is required");
   const cwd = process.cwd();
+  const secrets = refuseValues(values["refuse-values-from-env"]);
+  printed = secrets;
   // A tool list kept in the repository is the checker's config: the run may not change it.
   const toolsInRepo = values.tools ? await insideRepo(cwd, resolve(values.tools)) : undefined;
   const report = await checkBranch({
@@ -70,14 +75,16 @@ async function main(argv: string[]): Promise<number> {
     ...(values["run-base"] ? { runBase: values["run-base"] } : {}),
     ...(values.tools ? { tools: toolsFrom(values.tools) } : {}),
     ...(toolsInRepo ? { lockedPaths: [toolsInRepo] } : {}),
-    refuseValues: refuseValues(values["refuse-values-from-env"]),
+    refuseValues: secrets,
   });
   const { ok } = report;
-  if (values.json) console.log(JSON.stringify(report, null, 2));
+  // Everything printed is redacted: a secret can be a file's name or in the branch's name, not only in a file.
+  const print = (line: string) => console.log(redactSecrets(line, secrets));
+  if (values.json) print(JSON.stringify(report, null, 2));
   else {
     const name = report.branch ?? "(no branch)";
-    console.log(ok ? `${name}: ok` : `${name}: ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}`);
-    for (const problem of report.problems) console.log(`  ${problem.rule}  ${problem.path ?? "-"}  ${problem.detail}`);
+    print(ok ? `${name}: ok` : `${name}: ${report.problems.length} problem${report.problems.length === 1 ? "" : "s"}`);
+    for (const problem of report.problems) print(`  ${problem.rule}  ${problem.path ?? "-"}  ${problem.detail}`);
   }
   return ok ? 0 : 1;
 }
@@ -85,7 +92,7 @@ async function main(argv: string[]): Promise<number> {
 main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (error: unknown) => {
-    if (error instanceof RefError) console.error(error.message);
+    if (error instanceof RefError) console.error(redactSecrets(error.message, printed));
     else if (error instanceof UsageError || (error as { code?: string }).code?.startsWith("ERR_PARSE_ARGS")) console.error(`${(error as Error).message}\n${USAGE}`);
     else console.error(error);
     process.exit(2);

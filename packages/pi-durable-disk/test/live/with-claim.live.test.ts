@@ -83,6 +83,8 @@ function daemonsOf(mountpoint: string): number[] {
 before(async () => {
   if (!LIVE) return;
   control = await archilControl({ apiKey: process.env.ARCHIL_API_KEY!, disk: scratchDiskId(), region: REGION });
+  // Every mount root and its runs/ are root's, 0755: the archil wrapper refuses any other (only root may name entries there).
+  spawnSync("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, `${BASE}/runs`]);
   ledger.disk = scratchDiskId();
   ledger.subpaths.push({ key: PATH, createdAt: new Date().toISOString() });
   save();

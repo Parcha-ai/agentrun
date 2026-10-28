@@ -4,22 +4,26 @@
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import type { InputIssue } from "./errors.js";
+import { DEFAULT_HARNESS, harnessesOf } from "./harness.js";
 import { chooseModel, nodeTiers } from "./model.js";
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string }
-  | { kind: "workflow"; workflow: unknown };
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string }
+  | { kind: "workflow"; workflow: unknown; harness?: string };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool`, `adapter`,
  *  `code` and `tier` name it for a run's 409 details. */
-export type Blocker = InputIssue & { host: boolean; tool?: string; adapter?: string; code?: true; tier?: string };
+export type Blocker = InputIssue & { host: boolean; tool?: string; adapter?: string; code?: true; tier?: string; harness?: string };
 
 /** The reason a warning gives: the revision runs once this host has what it names. */
 export const NOT_SET_UP = "not_set_up_here";
 
 export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape): Promise<Blocker[]> {
   const out: Blocker[] = [];
+  const harness = revision.harness ?? DEFAULT_HARNESS;
+  const offer = harnessesOf(env).find((h) => h.id === harness);
+  if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {

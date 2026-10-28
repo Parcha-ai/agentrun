@@ -113,4 +113,4 @@ export function build(target = out, recordingsDir = join(here, 'recordings'), { 
   return { target, modules: parts.length, chatModules: chatParts.length, recordings: gallery.map((entry) => entry.id) };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) console.log(JSON.stringify(build(out, undefined, { files: process.argv.includes('--files') })));
+if (import.meta.main) console.log(JSON.stringify(build(out, undefined, { files: process.argv.includes('--files') })));

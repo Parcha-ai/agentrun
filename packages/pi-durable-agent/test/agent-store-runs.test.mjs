@@ -165,6 +165,27 @@ test("carryBack ends the row once: state, ended_at, cost and summary; a second c
   await store.close();
 });
 
+test("reopenRun opens a completed run again: running, no end, its cost and summary kept until the next carryBack; any other state, a running run or an unknown one is refused and changes nothing", async () => {
+  const { dir, store, agent } = await aStore();
+  const done = await store.startRun({ agent: agent.id });
+  await store.carryBack(done.runId, { state: "completed", costUsd: 0.02, summary: "Acme sells anvils." });
+  store.reopenRun(done.runId);
+  const open = runs(dir).find((r) => r.id === done.runId);
+  assert.deepEqual({ state: open.state, ended_at: open.ended_at, cost_usd: open.cost_usd, summary: open.summary }, { state: "running", ended_at: null, cost_usd: 0.02, summary: "Acme sells anvils." });
+  await store.carryBack(done.runId, { state: "completed", costUsd: 0.05, summary: "Acme sells anvils and rope." });
+  assert.deepEqual([runs(dir).find((r) => r.id === done.runId).state, runs(dir).find((r) => r.id === done.runId).cost_usd], ["completed", 0.05], "it ends again");
+  for (const state of ["failed", "stopped", "escalated"]) {
+    const run = await store.startRun({ agent: agent.id });
+    await store.carryBack(run.runId, { state, ...(state === "escalated" ? { summary: "escalated at gate-2" } : {}) });
+    assert.throws(() => store.reopenRun(run.runId), refused("invalid"), state);
+    assert.equal(runs(dir).find((r) => r.id === run.runId).state, state);
+  }
+  const running = await store.startRun({ agent: agent.id });
+  assert.throws(() => store.reopenRun(running.runId), refused("invalid"), "a running run is not reopened");
+  assert.throws(() => store.reopenRun("01890000-0000-7000-8000-000000000000"), refused("missing"));
+  await store.close();
+});
+
 test("each ended state is its own state; one outside the set, an unknown run, a bad cost or a bad summary is refused and ends nothing; escalated is final", async () => {
   const { dir, store, agent } = await aStore();
   for (const state of ["completed", "failed", "stopped", "escalated"]) {
