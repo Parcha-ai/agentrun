@@ -93,6 +93,20 @@ describe("fork", () => {
     }
   });
 
+  it("mounts each side at its run's own mountpoint under the mount root, never a mount root of its own", async () => {
+    const disk = new LocalDisk("fork-roots");
+    try {
+      await sourceRun(disk, ["hello"]);
+      const roots: string[] = [];
+      const mountRoot = disk.path("mnt");
+      await fork(SRC, "m1", { control: disk, mountRoot, acquire: async (o) => (roots.push(o.mountRoot ?? ""), disk.acquire(o.ref)) });
+      // The archil wrapper takes only <mountRoot>/runs/<run> under a mount root root owns: a fork may make no root.
+      assert.deepEqual(roots, [mountRoot, mountRoot]);
+    } finally {
+      disk.remove();
+    }
+  });
+
   it("refuses a source that is not released and sealed, one that is held, a target that exists, and the same id, touching nothing", async () => {
     const disk = new LocalDisk("fork-refuse");
     try {
