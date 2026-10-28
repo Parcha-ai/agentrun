@@ -252,7 +252,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A new agent learns where this host can keep its learning repository.
   const agents = new Agents(data, (await learningBlocker(env)) === undefined ? "auto" : "off");
   // Once a learning run's end is written, what it learned is proposed as its branch.
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents.store, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -276,7 +276,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
   // Ended runs of learning agents that were never proposed: a server that stopped between a carry back and its proposal.
   // A host commit that failed is made again by the agent's next save or run.
-  const caughtUp = catchUp(data, agents.store, (runId, error) => void process.stderr.write(`agentrun-serve: run ${runId}: not proposed: ${error.message}\n`))
+  const caughtUp = catchUp(data, agents, (line) => void process.stderr.write(`agentrun-serve: ${line}\n`))
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: learning catch-up: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------

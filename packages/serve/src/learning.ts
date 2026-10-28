@@ -183,12 +183,14 @@ function releasedStore(file: string) {
   };
 }
 
-type Runs = Pick<AgentStoreReader, "readRun" | "readRevision">;
+/** The agent store and how a read of it waits for another writer: `Agents`, or a caller's own `request`. */
+export type StoreAccess = { readonly store: Pick<AgentStoreReader, "readRun" | "readRevision" | "listRuns">; request<T>(act: () => T | Promise<T>): Promise<T> };
 
 /** What the ended run `runId` learned, proposed as `runs/<run id>` from the commit it was seeded from, with the host's memo:
  *  its outcome and cost as the carry back wrote them, and `untrusted` when it called an external tool. Undefined while the
  *  run has not ended, and for a run whose revision does not learn. The `Run-Id` trailer makes a second call `already`. */
-export async function proposeFor(data: string, store: Runs, runId: string): Promise<ProposeResult | undefined> {
+export async function proposeFor(data: string, agents: StoreAccess, runId: string): Promise<ProposeResult | undefined> {
+  const { store } = agents;
   const row = store.readRun(runId);
   if (!row || row.state === "running" || learningOf(store.readRevision(row.revision)) === "off") return undefined;
   const dir = join(data, "runs", runId);
@@ -215,7 +217,8 @@ export async function proposeFor(data: string, store: Runs, runId: string): Prom
 
 /** At start: every ended run of a learning revision that has no recorded proposal is proposed, so a server that stopped
  *  between a carry back and its proposal loses nothing. Returns the runs it proposed. */
-export async function catchUp(data: string, store: Runs & Pick<AgentStoreReader, "listRuns">, log: (runId: string, error: Error) => void): Promise<string[]> {
+export async function catchUp(data: string, agents: StoreAccess, log: (line: string) => void): Promise<string[]> {
+  const { store } = agents;
   const learns = new Map<string, boolean>();
   const done: string[] = [];
   for (const row of store.listRuns()) {
@@ -223,9 +226,9 @@ export async function catchUp(data: string, store: Runs & Pick<AgentStoreReader,
     if (!learns.has(row.revision)) learns.set(row.revision, learningOf(store.readRevision(row.revision)) !== "off");
     if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
     try {
-      if (await proposeFor(data, store, row.id)) done.push(row.id);
+      if (await proposeFor(data, agents, row.id)) done.push(row.id);
     } catch (error) {
-      log(row.id, error as Error);
+      log(`run ${row.id}: not proposed: ${(error as Error).message}`);
     }
   }
   return done;
