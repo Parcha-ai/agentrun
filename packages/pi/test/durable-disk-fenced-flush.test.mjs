@@ -103,11 +103,23 @@ async function runFenced({ lease, fence }) {
   return { runs, flushes, settled, fenced: state.fenced };
 }
 
-function refusedByTheFence(label, { runs, flushes, settled, fenced }) {
+// Each fence carries its cause: the watchdog's lapse is LEASE_LAPSED by the watchdog; a failed heartbeat write is the
+// lease's own write of run.json failing, with the I/O error as its cause.
+const lapsedByTheWatchdog = (e) => e?.code === 'LEASE_LAPSED' && e.by === 'watchdog';
+const failedHeartbeatWrite = (e) => e instanceof FencedError && e.code !== 'LEASE_LAPSED' && /run\.json/.test(e.message) && e.cause?.code === 'EIO';
+const carries = (error, fence) => {
+  for (let at = error; at; at = at.cause) if (at === fence) return true;
+  return false;
+};
+const described = (e) => (e ? `${e.name} ${e.code ?? ''}${e.by ? ` by ${e.by}` : ''}: ${e.message}` : String(e));
+
+function refusedByTheFence(label, { runs, flushes, settled, fenced }, cause) {
   assert.equal(fenced.length, 1, `${label}: the lease was fenced once`);
+  assert.ok(cause.test(fenced[0]), `${label}: the lease was fenced by ${cause.name}, got ${described(fenced[0])}`);
   assert.equal(flushes[0], 'ok', `${label}: the flush before the first attempt committed`);
   assert.equal(flushes.length, 2, `${label}: the driver flushed before the second attempt, saw ${flushes.length} flushes`);
   assert.ok(fencedBy(flushes[1]), `${label}: the flush before the second attempt is refused with the fence, got ${flushes[1] === 'ok' ? 'a commit' : `${flushes[1]?.name}: ${flushes[1]?.message}`}`);
+  assert.ok(carries(flushes[1], fenced[0]), `${label}: the flush is refused with the fence the lease recorded, got ${described(flushes[1])}`);
   assert.equal(runs, 1, `${label}: the node runner is not called for the second attempt`);
   assert.notEqual(settled.outcome?.status, 'complete', `${label}: the stale process does not complete the run`);
 }
@@ -120,7 +132,7 @@ test('a step\'s next attempt after its lease was fenced by a failed heartbeat wr
       await until(() => state.fenced.length === 1, 10000, 'the heartbeat fence');
     },
   });
-  refusedByTheFence('heartbeat', seen);
+  refusedByTheFence('heartbeat', seen, { name: 'a failed heartbeat write', test: failedHeartbeatWrite });
   assert.match(seen.fenced[0].message, /run\.json/);
 });
 
@@ -132,5 +144,5 @@ test('a step\'s next attempt after its lease lapsed while the process was stuck:
     lease: { heartbeatMs: 100, expiryMs: 3_000, marginMs: 1_000, checkMs: 50 },
     fence: async () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4_500); },
   });
-  refusedByTheFence('watchdog', seen);
+  refusedByTheFence('watchdog', seen, { name: 'the watchdog\'s lapse', test: lapsedByTheWatchdog });
 });
