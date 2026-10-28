@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-codex",
-  "version": "0.1.0-beta.27",
+  "version": "0.1.0-beta.28",
   "private": true,
   "description": "Codex as an AgentRun harness: a tool-less Codex app-server behind a loopback model proxy, durable in AgentRun's own store, with the host's tools as its only tools.",
   "keywords": [
@@ -41,8 +41,8 @@
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
   "dependencies": {
-    "@parcha/agentrun-adapters": "0.1.0-beta.27",
-    "@parcha/agentrun-dsl": "0.1.0-beta.27"
+    "@parcha/agentrun-adapters": "0.1.0-beta.28",
+    "@parcha/agentrun-dsl": "0.1.0-beta.28"
   },
   "peerDependencies": {
     "@openai/codex": "0.164.0"

@@ -45,8 +45,8 @@
   },
   "dependencies": {
     "@parcha/agentrun-adapters": "0.1.0-beta.28",
-    "@parcha/agentrun-claude-agent": "0.1.0-beta.27",
-    "@parcha/agentrun-codex": "0.1.0-beta.27",
+    "@parcha/agentrun-claude-agent": "0.1.0-beta.28",
+    "@parcha/agentrun-codex": "0.1.0-beta.28",
     "@parcha/agentrun-dsl": "0.1.0-beta.28",
     "@parcha/agentrun-pi": "0.1.0-beta.28",
     "@parcha/pi-durable-agent": "0.1.0-beta.28",
