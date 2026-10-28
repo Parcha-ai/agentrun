@@ -97,6 +97,14 @@ test("a run whose process fails at its start is never started again while its en
   assert.equal(log.split("has no default export").length - 1, 1, `one process for the run:\n${log}`);
   const next = await api("POST", "/agents/broken/runs", { input: { content: "hi" } });
   assert.equal(next.status, 202, `its place is free: ${JSON.stringify(next.body)}`);
+  // Watched for 2 s once the next run is over: a late start of the failed run (its first message's wait, woken by the
+  // settle that ended it) writes a second line here.
+  await follow(api, next.body.run_id, ["failed"]);
+  let after = "";
+  for (const until = Date.now() + 2_000; Date.now() < until && after.split("has no default export").length - 1 < 2; await sleep(100)) {
+    after = await readFile(join(data, "runs", run.body.run_id, "process.log"), "utf8");
+  }
+  assert.equal(after.split("has no default export").length - 1, 1, `the failed run was never started again:\n${after}`);
 });
 
 test("a message that waits on a run's settle answers 503 at its deadline, not when the settle ends", async (t) => {

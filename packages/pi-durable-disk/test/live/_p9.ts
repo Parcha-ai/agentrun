@@ -4,8 +4,8 @@
 // labeled `pda-fleet=p9`: the organization may run other sandboxes, which the suite never touches. Identifiers only;
 // never a key or a token.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { statePath } from "./_paths.ts";
 import { daytonaRest, LABEL_FLEET, type DaytonaClient, type SandboxInfo } from "../../src/hosts/daytona.ts";
 
@@ -213,9 +213,19 @@ const ARCHIL_URL = "https://s3.amazonaws.com/archil-client/pkg/archil_0.10.0-179
 const ARCHIL_SHA256 = "7d75f7b94d64952a939570dc79d0996c914696be176b45e9fed51a45c15ad0ba";
 const REPO = new URL("../../", import.meta.url).pathname;
 
-/** This checkout's working tree (no node_modules, .git or .tmp) as a gzipped tar. */
+/**
+ * This package's working tree as a gzipped tar: the files git tracks or would track (so no node_modules, .tmp or packed
+ * .tgz) and the built dist. tar packs that list, not a walk of the directory: tests write into it while others run
+ * (package.test.ts builds under .tmp/, creating it when it is absent), and tar fails a directory whose entries change
+ * while it reads them ("file changed as we read it").
+ */
 export function packageTarball(): Uint8Array {
-  const r = spawnSync("tar", ["-czf", "-", "--exclude=./node_modules", "--exclude=./.git", "--exclude=./.tmp", "-C", REPO, "."], { maxBuffer: 64 << 20 });
+  const git = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "."], { cwd: REPO, maxBuffer: 64 << 20 });
+  if (git.status !== 0) throw new Error(`git ls-files failed: ${git.stderr}`);
+  const dist = join(REPO, "dist");
+  const built = existsSync(dist) ? readdirSync(dist, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => relative(REPO, join(e.parentPath, e.name))) : [];
+  const files = [...git.stdout.toString().split("\0").filter(Boolean), ...built].filter((f) => existsSync(join(REPO, f)));
+  const r = spawnSync("tar", ["-czf", "-", "--null", "--no-recursion", "-C", REPO, "-T", "-"], { input: files.map((f) => `./${f}\0`).join(""), maxBuffer: 64 << 20 });
   if (r.status !== 0) throw new Error(`tar failed: ${r.stderr}`);
   return new Uint8Array(r.stdout);
 }

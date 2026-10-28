@@ -27,6 +27,14 @@
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
     },
+    "./kernel": {
+      "types": "./dist/kernel/index.d.ts",
+      "default": "./dist/kernel/index.js"
+    },
+    "./process": {
+      "types": "./dist/process/index.d.ts",
+      "default": "./dist/process/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -27,11 +27,12 @@ It prints where it listens and, at the start that made it, the token:
 agentrun-serve on http://127.0.0.1:7340/v2 (agent store in ~/.local/share/agentrun/agents)
 AGENTRUN_BASE_URL=http://127.0.0.1:7340/v2
 AGENTRUN_API_KEY=ar_local_...
-Open http://127.0.0.1:7340/?token=ar_local_...
+Open http://127.0.0.1:7340/
+Set your password: http://127.0.0.1:7340/setup (the first visit sets it)
 ```
 
-The last line opens [the page](#the-page). For a client, export the two lines before it, then make an agent, start a
-run, and read its timeline until a page says `final`:
+`Open` is [the page](#the-page), which takes [your password](#your-password). For a client, export the two lines before
+it, then make an agent, start a run, and read its timeline until a page says `final`:
 
 ```sh
 H="authorization: Bearer $AGENTRUN_API_KEY"
@@ -59,8 +60,9 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
 place: a token from the environment stays out of the logs. `DIR/.token`'s token is printed only by the start that made
-it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>` and `?token=<in DIR/.token>`, to read it there. The link
-encodes the token, and the page also takes one whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
+it; a later start prints `AGENTRUN_API_KEY=<in DIR/.token>`, to read it there. With `AGENTRUN_ACCOUNTS=0` the `Open`
+link carries the token (`?token=<in DIR/.token>` on a later start); it encodes the token, and the page also takes one
+whose `+` arrived as a space. `AGENTRUN_PUBLIC_URL`, when set, is the
 address people open (a container's published port, or a proxy's URL): the printed `Open` link and `AGENTRUN_BASE_URL`
 use it.
 
@@ -76,12 +78,21 @@ at=2026-10-25T21:04:09.010Z event=auth_failed route=/v2/runs reason=wrong_token
 ```
 
 A request's path has no query. `auth_failed` names the route and why (`no_credential`, `wrong_token`,
-`wrong_link_token`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
+`wrong_link_token`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 
 ## In a container
 
 The image is public: `ghcr.io/parcha-ai/agentrun-server` (`:beta`, or an exact version such as `:v0.1.0-beta.27`).
+
+1. `docker run` it (below).
+2. Open the page and set your password.
+3. Sign in with it on any browser; the token in the log stays for scripts and the CLI.
+
+On a fresh server with no `AGENTRUN_PUBLIC_URL`, whoever reaches the page first sets the password, so set it right after
+`docker run`, before the port is reachable by anyone else. With `AGENTRUN_PUBLIC_URL` set, the setup code the server
+prints still guards it.
+
 With no checkout:
 
 ```sh
@@ -104,7 +115,7 @@ docker compose -f packages/serve/docker/compose.yaml up --build -d
 docker compose -f packages/serve/docker/compose.yaml logs agentrun
 ```
 
-The banner's `Open` line is in the log of the start that made the token. On a stop the server gives a busy run 6 s
+The token is in the log of the start that made it. On a stop the server gives a busy run 6 s
 (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
 grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
 on this machine's loopback only (`127.0.0.1:7340`, or `AGENTRUN_PORT`, which the printed link follows), and
@@ -113,8 +124,10 @@ every route but `GET /v2/capabilities` and `GET /v2/health` still needs the toke
 `render.yaml`'s `healthCheckPath` are `GET /v2/health`.
 
 `render.yaml` at the repository's root is a Render blueprint for the same image: one web service with a 1 GB disk at
-`/data`. Render generates `AGENTRUN_TOKEN`; read it in the service's Environment tab and open
-`https://<service>.onrender.com/?token=<the token>`, as it is or URL-encoded: a `+` in it works either way. Set
+`/data`. Render generates `AGENTRUN_TOKEN`, which scripts and the CLI read in the service's Environment tab. With no
+`AGENTRUN_PUBLIC_URL` the server takes Render's own `RENDER_EXTERNAL_URL` as its public address, so setup takes the
+code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
+the address people open before the first start; without it, whoever opens the page first sets the password. Set
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
 
@@ -306,12 +319,33 @@ data directory, with this server's own views beside it:
   `POST /v2/runs/{id}/messages`. The live view leaves out the run's own start and end rows, as the stored view does.
   Once it is final, the page reads it from the store.
 
-The link sets a cookie (`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
+With accounts on (the default) the page takes the owner's session cookie ([your password](#your-password)), and a
+`?token=` link sets no cookie: the token is for scripts and the CLI. With `AGENTRUN_ACCOUNTS=0`, the link sets a cookie
+(`HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` when `X-Forwarded-Proto` says https)
 and sends the browser to the same address without the token. The cookie's value is derived from the token, never the
 token itself, and it lasts until the browser closes. Without it, `/` is a page that says to open the link. The page's
 data (`/api/*` and `/v2`) takes the cookie in place of `Authorization: Bearer`: for a `GET`, and for any other method
 only when the request's `Origin` is the page's own origin and its body is `application/json`. A request that sends an
 `Authorization` header is checked on that header alone.
+
+## Your password
+
+AgentRun Server is for one person, who signs in to the page with a password (`AGENTRUN_ACCOUNTS=0` turns this off). With
+no `AGENTRUN_PUBLIC_URL`, the start prints `Set your password: <url>/setup`, and the first visit sets it, 12 characters or
+more. With it, the start prints `Set up this server: <url>/setup#code=<code>`, and setup takes that code (or the token as
+the Bearer). The server keeps a scrypt hash of the password, never the password, in `DIR/owner.json`, and signs its
+session cookies with the key in `DIR/.session-secret`; both are 0600, and no run reaches either. A session lasts 30 days;
+**Sign out everywhere** ends every session on every browser. Sign-in tries are limited per address, ten in 15 minutes, and the limit keeps up to 10,000 addresses: past that a
+new address gets a 429 until older ones expire, and an address already limited stays limited. Forgot it: run
+`agentrun-serve reset-password --data DIR` where the data directory is (`docker exec agentrun node
+/opt/agentrun/packages/serve/dist/cli.js reset-password --data /data` in the image). It clears the password and signs every
+browser out, and the next visit sets a new one. The token works for scripts and the CLI either way.
+
+A browser's writes must come from the page's own origin. Serve the image on another address or port behind a proxy, and
+set `AGENTRUN_PUBLIC_URL` to the address people open. Behind a proxy every sign-in comes from the proxy's address, so the
+limit is one for everyone: ten wrong tries in 15 minutes, from anyone, keep the owner out until the window passes (the
+token still works for scripts meanwhile). Serve it over https where you can: on plain http a browser sends the session
+cookie to every server on the same host name, whatever its port, so another app on that host could read it.
 
 ## A run's life
 

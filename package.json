@@ -54,6 +54,7 @@
   "homepage": "https://agentrun.ai",
   "license": "Apache-2.0",
   "overrides": {
-    "zod": "$zod"
+    "zod": "$zod",
+    "undici@8.10.2": "8.12.2"
   }
 }

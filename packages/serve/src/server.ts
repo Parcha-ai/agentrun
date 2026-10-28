@@ -15,7 +15,8 @@ import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
-import { answerPage } from "./page.js";
+import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
+import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
@@ -43,6 +44,15 @@ const INLINE = new Set(["text/plain; charset=utf-8", "text/markdown; charset=utf
 export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
   data: string;
+  /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
+  accounts?: boolean;
+  /** With accounts: the first visit sets the password with no setup code (a server with no public address). Off, setup
+   *  takes the code this server prints, or the token. */
+  openSetup?: boolean;
+  /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
+  publicUrl?: string;
+  /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is a 429. */
+  signInAddresses?: number;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
    *  the only lock: put TLS in front of it. */
   host?: string;
@@ -78,7 +88,8 @@ export type ServeOptions = {
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
-export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; close(): Promise<void> };
+/** `setupUrl`: with accounts and no password yet, the page that sets it (with its code when setup needs one). */
+export type Serve = { url: string; baseUrl: string; port: number; token: string; tokenFile: string | null; tokenMade: boolean; setupUrl?: string; close(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -96,6 +107,7 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 }
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
+const SESSION_S = SESSION_MS / 1000;
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off. */
 export type Route = { method: string; pattern: RegExp; name: string; capability?: string };
@@ -260,6 +272,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         await rename(`${keptFile}.partial`, keptFile);
       }));
   const host = options.host ?? "127.0.0.1";
+  const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
 
@@ -533,6 +546,65 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     };
   }
 
+  // ---- the owner ------------------------------------------------------------------------------------------------------
+
+  /** A write from the page: this server's own origin and a JSON body. A cookie never makes one from anywhere else. */
+  function fromPage(req: IncomingMessage): void {
+    if (req.headers.origin?.toLowerCase() !== ownOrigin(req)) throw new ApiError("forbidden", "this write must come from this server's page");
+    if (!isJson(req)) throw new ApiError("unsupported_media_type", "the body must be application/json");
+  }
+
+  /** The body's one field `name`, a password: 422 on any other field, or on one the rules refuse. */
+  async function passwordIn(req: IncomingMessage, allowed: readonly string[], check = true): Promise<{ password: string; body: Json }> {
+    const body = await bodyOf(req);
+    const issues: InputIssue[] = Object.keys(body).filter((key) => !allowed.includes(key)).map((key) => ({ field: key, reason: "not_allowed", message: `The body keeps no field ${key}.` }));
+    const problem = check ? passwordProblem(body.password) : typeof body.password === "string" && Buffer.byteLength(body.password) <= 1024 ? undefined : "password is text, at most 1024 bytes";
+    if (problem) issues.push({ field: "password", reason: body.password === undefined ? "missing" : "invalid", message: problem });
+    if (issues.length) throw invalid(issues);
+    return { password: body.password as string, body };
+  }
+
+  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
+   *  credential: their own checks are the setup code (or the token), the password, and the session. */
+  async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
+    const method = path === "/auth/session" ? "GET" : "POST";
+    if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
+    switch (path) {
+      case "/setup": {
+        const byToken = req.headers.authorization !== undefined;
+        if (byToken && !timingSafeEqual(digest(String(req.headers.authorization)), expected)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
+        if (!byToken) fromPage(req);
+        const { password, body } = await passwordIn(req, ["password", "code"]);
+        const made = await me.setFirst(password, body.code, byToken);
+        if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
+        if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
+        return send(res, 201, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+      }
+      case "/auth/sign-in": {
+        fromPage(req);
+        const allowed = me.allow(req.socket.remoteAddress ?? "unknown");
+        if (allowed === "full") authFailed("/v2/auth/sign-in", "sign_in_table_full");
+        if (allowed !== "ok") throw new ApiError("rate_limited", "too many sign-ins; try again later", { retry_after_ms: 900_000 }, { "retry-after": "900" });
+        const { password } = await passwordIn(req, ["password"], false);
+        if (!me.hasPassword()) throw new ApiError("forbidden", "this server has no password yet: set it on the setup page");
+        if (!(await me.check(password))) {
+          authFailed("/v2/auth/sign-in", "wrong_password");
+          throw new ApiError("unauthenticated", "that is not the password");
+        }
+        return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+      }
+      case "/auth/sign-out": {
+        fromPage(req);
+        if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
+        me.signOutEverywhere();
+        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+      }
+      case "/auth/session":
+        return send(res, 200, { password_set: me.hasPassword(), signed_in: signedIn(req, me) });
+    }
+    throw new ApiError("not_found", `no route /v2${path}`);
+  }
+
   // ---- routing --------------------------------------------------------------------------------------------------------
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, path: string): Promise<void> {
@@ -707,7 +779,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (names && !names.has(String(req.headers.host ?? "").toLowerCase())) return fail(new ApiError("forbidden", "unexpected Host header"));
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
-    if (answerPage(req, res, raw, { token, dir: data, authFailed })) return;
+    // Before the page: its cookie must not stand in for the token on the owner's own routes.
+    if (owner && (raw === "/v2/setup" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
+    if (answerPage(req, res, raw, { token, dir: data, authFailed, ...(owner ? { owner } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
@@ -718,6 +792,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // An address of every interface is reached on this machine at its loopback one.
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
+  owner?.attach(options.publicUrl ?? url);
+  const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   return {
     url,
     baseUrl: `${url}/v2`,
@@ -725,6 +801,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     token,
     tokenFile,
     tokenMade: stored?.made ?? false,
+    ...(setupUrl ? { setupUrl } : {}),
     async close() {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
