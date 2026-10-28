@@ -64,8 +64,12 @@ export interface ProviderPolicy {
 }
 
 export interface ModelUsageReport extends ProxyUsage {
+  /** The provider's (or its gateway's) own figure when the response gave one (`reportedCostOf`); else the price table's,
+   *  `estimated`; null when neither is known. */
   usd: number | null;
   estimated?: boolean;
+  /** Beside a reported figure, what the price table makes of the same usage: kept to audit the table. */
+  tableUsd?: number | null;
   /** The ids the response's headers gave it (`providerIdsOf`), when they came. */
   providerIds?: Record<string, string>;
 }
@@ -127,6 +131,31 @@ export function providerIdsOf(headers: Headers): Record<string, string> | undefi
     if (ID_HEADER.test(name) && ID_VALUE.test(value)) ids[name] = value;
   });
   return Object.keys(ids).length ? ids : undefined;
+}
+
+/** LiteLLM's figures for what a response cost: its own (`x-litellm-response-cost`), and the figure before its discount
+ *  and margin (`-original`), which is the same only when both are reported 0. */
+const COST_HEADER = "x-litellm-response-cost";
+const COST_PARTS = ["x-litellm-response-cost-discount-amount", "x-litellm-response-cost-margin-amount"] as const;
+/** A cost as a gateway writes it: a decimal number, an exponent allowed (`3.7e-06`); nothing else is read as one. */
+const COST_VALUE = /^\d{1,9}(?:\.\d{1,30})?(?:[eE][-+]?\d{1,3})?$/;
+/** No one request costs this much: a figure above it is not believed. */
+const MAX_REQUEST_USD = 1000;
+
+const costOf = (value: string | null): number | undefined => {
+  if (value === null || !COST_VALUE.test(value.trim())) return undefined;
+  const usd = Number(value.trim());
+  return Number.isFinite(usd) && usd > 0 && usd <= MAX_REQUEST_USD ? usd : undefined;
+};
+
+/** What a response's headers say it cost, when they say so: LiteLLM's `x-litellm-response-cost`, or its `-original` when
+ *  the discount and margin it reports are both exactly 0. Only a positive number counts. A missing, malformed or zero
+ *  figure is unknown, never $0: a streamed answer's headers leave before it is priced, and LiteLLM writes 0.0 there. */
+export function reportedCostOf(headers: Headers): number | undefined {
+  const own = costOf(headers.get(COST_HEADER));
+  if (own !== undefined) return own;
+  if (!COST_PARTS.every((name) => /^0(?:\.0+)?$/.test(headers.get(name)?.trim() ?? ""))) return undefined;
+  return costOf(headers.get(`${COST_HEADER}-original`));
 }
 
 export class ProxyRefusal extends Error {
@@ -336,6 +365,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let began: { ok: boolean } | undefined;
     /** The ids its headers gave it. */
     let ids: Record<string, string> | undefined;
+    let reported: number | undefined;
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
@@ -348,6 +378,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       // Its ids are kept before its body is read: from here the provider has seen it, whatever cuts it off.
       ids = route.free ? undefined : providerIdsOf(upstream.headers);
+      reported = route.free ? undefined : reportedCostOf(upstream.headers);
       if (ids && hooks.responded) {
         try {
           await hooks.responded(ids, ticket);
@@ -393,6 +424,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     if (route.free) return;
     let usage: ProxyUsage | undefined;
     let usd: number | null = null;
+    // Whether `usd` is a figure the provider gave (an error answer's nothing included), not one this proxy made up.
+    let own = false;
+    let tableUsd: number | null | undefined;
     // A client may leave once it has read the response's usage (Codex does, at the completion event) while the provider
     // still holds the stream open: what was read of a successful answer is read for its usage as a whole one is. With none
     // in it, the cost is unknown, as for any answer cut short.
@@ -403,6 +437,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // A provider's error answer was not a paid response: it costs nothing.
       usage = { input: 0, output: 0, cacheRead: 0 };
       usd = 0;
+      own = true;
     } else {
       let unread = false;
       try {
@@ -422,9 +457,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         say(`model proxy (${policy.id}): the price could not be computed; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         usd = null;
       }
+      // What the gateway says it cost is what was paid; the table's figure stays beside it, to audit the table.
+      if (reported !== undefined) {
+        tableUsd = usd;
+        usd = reported;
+        own = true;
+      }
     }
     try {
-      await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}), ...(ids ? { providerIds: ids } : {}) }, ticket);
+      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}) }, ticket);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }

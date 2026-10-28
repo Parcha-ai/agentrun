@@ -180,7 +180,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       if (at >= 0) open.splice(at, 1);
       spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
       try {
-        await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }]);
+        await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }]);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
         if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);

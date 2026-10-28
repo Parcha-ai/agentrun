@@ -74,9 +74,11 @@ export interface ModelUsage {
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
-  /** Null when the price is unknown; `estimated` when it is not the provider's own figure. */
+  /** Null when the price is unknown; `estimated` when it is not the provider's own figure (the host's price table's). */
   usd: number | null;
   estimated?: boolean;
+  /** Beside the provider's own figure, what the host's price table makes of the same usage: kept to audit the table. */
+  tableUsd?: number | null;
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;
