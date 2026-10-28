@@ -87,7 +87,8 @@ if (tool === "sudo") {
   process.exit(r.status ?? 1);
 }
 
-if (tool === "fusermount") {
+// The wrapper's `release` runs fusermount -u as root, so it fails and succeeds as fusermount does.
+if (tool === "fusermount" || (tool === "archil" && args[0] === "release")) {
   const mp = args[args.length - 1];
   if (b.sysbox && state.mounts[mp]) exit(1, `fusermount: failed to unmount ${mp}: No such file or directory\n`);
   if (b.fusermountFail) exit(1, `fusermount: failed to unmount ${mp}: Device or resource busy\n`);

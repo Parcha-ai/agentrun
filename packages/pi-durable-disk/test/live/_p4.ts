@@ -173,7 +173,7 @@ export async function cleanupAll(): Promise<Record<string, unknown>> {
   return report;
 }
 
-export function prepareBase(): void {
-  spawnSync("sudo", ["mkdir", "-p", BASE]);
-  spawnSync("sudo", ["chown", `${process.getuid!()}:${process.getgid!()}`, BASE]);
+/** BASE and each mount root with its runs/, root's and 0755: the archil wrapper refuses any other. */
+export function prepareBase(roots: string[]): void {
+  spawnSync("sudo", ["-n", "install", "-d", "-o", "root", "-g", "root", "-m", "0755", BASE, ...roots.flatMap((r) => [r, `${r}/runs`])]);
 }

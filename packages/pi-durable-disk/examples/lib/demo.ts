@@ -6,7 +6,7 @@
 // losing a VM does to a mount. With `--host docker`, every instance is a container of the package's image (one machine
 // each, nothing on this machine needs root): a kill is `docker kill`, a freeze `docker pause`.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, statSync, accessSync, constants } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, statSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,13 +147,6 @@ export function preflight(opts: DemoOptions): string[] {
     const uid = spawnSync("id", ["-u", opts.user], { encoding: "utf8" });
     if (uid.status !== 0) problems.push(`no such user: ${opts.user}`);
     else {
-      for (const [name, root] of Object.entries(opts.mountRoots)) {
-        try {
-          if (statSync(join(root, "runs")).uid !== Number(uid.stdout)) problems.push(`host ${name.toUpperCase()}: ${join(root, "runs")} must be owned by ${opts.user}: chown ${opts.user} ${join(root, "runs")}`);
-        } catch {
-          // reported below as missing
-        }
-      }
       const reach = (what: string, argv: string[]) => {
         if (spawnSync("runuser", ["-u", opts.user!, "--", ...argv]).status !== 0) problems.push(`${opts.user} cannot ${what}: install Node system-wide and keep the package where ${opts.user} can read it`);
       };
@@ -162,13 +155,19 @@ export function preflight(opts: DemoOptions): string[] {
     }
   }
   if (spawnSync("systemctl", ["is-system-running"], { encoding: "utf8" }).stdout.trim() === "") problems.push("systemd is not running: the local host driver starts instances as systemd units");
+  // The archil wrapper mounts only under a mount root root owns: the root and its runs/ root's, writable by no one else.
+  // The wrapper's prepare makes each run's mountpoint there for the instance.
   for (const [name, root] of Object.entries(opts.mountRoots)) {
     const runs = join(root, "runs");
-    try {
-      accessSync(runs, constants.W_OK);
-    } catch {
-      problems.push(`host ${name.toUpperCase()}: ${runs} must exist and be writable by ${opts.user ?? "you"}: sudo mkdir -p ${runs} && sudo chown ${opts.user ?? '"$USER"'} ${runs}`);
-    }
+    const ok = [root, runs].every((p) => {
+      try {
+        const st = statSync(p);
+        return st.isDirectory() && st.uid === 0 && (st.mode & 0o022) === 0;
+      } catch {
+        return false;
+      }
+    });
+    if (!ok) problems.push(`host ${name.toUpperCase()}: ${root} and ${runs} must exist, owned by root and writable by no one else: sudo install -d -o root -g root -m 0755 ${root} ${runs}`);
   }
   try {
     statSync(opts.archil);
