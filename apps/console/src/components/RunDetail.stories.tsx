@@ -49,4 +49,4 @@ export const ArtifactOpen: Story = {
     );
   },
 };
-export const Phone: Story = { ...story("run.input_required.waiting.1"), parameters: { viewport: { defaultViewport: "mobile1" } } };
+export const Phone: Story = { ...story("run.input_required.waiting.1"), parameters: { viewport: { defaultViewport: "mobile1" } }, globals: { viewport: { value: "mobile1" } } };

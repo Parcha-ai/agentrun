@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/Composer";
 import { NeedsYou } from "@/components/NeedsYou";
 import { type RunActions, RunHeader } from "@/components/RunHeader";
@@ -8,6 +8,7 @@ import { RunResult } from "@/components/RunResult";
 import { Timeline, Working } from "@/components/Timeline";
 import { type MessageFeatures, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
+import { latest, pendingQuestion } from "@/lib/viewing";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
@@ -31,8 +32,17 @@ export function RunDetail({ run, agentName, messages, rows, files, readFile, ope
   const view = runState(run.status, run.state, run.kind, messages);
   const [tab, setTab] = useState<Tab>(initial ?? (view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
-  const waiting = view.needsYou ? rows.findLast((r) => r.kind === "waiting") ?? null : null;
-  const show = async (file: RunFile) => { setOpen({ file, text: null }); if (readFile) setOpen({ file, text: await readFile(file) }); };
+  const waiting = pendingQuestion(run.status, run.state, rows);
+  // Only the newest read lands: closing the viewer or opening another file retires a read still in flight.
+  const reads = useRef(latest()).current;
+  const show = async (file: RunFile) => {
+    const token = reads.begin();
+    setOpen({ file, text: null });
+    if (!readFile) return;
+    const text = await readFile(file);
+    if (reads.current(token)) setOpen({ file, text });
+  };
+  const close = () => { reads.cancel(); setOpen(null); };
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -68,7 +78,7 @@ export function RunDetail({ run, agentName, messages, rows, files, readFile, ope
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={() => setOpen(null)} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
     </div>
   );
 }

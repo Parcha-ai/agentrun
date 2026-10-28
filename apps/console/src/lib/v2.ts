@@ -59,7 +59,7 @@ export type TimelinePage = {
   cost?: Cost | null;
 };
 
-export type RunFile = { path: string; size_bytes: number; modified_at: string; content_type: string };
+export type RunFile = { path: string; size_bytes: number; modified_at: string; content_type: string | null };
 export type RunFiles = { run_id: string; files: RunFile[]; complete: boolean; truncated: boolean };
 
 /** A recorded response: what the server answered, exactly. */

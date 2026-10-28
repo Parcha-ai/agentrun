@@ -1,8 +1,9 @@
 import { Copy, Download, FileText, Folder, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { bytes, markdown, when } from "@/lib/format";
 import type { RunFile } from "@/lib/v2";
+import { viewKind } from "@/lib/viewing";
 
 /** The run's FILES tab: what it wrote, newest first, each opened in the viewer. */
 export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: RunFile) => void }) {
@@ -34,22 +35,26 @@ export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: R
  *  sanitized); anything else is offered as a download only. */
 export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: string | null; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+  // A native modal dialog: focus moves in and stays in, the page behind is inert, Escape closes it, and focus goes back
+  // to what opened it on close.
   useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
-  }, [onClose]);
-  const isMarkdown = file.content_type.startsWith("text/markdown") || file.path.endsWith(".md");
-  const isText = isMarkdown || file.content_type.startsWith("text/") || file.content_type.includes("json");
+    const opener = document.activeElement as HTMLElement | null;
+    const d = dialog.current;
+    if (d && !d.open) d.showModal?.();
+    return () => { d?.open && d.close(); opener?.focus?.(); };
+  }, []);
+  const kind = viewKind(file);
   const download = () => {
     if (text === null) return;
-    const url = URL.createObjectURL(new Blob([text], { type: file.content_type }));
+    const url = URL.createObjectURL(new Blob([text], { type: file.content_type ?? "application/octet-stream" }));
     const a = Object.assign(document.createElement("a"), { href: url, download: file.path.split("/").pop() });
     a.click(); URL.revokeObjectURL(url);
   };
   return (
-    <div className="fixed inset-0 z-50 flex bg-black/60 p-0 md:p-8" role="dialog" aria-modal="true" aria-label={file.path}>
-      <div className="mx-auto flex w-full max-w-5xl flex-col border bg-background">
+    <dialog ref={dialog} aria-label={file.path} onCancel={(e) => { e.preventDefault(); onClose(); }}
+      className="m-0 h-full max-h-none w-full max-w-none border-0 bg-transparent p-0 text-foreground backdrop:bg-black/60 md:p-8">
+      <div className="mx-auto flex h-full w-full max-w-5xl flex-col border bg-background">
         <header className="flex items-center gap-3 border-b px-4 py-2.5">
           <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close"><X aria-hidden /></Button>
           <FileText className="size-4 text-muted-foreground" aria-hidden />
@@ -59,12 +64,12 @@ export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: s
         </header>
         <div className="min-h-0 flex-1 overflow-auto px-6 py-8 md:px-16">
           {text === null ? <p className="font-mono text-[13px] text-muted-foreground">Loading the file...</p>
-            : isMarkdown ? <article className="report mx-auto max-w-3xl" dangerouslySetInnerHTML={{ __html: markdown(text) }} />
-            : isText ? <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.8]">{text}</pre>
+            : kind === "markdown" ? <article className="report mx-auto max-w-3xl" dangerouslySetInnerHTML={{ __html: markdown(text) }} />
+            : kind === "text" ? <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.8]">{text}</pre>
             : <p className="font-mono text-[13px] text-muted-foreground">This file type is not shown here. Download it to open it.</p>}
         </div>
-        <footer className="border-t px-4 py-2 font-mono text-[11px] text-muted-foreground">File · {text === null ? "..." : `${text.length.toLocaleString("en-US")} characters`} · {file.content_type}</footer>
+        <footer className="border-t px-4 py-2 font-mono text-[11px] text-muted-foreground">File · {text === null ? "..." : `${text.length.toLocaleString("en-US")} characters`} · {file.content_type ?? "unknown type"}</footer>
       </div>
-    </div>
+    </dialog>
   );
 }
