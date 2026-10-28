@@ -10,7 +10,7 @@ test("PUT definition commits a new revision whose parent is the current one and 
   assert.equal(put.status, 200, JSON.stringify(put.body));
   assert.notEqual(put.body.revision, created.revision);
   assert.equal(put.headers.get("etag"), `"${put.body.revision}"`);
-  assert.deepEqual(put.body.definition, { id: "editor", version: 2, name: "editor", instructions: "Answer briefly.", skills: ["cite"], tools: ["read"] });
+  assert.deepEqual(put.body.definition, { id: "editor", version: 2, name: "editor", instructions: "Answer briefly.", harness: "pi", skills: ["cite"], tools: ["read"] });
   assert.deepEqual(put.body.skills.map((s) => s.path), ["cite/SKILL.md"], "the current revision's skill files carry over");
   assert.equal(put.body.revisions, 2);
   const list = (await api("GET", "/agents/editor/revisions")).body;
@@ -55,7 +55,7 @@ test("PUT definition: If-Match must name the current revision, a name it does no
   const ok = await api("PUT", "/agents/guarded/definition", { definition: { workflow: answerFlow() } }, { "if-match": created.home_etag });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
   assert.equal(ok.body.kind, "workflow");
-  assert.deepEqual(ok.body.definition, { id: "guarded", version: 2, name: "guarded", workflow: answerFlow(), skills: [], tools: [] });
+  assert.deepEqual(ok.body.definition, { id: "guarded", version: 2, name: "guarded", workflow: answerFlow(), harness: "pi", skills: [], tools: [] });
   assert.equal((await api("PUT", "/agents/nobody/definition", { definition: { instructions: "x" } })).status, 404);
 });
 

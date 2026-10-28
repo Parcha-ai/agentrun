@@ -91,4 +91,4 @@ export async function main(args = process.argv.slice(2)) {
     return 1;
   } finally { process.off('SIGINT', stop); process.off('SIGTERM', stop); }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) process.exitCode = await main();
+if (import.meta.main) process.exitCode = await main();

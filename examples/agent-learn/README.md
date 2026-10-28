@@ -20,7 +20,7 @@ model, judge and remote.
 
 ## Run it
 
-Node 22.19 or later and git 2.40 or later. No key and no network: the model and the judge are scripted.
+Node 22.19 or later on 22, or 24.2 or later, and git 2.40 or later. No key and no network: the model and the judge are scripted.
 
 ```sh
 npm ci --ignore-scripts && npm run build && npm run demo:learn

@@ -303,4 +303,4 @@ async function main() {
   await session({ dir: resolve(values.dir), input, ...(maxUsd === undefined ? {} : { maxUsd }), ...(record ? { record } : {}), plain: values.plain === true, ...(values.transcript ? { transcript: resolve(values.transcript) } : {}) });
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) await main();
+if (import.meta.main) await main();

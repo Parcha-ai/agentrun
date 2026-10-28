@@ -4,7 +4,7 @@
 // writes). The new run's run.json starts at generation 0 and carries the source's seal: its first open is generation 1
 // and refuses a copy that lost a committed sequence (STORE_BEHIND_SEAL). Supervisor side: it needs the API key.
 import { randomUUID } from "node:crypto";
-import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, realpath, rename, rm, rmdir, symlink, utimes } from "node:fs/promises";
+import { chmod, copyFile, lchown, lstat, mkdir, readdir, readlink, realpath, rename, rm, symlink, utimes } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { acquire, createRunDir, type AcquireOptions, findDelegations, mintMountToken, removeMountToken, runPath, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
 import { HeldError, PdaError } from "./errors.ts";
@@ -30,7 +30,7 @@ export class ForkError extends PdaError {
 
 export interface ForkOptions {
   readonly control: CheckControl & Pick<SupervisorControl, "getObject" | "headObject">;
-  /** The copy's two mounts go under `<mountRoot>/.fork-<stamp>/{source,target}`. */
+  /** Each side is mounted at its run's own mountpoint, `<mountRoot>/runs/<run>`, under the claim of that run. */
   readonly mountRoot: string;
   readonly host?: ArchilHost;
   /** Prefix of the two short-lived token users' nicknames. Default "pda-". */
@@ -107,7 +107,6 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
   }
 
   const note = options.onResource ?? (() => {});
-  const base = join(options.mountRoot, `.fork-${Date.now().toString(36)}`);
   const tokens: string[] = [];
   const claims: Claim[] = [];
   // Set once this fork holds the new run's directory exclusively; until then the directory may be another operation's.
@@ -117,7 +116,8 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
     const t = await mintMountToken(control, { nickname: `${options.tokenPrefix ?? "pda-"}fork-${side}-${run.id}`.slice(0, 200), ttl: "1h" });
     tokens.push(t.identifier);
     note("token", t.identifier, side);
-    const claim = await (options.acquire ?? acquire)({ ref: run, token: t.token, mountRoot: join(base, side), host: options.host });
+    // Never a live mount another holder of the run (another fork of the same source) may release under this one.
+    const claim = await (options.acquire ?? acquire)({ ref: run, token: t.token, mountRoot: options.mountRoot, reuse: false, host: options.host });
     claims.push(claim);
     note("mount", claim.root, `${run.disk}:/${runPath(run.id)}`);
     return claim;
@@ -193,10 +193,6 @@ export async function fork(ref: RunRef, newId: string, options: ForkOptions): Pr
     for (const t of tokens) {
       await removeMountToken(control, t).then(() => note("token-removed", t), () => {});
     }
-    for (const side of ["source", "target"]) {
-      for (const dir of [join(base, side, "runs"), join(base, side)]) await rmdir(dir).catch(() => {});
-    }
-    await rmdir(base).catch(() => {});
   }
 }
 
