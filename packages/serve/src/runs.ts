@@ -81,7 +81,10 @@ type RunMeta = {
   error?: { code: string; message: string };
   /** A workflow run's output, once it completed. */
   output?: unknown;
-  /** How many messages the person had sent when the run's turn was stopped: it stays stopped until they send another. */
+  /** The person's last message when the run's turn was stopped, by its timeline row's id (its store entry's, so a
+   *  compaction or any rewrite of the messages shown never moves it): it stays stopped until they send another. */
+  stopped_at?: string;
+  /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
   stopped_after?: number;
 };
 type RunError = { code: string; message: string; retryable: boolean };
@@ -187,7 +190,14 @@ export function costView(rows: readonly TimelineEvent[], stored: number | undefi
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
-const stopped = (run: Run) => run.meta.stopped_after === usersOf(run.rows);
+const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
+/** Whether the turn a stop ended is still where the run stands: no message from the person since. Keyed on the stopped
+ *  message's id, never a count of the messages shown, which a compaction changes. */
+export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number }, rows: readonly TimelineEvent[]): boolean =>
+  meta.stopped_at !== undefined ? meta.stopped_at === lastUserMessage(rows) : meta.stopped_after !== undefined && meta.stopped_after === usersOf(rows);
+const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
+/** What a stop keeps of where the run stands: the person's last message, by its id. */
+export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at?: string; stopped_after?: number } => ({ stopped_at: lastUserMessage(rows) });
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -294,6 +304,7 @@ export class Runs {
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
+      ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
@@ -309,7 +320,7 @@ export class Runs {
       run.settled = true;
     } else if (record && this.doorOf(record)) {
       // A server that died between saving a stop and its abort reaching the run leaves the turn working.
-      run.finishStop = run.meta.stopped_after !== undefined;
+      run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
       this.adoptProcess(run, record);
     }
     this.refresh(run);
@@ -892,12 +903,16 @@ export class Runs {
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
-    const before = run.meta.stopped_after;
-    run.meta.stopped_after = usersOf(run.rows);
+    const before = { stopped_at: run.meta.stopped_at, stopped_after: run.meta.stopped_after };
+    delete run.meta.stopped_at;
+    delete run.meta.stopped_after;
+    Object.assign(run.meta, stopMark(run.rows));
     await this.saveMeta(run).catch((error: Error) => warn(run.id, `its stop is not saved, so a restart will not keep it: ${error.message}`));
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
     if (!answer || answer.status >= 400) {
-      run.meta.stopped_after = before;
+      if (before.stopped_at === undefined) delete run.meta.stopped_at;
+      else run.meta.stopped_at = before.stopped_at;
+      if (before.stopped_after !== undefined) run.meta.stopped_after = before.stopped_after;
       await this.saveMeta(run).catch(() => undefined);
       this.refresh(run);
       return false;
