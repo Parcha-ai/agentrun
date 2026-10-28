@@ -7,7 +7,8 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
+import { AgentHomeError, openStore, openStoreReader } from "@parcha/pi-durable-agent";
+import { sqliteBusy } from "../dist/agents.js";
 import { agent, answerFlow, flowAgent, follow, scratch, serve } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,13 +27,58 @@ function timed(port, token, method, path, body) {
   });
 }
 
-/** GET /capabilities one after another until `until` settles: the slowest answer. */
-async function slowestWhile(port, token, until) {
-  let done = false;
-  until.finally(() => (done = true)).catch(() => {});
-  let slowest = 0;
-  for (let i = 0; !done || i === 0; i++) slowest = Math.max(slowest, (await timed(port, token, "GET", "/capabilities")).took);
-  return slowest;
+/** `k` GET /capabilities, one after another, each answered 200 while the store is still held and before `waiting` (a
+ *  request on the held store) has answered. A store wait that blocked the event loop
+ *  answers none of them until it ends, so the order fails, never a clock. */
+async function answersWhileHeld(port, token, waiting, k = 5) {
+  let settled = false;
+  waiting?.finally(() => (settled = true)).catch(() => {});
+  for (let i = 1; i <= k; i++) assert.equal((await timed(port, token, "GET", "/capabilities")).status, 200, `GET /capabilities ${i} of ${k}`);
+  assert.equal(settled, false, `all ${k} GET /capabilities answered before the request on the held store did`);
+}
+
+/** The server's tries of its agent store (its writer's and its readers' calls) that came back busy (`count`), and those made with no turn of the event loop
+ *  since the try before (`unturned`): a wait between them that blocked the loop. A check-phase callback set at each try
+ *  has run by the next one only if the loop turned in between, however fast the runner is. */
+async function storeTries(t) {
+  const dir = await scratch(t);
+  const store = openStore(dir);
+  const reader = openStoreReader(dir);
+  const protos = new Set([Object.getPrototypeOf(store), Object.getPrototypeOf(reader)]);
+  reader.close();
+  store.close();
+  const tries = { count: 0, unturned: 0 };
+  const seen = new WeakSet();
+  let last = null;
+  const tried = (error) => {
+    if (!sqliteBusy(error) || seen.has(error)) return;
+    seen.add(error);
+    tries.count += 1;
+    if (last && !last.turned) tries.unturned += 1;
+    const mine = (last = { turned: false });
+    setImmediate(() => (mine.turned = true));
+  };
+  for (const proto of protos) for (const name of Object.getOwnPropertyNames(proto)) {
+    const original = proto[name];
+    if (name === "constructor" || typeof original !== "function") continue;
+    proto[name] = function (...args) {
+      try {
+        const result = original.apply(this, args);
+        return result instanceof Promise ? result.catch((error) => { tried(error); throw error; }) : result;
+      } catch (error) {
+        tried(error);
+        throw error;
+      }
+    };
+    t.after(() => void (proto[name] = original));
+  }
+  return tries;
+}
+
+/** Every wait between the store's busy tries let the event loop turn, and the store was tried more than once. */
+function turnedBetween(tries) {
+  assert.ok(tries.count >= 2, `the server tried the held store ${tries.count} times`);
+  assert.equal(tries.unturned, 0, `${tries.unturned} of ${tries.count} tries of the held store came with no turn of the event loop since the one before`);
 }
 
 /** Another connection holding store.sqlite (`IMMEDIATE`: no other writer; `EXCLUSIVE`: no reader either; `READ`: a
@@ -46,71 +92,83 @@ function hold(t, data, mode = "IMMEDIATE") {
   return release;
 }
 
-test("a run's end due while another connection holds the agent store: the server answers within 200 ms meanwhile", async (t) => {
+test("a run's end due while another connection holds the agent store: the server answers meanwhile", async (t) => {
   const dir = await scratch(t);
-  let firstBusy;
-  const busy = new Promise((resolve) => (firstBusy = resolve));
-  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: Array(5).fill(50), onBusy: () => firstBusy() }, settleRetryMs: 300 });
+  // The hold is let go after the end's third busy try, so its waits between tries are seen.
+  const thirdTry = Promise.withResolvers();
+  const onBusy = (_runId, attempt) => attempt === 2 && thirdTry.resolve();
+  const { api, data, port, token } = await serve(t, { carryBackRetry: { delaysMs: Array(5).fill(50), onBusy }, settleRetryMs: 300 });
+  const tries = await storeTries(t);
   assert.equal((await api("POST", "/agents", agent("ender", { instructions: `Answer once ${join(dir, "go")} exists.` }))).status, 201);
   const run = await api("POST", "/agents/ender/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const release = hold(t, data);
   await writeFile(join(dir, "go"), "");
-  await busy;
-  const slowest = await slowestWhile(port, token, sleep(1_500));
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the run's end waited`);
+  await thirdTry.promise;
+  await answersWhileHeld(port, token, null);
   release();
   const { last } = await follow(api, run.body.run_id, ["completed", "failed"]);
   assert.equal(last.status, "completed", JSON.stringify(last));
+  turnedBetween(tries);
 });
 
-test("a create while the agent store is held for 1 s waits, then answers 201; the server answers within 200 ms meanwhile", async (t) => {
+test("a create while the agent store is held for 1 s waits, then answers 201; the server answers meanwhile", async (t) => {
   const { data, port, token } = await serve(t);
+  const tries = await storeTries(t);
   const release = hold(t, data);
+  const held = sleep(1_000);
   const created = timed(port, token, "POST", "/agents", agent("patient"));
-  const slowest = await slowestWhile(port, token, sleep(1_000));
+  await answersWhileHeld(port, token, created);
+  await held;
   release();
   const answer = await created;
   assert.equal(answer.status, 201, JSON.stringify(answer.body));
   assert.ok(answer.took >= 900, `it waited for the store: ${answer.took} ms`);
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the create waited`);
+  turnedBetween(tries);
 });
 
 test("a create while the agent store is held for 3 s answers 409 home_busy at about 2 s, retryable", async (t) => {
   const { data, port, token } = await serve(t);
+  const tries = await storeTries(t);
   hold(t, data);
   const created = timed(port, token, "POST", "/agents", agent("impatient"));
-  const slowest = await slowestWhile(port, token, created);
+  await answersWhileHeld(port, token, created);
   const answer = await created;
   assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.retryable, answer.body.error?.retry_after_ms], [409, "home_busy", true, 500], JSON.stringify(answer.body));
   assert.ok(answer.took >= 1_500 && answer.took < 3_000, `answered at ${answer.took} ms`);
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the create waited`);
+  turnedBetween(tries);
 });
 
 test("a read while the agent store is held exclusively waits, then answers once it is free", async (t) => {
   const { api, data, port, token } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("read"))).status, 201);
+  const tries = await storeTries(t);
   const release = hold(t, data, "EXCLUSIVE");
+  const held = sleep(500);
   const read = timed(port, token, "GET", "/agents/read");
-  const slowest = await slowestWhile(port, token, sleep(500));
+  await answersWhileHeld(port, token, read);
+  await held;
   release();
   const answer = await read;
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
+  turnedBetween(tries);
 });
 
 test("an edit whose commit meets a reader of the agent store waits for it, then answers 200 with the new revision", async (t) => {
   const { api, data, port, token } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("edited"))).status, 201);
+  const tries = await storeTries(t);
   const release = hold(t, data, "READ");
+  const held = sleep(1_000);
   const edited = timed(port, token, "PUT", "/agents/edited/definition", agent("edited", { instructions: "Answer briefly.", version: 2 }));
-  const slowest = await slowestWhile(port, token, sleep(1_000));
+  await answersWhileHeld(port, token, edited);
+  await held;
   release();
   const answer = await edited;
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   assert.equal(answer.body.definition.instructions, "Answer briefly.");
   assert.ok(answer.took >= 900, `it waited for the reader: ${answer.took} ms`);
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the edit waited`);
+  turnedBetween(tries);
 });
 
 test("the agent home's own busy (a home held past its deadline) answers 409 home_busy with retry_after_ms, never 500", async (t) => {
