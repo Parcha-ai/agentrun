@@ -163,9 +163,10 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (limit !== null && turns >= limit) throw end("turn_limit");
     const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })) });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
-    // A pause that began while the host was checking: nothing was written for this request, so it is refused, not sent.
-    const paused = options.draining?.();
-    if (paused) throw paused;
+    // A stop or a pause that came while the host was checking: nothing was written for this request, so it is refused, not
+    // sent. After the write below it is committed (refusing it then would leave a recorded request that was never sent).
+    const late = options.stopped?.() ?? failed ?? options.draining?.();
+    if (late) throw late;
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;

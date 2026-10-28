@@ -165,3 +165,70 @@ test('a paid request waiting to be admitted when a pause begins is refused insid
   assert.deepEqual(events.filter((e) => e.type === 'request_start'), [], 'no request_start');
   assert.equal(hostCalls, 1, 'the host is not asked about a request that waited until after the pause began');
 });
+
+test('a node that stops (its time ran out) while the host is still checking a paid request does not admit it when the host answers: no record, no request_start', async () => {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let outcome;
+  let endTurn;
+  const adapter = {
+    id: 'one-request', version: '0.0.0', capabilities: () => ({ fork: false }), check: () => [],
+    async open(_spec, io) {
+      let turn;
+      return {
+        state: 'new',
+        async send() {
+          turn = new Promise((resolve) => { endTurn = resolve; });
+          outcome = io.models.beforeRequest({ model: 'm' }).then(() => 'admitted', (error) => `refused: ${error.message}`);
+        },
+        async recover() {},
+        turnEnd: () => turn,
+        async interrupt() { endTurn?.({ status: 'interrupted' }); },
+        async close() {},
+      };
+    },
+  };
+  const store = memorySessionStore();
+  const events = [];
+  let asked = 0;
+  const runner = createHarnessRunner(adapter, { store, tools: [lookup], timeoutMs: 150, onEvent: (e) => events.push(e), beforeRequest: async () => { asked += 1; await held; } });
+  const node = ask(runner).catch((error) => error);
+  await until(() => asked === 1, "the host's check");
+  assert.equal((await node).reason, 'timeout', 'the node stopped while the host was still checking');
+  release();
+  assert.match(await outcome, /^refused: /, 'the request is refused when the host answers after the stop');
+  const records = await Promise.all(store.keys().map((k) => store.read(k)));
+  assert.deepEqual(records.flat().filter((r) => r.kind === 'runner.request'), [], 'no request was recorded');
+  assert.deepEqual(events.filter((e) => e.type === 'request_start'), [], 'no request_start');
+});
+
+test('a submit that comes inside the drain is accepted and delivered: the paid answer is kept, the node returns it, never aborted', async () => {
+  let endTurn;
+  let started;
+  const turnStarted = new Promise((resolve) => { started = resolve; });
+  const adapter = {
+    id: 'submits-while-draining', version: '0.0.0', capabilities: () => ({ fork: false }), check: () => [],
+    async open(spec) {
+      let turn;
+      return {
+        state: 'new',
+        async send() { turn = new Promise((resolve) => { endTurn = resolve; }); started(); },
+        async recover() {},
+        turnEnd: () => turn,
+        async interrupt() {
+          // The turn in flight finishes its response during the drain: its last act is the submit.
+          const submit = spec.tools.find((t) => t.name === 'submit');
+          await submit.call({ value: { answer: 'finished during the pause' } }, { callId: 'c-submit', signal: new AbortController().signal });
+          endTurn?.({ status: 'completed' });
+        },
+        async close() {},
+      };
+    },
+  };
+  const runner = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup] });
+  const node = ask(runner).then((value) => ({ value }), (error) => ({ error }));
+  await turnStarted;
+  await runner.stop({ drainMs: 1000 });
+  const outcome = await node;
+  assert.deepEqual(outcome, { value: { answer: 'finished during the pause' } }, `delivered, not ${outcome.error?.reason}`);
+});
