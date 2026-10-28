@@ -368,8 +368,15 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       });
 
       const live = (event: unknown) => {
-        const e = event as { type?: string; delta?: unknown };
+        const e = event as { type?: string; delta?: unknown; callId?: string; name?: string; args?: unknown; reason?: string };
         if (e?.type === "text" && typeof e.delta === "string") io.onEvent({ type: "text", delta: e.delta });
+        // A call the CLI refused itself (a tool the session doesn't have): shown as a call that failed, by the name the
+        // model gave. The CLI's transcript, mirrored to the store, keeps the refusal.
+        if (e?.type === "tool_refused" && typeof e.callId === "string" && typeof e.name === "string") {
+          io.onEvent({ type: "tool_start", callId: e.callId, name: e.name, args: e.args ?? {} });
+          io.onEvent({ type: "tool_end", callId: e.callId, name: e.name, isError: true });
+          options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
+        }
       };
       // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
       // once the halted drive's last writes are in (serial.ts).
