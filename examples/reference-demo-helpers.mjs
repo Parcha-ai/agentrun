@@ -6,15 +6,63 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { ChildProcess } from 'node:child_process';
+import { Server, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
 import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 
 export const ORIGINAL = { ...process.env };
+
+/** What keeps a test file's process alive once its tests are done: a child process, a server, or a pipe a child's own child still holds open after the child exited. */
+export const leftOpen = () => {
+  const handles = process._getActiveHandles();
+  // A child's own stdio is named with the child.
+  const owned = new Set([process.stdin, process.stdout, process.stderr, ...handles.flatMap((handle) => (handle instanceof ChildProcess ? handle.stdio : []))]);
+  return handles.filter((handle) => handle instanceof ChildProcess || handle instanceof Server || (handle instanceof Socket && !owned.has(handle)));
+};
+/** The processes `pid` started, and theirs, from /proc (none where there is no /proc). */
+const descendants = (pid) => {
+  let rows = [];
+  try { rows = readdirSync('/proc').filter((name) => /^\d+$/.test(name)).flatMap((name) => { try { return [[Number(name), Number(readFileSync(`/proc/${name}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[1])]]; } catch { return []; } }); } catch { /* no /proc */ }
+  const found = [];
+  for (let parents = [pid]; parents.length;) { const next = rows.filter(([, parent]) => parents.includes(parent)).map(([child]) => child); found.push(...next); parents = next; }
+  return found;
+};
+/** A child is killed with what it started: its process group when it leads one (spawned detached), else each process under it. */
+const killWithItsOwn = (child) => {
+  try { process.kill(-child.pid, 'SIGKILL'); return []; } catch { /* not a group leader */ }
+  const under = descendants(child.pid);
+  for (const pid of [...under, child.pid]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  return under;
+};
+
+/** node --test reports the files in order and waits for each file's process to exit: a file whose tests all passed but which left something open would hold the report
+ *  of every later file until the job's limit. Ten seconds after the file's hooks start, if the process is still alive, what keeps it alive is named on stderr, closed,
+ *  and the file fails (its exit code). The timer is unref'd, so a file that left nothing open exits at once, and the file's own after() hooks, which run after this
+ *  one, have had their turn first. */
+export function closeLeftOpen() {
+  const open = leftOpen();
+  if (!open.length) return;
+  const names = open.map((handle) => {
+    if (handle instanceof ChildProcess) {
+      const under = killWithItsOwn(handle);
+      for (const stream of handle.stdio) stream?.destroy();
+      const argv = handle.spawnargs.slice(1).join(' ');
+      return `child ${handle.pid} (${argv.length > 160 ? `${argv.slice(0, 100)} ... ${argv.slice(-50)}` : argv})${under.length ? ` and ${under.length} it started (${under.join(', ')})` : ''}`;
+    }
+    if (handle instanceof Server) { const address = JSON.stringify(handle.address()); handle.closeAllConnections?.(); handle.close(); return `server ${address}`; }
+    handle.destroy();
+    return 'a pipe still held open';
+  });
+  console.error(`left open after the file's last test, now closed: ${names.join('; ')}`);
+  process.exitCode = 1;
+}
+after(() => { setTimeout(closeLeftOpen, 10_000).unref(); });
 
 export const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
 
