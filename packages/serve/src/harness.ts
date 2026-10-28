@@ -10,9 +10,13 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 /** One harness as capabilities lists it: whether this server runs it, and when not, why. */
 export type HarnessOffer = { id: HarnessId; available: boolean; reason?: string };
 
+/** A module whose `script(spec)` scripts run-adapters' faux harness: with it, every harness but pi runs on that faux
+ *  harness, as `--faux` runs pi on the faux model. */
+export const FAUX_HARNESS_ENV = "AGENTRUN_SERVE_FAUX_HARNESS";
+
 /** What this server offers of each harness. */
-export function harnessesOf(_env: NodeJS.ProcessEnv): HarnessOffer[] {
-  return HARNESSES.map((id) => (id === DEFAULT_HARNESS ? { id, available: true } : { id, available: false, reason: `This server does not run ${id} yet.` }));
+export function harnessesOf(env: NodeJS.ProcessEnv): HarnessOffer[] {
+  return HARNESSES.map((id) => (id === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV] ? { id, available: true } : { id, available: false, reason: `This server does not run ${id} yet.` }));
 }
 
 /** The harness a stored body names, as answers show it. */

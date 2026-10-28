@@ -7,6 +7,7 @@
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 import { readFile } from "node:fs/promises";
+import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
 import type { TSchema } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, type Extension, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
@@ -14,6 +15,9 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
+import { adapterFor } from "./adapters.js";
+import { DEFAULT_HARNESS } from "./harness.js";
+import { adapterRun } from "./harness-app.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
 import { isObject, skillNames } from "./validate.js";
 
@@ -83,6 +87,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const registry = createRegistry();
   registry.install(CodingTools);
   const fileTools = new Map((CodingTools.tools ?? []).map((tool) => [tool.name, tool] as const));
+  if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
+    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], tools: [], context: "fresh" as const };
+    const { door, onOpen } = adapterRun(await adapterFor(revision.body.harness, process.env), spec, BACKGROUND, cap);
+    return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
+  }
   if (revision.kind === "agentic") {
     registry.install(defineExtension({ name: "person", tools: [askPerson] }));
     const bound = new Map<string, ToolRegistration>([...fileTools, [ASK_TOOL, askPerson as ToolRegistration]]);
