@@ -6,9 +6,14 @@
 FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 AS build
 WORKDIR /src
 COPY . .
-# The reference harness is not part of the server: it is removed from the image after the workspace build.
+# The reference harness is not part of the server: it is removed from the image after the workspace build. So is the
+# Claude Agent SDK, which its adapter develops against (a dev dependency, so npm ci installs it), with its platform
+# packages (they hold the Claude CLI) and bin link, until its licence is reviewed for the image: docker/image-check.sh
+# names them. Never `npm prune --omit=dev`: the pi packages the server loads are dev dependencies too.
 RUN npm ci --ignore-scripts && npm run build \
  && rm -rf packages/harness node_modules/@parcha/agentrun-harness \
+ && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
+      node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \
  && chmod -R a+rX,go-w /src
 
 FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6
@@ -21,6 +26,8 @@ RUN apt-get update -qq \
 RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40 \
  || { echo "git $v is older than 2.40" >&2; exit 1; }
 COPY --from=build --chown=root:root /src /opt/agentrun
+# The build fails if any of it is left anywhere in the tree, a nested copy included.
+RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
 WORKDIR /opt/agentrun
 USER node
 ENV NODE_ENV=production
