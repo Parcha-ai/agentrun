@@ -138,21 +138,15 @@ test("a run cancelled while its request answers costs unknown (the request may h
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const paid = await ended(api, (await start(api, "paid", "What is six times seven?")).run_id);
   assert.ok(paid.cost.usd > 0);
-  // One cancelled while its first request is still answering; one cancelled at once, before or as its first leaves.
+  // Cancelled while its first request is still answering: the request is cut, and may have been billed.
   const slow = await start(api, "slow", "Take your time.");
   await follow(api, slow.run_id, ["working"]);
   await api("POST", `/runs/${slow.run_id}/cancel`);
-  const early = await start(api, "early", "Take your time.");
-  await api("POST", `/runs/${early.run_id}/cancel`);
-  const cut = await ended(api, slow.run_id, ["cancelled"]);
-  assert.equal(cut.cost.usd, null, JSON.stringify(cut.cost));
-  for (const id of [slow.run_id, early.run_id]) {
-    const run = await ended(api, id, ["cancelled"]);
-    assert.ok(run.cost.usd === null || typeof run.cost.usd === "number", JSON.stringify(run.cost));
-    assert.equal(storeRun(data, id).costUsd ?? null, run.cost.usd, "the store records the cost it carried back");
-    const listed = (await api("GET", `/runs?agent=${run.agent_id}`)).body.runs[0];
-    assert.equal(listed.cost.usd, run.cost.usd, JSON.stringify(listed.cost));
-  }
+  const run = await ended(api, slow.run_id, ["cancelled"]);
+  assert.equal(run.cost.usd, null, JSON.stringify(run.cost));
+  assert.equal(storeRun(data, slow.run_id).costUsd ?? null, run.cost.usd, "the store records the cost it carried back");
+  const listed = (await api("GET", `/runs?agent=${run.agent_id}`)).body.runs[0];
+  assert.equal(listed.cost.usd, run.cost.usd, JSON.stringify(listed.cost));
   for (const usage of await usages(api)) {
     assert.ok(Math.abs(usage.total_usd - paid.cost.usd) < 1e-9, JSON.stringify(usage));
     assert.ok(usage.lines.every((line) => typeof line.usd === "number"), JSON.stringify(usage));

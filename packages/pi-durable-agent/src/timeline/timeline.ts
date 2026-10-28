@@ -285,9 +285,11 @@ function createProjector(options: TimelineOptions) {
 
   function usage(): TimelineEvent | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
+    // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
+    const cut = marked - (inFlight ? 1 : 0) > requests;
+    if ((!requests && !cut) || root === undefined) return undefined;
     const count = Math.max(requests, marked);
-    if (!count || root === undefined) return undefined;
-    const total = usd === null || marked - (inFlight ? 1 : 0) > requests ? null : Math.round(usd * 1e6) / 1e6;
+    const total = usd === null || cut ? null : Math.round(usd * 1e6) / 1e6;
     return make("usage", root, `${root}:usage`, {
       summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
       usage: { usd: total, requests: count },
