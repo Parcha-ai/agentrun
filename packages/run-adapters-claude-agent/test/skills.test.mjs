@@ -115,6 +115,18 @@ test("the CLI's own skill names, pinned: each is the CLI's, and every command an
   assert.deepEqual(reported.filter((n) => !CLAUDE_AGENT_CLI_SKILL_NAMES.has(n)), [], 'each command and skill the CLI reports is listed');
 });
 
+test('a user\'s skill named like one of the CLI\'s own ("review"): the run starts, Skill("agentrun:review") loads it, and the bare Skill("review") never reaches it', { skip, timeout: 240_000 }, async (t) => {
+  const REVIEW = 'CANARY-USER-REVIEW';
+  const review = { name: 'review', files: { 'SKILL.md': `---\nname: review\ndescription: How this team reviews.\n---\n${REVIEW}: read the diff twice.\n` } };
+  const qualified = await node(t, { skills: [SKILL, review], call: 'agentrun:review' });
+  assert.deepEqual(qualified.output, { answer: 'ok' });
+  assert.ok(JSON.stringify(qualified.last).includes(REVIEW), 'the qualified name loads the user\'s skill');
+  const bare = await node(t, { skills: [SKILL, review], call: 'review' });
+  assert.deepEqual(bare.output, { answer: 'ok' });
+  assert.ok(!JSON.stringify(bare.last).includes(REVIEW), 'the bare name never loads the user\'s skill');
+  t.diagnostic(`bare Skill("review") was told: ${toolResults(bare.last).map((r) => r.text.slice(0, 120)).join(' | ')}`);
+});
+
 test("a skill that is not the host's (one the CLI bundles) is refused, and none of it reaches the model", { skip, timeout: 120_000 }, async (t) => {
   const { output, last } = await node(t, { skills: [SKILL], call: 'simplify' });
   assert.deepEqual(output, { answer: 'ok' });
@@ -164,7 +176,8 @@ test('the skills are checked when the adapter is made: a plain name, a SKILL.md 
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a', 'other: x') } }), /no description/);
   for (const path of ['../escape.md', '/abs.md', 'a/../../b.md', 'a//b.md', '.hidden', 'a/./b']) assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), [path]: 'x' } }), /not a plain relative path/, path);
   assert.match(skillProblems([{ name: 'a', files: { 'SKILL.md': md('a') } }, { name: 'a', files: { 'SKILL.md': md('a') } }]).join(';'), /given twice/);
-  for (const name of ['simplify', 'help', 'review']) assert.match(wrong({ name, files: { 'SKILL.md': md(name) } }), /one of the Claude Agent CLI's own commands or skills/, name);
+  // A name the CLI keeps for itself is no problem: that skill is served by its qualified name alone.
+  for (const name of ['simplify', 'help', 'review']) assert.deepEqual(skillProblems([{ name, files: { 'SKILL.md': md(name) } }]), [], name);
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), 'big.md': 'x'.repeat(1024 * 1024) } }), /more than 1048576/);
   assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, skills: [{ name: 'a', files: {} }], sdk: {}, standIn: { command: process.execPath } }), /agentrun-claude-agent: the skill a has no SKILL.md/);
 });

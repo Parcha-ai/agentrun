@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too, and rewrites it to the plugin-qualified one.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -38,6 +38,7 @@ import { sandboxSpawn } from './spawn.js';
 import { toolServer } from './host/tool-server.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
+import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
 import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
 
 /**
@@ -557,12 +558,12 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                   try {
                     if (hook.hook_event_name !== 'PreToolUse' || bridged(hook.tool_name)) return {};
                     // A skill only loads text into the conversation: one of the session's own, by its plugin-qualified
-                    // name or by its bare one. A bare name is rewritten to the qualified one, so it loads the session's
-                    // skill even where one of the CLI's bundled skills has the same name (the CLI would pick that one).
+                    // name or by its bare one, which is rewritten to the qualified one so the record names what loaded.
+                    // A bare name the CLI keeps for itself (a command or bundled skill) is never mapped to the session's.
                     if (skills && hook.tool_name === 'Skill') {
                       const input = (hook.tool_input ?? {}) as { skill?: unknown };
                       const asked = input.skill;
-                      const name = typeof asked === 'string' ? skills.names.find((n) => n === asked || n.slice(n.indexOf(':') + 1) === asked) : undefined;
+                      const name = typeof asked === 'string' ? skills.names.find((n) => n === asked || (!CLAUDE_AGENT_CLI_SKILL_NAMES.has(asked) && n.slice(n.indexOf(':') + 1) === asked)) : undefined;
                       if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
