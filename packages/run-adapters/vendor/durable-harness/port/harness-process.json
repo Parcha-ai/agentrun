@@ -1,0 +1,6 @@
+{
+  "package": "harness-process",
+  "upstream": "packages/harness-process/src",
+  "out": "src/process",
+  "files": ["builtins.ts", "inbox.ts", "journal.ts", "records.ts", "recovery.ts", "tail.ts", "tools.ts"]
+}

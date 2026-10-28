@@ -1,0 +1,44 @@
+{
+  "relative": { "from": ".ts", "to": ".js" },
+  "modules": {
+    "node:crypto": { "keep": true },
+    "node:fs": { "keep": true },
+    "harness-world": {
+      "to": "src/kernel/index.ts",
+      "symbols": {
+        "BLOB_PIECE_CHARS": "BLOB_PIECE_CHARS",
+        "DriveContext": "DriveContext",
+        "EffectError": "EffectError",
+        "EffectFailure": "EffectFailure",
+        "EffectInterrupted": "EffectInterrupted",
+        "EffectRecord": "EffectRecord",
+        "Fatal": "Fatal",
+        "HostTool": "HostTool",
+        "HostToolIO": "HostToolIO",
+        "ReplayPolicy": "ReplayPolicy",
+        "Restart": "Restart",
+        "SessionState": "SessionState",
+        "Submission": "Submission",
+        "blobStreamName": "blobStreamName",
+        "hostToolIO": "hostToolIO",
+        "pendingSubmissions": "pendingSubmissions",
+        "readBlobs": "readBlobs",
+        "sha256Hex": "sha256Hex",
+        "writeBlob": "writeBlob",
+        "Harness": "gap",
+        "QUEUE_PREFIX": "gap",
+        "UNAVAILABLE_STEP": "gap",
+        "Yield": "gap",
+        "durableSessions": "gap",
+        "chatRoute": "gap",
+        "defineDoc": "gap",
+        "isMark": "gap",
+        "liveStreamName": "gap",
+        "rawSessions": "gap",
+        "readJsonLines": "gap",
+        "vercelAnchors": "gap",
+        "workRemains": "gap"
+      }
+    }
+  }
+}

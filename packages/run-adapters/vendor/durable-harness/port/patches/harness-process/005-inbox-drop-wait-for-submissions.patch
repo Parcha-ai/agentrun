@@ -1,0 +1,51 @@
+Patch: 005-inbox-drop-wait-for-submissions
+Reason: waitForSubmissions and WaitOptions are not used by any harness in this package and read hints the host does not offer; the file keeps what is used
+Upstream: ours
+Pins: the shared process layer exports no waitForSubmissions
+---
+diff --git a/packages/harness-process/src/inbox.ts b/packages/harness-process/src/inbox.ts
+index 0f588d2..9d44419 100644
+--- a/packages/harness-process/src/inbox.ts
++++ b/packages/harness-process/src/inbox.ts
+@@ -18,41 +18,3 @@ export async function placeSubmissions(ctx: DriveContext, submissions: Submissio
+   const ids = submissions.map((s) => s.id);
+   await ctx.effect(`place:${ids[0]}`, { name, replay: 'safe', input: { ids }, placed: ids }, async () => true);
+ }
+-
+-export interface WaitOptions {
+-  /** How often to read the inbox when the kernel offers no hints. Default 500 ms (5 s with hints). */
+-  pollMs?: number;
+-  /** Stop waiting (resolves `[]`). `ctx.signal` always stops it too. */
+-  signal?: AbortSignal;
+-}
+-
+-/**
+- * The submissions waiting to be placed, as soon as there are any: refreshes
+- * the log on every hint (`ctx.onHint`) and on a poll. Resolves `[]` when
+- * `ctx.signal` or `options.signal` aborts. A drive that has nothing left to
+- * do should return instead of waiting; this is for a harness that keeps its
+- * runtime up while a turn runs (steers) or for a short idle grace.
+- */
+-export async function waitForSubmissions(ctx: DriveContext, options: WaitOptions = {}): Promise<Submission[]> {
+-  const signals = [ctx.signal, options.signal].filter((s): s is AbortSignal => !!s);
+-  const stop = signals.length > 1 ? AbortSignal.any(signals) : signals[0]!;
+-  const pollMs = options.pollMs ?? (ctx.onHint ? 5000 : 500);
+-  for (;;) {
+-    if (stop.aborted) return [];
+-    const pending = ctx.pending();
+-    if (pending.length > 0) return pending;
+-    await new Promise<void>((resolve) => {
+-      const timer = setTimeout(done, pollMs);
+-      const off = ctx.onHint?.(() => done());
+-      stop.addEventListener('abort', done, { once: true });
+-      function done() {
+-        clearTimeout(timer);
+-        off?.();
+-        stop.removeEventListener('abort', done);
+-        resolve();
+-      }
+-    });
+-    if (stop.aborted) return [];
+-    await ctx.refresh();
+-  }
+-}
