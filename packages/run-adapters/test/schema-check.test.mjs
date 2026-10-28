@@ -26,3 +26,12 @@ test('every place a schema is invalid is named, once each', () => {
   const problems = toolSchemaProblems('t', { type: 'object', properties: { a: { type: 'strng' }, n: { type: 'number', minimum: 'x' } }, required: 'a' });
   assert.deepEqual(pointers('t', problems).sort(), ['/properties/a/type', '/properties/n/minimum', '/required']);
 });
+
+test('a schema that is not JSON (a cycle in its objects, a BigInt) is refused at once, and the check returns', () => {
+  const cyclic = { type: 'object', properties: {} };
+  cyclic.properties.child = cyclic;
+  const [problem, ...rest] = toolSchemaProblems('loop', cyclic);
+  assert.match(problem, /^loop: \/: the schema is not JSON \(.*circular/i);
+  assert.deepEqual(rest, []);
+  assert.match(toolSchemaProblems('big', { type: 'object', properties: { n: { type: 'integer', maximum: 10n } } })[0], /^big: \/: the schema is not JSON/);
+});
