@@ -13,6 +13,7 @@ import { createRegistry, type Extension, type Harness, type Tx } from "@earendil
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
+import { markRequests } from "./request-start.js";
 import { readJson, RUN_META } from "./files.js";
 import { nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
@@ -49,7 +50,9 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
-  const models = cap === undefined ? chosen.models : await capModels(chosen.models, cap, spentIn(join(where.store, RUN_STORE_FILE)));
+  // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves.
+  const marked = await markRequests(chosen.models);
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)));
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
@@ -85,7 +88,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic") {
     const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
     const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
-    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } } } as unknown as AppOptions;
+    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
@@ -117,6 +120,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);
   const onOpen = async (durable: DurableRun) => {
+    marked.open(durable);
     const started = { runId: run.id, storePath: join(where.store, RUN_STORE_FILE), agentId: run.agent, revision: revision as Extract<Revision, { kind: "workflow" }> };
     const outcome = await startWorkflowRevision({ harness: durable.harness as never, workflows, context: BACKGROUND_CONTEXT, run: started, input, tools: inspectWorkflow(revision.body.workflow).requires.tools });
     await letGo(durable.harness);
