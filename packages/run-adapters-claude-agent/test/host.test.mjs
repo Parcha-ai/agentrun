@@ -401,3 +401,18 @@ test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs 
   assert.equal(out.code, 0);
   assert.equal(out.out, '1');
 });
+
+test("a request on the session's small model is asked about and priced as the small model", async () => {
+  const asked = [];
+  const rates = { 'claude-main': 15, 'claude-small': 1 };
+  const proxy = await startModelProxy({ policy, model: 'claude-main', origin: 'https://provider.invalid', credential: () => 'provider-secret', price: (model, u) => (u.input + u.output) * rates[model] / 1e6, hooks: { beforeRequest: async (r) => { asked.push(r.model); }, afterRequest: async (u) => { asked.push(u.usd); } }, fetch: async () => new Response(RECORDED_STREAM, { headers: { 'content-type': 'text/event-stream' } }) }, 'session-key');
+  try {
+    for (const model of ['claude-small', 'claude-main']) {
+      const res = await fetch(`${proxy.url}/v1/messages?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer session-key', 'anthropic-version': '2023-06-01' }, body: JSON.stringify(body({ model, stream: true })) });
+      await res.text();
+    }
+  } finally {
+    await proxy.close();
+  }
+  assert.deepEqual(asked, ['claude-small', (11 + 15) * 1 / 1e6, 'claude-main', (11 + 15) * 15 / 1e6]);
+});
