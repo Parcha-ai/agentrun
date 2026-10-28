@@ -6,15 +6,35 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { ChildProcess } from 'node:child_process';
+import { Server, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { fold, readEvents } from '../scripts/recording/fold.mjs';
 import { validateRecording } from '../scripts/recording/validate.mjs';
 import { effectiveBoxes } from '../packages/harness/dist/demo-spec.js';
 import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, tapBox, JEV_LIST_PRICE, jevCost, killsOf, maxUsdOf, parseInput, plansOf } from '@parcha/agentrun-harness';
 
 export const ORIGINAL = { ...process.env };
+
+/** What keeps a test file's process alive once its tests are done: a child process, a server, or a pipe a child's own child still holds open after the child exited. */
+export const leftOpen = () => process._getActiveHandles().filter((handle) => handle instanceof ChildProcess || handle instanceof Server || (handle instanceof Socket && ![process.stdin, process.stdout, process.stderr].includes(handle)));
+const nameOf = (handle) => handle instanceof ChildProcess ? `child ${handle.pid} (${handle.spawnargs.slice(1).join(' ').slice(0, 160)})` : handle instanceof Server ? `server ${JSON.stringify(handle.address())}` : 'a pipe still held open';
+
+/** node --test reports the files in order and waits for each file's process to exit: a file whose tests all passed but which left something open would hold the report
+ *  of every later file until the job's limit. After a file's last test, what is still open after `ms` is named, closed, and fails the file. */
+export async function closeLeftOpen(ms = 10_000) {
+  for (let waited = 0; leftOpen().length && waited < ms; waited += 100) await new Promise((resolve) => setTimeout(resolve, 100));
+  const open = leftOpen();
+  if (!open.length) return;
+  const names = open.map(nameOf);
+  for (const handle of open) {
+    if (handle instanceof ChildProcess) { handle.kill('SIGKILL'); for (const stream of handle.stdio) stream?.destroy(); } else if (handle instanceof Server) { handle.closeAllConnections?.(); handle.close(); } else handle.destroy();
+  }
+  throw new Error(`left open after the file's last test, now closed: ${names.join('; ')}`);
+}
+after(() => closeLeftOpen());
 
 export const FIXTURE = new URL('./reference/demo-fixture.ts', import.meta.url).href;
 
