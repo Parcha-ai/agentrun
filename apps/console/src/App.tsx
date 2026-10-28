@@ -87,11 +87,27 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
   const [pick, setPick] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (where.section !== "playground" && where.section !== "operator") return;
-    allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents).then((a) => { setAgents(a); setPick((p) => p ?? a[0]?.agent_id ?? null); }).catch((e) => setError(String(e)));
-  }, [v2, where.section]);
-  useEffect(() => { if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then(setRevs).catch(() => setRevs([])); }, [v2, pick]);
+    setStartError(null);
+    allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents)
+      .then((a) => {
+        setAgents(a);
+        // Keep the pick only while it is an active agent: one archived since is not offered, so not picked either.
+        const active = a.filter((x) => !x.archived_at);
+        setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
+      })
+      .catch((e) => setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)));
+  }, [v2, where.section, retry]);
+  const revsAsked = useRef(0);
+  useEffect(() => {
+    // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
+    const n = ++revsAsked.current;
+    setRevs([]);
+    if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
+  }, [v2, pick]);
   const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
     const t0 = performance.now();
     try {
@@ -105,7 +121,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   return (
     <Shell active={where.section} onNavigate={nav} onSignOut={() => { v2.signOut().catch(() => {}).finally(onSignedOut); }}>
-      {where.section === "operator"
+      {(where.section === "operator" || where.section === "playground") && startError
+        ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
+        : where.section === "operator"
         ? agents && <Operator agents={agents} error={error} onStart={async (agentId, text, key) => { const r = await send(agentId, { input: { content: text } }, key); if (r.runId) { go(`#/runs/${encodeURIComponent(r.runId)}`); return null; } return (r.body as { error?: { message?: string } }).error?.message ?? `The server answered ${r.status}.`; }} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)} />

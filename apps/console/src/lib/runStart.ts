@@ -48,3 +48,7 @@ export function curlFor(origin: string, agentId: string, body: StartBody, key: s
     `  -d ${sh(JSON.stringify(body))}`,
   ].join("\n");
 }
+
+/** A run started only when the server said so (2xx). A lost answer (no status) or a refusal keeps the request's key, so
+ *  sending it again is the same request and cannot start a second run. */
+export const started = (status: number): boolean => status >= 200 && status < 300;

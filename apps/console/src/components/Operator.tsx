@@ -1,5 +1,5 @@
 import { ArrowUp } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Agent } from "@/lib/agentForm";
 import { keeper, startBody } from "@/lib/runStart";
 
@@ -11,9 +11,11 @@ export function Operator({ agents, onStart, error }: { agents: Agent[]; onStart?
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const keys = useMemo(() => keeper(), []);
+  // The list can change under the page (the first agent made, one archived): keep a selection that is in it.
+  useEffect(() => { if (!agentic.some((a) => a.agent_id === agentId)) setAgentId(agentic[0]?.agent_id ?? ""); }, [agents]); // eslint-disable-line react-hooks/exhaustive-deps
   const start = async () => {
     const built = startBody("agentic", { text });
-    if (!built.ok || !onStart || !agentId) return;
+    if (!built.ok || !onStart || !agentId || sending) return;
     setSending(true);
     const refused = await onStart(agentId, text, keys.keyFor(agentId, built.body));
     setSending(false); setProblem(refused);
