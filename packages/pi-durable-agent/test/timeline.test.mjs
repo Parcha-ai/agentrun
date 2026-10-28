@@ -221,6 +221,10 @@ test("cost: a request marked as it left and cut before its first content counts,
   assert.deepEqual(timelineOf([user("hi", 0), started, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "answered: its row");
   // A run written before requests were marked reads as it did.
   assert.deepEqual(timelineOf([a]).at(-1).usage, { usd: 0.01, requests: 1 });
+  // A run written before requests were marked, continued after: its earlier answers are not the marked requests' entries.
+  assert.deepEqual(timelineOf([a, started, ended]).at(-1).usage, { usd: null, requests: 2 }, "the new request was cut");
+  assert.deepEqual(timelineOf([a, started, assistant([{ type: "text", text: "b" }], 1)]).at(-1).usage, { usd: 0.02, requests: 2 }, "the new request answered");
+  assert.deepEqual(timelineOf([a, started], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "settled with the new one unanswered");
 });
 
 test("cost: a compaction's summary is a paid request: its cost is summed; one aborted, or open when the run settles, makes the cost unknown; one in flight beside a generation does not", () => {
