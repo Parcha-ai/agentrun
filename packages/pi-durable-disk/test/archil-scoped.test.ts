@@ -1,6 +1,7 @@
-// bin/archil-scoped, run for real with its archil, systemd-run and cgroup file pointed at stubs: `mount` takes its token
-// as one line on stdin and puts it only in the environment of the exec; no token refuses the mount; other verbs pass
-// through without reading stdin. No Archil, no root.
+// bin/archil-scoped, run for real with its archil, systemd-run, cgroup file and mount table pointed at stubs: root runs
+// archil only in the shapes the claim uses, each with exact arguments, and refuses anything else with exit 2 before
+// archil runs. `mount` takes its token as one line on stdin and puts it only in the environment of the exec; no token
+// refuses the mount; the other verbs leave stdin unread. No Archil, no root.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -11,10 +12,24 @@ import { ARCHIL_SCOPED } from "../src/claim.ts";
 import { disposeAfter } from "./_dispose.ts";
 
 const TOKEN = `tok-${"5".repeat(40)}`;
+const REGION = "aws-us-east-1";
 
-function wrapper(cgroup: string) {
+/**
+ * The wrapper over a real <root>/runs/r1 (listed as a fuse.archil mount) and an unlisted <root>/runs/r2. `rootLink`:
+ * the root is reached through a link; `mpLink`: runs/r1 is a link to a directory elsewhere.
+ */
+function wrapper(cgroup: string, opts: { rootLink?: boolean; mpLink?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pda-scoped-"));
   const out = join(dir, "seen");
+  const real = join(dir, "mnt");
+  mkdirSync(join(real, "runs", "r2"), { recursive: true });
+  if (opts.mpLink) {
+    mkdirSync(join(dir, "elsewhere"));
+    symlinkSync(join(dir, "elsewhere"), join(real, "runs", "r1"));
+  } else mkdirSync(join(real, "runs", "r1"));
+  if (opts.rootLink) symlinkSync(real, join(dir, "link"));
+  const root = opts.rootLink ? join(dir, "link") : real;
+  const mp = join(root, "runs", "r1");
   const stub = (name: string, body: string) => {
     const p = join(dir, name);
     writeFileSync(p, `#!/bin/sh\n${body}\n`);
@@ -27,11 +42,15 @@ function wrapper(cgroup: string) {
   const systemdRun = stub("systemd-run", `echo "scope=$*" > '${out}.scope'; while [ "$1" != -- ]; do shift; done; shift; exec "$@"`);
   const cgroupFile = join(dir, "cgroup");
   writeFileSync(cgroupFile, `${cgroup}\n`);
-  const script = readFileSync(ARCHIL_SCOPED, "utf8")
+  const mounts = join(dir, "mounts");
+  writeFileSync(mounts, `dsk-1:/runs/r1[${REGION}] ${mp} fuse.archil rw,allow_other 0 0\nproc /proc proc rw 0 0\n`);
+  const source = readFileSync(ARCHIL_SCOPED, "utf8");
+  const script = source
     .replace("ARCHIL=/usr/bin/archil", `ARCHIL='${archil}'`)
+    .replace("MOUNTS=/proc/self/mounts", `MOUNTS='${mounts}'`)
     .replace("/usr/bin/systemd-run", systemdRun)
     .replace("/proc/self/cgroup", cgroupFile);
-  assert.notEqual(script, readFileSync(ARCHIL_SCOPED, "utf8"));
+  assert.notEqual(script, source);
   const path = stub("archil-scoped", script.replace(/^#!\/bin\/sh\n/, ""));
   const run = (args: string[], input: string) => {
     const r = spawnSync(path, args, { input, encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" } });
@@ -41,18 +60,19 @@ function wrapper(cgroup: string) {
     rmSync(`${out}.scope`, { force: true });
     return { status: r.status, stderr: r.stderr, seen, scope };
   };
-  return { run, archil, [Symbol.dispose]: () => rmSync(dir, { recursive: true, force: true }) };
+  return { run, archil, root, mp, [Symbol.dispose]: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const OUTSIDE = "0::/user.slice/user-1000.slice/session-3.scope";
 const SERVICE = "0::/system.slice/pda-r1.service";
+const mountOf = (mp: string, target = "dsk-1:/runs/r1") => ["mount", target, mp, "--region", REGION];
 
 test("mount takes the token from the first line of stdin and gives it only to archil", () => {
   const w = disposeAfter(wrapper(OUTSIDE));
   for (const [input, expect] of [[`${TOKEN}\n`, TOKEN], [TOKEN, TOKEN], [`${TOKEN}\nsecond line\n`, TOKEN]] as const) {
-    const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1", "--region", "aws-us-east-1"], input);
+    const r = w.run(mountOf(w.mp), input);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.seen?.argv, "mount dsk-1:/runs/r1 /mnt/archil/runs/r1 --region aws-us-east-1");
+    assert.equal(r.seen?.argv, `mount dsk-1:/runs/r1 ${w.mp} --region ${REGION}`);
     assert.equal(r.seen?.token, expect);
     assert.ok(!r.seen?.argv.includes(TOKEN));
     assert.equal(r.scope, null, "outside a system service there is no scope");
@@ -62,7 +82,7 @@ test("mount takes the token from the first line of stdin and gives it only to ar
 test("mount refuses no token: empty stdin or an empty first line, and archil never runs", () => {
   const w = disposeAfter(wrapper(OUTSIDE));
   for (const input of ["", "\n", "\nlater\n"]) {
-    const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1"], input);
+    const r = w.run(mountOf(w.mp), input);
     assert.equal(r.status, 2, JSON.stringify(input));
     assert.match(r.stderr, /no mount token on stdin/);
     assert.equal(r.seen, null);
@@ -71,24 +91,68 @@ test("mount refuses no token: empty stdin or an empty first line, and archil nev
 
 test("inside a system service, mount runs in its own scope and the token still reaches only archil", () => {
   const w = disposeAfter(wrapper(SERVICE));
-  const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1"], `${TOKEN}\n`);
+  const r = w.run(mountOf(w.mp), `${TOKEN}\n`);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.scope ?? "", new RegExp(`^scope=--scope --quiet --collect --unit=pda-r1-fuse-\\d+ -- ${w.archil} mount dsk-1:/runs/r1 /mnt/archil/runs/r1$`));
+  assert.match(r.scope ?? "", new RegExp(`^scope=--scope --quiet --collect --unit=pda-r1-fuse-\\d+ -- ${w.archil} mount dsk-1:/runs/r1 ${w.mp} --region ${REGION}$`));
   assert.ok(!r.scope?.includes(TOKEN), "the token is not an argument of systemd-run");
   assert.equal(r.seen?.token, TOKEN);
 });
 
-test("other verbs pass through untouched: no token, stdin left unread", () => {
-  const w = disposeAfter(wrapper(SERVICE));
-  for (const verb of [["sync", "/mnt/x"], ["unmount", "/mnt/x"], ["delegations", "--json", "/mnt/x"]]) {
-    const r = w.run(verb, "left-for-archil\n");
+test("each shape the claim uses reaches archil with exactly its arguments; only mount reads stdin", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const mounts: string[][] = [mountOf(w.mp), ["mount", "--force", "dsk-1:/runs/r1", w.mp, "--region", REGION], mountOf(w.mp, "dsk-1:/data/set.v2")];
+  for (const args of mounts) {
+    const r = w.run(args, `${TOKEN}\n`);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.seen?.argv, verb.join(" "));
+    assert.equal(r.seen?.argv, args.join(" "));
+    assert.equal(r.seen?.token, TOKEN);
+  }
+  for (const args of [["unmount", w.mp], ["checkin", w.mp], ["delegations", "--json", w.mp]]) {
+    const r = w.run(args, "left-for-archil\n");
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.seen?.argv, args.join(" "));
     assert.equal(r.seen?.token, "<unset>");
     assert.equal(r.seen?.stdin, "left-for-archil");
-    assert.equal(r.scope, null);
   }
 });
+
+// Each refused before archil runs, with exit 2. `args` is built over the rig's paths. The rig's mount table lists
+// runs/r1 by its own name even when it is a link, which a kernel's never does: the wrapper must refuse the link itself.
+type Rig = { root: string; mp: string };
+const REFUSED: [string, (w: Rig) => string[], { rootLink?: boolean; mpLink?: boolean }?][] = [
+  ["a mountpoint at /etc", () => mountOf("/etc")],
+  ["a mountpoint at /usr/local/bin", () => mountOf("/usr/local/bin")],
+  ["unmount /usr", () => ["unmount", "/usr"]],
+  ["a ../ in the mountpoint", (w) => mountOf(`${w.root}/runs/r1/../../../etc`)],
+  ["a ../ in the disk path", (w) => mountOf(w.mp, "dsk-1:/runs/../etc")],
+  ["a disk path with an absolute second root", (w) => mountOf(w.mp, "dsk-1://etc")],
+  ["a symlinked root", (w) => mountOf(w.mp), { rootLink: true }],
+  ["a symlinked mountpoint", (w) => mountOf(w.mp), { mpLink: true }],
+  ["unmount through a symlinked mountpoint", (w) => ["unmount", w.mp], { mpLink: true }],
+  ["unmount of a path no archil mount is listed at", (w) => ["unmount", `${w.root}/runs/r2`]],
+  ["a missing --region", (w) => ["mount", "dsk-1:/runs/r1", w.mp]],
+  ["an extra flag after the region", (w) => [...mountOf(w.mp), "--shared"]],
+  ["an extra flag before the target", (w) => ["mount", "--read-only", "dsk-1:/runs/r1", w.mp, "--region", REGION]],
+  ["--force after the target", (w) => ["mount", "dsk-1:/runs/r1", "--force", w.mp, "--region", REGION]],
+  ["--force at the end", (w) => [...mountOf(w.mp), "--force"]],
+  ["an unknown verb", (w) => ["sync", w.mp]],
+  ["no verb", () => []],
+  ["delegations without --json", (w) => ["delegations", w.mp]],
+  ["checkin with an extra argument", (w) => ["checkin", w.mp, "--all"]],
+  ["a bad disk token", (w) => mountOf(w.mp, "dsk-1;id:/runs/r1")],
+  ["a bad region token", (w) => ["mount", "dsk-1:/runs/r1", w.mp, "--region", "aws-us-east-1/x"]],
+  ["a newline in the mountpoint", (w) => mountOf(`${w.mp}\n/etc`)],
+  ["a newline in an unmount's mountpoint", (w) => ["unmount", `${w.mp}\n/usr`]],
+];
+for (const [name, args, opts] of REFUSED) {
+  test(`refused: ${name}`, () => {
+    const w = disposeAfter(wrapper(OUTSIDE, opts));
+    const r = w.run(args(w), `${TOKEN}\nleft-for-archil\n`);
+    assert.equal(r.status, 2, `exit ${r.status}: ${r.stderr}`);
+    assert.match(r.stderr, /^archil-scoped: /m);
+    assert.equal(r.seen, null, `archil ran with ${JSON.stringify(r.seen?.argv)}`);
+  });
+}
 
 // ---- retire: move a mount the kernel will not unmount (Sysbox) aside and kill exactly its daemon ----------------------
 
