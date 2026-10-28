@@ -98,10 +98,13 @@ describe("fork", () => {
     try {
       await sourceRun(disk, ["hello"]);
       const roots: string[] = [];
+      const reuse: unknown[] = [];
       const mountRoot = disk.path("mnt");
-      await fork(SRC, "m1", { control: disk, mountRoot, acquire: async (o) => (roots.push(o.mountRoot ?? ""), disk.acquire(o.ref)) });
+      await fork(SRC, "m1", { control: disk, mountRoot, acquire: async (o) => (roots.push(o.mountRoot ?? ""), reuse.push(o.reuse), disk.acquire(o.ref)) });
       // The archil wrapper takes only <mountRoot>/runs/<run> under a mount root root owns: a fork may make no root.
       assert.deepEqual(roots, [mountRoot, mountRoot]);
+      // A fork shares each run's mountpoint, so it never rides on a live mount another holder (another fork) may release.
+      assert.deepEqual(reuse, [false, false]);
     } finally {
       disk.remove();
     }

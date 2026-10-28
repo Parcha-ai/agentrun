@@ -563,6 +563,21 @@ test("a dead mount that fusermount cannot clean fails DEAD_MOUNT_CLEANUP_FAILED"
   assert.equal(r.calls("archil", "mount").length, 0);
 });
 
+// Two holders of one run on one host, as two forks of one source are: the second must not ride on the first's live
+// mount, or the first's release unmounts it from under the second mid-read. A restart in place still reuses (default).
+test("a second holder that may not reuse a live mount of the run is refused as held, and the first's mount is untouched", async () => {
+  const r = disposeAfter(rig());
+  const first = await acquire(r.opts);
+  const second = await acquire({ ...r.opts, reuse: false }).then(
+    (c) => c,
+    (e: unknown) => e,
+  );
+  assert.ok(second instanceof HeldError, `the second holder rode on the first's mount: ${second instanceof Error ? second.message : "reused it"}`);
+  assert.ok(r.read().mounts[r.root], "the first holder's mount is untouched");
+  assert.equal(r.calls("archil", "mount").length, 1, "no second mount was made");
+  await first.release();
+});
+
 test("a mountpoint that cannot be created is MOUNT_FAILED; under a root-owned root it is made by the wrapper's prepare through sudo", { skip: process.getuid?.() === 0 }, async () => {
   for (const sudo of [false, true]) {
     const r = disposeAfter(rig({ sudo }));
