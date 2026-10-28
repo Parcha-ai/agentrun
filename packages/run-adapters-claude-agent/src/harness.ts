@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -30,12 +30,12 @@ import {
   settleAbandonedModelSteps,
   toolBridge,
   waitForSubmissions,
-  zodShapeFromJsonSchema,
 } from './host/process.js';
 import { durableEnv, nativeModelId } from './env.js';
 import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
+import { toolServer } from './host/tool-server.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
@@ -107,7 +107,7 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
  */
 
 /** The SDK functions the harness calls (the module `@anthropic-ai/claude-agent-sdk`, a peer dependency). */
-export type ClaudeAgentSdk = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'query' | 'createSdkMcpServer' | 'tool'>;
+export type ClaudeAgentSdk = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'query'>;
 type QueryOptions = NonNullable<Parameters<ClaudeAgentSdk['query']>[0]['options']>;
 type UserMessage = import('@anthropic-ai/claude-agent-sdk').SDKUserMessage;
 
@@ -421,7 +421,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       }
       const sandbox = options.sandbox;
       if (!sandbox) throw sandboxRequired();
-      const [{ query, createSdkMcpServer, tool }, { z }] = await Promise.all([loadSdk(), import('zod')]);
+      const { query } = await loadSdk();
       const journal = new NativeJournal(ctx);
       const records = await journal.read();
       const store = new JournalSessionStore(journal, { records, coalesceMs: options.coalesceMs ?? 150 });
@@ -502,27 +502,22 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         /** Bash calls whose timeout the invocation clamped: their outcome, if it timed out, says so. */
         const clamped = new Map<string, number>();
         const bridged = (name: string) => name.startsWith(`mcp__${MCP_SERVER}__`);
-        const server = createSdkMcpServer({
-          name: MCP_SERVER,
-          version: '1.0.0',
-          tools: bridge.tools.map((t) =>
-            tool(t.name, t.description, zodShapeFromJsonSchema(t.inputSchema, z), async (args, extra) => {
-              const callId = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta?.['claudecode/toolUseId'];
-              if (typeof callId !== 'string') return errorResult(`${t.name} was not run: the call carries no tool_use id`);
-              await transcript.beforeCall(callId, t.name);
-              const running = t.call(args, callId);
-              calls.add(running);
-              try {
-                const result = await running;
-                return { content: [{ type: 'text' as const, text: result.text }], ...(result.isError ? { isError: true } : {}) };
-              } catch (err) {
-                // The barrier timed out (nothing ran), or the drive stopped (the bridge halted it).
-                return errorResult(`${t.name} was not run: ${(err as Error)?.message ?? String(err)}`);
-              } finally {
-                calls.delete(running);
-              }
-            })
-          ),
+        const byName = new Map(bridge.tools.map((t) => [t.name, t]));
+        const server = await toolServer(MCP_SERVER, bridge.tools, async (name, args, callId) => {
+          const t = byName.get(name)!;
+          if (typeof callId !== 'string') return errorResult(`${t.name} was not run: the call carries no tool_use id`);
+          await transcript.beforeCall(callId, t.name);
+          const running = t.call(args, callId);
+          calls.add(running);
+          try {
+            const result = await running;
+            return { content: [{ type: 'text' as const, text: result.text }], ...(result.isError ? { isError: true } : {}) };
+          } catch (err) {
+            // The barrier timed out (nothing ran), or the drive stopped (the bridge halted it).
+            return errorResult(`${t.name} was not run: ${(err as Error)?.message ?? String(err)}`);
+          } finally {
+            calls.delete(running);
+          }
         });
 
         const allow = (updatedInput?: Record<string, unknown>) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'allow' as const, ...(updatedInput ? { updatedInput } : {}) } });
@@ -648,6 +643,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ...(smallModel ? { smallModel } : {}),
           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
           ...(sandbox.env ? { extra: sandbox.env } : {}),
+          toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
         });
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));

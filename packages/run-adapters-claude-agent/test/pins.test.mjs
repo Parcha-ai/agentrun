@@ -75,9 +75,9 @@ test('the installed SDK and its pinned CLI pass', { skip: !claudeAgentExecutable
   assert.equal(cliPath, claudeAgentExecutable());
 });
 
-test('an injected SDK with no zod beside the adapter is refused when the adapter is made, typed, before any turn', () => {
-  const noZod = (name) => (name === 'zod' ? undefined : '0.3.286');
-  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'none') }, noZod), (e) => e instanceof ClaudeAgentNotInstalled && /zod/.test(e.detail));
+test('an injected SDK with no MCP library beside the adapter is refused when the adapter is made, typed, before any turn', () => {
+  const noMcp = (name) => (name === '@modelcontextprotocol/sdk' ? undefined : '0.3.286');
+  assert.throws(() => verifyClaudeAgent({ sdk: fakeSdk(), sdkVersion: '0.3.286', cliPath: join(ROOT, 'none') }, noMcp), (e) => e instanceof ClaudeAgentNotInstalled && /@modelcontextprotocol\/sdk/.test(e.detail));
 });
 
 test("the pinned CLI is found beside the adapter's install, whatever the process's working directory", { skip: !claudeAgentExecutable() && 'the pinned CLI is not installed here' }, () => {

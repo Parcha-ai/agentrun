@@ -202,9 +202,9 @@ export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk"
   const sdkVersion = options.sdk ? options.sdkVersion : installed("@anthropic-ai/claude-agent-sdk");
   if (!options.sdk && sdkVersion === undefined) throw new ClaudeAgentNotInstalled("@anthropic-ai/claude-agent-sdk is not installed beside the adapter, and no module was given (sdk)");
   if (sdkVersion !== undefined && sdkVersion !== CLAUDE_AGENT_SDK_VERSION) throw new ClaudeAgentPinMismatch("sdk_version", CLAUDE_AGENT_SDK_VERSION, sdkVersion);
-  // The harness builds the session's tool schemas with zod, imported from here, whichever SDK runs: an injected SDK
-  // does not bring it, so a missing one is refused now, not at the first turn.
-  if (installed("zod") === undefined) throw new ClaudeAgentNotInstalled("zod is not installed beside the adapter (the Agent SDK's peer, which the harness builds its tool schemas with)");
+  // The session's tools are served by an MCP server built here (host/tool-server.ts), whichever SDK runs: an injected
+  // SDK does not bring the MCP library, so a missing one is refused now, not at the first turn.
+  if (installed("@modelcontextprotocol/sdk") === undefined) throw new ClaudeAgentNotInstalled("@modelcontextprotocol/sdk is not installed beside the adapter (the Agent SDK's peer, which serves the session's tools)");
   const cli = verifyClaudeAgentCli(options.cliPath ?? findClaudeExecutable());
   if (cli instanceof Error) throw cli;
   return { cliPath: cli.path };
