@@ -66,6 +66,8 @@ export interface ProviderPolicy {
 export interface ModelUsageReport extends ProxyUsage {
   usd: number | null;
   estimated?: boolean;
+  /** The ids the response's headers gave it (`providerIdsOf`), when they came. */
+  providerIds?: Record<string, string>;
 }
 
 export interface ModelProxyHooks {
@@ -74,6 +76,9 @@ export interface ModelProxyHooks {
   beforeRequest(request: { model: string }): Promise<unknown>;
   /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
   afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
+  /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
+   *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
+  responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
 }
 
 export interface ModelProxyOptions {
@@ -107,6 +112,22 @@ const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** How much of a response's start and end the proxy keeps to read its usage from. */
 const USAGE_WINDOW = 64 * 1024;
+
+/** A response header that names the request: the provider's `request-id` (`x-request-id`), or a gateway's own call id
+ *  (LiteLLM's `x-litellm-call-id`, the id its spend log records; `llm_provider-request-id`, the provider's passed on). */
+const ID_HEADER = /^(?:[a-z0-9]+[-_])*(?:request|call)[-_]id$/;
+/** What an id looks like: nothing else (a cookie, a token, prose) is ever kept. */
+const ID_VALUE = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+/** The ids a response's headers give its request, by header name, so a run's books can be joined to the provider's (or
+ *  a gateway's) request by request; undefined when there are none. Only id-named headers with id-shaped values. */
+export function providerIdsOf(headers: Headers): Record<string, string> | undefined {
+  const ids: Record<string, string> = {};
+  headers.forEach((value, name) => {
+    if (ID_HEADER.test(name) && ID_VALUE.test(value)) ids[name] = value;
+  });
+  return Object.keys(ids).length ? ids : undefined;
+}
 
 export class ProxyRefusal extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "ProxyRefusal"; }
@@ -313,6 +334,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let answered: { ok: boolean } | undefined;
     /** That the provider's answer began, with its status: what a client that left before the end had of it. */
     let began: { ok: boolean } | undefined;
+    /** The ids its headers gave it. */
+    let ids: Record<string, string> | undefined;
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
@@ -322,6 +345,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         options.onResponse?.({ method: route.method, path: route.path, free: route.free === true, status: upstream.status });
       } catch (error) {
         say(`model proxy (${policy.id}): onResponse threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+      // Its ids are kept before its body is read: from here the provider has seen it, whatever cuts it off.
+      ids = route.free ? undefined : providerIdsOf(upstream.headers);
+      if (ids && hooks.responded) {
+        try {
+          await hooks.responded(ids, ticket);
+        } catch (error) {
+          say(`model proxy (${policy.id}): responded threw; the request's ids are kept with its booking only`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
       }
       began = { ok: upstream.ok };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
@@ -392,7 +424,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
     }
     try {
-      await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) }, ticket);
+      await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}), ...(ids ? { providerIds: ids } : {}) }, ticket);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }

@@ -18,7 +18,7 @@ export const SUBMIT_TOOL = "submit";
 /** The records the runner keeps beside the adapter's own, in each session. */
 /** `request` is written before a paid request leaves, `turn` when it has answered with its usage: a request a crash cut off
  *  keeps its `request` and has no `turn`. */
-export const RUNNER_RECORDS = { request: "runner.request", turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
+export const RUNNER_RECORDS = { request: "runner.request", response: "runner.response", turn: "runner.turn", submit: "runner.submit", accepted: "runner.accepted" } as const;
 
 /** What the host is asked before each paid request. A `refuse` ends the node, final. */
 export type BeforeRequest = (request: {
@@ -132,6 +132,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     spentUsd = spentUsd === null || data.usd === null ? null : spentUsd + (data.usd ?? 0);
   }
   if (inherited.some((t) => !answered.has(t))) spentUsd = null;
+  // The ids each request's response gave it, kept as its headers arrived: a request cut off after them reached the provider.
+  const responses = new Map<number, Record<string, string>>();
+  for (const r of options.records) {
+    if (r.kind !== RUNNER_RECORDS.response) continue;
+    const data = r.data as { turn?: number; providerIds?: Record<string, string> };
+    if (typeof data.turn === "number" && data.providerIds) responses.set(data.turn, data.providerIds);
+  }
   // This process's requests in flight, oldest first: the turn each was admitted as, and its model.
   const open: { turn: number; model: string }[] = [];
   // Admissions run one at a time (the turn limit, the host's check and the durable write), so two requests asked for at
@@ -159,6 +166,10 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       admitting = admitted.catch(() => {});
       return admitted;
     },
+    responded: async (ids: Record<string, string>, ticket?: ModelTicket) => {
+      const turn = ticket?.turn ?? open[0]?.turn ?? turns;
+      await append([{ kind: RUNNER_RECORDS.response, data: { turn, providerIds: ids } }]);
+    },
     afterRequest: async (usage: ModelUsage, ticket?: ModelTicket) => {
       // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
       const turn = ticket?.turn ?? open[0]?.turn ?? turns;
@@ -166,7 +177,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       if (at >= 0) open.splice(at, 1);
       spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
       try {
-        await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd } }]);
+        await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }]);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
         if (!options.stopped?.()) end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
@@ -187,11 +198,19 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       // Only requests an earlier process admitted: one this process has in flight is not cut.
       const numbers = inherited.filter((t) => !answered.has(t));
       if (numbers.length === 0) return;
-      const cut: ModelUsage = { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true };
-      await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { usd: null, cut: true, turn } })));
+      // A cut request whose response had begun carries the ids it gave: the provider saw it, under them. One with none may
+      // still have reached the provider before any answer; both are booked at an unknown price.
+      const cutOf = (turn: number): SessionRecord["data"] => {
+        const providerIds = responses.get(turn);
+        return providerIds ? { usd: null, cut: true, turn, providerIds } : { usd: null, cut: true, turn };
+      };
+      await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: cutOf(turn) })));
       for (const turn of numbers) answered.add(turn);
       spentUsd = null;
-      for (const turn of numbers) emit({ type: "request_end", turn, usage: cut });
+      for (const turn of numbers) {
+        const providerIds = responses.get(turn);
+        emit({ type: "request_end", turn, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true, ...(providerIds ? { providerIds } : {}) } });
+      }
     },
   };
 }
