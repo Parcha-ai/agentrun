@@ -1,0 +1,5 @@
+---
+packages: repo
+kind: ci
+---
+`scripts/port-durable-harness.mjs` regenerates the code copied from vercel-labs/durable-harness into `@parcha/agentrun-adapters` from four inputs: the pristine upstream files at the pin, named patches (`vendor/durable-harness/port/patches/<upstream package>/NNN-<slug>.patch`, each with a `Reason:`, an `Upstream:` of `offer` or `ours`, and the tests it is `Pins:`-ed by), one import table (`port/imports.json`) and generated headers. A module or symbol the table lacks, or maps to a gap, fails the port by name; a patch applies with exact context or fails by name. `--check` (run by `npm run test:release`) fails on any byte of the committed `src/process` that the port does not make, and on a patch that changes nothing; `--drop <patch>` regenerates without one patch, for mutants; `--pin <sha> --upstream <clone>` reports an upgrade as the pristine diff, the table against the new text and the patches that fail. The copies' Changed-by line is now generated from the patch list, and the shared process layer's files are otherwise unchanged.
