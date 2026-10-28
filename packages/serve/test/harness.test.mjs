@@ -60,3 +60,20 @@ test("capabilities lists each harness: pi runs here; claude-agent and codex say 
   assert.deepEqual(body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", false], ["codex", false]]);
   for (const h of body.harnesses.filter((h) => !h.available)) assert.match(h.reason, new RegExp(h.id));
 });
+
+test("an edit that names no harness keeps the agent's; one that names pi moves it to pi", async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("kept", { harness: "claude-agent" }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const edit = (definition) => api("PUT", "/agents/kept/definition", { definition }, { "if-match": `"${current.revision}"` });
+  let current = made.body;
+  const kept = await edit({ instructions: "Answer briefly." });
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
+  assert.equal(kept.body.definition.harness, "claude-agent", "absent on an edit: unchanged");
+  current = kept.body;
+  const moved = await edit({ instructions: "Answer briefly.", harness: "pi" });
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.definition.harness, "pi");
+  current = moved.body;
+  assert.equal((await edit({ instructions: "Answer at length." })).body.definition.harness, "pi", "and pi stays pi");
+});
