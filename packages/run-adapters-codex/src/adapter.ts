@@ -6,22 +6,15 @@
 // as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
 // `afterRequest`.
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
-import { CODEX_VERSION, codexBinary, codexTarget } from "./binary.js";
+import { CODEX_VERSION, verifyCodex } from "./binary.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
 import { localMachine } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
-
-/** The pinned binary's sha256, per target, where it is recorded; any other target is checked by its version alone. */
-export const CODEX_DIGESTS: Readonly<Record<string, string>> = Object.freeze({
-  "x86_64-unknown-linux-musl": "b93f6811d3f653f0fb83be4050d857fb9abbb111dfa2ce160563327daff7f306",
-});
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -53,24 +46,6 @@ export interface CodexAdapterOptions {
   fetch?: typeof fetch;
 }
 
-/** What the binary to run is, or why there is none to run. */
-export function checkBinary(path = codexBinary()): { path: string } | { problem: string } {
-  if (!path) return { problem: `no Codex binary: install @openai/codex@${CODEX_VERSION}, or set CODEX_BIN` };
-  const target = codexTarget()?.target;
-  const digest = target ? CODEX_DIGESTS[target] : undefined;
-  try {
-    if (digest) {
-      const found = createHash("sha256").update(readFileSync(path)).digest("hex");
-      if (found !== digest) return { problem: `the Codex binary at ${path} is not the pinned ${CODEX_VERSION} build (its sha256 differs)` };
-    }
-    const version = execFileSync(path, ["--version"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin" }, encoding: "utf8", timeout: 10_000 }).trim();
-    if (version !== `codex-cli ${CODEX_VERSION}`) return { problem: `the Codex binary at ${path} is ${JSON.stringify(version.slice(0, 60))}, not codex-cli ${CODEX_VERSION}` };
-  } catch (error) {
-    return { problem: `the Codex binary at ${path} could not be checked: ${String((error as Error)?.message ?? error).slice(0, 200)}` };
-  }
-  return { path };
-}
-
 /** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure. */
 function kernelTool(tool: HostTool): KernelTool {
   return {
@@ -100,12 +75,9 @@ function adapterEvent(event: unknown): AdapterEvent | undefined {
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
-  let binary: { path: string } | { problem: string } | undefined;
-  const binaryProblem = (): string | undefined => {
-    if (options.standIn) return undefined;
-    binary ??= checkBinary();
-    return "problem" in binary ? binary.problem : undefined;
-  };
+  // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
+  // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
+  if (!options.standIn) verifyCodex();
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
@@ -124,8 +96,6 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
       }
-      const problem = binaryProblem();
-      if (problem) problems.push(problem);
       return problems;
     },
     async open(spec, io) {

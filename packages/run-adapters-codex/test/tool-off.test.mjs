@@ -11,16 +11,18 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { checkBinary, codexAdapter } from '@parcha/agentrun-codex';
+import { codexAdapter } from '@parcha/agentrun-codex';
+import { findCodex, verifyCodexBinary } from '../dist/binary.js';
 
-const binary = checkBinary();
+const binary = verifyCodexBinary(findCodex());
+const problem = binary instanceof Error ? binary.message : undefined;
 const required = process.env.AGENTRUN_CODEX_REQUIRE_BINARY === '1';
-const skip = 'problem' in binary && !required ? binary.problem : false;
+const skip = problem && !required ? problem : false;
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-off-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 
 test('the pinned Codex binary is present where it is required', { skip: !required && 'not required here' }, () => {
-  assert.ok(!('problem' in binary), binary.problem);
+  assert.ok(!problem, problem);
 });
 
 const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };
