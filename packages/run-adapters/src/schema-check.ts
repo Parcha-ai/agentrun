@@ -16,7 +16,7 @@ const escape = (key: string) => key.replace(/~/g, "~0").replace(/\//g, "~1");
 
 /** The keywords whose value is a schema, a list of schemas, or a map of names to schemas (JSON Schema 2020-12, with the
  *  older spellings a generator still writes). Every other keyword holds values (default, examples, const, enum, ...). */
-const SCHEMA_ONE = new Set(["items", "additionalItems", "additionalProperties", "contains", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "not", "if", "then", "else"]);
+const SCHEMA_ONE = new Set(["items", "additionalItems", "additionalProperties", "contains", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "not", "if", "then", "else", "contentSchema"]);
 const SCHEMA_LISTS = new Set(["allOf", "anyOf", "oneOf", "prefixItems", "items"]);
 const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"]);
 
