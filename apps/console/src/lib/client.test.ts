@@ -68,3 +68,37 @@ describe("follow", () => {
     expect(calls.length).toBe(2);
   });
 });
+
+describe("review fixes", () => {
+  it("reads a file's bytes as text, even a JSON file the server labels application/json", async () => {
+    const { fn } = fakeFetch(() => json(200, { a: 1 }));
+    const text = await createClient({ fetch: fn }).readFile("r1", "out.json");
+    expect(typeof text).toBe("string");
+    expect(text).toBe('{"a":1}');
+  });
+
+  it("keeps following a settled run while the server says it has more rows", async () => {
+    const first = running.body as unknown as TimelinePage;
+    const pages = [{ ...first, final: true, has_more: true }, { ...first, reset: false, rows: [], final: true, has_more: false, next_after: first.next_after + 1 }];
+    const { fn, calls } = fakeFetch(() => json(200, pages.shift()));
+    await follow(createClient({ fetch: fn }), "r1", { onRows: () => {}, waitMs: 1, minDelayMs: 0 });
+    expect(calls.length).toBe(2);
+  });
+
+  it("an aborted follow passes its signal to the request and publishes nothing after the abort", async () => {
+    const page = running.body as unknown as TimelinePage;
+    const ctl = new AbortController();
+    let seenSignal: AbortSignal | null | undefined;
+    const fn = (async (_url: string, init?: RequestInit) => { seenSignal = init?.signal; ctl.abort(); return json(200, { ...page, final: false }); }) as typeof fetch;
+    let published = 0;
+    await follow(createClient({ fetch: fn }), "r1", { onRows: () => { published++; }, signal: ctl.signal, waitMs: 1, minDelayMs: 0 });
+    expect(seenSignal).toBe(ctl.signal);
+    expect(published).toBe(0);
+  });
+
+  it("asks for the next page of runs with the server's cursor", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { runs: [], next_cursor: null }));
+    await createClient({ fetch: fn }).listRuns(50, "c2");
+    expect(calls[0].url).toBe("/v2/runs?limit=50&cursor=c2");
+  });
+});

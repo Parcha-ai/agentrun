@@ -16,9 +16,11 @@ export type Client = ReturnType<typeof createClient>;
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
  *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
 export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
-  async function call<T>(method: string, path: string, { body, headers = {} }: { body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
+  /** `text`: the body as text whatever its type (a run's file is its bytes, never parsed). */
+  async function call<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
     const res = await f(`${base}${path}`, {
       method,
+      signal,
       credentials: "same-origin",
       headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -27,22 +29,22 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       const e = ((await res.json().catch(() => null)) as { error?: ApiError } | null)?.error;
       throw new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
     }
-    return (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
+    return !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
   }
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
-    listRuns: (limit = 50) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}`),
-    listAgents: () => call<{ agents: { agent_id: string; definition: { name?: string } }[] }>("GET", "/agents"),
+    listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+    listAgents: (cursor?: string | null) => call<{ agents: { agent_id: string; definition: { name?: string } }[]; next_cursor: string | null }>("GET", `/agents${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     getRun: (id: string) => call<Run>("GET", run(id)),
-    getTimeline: (id: string, { after, waitMs }: { after?: number; waitMs?: number } = {}) => {
+    getTimeline: (id: string, { after, waitMs, signal }: { after?: number; waitMs?: number; signal?: AbortSignal } = {}) => {
       const q = new URLSearchParams();
       if (after !== undefined) q.set("after", String(after));
       if (waitMs !== undefined) q.set("wait_ms", String(waitMs));
-      return call<TimelinePage>("GET", `${run(id)}/timeline${q.size ? `?${q}` : ""}`);
+      return call<TimelinePage>("GET", `${run(id)}/timeline${q.size ? `?${q}` : ""}`, { signal });
     },
     listFiles: (id: string) => call<RunFiles>("GET", `${run(id)}/files`),
-    readFile: (id: string, path: string) => call<string>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`),
+    readFile: (id: string, path: string) => call<string>("GET", `${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`, { text: true }),
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
       call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
@@ -51,8 +53,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   };
 }
 
-/** Follows a run's timeline from its cursor until the server says the timeline is final (or `signal` aborts), handing
- *  the merged rows to `onRows` after each page. Resolves with the last page. */
+/** Follows a run's timeline from its cursor until the server says the timeline is final and has no more rows (or
+ *  `signal` aborts), handing the merged rows to `onRows` after each page. A request in flight when `signal` aborts is
+ *  cancelled, and nothing after the abort is published. Resolves with the last page. */
 export async function follow(
   v2: Client,
   runId: string,
@@ -62,12 +65,13 @@ export async function follow(
   let after: number | undefined;
   let last: TimelinePage | undefined;
   while (!signal?.aborted) {
-    const page = await v2.getTimeline(runId, after === undefined ? {} : { after, waitMs });
+    const page = await v2.getTimeline(runId, after === undefined ? { signal } : { after, waitMs, signal }).catch((e) => { if (signal?.aborted) return null; throw e; });
+    if (!page || signal?.aborted) break;
     last = page;
     rows = applyPage(rows, page);
     onPage?.(page);
     onRows(rows);
-    if (page.final || signal?.aborted) break;
+    if (page.final && !page.has_more) break;
     after = page.next_after;
     const delay = Math.max(minDelayMs, page.unchanged ? (page.poll_after_ms ?? 0) : 0);
     if (delay) await new Promise((r) => setTimeout(r, delay));

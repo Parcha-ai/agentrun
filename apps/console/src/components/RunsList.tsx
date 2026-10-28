@@ -5,7 +5,7 @@ import type { Run } from "@/lib/v2";
 
 /** Every run on the server, newest first, as the hosted console's history table, with the status column it leaves out
  *  at desktop width. A row opens its run. */
-export function RunsList({ runs, agentName, onOpen, error }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: string | null }) {
+export function RunsList({ runs, agentName, onOpen, error, onMore, loadingMore }: { runs: Run[] | null; agentName: (id: string) => string; onOpen: (id: string) => void; error?: string | null; onMore?: () => void; loadingMore?: boolean }) {
   if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{error}</p>;
   if (!runs) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading runs...</p>;
   if (!runs.length) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">No runs yet.</p>;
@@ -36,6 +36,7 @@ export function RunsList({ runs, agentName, onOpen, error }: { runs: Run[] | nul
           ))}
         </tbody>
       </table>
+      {onMore && <div className="mt-4 flex justify-center"><button type="button" onClick={onMore} disabled={loadingMore} className="caps border px-4 py-2 text-[12px] hover:bg-accent disabled:opacity-45">{loadingMore ? "Loading" : "Load more"}</button></div>}
     </div>
   );
 }
