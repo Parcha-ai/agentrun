@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
+import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 export type HarnessRunner = (request: NodeRequest) => Promise<unknown>;
 
@@ -115,13 +115,21 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   const emit = (event: ModelPortEvent) => options.onEvent?.({ ...event, ...node });
   // A turn is a paid request that left: counted from the records written before each one left, so a request a crash cut
   // off still counts against the turn cap. What it cost is unknown, so the session's spend is too from then on.
-  let turns = options.records.filter((r) => r.kind === RUNNER_RECORDS.request).length;
-  const booked = options.records.filter((r) => r.kind === RUNNER_RECORDS.turn);
-  let answered = booked.length;
-  let spentUsd: number | null = answered < turns ? null : booked.reduce<number | null>((sum, r) => {
-    const usd = (r.data as { usd?: number | null }).usd;
-    return sum === null || usd === null ? null : sum + (usd ?? 0);
-  }, 0);
+  const inherited = options.records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r, i) => (r.data as { turn?: number }).turn ?? i + 1);
+  let turns = inherited.length;
+  // Which of them were answered: each runner.turn names its own turn (one written before turns were named answers the
+  // earliest still open, as answers then came in order).
+  const answered = new Set<number>();
+  let spentUsd: number | null = 0;
+  for (const r of options.records) {
+    if (r.kind !== RUNNER_RECORDS.turn) continue;
+    const data = r.data as { turn?: number; usd?: number | null };
+    answered.add(data.turn ?? inherited.find((t) => !answered.has(t)) ?? 0);
+    spentUsd = spentUsd === null || data.usd === null ? null : spentUsd + (data.usd ?? 0);
+  }
+  if (inherited.some((t) => !answered.has(t))) spentUsd = null;
+  // This process's requests in flight, by the turn each was admitted as.
+  const open: number[] = [];
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
   const models: ModelPort = {
@@ -132,21 +140,28 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd });
       if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
       // Durable before the request leaves: admitted, then sent.
-      await append([{ kind: RUNNER_RECORDS.request, data: { turn: turns + 1, model } }]);
-      turns += 1;
-      emit({ type: "request_start", turn: turns, model });
+      const turn = turns + 1;
+      turns = turn;
+      await append([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
+      open.push(turn);
+      emit({ type: "request_start", turn, model });
+      return { turn };
     },
-    afterRequest: async (usage: ModelUsage) => {
+    afterRequest: async (usage: ModelUsage, ticket?: ModelTicket) => {
+      // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
+      const turn = ticket?.turn ?? open[0] ?? turns;
+      const at = open.indexOf(turn);
+      if (at >= 0) open.splice(at, 1);
       spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
       try {
-        await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
+        await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd } }]);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
         if (!options.stopped?.()) end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
         throw error;
       }
-      answered += 1;
-      emit({ type: "request_end", turn: turns, usage });
+      answered.add(turn);
+      emit({ type: "request_end", turn, usage });
     },
   };
   return {
@@ -157,12 +172,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       // A paid request a crash cut off kept its runner.request and has no runner.turn: the provider may have billed it.
       // Each is booked once, as cut, at an unknown price, and the host is told as for any answered request, so its ledger
       // shows the possible spend instead of nothing. Booked, it is answered: a later attempt never books it again.
-      const unanswered = turns - answered;
-      if (unanswered <= 0) return;
+      // Only requests an earlier process admitted: one this process has in flight is not cut.
+      const numbers = inherited.filter((t) => !answered.has(t));
+      if (numbers.length === 0) return;
       const cut: ModelUsage = { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true };
-      const numbers = Array.from({ length: unanswered }, (_, i) => answered + i + 1);
       await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { usd: null, cut: true, turn } })));
-      answered = turns;
+      for (const turn of numbers) answered.add(turn);
       spentUsd = null;
       for (const turn of numbers) emit({ type: "request_end", turn, usage: cut });
     },

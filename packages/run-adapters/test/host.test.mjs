@@ -424,3 +424,29 @@ test("a request for the session's smaller model is asked about and priced as tha
   assert.deepEqual(throwing.hooks.before.map((r) => r.model), ['session-model']);
   assert.ok(throwing.hooks.logged.some((l) => /could not name the request's model/.test(l.message)));
 });
+
+test('two paid requests in flight through the proxy, answered in reverse: each is booked under its own turn, once', async (t) => {
+  const { createHarnessRunner, modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const ends = [];
+  const booking = await modelPortFor(await store.open('chat:proxy'), { key: 'chat:proxy', onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.input]); } });
+  // The slow request (admitted first) answers after the fast one: each answer reports its own size as input tokens.
+  const slow = new Promise((resolve) => setTimeout(resolve, 150));
+  const fetchStub = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.input === 'slow') await slow;
+    return new Response(sse({ in: body.input === 'slow' ? 100 : 7, out: 1 }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
+  await Promise.all([first, second]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(ends, [[2, 7], [1, 100]], 'the fast (turn 2) answer first, then the slow (turn 1), each under its own turn');
+  const turns = (await store.read('chat:proxy')).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data.turn);
+  assert.deepEqual(turns, [2, 1]);
+  void createHarnessRunner;
+});
