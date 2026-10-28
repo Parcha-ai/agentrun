@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { RUN_CANCELLED } from "../dist/files.js";
 import { cancelledIn } from "../dist/request-start.js";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
@@ -47,4 +48,27 @@ test("serve's cancel and the run's guard meet: once a run is cancelled through s
   assert.equal(guard(), true, "the mark serve wrote is the one the run's process reads");
   await writeFile(gate, "");
   await follow(api, run.run_id, ["cancelled"], { deadlineMs: 60_000 });
+});
+
+test("the run's app reads that guard: built on a cancelled run's directory, its models send nothing, and the faux model is never called", { timeout: 90_000 }, async (t) => {
+  const dir = await scratch(t);
+  const gate = join(dir, "gate");
+  const sent = join(dir, "sent");
+  await writeFile(gate, "");
+  withEnv(t, { FAUX_GATE: gate, FAUX_SENT: sent });
+  const { api, data } = await serve(t, { faux: GATED });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  await follow(api, run.run_id, ["completed"]);
+  // The run's directory now holds its store and revision; cancelling it writes the mark there.
+  const root = join(data, "runs", run.run_id);
+  await writeFile(join(root, RUN_CANCELLED), "");
+  withEnv(t, { AGENTRUN_SERVE_FAUX: GATED, FAUX_GATE: gate, FAUX_SENT: join(dir, "sent-in-test") });
+  const { default: app } = await import("../dist/app.js");
+  const options = await app({ ref: { id: run.run_id }, root, work: join(root, "work"), store: join(root, "store") });
+  await options.onOpen({ harness: { commit: async (change) => change({ appendEntry: async () => ({ id: 1 }) }) } });
+  const ref = options.root.agent.model;
+  const result = await options.models.streamSimple(options.models.getModel(ref.provider, ref.modelId), { messages: [] }, {}).result();
+  assert.match(result.errorMessage ?? "", /cancelled/);
+  assert.equal(existsSync(join(dir, "sent-in-test")), false, "the faux model was never called");
 });
