@@ -2,7 +2,7 @@
 // it works, and completes; each paid request is counted once, also when the run's process dies mid-turn and the next
 // one resumes the session.
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -12,8 +12,8 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
-async function started(api, id, instructions, harness = "claude-agent") {
-  assert.equal((await api("POST", "/agents", agent(id, { harness, instructions }))).status, 201);
+async function started(api, id, instructions, harness = "claude-agent", tools = []) {
+  assert.equal((await api("POST", "/agents", agent(id, { harness, instructions, tools }))).status, 201);
   const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   return run.body.run_id;
@@ -129,4 +129,36 @@ test("a run opened again whose new opening has a request of unknown price reads 
   const { rows } = await follow(api, runId, ["completed"]);
   assert.deepEqual(usageOf(rows), { usd: null, requests: 4 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
+});
+
+const toolResults = (rows) => rows.filter((r) => r.kind === "tool_result").map((r) => [`${r.summary ?? ""} ${r.tool_result_preview ?? ""}`, r.tool_status]);
+
+test("a run on another harness gets pi's own file tools: a write then a read of the run's workspace", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const runId = await started(api, "files", "Write then read.", "codex", ["read", "write"]);
+  const { rows } = await follow(api, runId, ["completed"]);
+  assert.equal(await readFile(join(data, "runs", runId, "work", "note.txt"), "utf8"), "hello from the tool");
+  const results = toolResults(rows);
+  assert.equal(results.length, 2, JSON.stringify(results));
+  assert.match(results[1][0], /hello from the tool/, "the read returned what the write wrote");
+});
+
+test("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const dir = await scratch(t);
+  const go = join(dir, "go");
+  const secret = join(dir, "secret.txt");
+  await writeFile(secret, "not for the agent");
+  const runId = await started(api, "link", `Read the link after ${go}.`, "claude-agent", ["read", "write"]);
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+    assert.ok(i < 300, "the first tool's row");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  await symlink(secret, join(data, "runs", runId, "work", "out.txt"));
+  await writeFile(go, "");
+  await killRun(data, runId);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const read = toolResults(rows).at(-1);
+  assert.match(read[0], /outside the workspace/, JSON.stringify(read));
+  assert.doesNotMatch(read[0], /not for the agent/);
 });
