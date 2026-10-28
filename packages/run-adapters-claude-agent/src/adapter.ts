@@ -221,7 +221,7 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
       const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
       io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
       calls.begin(callId);
-      // A pause began before this call: it is recorded as not run, and the session resumes with that.
+      // A guard: a call begun during a pause is not run; the bridge's per-drive mutex keeps it unreachable while calls are serial, and its test lands with the fan-out PR.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
       const result = await tool.call(input, { callId, signal: effect.signal });
       if (result.isError) throw new Error(result.text);
