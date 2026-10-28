@@ -9,6 +9,12 @@ export interface SchemaCheckCase {
 }
 
 const P = { a: { type: "string" }, b: { type: "string" } };
+/** A schema `depth` objects deep, each one property down. */
+const nested = (depth: number): Record<string, unknown> => {
+  let schema: Record<string, unknown> = { type: "string" };
+  for (let i = 0; i < depth; i += 1) schema = { type: "object", properties: { a: schema } };
+  return schema;
+};
 
 export const SCHEMA_CHECK_CASES: readonly SchemaCheckCase[] = Object.freeze([
   // The root: an object of arguments, nothing else.
@@ -29,6 +35,10 @@ export const SCHEMA_CHECK_CASES: readonly SchemaCheckCase[] = Object.freeze([
   { name: "a $schema of 2020-12", schema: { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: P }, refusedAt: [] },
   { name: "a $schema that is not a string", schema: { $schema: 42, type: "object", properties: P }, refusedAt: ["/$schema"] },
   { name: "a $schema naming no dialect", schema: { $schema: "https://example.com/unknown", type: "object", properties: P }, refusedAt: ["/$schema"] },
+  // A check never throws: a schema so deep the metaschema check overflows is a problem at "/", and so is one deeper still.
+  { name: "a schema 2,000 objects deep (the metaschema check overflows)", schema: nested(2_000), refusedAt: ["/"] },
+  { name: "a schema 5,000 objects deep", schema: nested(5_000), refusedAt: ["/"] },
+  { name: "a schema 100 objects deep", schema: nested(100), refusedAt: [] },
   // $ref: local followed, remote refused.
   { name: "a remote $ref by URL", schema: { type: "object", properties: { r: { $ref: "https://example.com/schema.json" } } }, refusedAt: ["/properties/r/$ref"] },
   { name: "a remote $ref by file", schema: { type: "object", properties: { r: { $ref: "other.json#/x" } } }, refusedAt: ["/properties/r/$ref"] },
