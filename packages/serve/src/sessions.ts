@@ -16,6 +16,8 @@ type EntryLike = { kind: string; data?: unknown };
 export function durableSessions(harness: Harness, context: Context): SessionStore {
   const holders = new Map<string, number>();
   const known = new Map<string, ConversationId>();
+  // One creation per key at a time: two first opens at once share it, so a key names one conversation.
+  const creating = new Map<string, Promise<ConversationId>>();
 
   const scan = async (id: ConversationId, each: (entry: EntryLike) => void) => {
     const conversation = await harness.conversation(id, context);
@@ -32,7 +34,8 @@ export function durableSessions(harness: Harness, context: Context): SessionStor
     if (!known.has(key)) {
       await scan(ROOT_CONVERSATION_ID, (entry) => {
         const data = entry.data as { key?: unknown; conversation?: unknown } | undefined;
-        if (entry.kind === SESSION_KEY && typeof data?.key === "string" && data.conversation != null) known.set(data.key, data.conversation as ConversationId);
+        // The first entry of a key names its conversation.
+        if (entry.kind === SESSION_KEY && typeof data?.key === "string" && data.conversation != null && !known.has(data.key)) known.set(data.key, data.conversation as ConversationId);
       });
     }
     return known.get(key);
@@ -50,9 +53,37 @@ export function durableSessions(harness: Harness, context: Context): SessionStor
     try {
       return await harness.commit(change, context);
     } catch (error) {
-      if (error instanceof FencedError || error instanceof SessionFenced) throw new SessionFenced(key);
+      // The lease's refusal can come as the cause of the Harness's own error.
+      for (let at: unknown = error; at; at = (at as { cause?: unknown }).cause) if (at instanceof FencedError || at instanceof SessionFenced) throw new SessionFenced(key);
       throw error;
     }
+  };
+
+  const create = (key: string): Promise<ConversationId> => {
+    let made = creating.get(key);
+    if (!made) {
+      made = (async () => {
+        // The root holds the key's entry; a run's agent made it already, and one that has none gets it here.
+        await harness.root(context);
+        const id = await commit(key, async (tx) => {
+          // Read again in the commit: a key another process named meanwhile keeps its conversation.
+          for (let cursor: Cursor | undefined; ; ) {
+            const page = await tx.scanEntries({ conversationId: ROOT_CONVERSATION_ID, order: "ascending" }, PAGE, cursor);
+            const named = page.items.find((entry) => entry.kind === SESSION_KEY && (entry.data as { key?: unknown } | undefined)?.key === key);
+            if (named) return (named.data as { conversation: ConversationId }).conversation;
+            if (page.next === undefined) break;
+            cursor = page.next;
+          }
+          const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
+          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: SESSION_KEY, data: { key, conversation: conversation.id } });
+          return conversation.id;
+        });
+        known.set(key, id);
+        return id;
+      })().finally(() => creating.delete(key));
+      creating.set(key, made);
+    }
+    return made;
   };
 
   return {
@@ -60,18 +91,7 @@ export function durableSessions(harness: Harness, context: Context): SessionStor
     async open(key) {
       const holder = (holders.get(key) ?? 0) + 1;
       holders.set(key, holder);
-      let id = await find(key);
-      if (!id) {
-        // The root holds the key's entry; a run's agent made it already, and one that has none gets it here.
-        await harness.root(context);
-        id = await commit(key, async (tx) => {
-          const made = await tx.createConversation({ ownership: { kind: "ownerless" } });
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: SESSION_KEY, data: { key, conversation: made.id } });
-          return made.id;
-        });
-        known.set(key, id);
-      }
-      const conversation = id;
+      const conversation = (await find(key)) ?? (await create(key));
       const writer: SessionWriter = {
         key,
         read: () => read(key),
