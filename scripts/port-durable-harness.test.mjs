@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { bodyOf, checkPort, header, parsePatch, portPackage, PORT_DIR, readPatches, upgradeReport } from './port-durable-harness.mjs';
+import { bodyOf, checkPort, header, parsePatch, portPackage, PORT_DIR, readPatches, rewriteImports, upgradeReport } from './port-durable-harness.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const packageDir = join(root, 'packages', 'run-adapters');
@@ -222,4 +222,66 @@ test('the Claude port: its relative imports land where the manifest or the table
   assert.match((await portPackage(bare)).problems.join('\n'), /harness\.ts: a dynamic import or require of @anthropic-ai\/claude-agent-sdk: module @anthropic-ai\/claude-agent-sdk is not in the import table/);
   const noLanding = await withTable(claude, (text) => text.replace('packages/harness-claude-code/src/spawn.ts', 'packages/harness-claude-code/src/elsewhere.ts'), 'harness-claude-code.json');
   assert.match((await portPackage(noLanding)).problems.join('\n'), /harness\.ts: import from \.\/spawn\.ts: packages\/harness-claude-code\/src\/spawn\.ts is not a file of this manifest, and the import table has no landing for it/);
+});
+
+/** The table's verdict on `text`, which imports from the modules `mod-a` (renames symbols) and `mod-kept` (kept as it is). */
+function rewrite(text) {
+  const table = { relative: { from: '.ts', to: '.js' }, modules: {
+    'mod-a': { to: 'src/kernel/index.ts', symbols: { '*': '*', DriveContext: 'NewContext', X: 'Y', Z: 'ZZ' } },
+    'mod-kept': { keep: true },
+  } };
+  const problems = [];
+  const { text: out } = rewriteImports(text, { table, file: 'up/a.ts', entries: [{ from: 'up/a.ts', to: 'src/a.ts' }], problems, outDir: 'src', target: 'pkg' });
+  return { out, problems };
+}
+
+test('export * from a module goes through the table: an unknown one is named, a known one lands where the table says', () => {
+  assert.match(rewrite("export * from 'mod-unknown';\n").problems.join('\n'), /a\.ts: export from mod-unknown: module mod-unknown is not in the import table/);
+  const known = rewrite("export * from 'mod-a';\nexport * as ns from 'mod-a';\nexport * from 'mod-kept';\n");
+  assert.deepEqual(known.problems, []);
+  assert.equal(known.out, "export * from './kernel/index.js';\nexport * as ns from './kernel/index.js';\nexport * from 'mod-kept';\n");
+});
+
+test('a symbol rename touches the imported name only: the local alias stays, in an import and in a re-export', () => {
+  const { out, problems } = rewrite([
+    "import { DriveContext as C } from 'mod-a';",
+    "import { X as X } from 'mod-a';",
+    "import { type DriveContext as D, DriveContext } from 'mod-a';",
+    "export { Z as W } from 'mod-a';",
+    "export { Z } from 'mod-a';",
+    '',
+  ].join('\n'));
+  assert.deepEqual(problems, []);
+  assert.equal(out, [
+    "import { NewContext as C } from './kernel/index.js';",
+    "import { Y as X } from './kernel/index.js';",
+    "import { type NewContext as D, NewContext as DriveContext } from './kernel/index.js';",
+    "export { ZZ as W } from './kernel/index.js';",
+    "export { ZZ as Z } from './kernel/index.js';",
+    '',
+  ].join('\n'));
+});
+
+test('--pin counts real line changes: a reordered pair and an added duplicate line each report a change', async () => {
+  const clone = join(scratch, 'upstream-order');
+  const git = (...args) => execFileSync('git', ['-C', clone, '-c', 'user.email=a@b.c', '-c', 'user.name=x', ...args], { encoding: 'utf8' });
+  await mkdir(clone, { recursive: true });
+  git('init', '-q');
+  const tail = 'packages/harness-process/src/tail.ts';
+  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools', 'zod']) {
+    const upstreamFile = `packages/harness-process/src/${file}.ts`;
+    await mkdir(dirname(join(clone, upstreamFile)), { recursive: true });
+    await writeFile(join(clone, upstreamFile), await readFile(join(packageDir, 'vendor/durable-harness/upstream', upstreamFile)));
+  }
+  git('add', '-A'); git('commit', '-qm', 'same');
+  const lines = (await readFile(join(clone, tail), 'utf8')).split('\n');
+  const at = lines.findIndex((line, i) => line.trim() && lines[i + 1]?.trim() && line !== lines[i + 1]);
+  await writeFile(join(clone, tail), [...lines.slice(0, at), lines[at + 1], lines[at], ...lines.slice(at + 2)].join('\n'));
+  git('add', '-A'); git('commit', '-qm', 'reordered');
+  const reordered = git('rev-parse', 'HEAD').trim();
+  await writeFile(join(clone, tail), [...lines.slice(0, at + 1), lines[at], ...lines.slice(at + 1)].join('\n'));
+  git('add', '-A'); git('commit', '-qm', 'duplicated');
+  const duplicated = git('rev-parse', 'HEAD').trim();
+  assert.deepEqual((await upgradeReport(packageDir, { sha: reordered, upstreamClone: clone })).pristine[tail], { removed: 1, added: 1 }, 'a reorder');
+  assert.deepEqual((await upgradeReport(packageDir, { sha: duplicated, upstreamClone: clone })).pristine[tail], { removed: 0, added: 1 }, 'an added copy of a line');
 });

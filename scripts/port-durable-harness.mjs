@@ -91,7 +91,7 @@ function applyPatch(root, patch) {
   }
 }
 
-const IMPORT = /\b(import|export)\s+(type\s+)?(?:(\*\s+as\s+\w+)|\{([^}]*)\}|(\w+))?(?:\s*,\s*\{([^}]*)\})?\s*(?:from\s+)?(['"])([^'"]+)\7/g;
+const IMPORT = /\b(import|export)\s+(type\s+)?(?:(\*(?:\s+as\s+\w+)?)|\{([^}]*)\}|(\w+))?(?:\s*,\s*\{([^}]*)\})?\s*(?:from\s+)?(['"])([^'"]+)\7/g;
 
 /** Rewrite one file's imports through the table; returns the text and whether a module was rewritten. Problems are
  *  collected, never thrown, so one run names every module and symbol the table lacks. */
@@ -141,11 +141,11 @@ export function rewriteImports(text, { table, file, entries, problems, outDir, t
       else if (mapped === 'gap') { problems.push(`${at}: symbol ${symbol} is a gap in the import table for ${spec}`); bad = true; }
     }
     if (bad) return whole;
-    let renamed = whole;
-    for (const symbol of symbols) {
-      const mapped = forTarget(entry.symbols[symbol], target);
-      if (mapped !== symbol && symbol !== 'default' && symbol !== '*') renamed = renamed.replace(new RegExp(`(^|[{,\\s])(type\\s+)?${symbol}(?=\\s*[,}\\s])`), (m, pre, ty = '') => `${pre}${ty}${mapped} as ${symbol}`);
-    }
+    // A rename touches the imported name only: `{ A as B }` becomes `{ NewA as B }`, a bare `{ A }` becomes `{ NewA as A }`.
+    const renamed = whole.replace(/\{([^}]*)\}/g, (_block, list) => `{${list.split(',').map((member) => member.replace(/^(\s*(?:type\s+)?)(\w+)(\s+as\s+\w+)?(\s*)$/, (same, before, name, alias = '', after) => {
+      const mapped = name === 'default' ? name : forTarget(entry.symbols[name], target);
+      return mapped === name ? same : `${before}${mapped}${alias || ` as ${name}`}${after}`;
+    })).join(',')}}`);
     rewritten = true;
     const spot = posix.relative(outDir, landing).replace(/\.ts$/, '.js');
     return renamed.replace(`${quote}${spec}${quote}`, `${quote}${spot.startsWith('.') ? spot : `./${spot}`}${quote}`);
@@ -292,6 +292,18 @@ function firstDifference(a, b) {
   return at < 0 && x.length === y.length ? '' : ` (line ${(at < 0 ? Math.min(x.length, y.length) : at) + 1}: committed ${JSON.stringify((x[at] ?? '').slice(0, 70))}, port ${JSON.stringify((y[at] ?? '').slice(0, 70))})`;
 }
 
+/** How many lines `before` loses and `after` gains: the rest is the longest run of lines both keep, in order, so a reordered pair
+ *  and an added copy of a line both count. */
+export function lineChanges(before, after) {
+  let row = new Array(after.length + 1).fill(0);
+  for (const line of before) {
+    const next = [0];
+    for (let j = 0; j < after.length; j += 1) next.push(line === after[j] ? row[j] + 1 : Math.max(row[j + 1], next[j]));
+    row = next;
+  }
+  return { removed: before.length - row[after.length], added: after.length - row[after.length] };
+}
+
 /** `--pin`: what changes if upstream's text moves to `sha`: per file the pristine diff (lines), the import table's verdict on
  *  the new text, and the patches that no longer apply. Never writes. */
 export async function upgradeReport(dir, { sha, upstreamClone }) {
@@ -305,8 +317,7 @@ export async function upgradeReport(dir, { sha, upstreamClone }) {
     const table = await readJson(manifest.tableFile, 'the import table');
     for (const { from: path } of manifestEntries(manifest)) {
       const before = (await old(path)).toString('utf8').split('\n'), after = (await read(path)).toString('utf8').split('\n');
-      const set = new Set(before), next = new Set(after);
-      report.pristine[path] = { removed: before.filter((l) => !next.has(l)).length, added: after.filter((l) => !set.has(l)).length };
+      report.pristine[path] = lineChanges(before, after);
     }
     const done = await portManifest({ manifest, read, table, patches: manifest.patches, keepGoing: true });
     for (const problem of done.problems) (/^patch /.test(problem) ? report.patches : report.imports).push(problem);
