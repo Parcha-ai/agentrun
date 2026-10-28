@@ -30,7 +30,7 @@ export function RunFiles({ files, onOpen }: { files: RunFile[]; onOpen: (file: R
   );
 }
 
-/** grep.ai's file viewer: the file's name, Copy, Download and its characters. Text and Markdown render here (Markdown
+/** The file viewer: the file's name, Copy, Download and its characters. Text and Markdown render here (Markdown
  *  sanitized); anything else is offered as a download only. */
 export function ArtifactViewer({ file, text, onClose }: { file: RunFile; text: string | null; onClose: () => void }) {
   const [copied, setCopied] = useState(false);

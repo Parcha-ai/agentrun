@@ -9,7 +9,7 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json",
     "storybook": "storybook dev --host 127.0.0.1 -p 6006 --no-open",
-    "build-storybook": "storybook build -o storybook-static"
+    "build-storybook": "storybook build -o dist/storybook"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.1.1",

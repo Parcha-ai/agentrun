@@ -55,7 +55,7 @@ function Row({ row, last }: { row: TimelineRow; last: boolean }) {
   );
 }
 
-/** The run's live timeline, grep.ai's step list: newest last, older steps folded behind "N earlier steps". */
+/** The run's live timeline as a step list: newest last, older steps folded behind "N earlier steps". */
 export function Timeline({ rows, live, fold = 6 }: { rows: TimelineRow[]; live: boolean; fold?: number }) {
   const [all, setAll] = useState(false);
   const hidden = all ? 0 : Math.max(0, rows.length - fold);
@@ -74,7 +74,7 @@ export function Timeline({ rows, live, fold = 6 }: { rows: TimelineRow[]; live: 
   );
 }
 
-/** grep.ai's centred progress note: a spinner, a mono caps title and one muted line. */
+/** A centred progress note: a spinner, a mono caps title and one muted line. */
 export function Working({ title, note, spin = true }: { title: string; note: string; spin?: boolean }) {
   return (
     <div className="flex flex-col items-center gap-2 py-12 text-center">

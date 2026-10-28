@@ -335,3 +335,17 @@ test('vendored code an app keeps is listed apart, with its source, licenses and 
   await f.run('--inventory-only');
   assert.match(await readFile(join(f.root, 'docs/dependencies.md'), 'utf8'), /\*\*some-lib@1\.2\.3:\*\* GPL-3\.0-only — Restrictive or reciprocal metadata needs release-owner review\./);
 });
+
+test('a TSX source file is archived and scanned like any other source', async t => {
+  const f = await fixture(t);
+  // apps/console is React in TSX: a .tsx file is source text, so it is exported and its contents are scanned for secrets.
+  await f.write('apps/console/src/App.tsx', 'export const App = () => <main>AgentRun</main>;\n');
+  await f.run();
+  assert.match(await f.listing(), /agentrun-dsl-source\/apps\/console\/src\/App\.tsx/);
+  const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');
+  await f.write('apps/console/src/Key.tsx', `export const key = "${fakeSecret}";\n`);
+  await assert.rejects(f.run(), error => {
+    assert.match(error.stderr, /Source export blocked/);
+    return true;
+  });
+});

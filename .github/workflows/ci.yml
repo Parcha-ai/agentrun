@@ -85,11 +85,33 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  console:
+    # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
+    # workspaces. Its typecheck, tests, build and Storybook build run here; verify needs it like the test shards.
+    name: console
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+          cache-dependency-path: apps/console/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run build-storybook
+
   verify:
-    # The required checks keep their names: verify (<node>) passes when every test shard passed. It reads `needs`, not
-    # the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x) too.
+    # The required checks keep their names: verify (<node>) passes when every test shard and the console passed. It reads
+    # `needs`, not the jobs API, so an API error cannot fail a required check. A red 24.21 shard now fails verify (22.x) too.
     name: verify (${{ matrix.node }})
-    needs: test
+    needs: [test, console]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -98,10 +120,11 @@ jobs:
       matrix:
         node: ['22.19.0', '22.23.2', '24.21.0']
     steps:
-      - name: Every test shard passed
+      - name: Every test shard and the console passed
         env:
           RESULT: ${{ needs.test.result }}
-        run: test "$RESULT" = success
+          CONSOLE: ${{ needs.console.result }}
+        run: test "$RESULT" = success && test "$CONSOLE" = success
 
   pi-durable-disk-pi-floor:
     # @parcha/pi-durable-disk's peers accept the pi family from 1.0.4, while the workspace develops against 1.1.0. Its

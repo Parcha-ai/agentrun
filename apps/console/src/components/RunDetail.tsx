@@ -6,13 +6,15 @@ import { RunError } from "@/components/RunError";
 import { ArtifactViewer, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
 import { Timeline, Working } from "@/components/Timeline";
-import { runState } from "@/lib/runState";
+import { type MessageFeatures, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import type { Run, RunFile, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
   agentName: string;
+  /** The server's `features.messages` from GET /v2/capabilities: the composer offers only the modes it takes. */
+  messages: MessageFeatures;
   rows: TimelineRow[];
   files: RunFile[];
   /** Reads a file's text (the authenticated bytes from /v2/runs/{id}/files/{path}). */
@@ -24,9 +26,9 @@ export type RunDetailProps = {
 };
 type Tab = "report" | "timeline" | "files";
 
-/** The run page: grep.ai's REPORT / TRACK / FILES tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, rows, files, readFile, openFile = null, actions, onMessage, tab: initial }: RunDetailProps) {
-  const view = runState(run.status, run.state, run.kind);
+/** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
+export function RunDetail({ run, agentName, messages, rows, files, readFile, openFile = null, actions, onMessage, tab: initial }: RunDetailProps) {
+  const view = runState(run.status, run.state, run.kind, messages);
   const [tab, setTab] = useState<Tab>(initial ?? (view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = view.needsYou ? rows.findLast((r) => r.kind === "waiting") ?? null : null;

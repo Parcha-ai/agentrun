@@ -16,7 +16,7 @@ export function Wordmark() {
   return <span className="whitespace-nowrap font-mono text-[22px] font-semibold" aria-label="AgentRun">agent<span className="text-primary">.run()</span></span>;
 }
 
-/** grep.ai's AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
+/** The AgentRun shell: a 220px sidebar with the wordmark, the nav (the active item orange with a 2px inset bar),
  *  and sign out at its foot; under 700px a top bar with a menu that opens the nav. */
 export function Shell({ active, onNavigate, onSignOut, children }: { active: Section; onNavigate?: (s: Section) => void; onSignOut?: () => void; children: ReactNode }) {
   const [open, setOpen] = useState(false);

@@ -6,7 +6,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The AgentRun look, ported from grep.ai's agentrun variant: shadcn's variables (dark is the default), an orange
+/* The AgentRun look, the hosted AgentRun console's: shadcn's variables (dark is the default), an orange
    primary, a 1px border on everything, and no rounded corners. Values are HSL triplets. */
 @layer base {
   :root {

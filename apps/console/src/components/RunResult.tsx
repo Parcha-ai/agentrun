@@ -1,7 +1,7 @@
 import { markdown } from "@/lib/format";
 import type { Run, TimelineRow } from "@/lib/v2";
 
-/** The run's answer, as grep.ai's report: an agentic run's final answer as Markdown, a workflow run's typed output as
+/** The run's answer, as a report: an agentic run's final answer as Markdown, a workflow run's typed output as
  *  JSON. Nothing is invented when there is no answer. */
 export function RunResult({ run, rows }: { run: Run; rows: TimelineRow[] }) {
   const answer = run.result?.final_answer ?? rows.findLast((r) => r.kind === "final_answer")?.text ?? null;

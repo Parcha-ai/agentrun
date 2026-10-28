@@ -2,7 +2,7 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 import type { Tone } from "@/lib/runState";
 
-// The small bordered label grep.ai uses for BUILT-IN, READY and COMPLETE.
+// The small bordered label for a status or a kind.
 const TONE: Record<Tone | "plain", string> = {
   plain: "border-border text-muted-foreground",
   active: "border-run-active/50 text-run-active",

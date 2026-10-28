@@ -1,3 +1,4 @@
+import type { MessageFeatures } from "@/lib/runState";
 // Typed access to the recorded responses in this folder (see README.md). Recorded by the dev kit; never hand-edited.
 import type { Recorded, Run, RunFile, RunFiles, TimelinePage } from "@/lib/v2";
 
@@ -37,3 +38,6 @@ export function failedWith(code: string, message?: RegExp): RunFixture {
   if (!name) throw new Error(`no recorded failed run with ${code}`);
   return runFixture(name);
 }
+
+/** The recorded server's `features.messages`. */
+export const messageFeatures = recorded<{ features: { messages: MessageFeatures } }>("capabilities").body.features.messages;
