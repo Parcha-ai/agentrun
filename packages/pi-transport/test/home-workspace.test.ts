@@ -48,7 +48,11 @@ describe("moveWorkspace on local boxes", () => {
 		mkdirSync(src);
 		const file = join(src, "late.txt");
 		writeFileSync(file, "late");
-		execFileSync("touch", ["-d", "@1700000000.999999999", file]);
+		try {
+			execFileSync("touch", ["-d", "@1700000000.999999999", file], { stdio: "ignore" });
+		} catch {
+			// A touch without `-d @<seconds>` (BSD's) leaves the time as it was, and the skip below names it.
+		}
 		test.skip(
 			statSync(file, { bigint: true }).mtimeNs !== 1_700_000_000_999_999_999n,
 			"touch cannot set nanoseconds here",
