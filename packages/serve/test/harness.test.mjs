@@ -44,7 +44,9 @@ test("a harness this server does not run saves with a warning on the field, and 
     const made = await api("POST", "/agents", body);
     assert.equal(made.status, 201, JSON.stringify(made.body));
     assert.equal(made.body.definition.harness, harness);
-    assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), [["definition.harness", "not_set_up_here"]]);
+    // A workflow on another harness also warns that its nodes run on pi only (runnable.ts).
+    const warned = id === "flow" ? [["definition.harness", "not_set_up_here"], ["definition.workflow", "not_set_up_here"]] : [["definition.harness", "not_set_up_here"]];
+    assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), warned);
     const run = await api("POST", `/agents/${id}/runs`, { input: id === "flow" ? { question: "q" } : { content: "hi" } });
     assert.equal(run.status, 409, JSON.stringify(run.body));
     assert.equal(run.body.error.code, "agent_not_runnable");

@@ -37,6 +37,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
     return out;
   }
+  // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
+  if (harness !== DEFAULT_HARNESS) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
   const { requires } = inspectWorkflow(revision.workflow);
   const runs = "agentrun-serve runs a workflow's model nodes (agent, decide, extract, report)";
