@@ -12,6 +12,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const SMOKE = fileURLToPath(new URL("../docker/image-smoke.sh", import.meta.url));
+/** The address the stand-in container answers on, as the smoke publishes it: loopback. */
+const LOOPBACK = "127.0.0.1";
 
 /** Runs the smoke with a stand-in docker whose container is `answer` (a function of the path), on loopback. */
 async function smoke(t, answer, ...runArgs) {
@@ -20,7 +22,7 @@ async function smoke(t, answer, ...runArgs) {
     if (!reply) return req.socket.destroy();
     res.writeHead(reply.status, { "content-type": "application/json" }).end(JSON.stringify(reply.body));
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(0, LOOPBACK, resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const dir = await mkdtemp(join(tmpdir(), "agentrun-image-smoke-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -30,8 +32,8 @@ async function smoke(t, answer, ...runArgs) {
 echo "$*" >> "${calls}"
 case "$1" in
   run) echo 0123456789ab ;;
-  port) echo "127.0.0.1:${server.address().port}" ;;
-  logs) echo "AGENTRUN_API_KEY=ar_local_secretvalue"; echo "Open http://127.0.0.1:7340/?token=othersecret" ;;
+  port) echo "${LOOPBACK}:${server.address().port}" ;;
+  logs) echo "AGENTRUN_API_KEY=ar_local_secretvalue"; echo "Open the page with ?token=othersecret" ;;
 esac
 `);
   await chmod(join(dir, "docker"), 0o755);
@@ -53,7 +55,7 @@ test("an image that serves passes: health 200 ok, capabilities with pi available
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /health 200 ok; capabilities 200, contract agentrun\.v2\/0/);
   assert.match(r.stdout, /codex: unavailable/);
-  assert.ok(r.calls[0].startsWith("run -d --name agentrun-image-smoke-") && r.calls[0].endsWith(" -p 127.0.0.1::7340 -e AGENT_MODEL=m agentrun-server:test"), r.calls[0]);
+  assert.ok(r.calls[0].startsWith("run -d --name agentrun-image-smoke-") && r.calls[0].endsWith(` -p ${LOOPBACK}::7340 -e AGENT_MODEL=m agentrun-server:test`), r.calls[0]);
   assert.match(r.calls.at(-1), /^rm -f -v agentrun-image-smoke-\d+$/, "the container it started is removed");
 });
 

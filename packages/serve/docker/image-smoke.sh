@@ -10,12 +10,14 @@ set -eu
 image=${1:?usage: image-smoke.sh <image> [docker run arguments...]}
 shift
 name="agentrun-image-smoke-$$"
+# The one address the container is published on: this machine's loopback, never a public interface.
+loopback=127.0.0.1
 cleanup() { docker rm -f -v "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
-docker run -d --name "$name" -p 127.0.0.1::7340 "$@" "$image" >/dev/null
-port=$(docker port "$name" 7340/tcp | sed -n 's/^127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -n 1)
+docker run -d --name "$name" -p "$loopback::7340" "$@" "$image" >/dev/null
+port=$(docker port "$name" 7340/tcp | sed -n "s/^$loopback:\([0-9][0-9]*\)\$/\1/p" | head -n 1)
 [ -n "$port" ] || { echo "image smoke: no loopback port for $name" >&2; exit 1; }
-if ! node - "http://127.0.0.1:$port" "${IMAGE_SMOKE_WAIT_S:-60}" <<'EOF'
+if ! node - "http://$loopback:$port" "${IMAGE_SMOKE_WAIT_S:-60}" <<'EOF'
 const base = process.argv[2];
 const fail = (why) => { console.error(`image smoke: ${why}`); process.exit(1); };
 // Docker's port proxy accepts a connection before the server listens, and a fetch on it can then wait with nothing
