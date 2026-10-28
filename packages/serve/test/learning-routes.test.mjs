@@ -114,6 +114,8 @@ test("the memo and the diff: from the branch while proposed, from main and the l
   assert.equal(landed.body.of, "landed");
   assert.ok(landed.body.files.some((f) => f.path === `learnings/${id}.md`));
   assert.equal(JSON.stringify(landed.body).includes("Zx81"), false, "what was refused did not land");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 test("untrusted text on our origin: the memo, a file and the diff answer with an explicit type, nosniff, and a sandbox on non-JSON", async (t) => {
@@ -251,6 +253,8 @@ test("secrets: a note with the door token shows its path and reason only, and th
   const memo = await again.api("GET", `/runs/${runId}/learning/memo`);
   assert.equal(memo.body.includes(late), false, "nor out of the memo");
   assert.match(memo.body, /Ask for \[redacted\] at the desk\./, "where it reads [redacted]");
+  // The first server's after-hook removes the data directory this one still uses: stop it first.
+  await again.close();
 });
 
 /** Commits `files` on agent `id`'s main as a curator would, with `message` and `trailers`. */
