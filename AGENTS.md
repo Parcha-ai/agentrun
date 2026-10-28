@@ -18,12 +18,12 @@ Each package's README is its API reference. Packages with no dependency on the o
 
 | Path | What an agent must know |
 | --- | --- |
-| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun`). Node reference: `skills/author/references/language.md`; judgment design: `jev-decisions.md`. `schema/workflow.schema.json` is generated |
+| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
 | `packages/jev`, `packages/pi` | `runJudge` adapter for Jev; the Pi extension (`/agentrun`) and Pi-backed `runNode` |
-| `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need an Archil account and run nowhere by default |
+| `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
 | `packages/pi-browser` | Synced snapshot of the agentrun harness's `packages/pi-browser`: never edit it here. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
 | `packages/pi-vision` | ffmpeg/poppler suites run only in the `vision-binaries` CI job; `pi-1-2` and `pi-vision-pi-floor` cover its peer range |
-| `packages/pi-transport` | Vitest on source; CI also runs its biome `lint`; Docker suite opt-in (`test:live:docker`) |
+| `packages/pi-transport` | Vitest on source; its biome `lint` and Docker suite (`test:live:docker`) run in the `transport-docker` CI job |
 | `packages/pi-durable-agent` | Agent home; subpaths `./timeline`, `./export`, `./workflow`, `./serve`; bin `pi-durable-agent`. Only `./workflow` loads `dsl` and `pi`, lazily |
 | `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
 | `packages/pi-git-remote` | No repository hook, filter or driver ever runs; https credentials reach git only on fd 3. Tests need git 2.40+ and `openssl` |
@@ -33,14 +33,12 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/run-adapters`, `run-adapters-claude-agent` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code from vercel-labs/durable-harness is tracked in `vendor/durable-harness/UPSTREAM.json`; never hand-edit `vendor/durable-harness/upstream/`. The Claude adapter pins an exact SDK/CLI pair; CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` |
 | `apps/viewer` | Run viewer; `npm run test:viewer` (in `npm run check`) |
 | `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ models `Receipts.tla` and `Door.tla` (see Models of recovery) |
-| `examples/` | Offline by default (`npm run test:examples`); `*-live.*` are opt-in. Index: `docs/examples.md` |
+| `examples/` | Offline (`npm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
 | `changes/`, `docs/`, `scripts/` | Changelog fragments; guides (`guide.md`, `authoring.md`, `host-integration.md`, `releasing.md`); generation and verification scripts |
 
-Fifteen packages share one version. Publish order: `dsl`, `jev`, `pi`; then `pi-durable-disk`,
-`pi-browser`, `pi-vision`, `pi-transport`; `pi-durable-agent`; `pi-git-remote`; `pi-agent-learn`.
-`harness`, `serve`, `learn`, `run-adapters` and `run-adapters-claude-agent` are held
-(`"private": true`): built, tested, verified and versioned like the rest, but in no publish path.
-Removing that flag lifts a hold.
+Fifteen packages share one version. `"private": true` holds `harness`, `serve`, `learn`,
+`run-adapters` and `run-adapters-claude-agent`: built, tested, verified and versioned like the
+rest, never published; removing the flag lifts a hold. Release order: `scripts/release-preflight.mjs`.
 
 ## Setup and checks
 
@@ -53,6 +51,7 @@ npm ci --ignore-scripts
 npm run build
 npm test
 npm run check   # build, generated-file checks, typecheck, all tests, examples, viewer
+npm run verify:packages   # packs each package into a clean consumer (install needs network; CI checks shard)
 ```
 
 - Most package suites import `dist/`, so rebuild before running one file with `node --test`.
