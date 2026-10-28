@@ -1,7 +1,7 @@
 // The Codex adapter behind createHarnessRunner, as a DSL host runs it, on the stand-in app-server (fake-app-server.mjs)
 // with its model requests going through the session's real proxy to a scripted provider. No network, no Codex binary.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -10,7 +10,7 @@ import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { foldSession } from '@parcha/agentrun-adapters/kernel';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { codexAdapter } from '@parcha/agentrun-codex';
+import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
 const FAKE = fileURLToPath(new URL('./fake-app-server.mjs', import.meta.url));
@@ -208,4 +208,38 @@ test('a fresh box recovers a crashed never call from the session store alone, an
   assert.equal((await b.turnEnd()).status, 'completed');
   await b.close();
   assert.equal(charged, 1, 'the charge ran once');
+});
+
+test('making the adapter checks the binary against the pins: one that is not the pinned build is a typed error before any turn', async () => {
+  const dir = scratch();
+  const impostor = join(dir, 'codex');
+  writeFileSync(impostor, '#!/bin/sh\necho "codex-cli 0.0.1"\n');
+  chmodSync(impostor, 0o755);
+  const options = { model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') };
+  const before = process.env.CODEX_BIN;
+  try {
+    process.env.CODEX_BIN = impostor;
+    assert.throws(() => codexAdapter(options), (error) => error instanceof CodexPinMismatch && /^(binary_sha256|version)$/.test(error.pin), 'a binary that is not the pinned build');
+    process.env.CODEX_BIN = join(dir, 'no-such-codex');
+    assert.throws(() => codexAdapter(options), (error) => error instanceof CodexNotInstalled, 'no binary at the path');
+  } finally {
+    if (before === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = before;
+  }
+});
+
+test("a never tool's intent is in the log before the tool runs, so a crash in the call is always reported, never repeated", async () => {
+  const spec = { key: 'step:intent', label: 'pay', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const writer = await store.open(spec.key);
+  let logged;
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: async () => {
+    // What the session's records hold at the moment the tool starts running.
+    logged = (await writer.read()).filter((r) => r.kind === 'kernel.start' && r.data.name === 'tool.charge').length;
+    return { text: 'paid' };
+  } };
+  const session = await bare(['call charge {"amount":5}']).open({ ...spec, tools: [charge] }, { writer, models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await session.send('pay');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  await session.close();
+  assert.equal(logged, 1, 'the intent was durable before the tool ran');
 });

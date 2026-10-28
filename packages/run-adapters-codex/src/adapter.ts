@@ -50,7 +50,10 @@ export interface CodexAdapterOptions {
   fetch?: typeof fetch;
 }
 
-/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure. */
+/** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure.
+ *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
+ *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
+ *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
 function kernelTool(tool: HostTool): KernelTool {
   return {
     name: tool.name,

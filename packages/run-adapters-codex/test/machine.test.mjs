@@ -106,3 +106,34 @@ test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs 
   const out = await run(process.execPath, ['-e', 'process.stdout.write(require("fs").readFileSync("/proc/self/status", "utf8").match(/^NoNewPrivs:\\s*(\\d)/m)[1])']);
   assert.equal(out.out, '1');
 });
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const gone = async (pid) => { for (let i = 0; i < 200 && alive(pid); i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); return !alive(pid); };
+/** Start a child that forks a grandchild (a sleep in the background) and reports its pid; returns both pids. */
+async function forking(machine, signal) {
+  const proc = await machine.spawn({ command: '/bin/sh', args: ['-c', 'sleep 300 & echo $!; wait'], env: {}, ...(signal ? { signal } : {}) });
+  let grandchild;
+  for await (const line of proc.lines()) { grandchild = Number(line); break; }
+  assert.ok(Number.isInteger(grandchild) && alive(grandchild), 'the grandchild is running');
+  return { proc, grandchild };
+}
+
+test("a child that forks a grandchild leaves none alive after the session's signal aborts: the kill is the process group", async (t) => {
+  const { machine } = await machineAt(t, scratch());
+  const stop = new AbortController();
+  const { proc, grandchild } = await forking(machine, stop.signal);
+  stop.abort(new Error('the process died'));
+  const left = await gone(grandchild);
+  if (!left) process.kill(grandchild, 'SIGKILL');
+  assert.ok(left, 'the grandchild outlived its child');
+  await proc.exited;
+});
+
+test("a child that forks a grandchild leaves none alive after close()", async (t) => {
+  const { machine } = await machineAt(t, scratch());
+  const { grandchild } = await forking(machine);
+  await Promise.race([machine.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
+  const left = await gone(grandchild);
+  if (!left) process.kill(grandchild, 'SIGKILL');
+  assert.ok(left, 'the grandchild outlived the machine');
+});
