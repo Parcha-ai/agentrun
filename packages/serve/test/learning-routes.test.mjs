@@ -3,6 +3,7 @@
 // and passes through the host's secrets at read time. The faux model; a faux screen and a scripted judge.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -309,4 +310,20 @@ test("nothing person-identifying reaches main: approve, refuse and retire by an 
   const everything = git(bare, "rev-list", "--objects", "--all").split("\n").map((line) => git(bare, "cat-file", "-p", line.split(" ")[0])).join("\n");
   assert.equal(everything.includes("ana@example.com"), false, "no email anywhere in the repository");
   assert.ok(lines.some((line) => /learning_retired/.test(line) && /acct_7f3a91/.test(line)), "who retired it is in the log");
+});
+
+test("under a held agent store the learning routes answer home_busy within about 3 s: not a 500, not a hang, not a wrong answer", async (t) => {
+  const { api, data } = await serve(t, { learning: { screen: SCREEN, judge } });
+  await api("POST", "/agents", agent("calc", { learning: "auto" }));
+  const runId = await learned(api, data, "calc");
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  store.exec("BEGIN EXCLUSIVE");
+  t.after(() => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close()));
+  for (const path of ["/agents/calc/learning", "/agents/calc/learning/log", `/runs/${runId}/learning`]) {
+    const started = Date.now();
+    const answer = await api("GET", path);
+    const took = Date.now() - started;
+    assert.deepEqual([answer.status, answer.body?.error?.code], [409, "home_busy"], `${path}: ${JSON.stringify(answer.body).slice(0, 200)}`);
+    assert.ok(took < 3_500, `${path} took ${took} ms`);
+  }
 });
