@@ -255,7 +255,8 @@ test("every sudoers line this package writes or documents names the archil wrapp
   const lines: string[] = [];
   const wrong: string[] = [];
   for (const f of files) {
-    for (const m of readFileSync(join(pkg, f), "utf8").matchAll(/NOPASSWD:\s*([^'"\n]*)/g)) {
+    // A rule, as sudoers writes one: <who> ALL=(<as>) NOPASSWD: <commands>.
+    for (const m of readFileSync(join(pkg, f), "utf8").matchAll(/\bALL=\([^)]*\)\s*NOPASSWD:\s*([^'"\n]*)/g)) {
       lines.push(`${f}: ${m[1].trim()}`);
       // One command, the wrapper: a second entry, a list, or a wildcard argument grants more than the wrapper bounds.
       if (/[,*]|fusermount|umount|mkdir|rmdir|\bALL\b/.test(m[1])) wrong.push(`${f}: ${m[1].trim()}`);

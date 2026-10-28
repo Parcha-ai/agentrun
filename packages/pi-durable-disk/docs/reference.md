@@ -452,16 +452,17 @@ unprivileged user and only the archil client runs as root:
    (from an npm install the file is `node_modules/@parcha/pi-durable-disk/bin/archil-scoped`, and `ARCHIL_SCOPED`, exported by
    the package, is its path). Point the driver at it: `localHost({ archil: "/usr/local/lib/pi-durable-disk/archil-scoped",
    user: "pda" })`, or `supervise --archil /usr/local/lib/pi-durable-disk/archil-scoped --user pda`.
-3. **A sudoers drop-in for exactly that wrapper and `fusermount -u`.** It keeps no environment: the token travels on the
+3. **A sudoers drop-in for exactly that wrapper, and nothing else.** It keeps no environment: the token travels on the
    wrapper's stdin, and sudo logs every variable it preserves. Install it as `/etc/sudoers.d/pi-durable-disk`, mode 0440,
    after `visudo -cf` accepts it:
 
    ```
-   pda ALL=(root) NOPASSWD: /usr/local/lib/pi-durable-disk/archil-scoped, /usr/bin/fusermount -u /mnt/archil/runs/*
+   pda ALL=(root) NOPASSWD: /usr/local/lib/pi-durable-disk/archil-scoped
    ```
 
-   Never a bare `/usr/bin/fusermount`, and never `mkdir` or `rmdir`: the wrapper's `prepare` makes the run's mountpoint,
-   and only there.
+   Never `fusermount`, `mkdir` or `rmdir` beside it: the wrapper's `release` cleans a dead mount (`fusermount -u` on the
+   checked mountpoint) and its `prepare` makes the run's mountpoint. A sudoers argument's `*` matches any characters, so
+   an entry such as `fusermount -u <mountRoot>/runs/*` grants far more than it says.
 
 4. **The supervisor runs as root** (it creates units, stops them, and writes each start's token under
    `/run/pi-durable-disk`, root-only), with `--user pda`, so instances never run as root; `localHost` refuses to start

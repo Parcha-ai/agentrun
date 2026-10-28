@@ -9,7 +9,11 @@
 # verb, an extra, missing or reordered flag, any argument holding a newline) with exit 2:
 #   mount [--force] <disk>:/<path> <root>/runs/<run> --region <region>
 #   unmount <root>/runs/<run>    checkin <root>/runs/<run>    sync <root>/runs/<run>    delegations --json <root>/runs/<run>
-# and `prepare` and the cleanup verbs below. <disk> and <region> are one safe token each, <path> a relative path of safe segments
+# and `prepare`, `release` and the cleanup verbs below.
+#
+# `release <root>/runs/<run>` takes a dead mount (its daemon gone, which archil unmount refuses) off its mountpoint with
+# `fusermount -u -- <mp>`, run here as root with an argv built from the checked path: a sudoers line therefore names
+# this wrapper alone, never fusermount, whose argument a sudoers wildcard could not bound. <disk> and <region> are one safe token each, <path> a relative path of safe segments
 # (never "." or ".."). A mountpoint passes the same checks as the cleanup verbs' (a plain <root>/runs/<run>, no link in
 # <root> or <root>/runs); `mount`'s must be a real directory there, not a link, and the other three name a fuse.archil
 # mount the mount table lists at exactly that path.
@@ -47,6 +51,7 @@ set -eu
 ARCHIL=/usr/bin/archil
 MOUNT=/usr/bin/mount
 MOUNTS=/proc/self/mounts
+FUSERMOUNT=/usr/bin/fusermount
 PROC=/proc
 KILL=kill
 OWNER=0
@@ -213,6 +218,11 @@ case "${1:-}" in
     [ "$#" -eq 3 ] && [ "$2" = --json ] || refuse "usage: archil-scoped delegations --json <root>/runs/<run>"
     archil_mount "$3"
     exec "$ARCHIL" delegations --json "$mp"
+    ;;
+  release)
+    [ "$#" -eq 2 ] || refuse "usage: archil-scoped release <root>/runs/<run>"
+    archil_mount "$2"
+    exec "$FUSERMOUNT" -u -- "$mp"
     ;;
   mount) ;;
   prepare)

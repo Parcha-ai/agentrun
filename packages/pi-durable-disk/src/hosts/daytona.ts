@@ -1,5 +1,5 @@
 // daytonaHost: one Daytona sandbox per instance, created from a snapshot that holds Node, the archil client
-// (libfuse2), this package, the run user and the sudoers drop-in for `archil-scoped` and `fusermount -u` (or from a
+// (libfuse2), this package, the run user and the sudoers drop-in for `archil-scoped` alone (or from a
 // default image the caller's `prepare` installs them into). The toolbox's user is root or has passwordless sudo (a
 // default Daytona image's `daytona` user). The box runs `daytona-launch.ts`, which keeps the instance alive as the run
 // user (the in-box stand-in for systemd: restart in place after a non-terminal exit, never after 0, 65, 70, 75 or 76).

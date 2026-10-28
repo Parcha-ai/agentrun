@@ -34,7 +34,6 @@ export interface ArchilHost {
    * token as one line on stdin; plain `/usr/bin/archil` does not, so a mount through it fails unauthenticated.
    */
   archil?: string;
-  fusermount?: string;
   /** The sudo binary, or false when the process is root. Default: /usr/bin/sudo unless uid 0. */
   sudo?: string | false;
   procMounts?: string;
@@ -385,7 +384,6 @@ type Host = Required<Omit<ArchilHost, "timeoutMs" | "fs">> & {
 function resolveHost(h: ArchilHost = {}): Host {
   return {
     archil: h.archil ?? ARCHIL_SCOPED,
-    fusermount: h.fusermount ?? "/usr/bin/fusermount",
     sudo: h.sudo ?? (process.getuid?.() === 0 ? false : "/usr/bin/sudo"),
     procMounts: h.procMounts ?? "/proc/self/mounts",
     proc: h.proc ?? "/proc",
@@ -502,7 +500,9 @@ const refusedWithEnoent = (r: Ran) => !ok(r) && UNMOUNT_ENOENT.test(`${r.stderr}
 
 /** Remove a dead mount with `fusermount -u`; where the kernel refuses with ENOENT (Sysbox), move it aside instead. */
 async function cleanDead(host: Host, mountpoint: string): Promise<"fusermount" | "moved"> {
-  const r = await sh(asRoot(host, [host.fusermount, "-u", mountpoint]), host.timeoutMs.cli);
+  // Through the wrapper (`release`), which runs fusermount -u as root on the checked mountpoint: no sudoers line names
+  // fusermount, whose argument a sudoers wildcard cannot bound.
+  const r = await archil(host, ["release", mountpoint]);
   if (!(await mountEntry(host, mountpoint))) return "fusermount";
   if (refusedWithEnoent(r)) {
     await moveAside(host, mountpoint, "DEAD_MOUNT_CLEANUP_FAILED");
