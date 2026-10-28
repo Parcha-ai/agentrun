@@ -35,6 +35,12 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     });
     const chosen = await chooseModel(env, revision.model);
     if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
+    // The harness runs here; whether it runs this revision's model (its own, or the server's default) is checked on it.
+    else if (harness !== DEFAULT_HARNESS && offer?.available) {
+      const { harnessReason } = await import("./adapters.js");
+      const why = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
+      if (why !== undefined) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: why, host: true, harness });
+    }
     return out;
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.

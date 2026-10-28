@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agent, flowAgent, serve } from "./support.mjs";
+import { blockersOf } from "../dist/runnable.js";
+import { agent, flowAgent, serve, withEnv } from "./support.mjs";
 
 const storedBodies = (data) => {
   const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
@@ -100,4 +101,18 @@ test("a workflow on a harness other than pi saves with a warning and its runs ar
   const run = await api("POST", "/agents/flow-codex/runs", { input: { question: "q" } });
   assert.deepEqual([run.status, run.body.error?.code, run.body.error?.details?.harness], [409, "agent_not_runnable", "codex"], JSON.stringify(run.body));
   assert.equal((await api("GET", "/runs")).body.runs.length, 0);
+});
+
+test("a harness is checked on the revision's own model, never refused for the server's default: claude-agent runs an Anthropic model on a server whose default is OpenAI", { timeout: 60_000 }, async (t) => {
+  // Both providers configured (no real keys), the server's default model OpenAI's.
+  withEnv(t, { AGENT_MODEL: "openai/gpt-4o-mini", OPENAI_API_KEY: `not-a-secret-${"openai"}`, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENTRUN_SERVE_FAUX_HARNESS"]);
+  // A copy: serve checks a harness once per environment object, and process.env outlives this test.
+  const env = { ...process.env };
+  const revision = (model) => ({ kind: "agentic", instructions: "Answer.", harness: "claude-agent", ...(model ? { model } : {}) });
+  assert.deepEqual(await blockersOf(env, revision("anthropic/claude-haiku-4-5")), [], "its own Anthropic model runs");
+  for (const [model, field] of [["openai/gpt-4o-mini", "definition.model"], [undefined, "definition.harness"]]) {
+    const blockers = await blockersOf(env, revision(model));
+    assert.deepEqual(blockers.map((b) => [b.field, b.host]), [[field, true]], `an OpenAI model (${model ?? "the default"}) does not`);
+    assert.match(blockers[0].message, /claude-agent runs Anthropic models; the run's model is openai\/gpt-4o-mini/);
+  }
 });

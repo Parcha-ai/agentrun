@@ -44,7 +44,7 @@ export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin
     if (path !== "" && path !== "/v1") throw new HarnessUnavailable(`codex sends the Responses API to the gateway's origin + /v1/responses; AGENT_MODEL_BASE_URL has the path ${path}, which it cannot reach yet.`);
     return { origin: url.origin, credential: () => env.AGENT_MODEL_API_KEY || "none" };
   }
-  if (model.provider !== "openai") throw new HarnessUnavailable(`codex runs OpenAI models; this server's model is ${model.provider}/${model.modelId}.`);
+  if (model.provider !== "openai") throw new HarnessUnavailable(`codex runs OpenAI models; the run's model is ${model.provider}/${model.modelId}.`);
   if (!env.OPENAI_API_KEY) throw new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.");
   return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "" };
 }
@@ -64,7 +64,7 @@ export function priceOf(needs: AdapterNeeds) {
  *  gateway, which can never serve it. */
 export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
   if (env.AGENT_MODEL_BASE_URL) throw new HarnessUnavailable("claude-agent needs an Anthropic Messages endpoint (ANTHROPIC_API_KEY); AGENT_MODEL_BASE_URL is an OpenAI Responses gateway.");
-  if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; this server's model is ${model.provider}/${model.modelId}.`);
+  if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${model.provider}/${model.modelId}.`);
   if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.");
   let origin = "https://api.anthropic.com";
   if (env.ANTHROPIC_BASE_URL) {
@@ -92,6 +92,9 @@ async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Ag
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
   }
 }
+
+/** The run's thinking level as the harness takes it: serve's levels run to max; Codex's reasoning efforts stop at xhigh. */
+export const thinkingFor = (harness: string, level: string): SessionSpec["thinking"] => (harness === "codex" && level === "max" ? "xhigh" : level) as SessionSpec["thinking"];
 
 /** The bare id Codex takes: serve's "openai/<id>" without its provider. */
 const bareId = (model: ModelRef) => (model.modelId.startsWith("openai/") ? model.modelId.slice("openai/".length) : model.modelId);
@@ -125,11 +128,9 @@ export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs:
 }
 
 /** Why `harness` cannot run here, or undefined when it can: its package and pins, its provider, and the adapter's own
- *  check of the default model. */
+ *  check of the model `given` names (with none, a model of the harness's own provider: whether it runs here at all). */
 export async function harnessReason(harness: string, env: NodeJS.ProcessEnv, given: AdapterNeeds | undefined): Promise<string | undefined> {
   if (env[FAUX_HARNESS_ENV]) return undefined;
-  // With no default model (each agent names its own), the harness is checked on a model of its own provider: whether it
-  // is installed, pinned and has its endpoint. Whether an agent's model fits it is that agent's.
   const needs = given ?? { model: { provider: harness === "claude-agent" ? "anthropic" : "openai", modelId: "default" }, models: { getModel: () => undefined } };
   try {
     const adapter = await adapterFor(harness, env, needs);

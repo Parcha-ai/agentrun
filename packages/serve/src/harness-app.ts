@@ -10,6 +10,11 @@
 // reported), so an entry is written at the next boundary that has both: the next request, a tool's end, the turn's end.
 // A request the session booked but the root has no entry for (the process died before the boundary) gets one at the
 // next open, with its cost and no content.
+//
+// A message the door accepts is on the root before the door says so, and its end (sent to the session, or dropped by a
+// stop) after: one that waited for a turn's end when the process died is sent at the next open. Its end is written once
+// the session has it, so a process that dies between the two sends it again rather than never.
+import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-adapters";
@@ -21,19 +26,24 @@ import { durableSessions } from "./sessions.js";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
+/** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
+export const MESSAGE = "adapter.message";
+export const MESSAGE_END = "adapter.message_end";
 
 type ToolCall = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
 type Pending = { request: number; usage: ModelUsage };
+/** An accepted message: `recorded` once its record is on the root. */
+type Message = { id: string; content: string; recorded: Promise<unknown> };
 
 const now = () => Date.now();
 const textOf = (content: unknown): string =>
   typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => (part && typeof part === "object" && "text" in part && typeof part.text === "string" ? part.text : "")).join("") : "";
 
-/** One request as pi's own assistant message: its content, and its usage with the cost when it is known. `refused`: a
- *  request the run's cap kept back, as pi's own refusal reads (spend_cap_reached, at $0). */
-function assistantMessage(harness: string, request: Pending | undefined, text: string, calls: ToolCall[], refused?: string) {
-  if (refused !== undefined) {
-    return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: refused, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+/** One request as pi's own assistant message: its content, and its usage with the cost when it is known. `error`: a
+ *  turn that ended on an error, as pi's own reads (the cap's refusal is spend_cap_reached), at $0. */
+function assistantMessage(harness: string, request: Pending | undefined, text: string, calls: ToolCall[], error?: string) {
+  if (error !== undefined) {
+    return { role: "assistant", content: [], api: "agentrun-adapter", provider: harness, model: harness, stopReason: "error", errorMessage: error, timestamp: now(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
   const usage = request?.usage;
   const known = usage !== undefined && usage.usd !== null && usage.usd !== undefined;
@@ -81,6 +91,8 @@ export function adapterRun(
     if (answer) refused = answer.refuse;
     return answer;
   });
+  // A paid request whose cost could not be written: the booking admits no request after it, and the turn stops on it.
+  let halted: Error | undefined;
   const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
@@ -91,7 +103,7 @@ export function adapterRun(
   // The door's emit, from attach as the door opens: a recovered turn, started by no submit, reports through it too.
   let emit: ((event: DoorEvent) => void) | undefined;
   let attached = false;
-  const queue: string[] = [];
+  const queue: Message[] = [];
   const stop = new AbortController();
   // The current request's content, and the requests whose cost is in but whose entry is not written yet.
   let text = "";
@@ -170,10 +182,16 @@ export function adapterRun(
     return out;
   };
 
-  /** The person's message: its entry on the root, then the session's new turn. */
-  const sendOf = (content: string) => async () => {
-    await commit(async (tx) => void (await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, { model: [{ role: "user", content: [{ type: "text", text: content }], timestamp: now() } as never] })));
-    await session!.send(content);
+  /** The person's message: the session's new turn, then its entry and its end on the root. */
+  const sendOf = (message: Message) => async () => {
+    await message.recorded;
+    await session!.send(message.content);
+    await later(() =>
+      commit(async (tx) => {
+        await tx.appendEntry(UserEntry, ROOT_CONVERSATION_ID, { model: [{ role: "user", content: [{ type: "text", text: message.content }], timestamp: now() } as never] });
+        await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE_END, data: { key: spec.key, id: message.id, sent: true } });
+      }).then(() => undefined),
+    );
   };
 
   /** Turns until nothing waits: each with its start and end on the door, then the next waiting message. Busy throughout,
@@ -182,19 +200,21 @@ export function adapterRun(
     turn = (async () => {
       for (let start: (() => Promise<void>) | undefined = first; start; ) {
         emit?.({ type: "run_start" });
+        let failed: string | undefined;
         try {
           await start();
-          await session!.turnEnd();
-        } catch {
-          // The turn's end is in the session's records; the door's run_end follows either way.
+          const end = await session!.turnEnd();
+          if (end.status === "failed") failed = end.error ?? "the turn failed";
+        } catch (error) {
+          failed = String((error as Error)?.message ?? error);
         } finally {
           await flush(true);
           await writing;
-          if (refused !== undefined) {
-            const why = refused;
-            refused = undefined;
-            await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, "", [], why) as never] })));
-          }
+          // A turn that failed ends the run on its error, as a pi run's does: the cap's refusal, a cost the booking could
+          // not write, or the harness's own failure.
+          const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
+          refused = undefined;
+          if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, "", [], why) as never] })));
           emit?.({ type: "run_end" });
         }
         const next = queue.shift();
@@ -212,18 +232,24 @@ export function adapterRun(
     async submit(input, ctx: DoorContext) {
       if (!attached) emit = ctx.emit;
       await opened;
+      if (turn && input.whenBusy === "reject") return { accepted: false, reason: "busy" };
+      const id = randomUUID();
       const content = textOf(input.content);
-      if (turn) {
-        if (input.whenBusy === "reject") return { accepted: false, reason: "busy" };
-        queue.push(content);
-        return { accepted: true };
-      }
-      runTurns(sendOf(content));
+      const message: Message = { id, content, recorded: commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE, data: { key: spec.key, id, content } }))) };
+      if (turn) queue.push(message);
+      else runTurns(sendOf(message));
+      await message.recorded;
       return { accepted: true };
     },
     async abort(ctx: DoorContext) {
       if (!attached) emit = ctx.emit;
-      queue.length = 0;
+      const dropped = queue.splice(0);
+      if (dropped.length) {
+        await Promise.all(dropped.map((message) => message.recorded));
+        await commit(async (tx) => {
+          for (const message of dropped) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: MESSAGE_END, data: { key: spec.key, id: message.id, sent: false } });
+        });
+      }
       if (!turn) return "idle";
       await session?.interrupt();
       return "aborted";
@@ -236,13 +262,17 @@ export function adapterRun(
     async onOpen(durable) {
       run = durable;
       const sessions = durableSessions(durable.harness, context);
-      // The requests already written on the root, from any earlier process.
+      // The requests already written on the root, and the messages accepted and never sent, from any earlier process.
       const root = await durable.harness.conversation(ROOT_CONVERSATION_ID, context);
+      const accepted = new Map<string, Message>();
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
-          const data = entry.data as { key?: unknown; request?: unknown } | undefined;
-          if (entry.kind === BOOKED && data?.key === spec.key && typeof data.request === "number") written.add(data.request);
+          const data = entry.data as { key?: unknown; request?: unknown; id?: unknown; content?: unknown } | undefined;
+          if (data?.key !== spec.key) continue;
+          if (entry.kind === BOOKED && typeof data.request === "number") written.add(data.request);
+          else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
+          else if (entry.kind === MESSAGE_END && typeof data.id === "string") accepted.delete(data.id);
         }
         if (page.next === undefined) break;
         cursor = page.next;
@@ -252,15 +282,31 @@ export function adapterRun(
       if (typeof env.confinePrefix !== "function") throw new Error("the run's environment gives no confinement for the harness's process");
       const adapter = await make(confineOf(env.confinePrefix()));
       const writer = await sessions.open(spec.key);
-      const booking = await modelPortFor(writer, { key: spec.key, ...(budgetUsd !== undefined ? { budgetUsd } : {}), ...(guard ? { beforeRequest: guard as never } : {}), onEvent: onModel });
+      const booking = await modelPortFor(writer, {
+        key: spec.key,
+        ...(budgetUsd !== undefined ? { budgetUsd } : {}),
+        ...(guard ? { beforeRequest: guard as never } : {}),
+        onEvent: onModel,
+        stopped: () => halted,
+        stop: (reason, message) => {
+          const error = new Error(message ?? reason);
+          if (reason === "model_error" && !halted) {
+            halted = error;
+            void session?.interrupt();
+          }
+          return error;
+        },
+      });
       // A request a crash cut off is booked once, unknown, before anything is sent.
       await booking.bookCut();
       // Each request the session booked and the root has no entry for: its cost, with no content.
       for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request)) costed.push({ request, usage });
       await flush();
       session = await adapter.open({ ...spec, tools: fileTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
+      queue.push(...accepted.values());
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
+      else if (queue.length) runTurns(sendOf(queue.shift()!));
     },
   };
 }

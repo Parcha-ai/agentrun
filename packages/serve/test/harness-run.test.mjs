@@ -181,3 +181,15 @@ test("a capped run whose spend became unknown (a request cut by a crash) refuses
   assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
   assert.match(ended.error.message, /spent is unknown/);
 });
+
+test("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  for (const [harness, thinking, said] of [["claude-agent", "high", "Thinking high."], ["claude-agent", "max", "Thinking max."], ["codex", "max", "Thinking xhigh."]]) {
+    const id = `think-${harness}-${thinking}`;
+    assert.equal((await api("POST", "/agents", agent(id, { harness, instructions: "Say your thinking.", thinking }))).status, 201);
+    const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    await follow(api, run.body.run_id, ["completed"]);
+    assert.equal(await answer(api, run.body.run_id), said);
+  }
+});

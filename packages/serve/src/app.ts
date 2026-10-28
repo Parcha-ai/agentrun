@@ -15,7 +15,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { adapterFor, type ConfineChild } from "./adapters.js";
+import { adapterFor, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
@@ -89,7 +89,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const fileTools = new Map((CodingTools.tools ?? []).map((tool) => [tool.name, tool] as const));
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const };
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(revision.body.harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
     // The harness's own files (its homes, its working state) go in a private directory beside the workspace, never in it.
