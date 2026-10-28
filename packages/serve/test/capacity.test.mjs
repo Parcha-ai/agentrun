@@ -2,7 +2,7 @@
 // reads the store and the free disk, a cancel that settles a run whose carry back cannot be written, and a run whose
 // process was killed answered again at once.
 import assert from "node:assert/strict";
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -113,6 +113,36 @@ test("a completed run's follow-up gives its place back when it ends again: the n
   const next = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
   assert.equal(next.status, 202, `the follow-up kept a place: ${JSON.stringify(next.body)}`);
   await follow(api, next.body.run_id, ["completed"]);
+});
+
+test("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that", { timeout: 90_000 }, async (t) => {
+  const gate = join(await scratch(t), "gate");
+  await writeFile(gate, "");
+  withEnv(t, { EXIT_GATE: gate });
+  const { api } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const { body: first } = await api("POST", "/agents/calc/runs", { input: { content: "First." } });
+  await follow(api, first.run_id, ["completed"]);
+  // A second run answers, and its process cannot exit: it holds the one place while the follow-ups wait for it.
+  await rm(gate);
+  const { body: holder } = await api("POST", "/agents/calc/runs", { input: { content: "Hold." } });
+  for (let i = 0; (await api("GET", `/runs/${holder.run_id}`)).body.status !== "completed"; i++) {
+    assert.ok(i < 400, "the holding run answers");
+    await sleep(50);
+  }
+  const answers = Promise.all(["And again?", "And once more?"].map((content) => api("POST", `/runs/${first.run_id}/messages`, { content })));
+  await sleep(300);
+  await writeFile(gate, "");
+  const statuses = await answers;
+  assert.deepEqual(statuses.map((a) => a.status), [202, 202], JSON.stringify(statuses.map((a) => a.body)));
+  const { rows } = await follow(api, first.run_id, ["completed"]);
+  const sent = rows.filter((r) => r.kind === "user_message").map((r) => r.text);
+  assert.deepEqual([...sent].sort(), ["And again?", "And once more?", "First."].sort(), "both messages reached the run");
+  // Completed again, it opens again for the next follow-up: the reopen the two shared is over.
+  const third = await api("POST", `/runs/${first.run_id}/messages`, { content: "And a third time?" });
+  assert.equal(third.status, 202, JSON.stringify(third.body));
+  const after = await follow(api, first.run_id, ["completed"]);
+  assert.ok(after.rows.some((r) => r.kind === "user_message" && r.text === "And a third time?"), "the third message reached the run");
 });
 
 test("a server full of runs that still work answers 429 at once: only a place being given back is waited for", { timeout: 90_000 }, async (t) => {

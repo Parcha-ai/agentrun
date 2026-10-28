@@ -113,6 +113,8 @@ export type Run = {
   orphan?: number;
   /** Adopted with a saved stop: its first snapshot is checked once, and a turn still working is aborted. */
   finishStop?: boolean;
+  /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
+  reopening?: Promise<void>;
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
@@ -849,7 +851,7 @@ export class Runs {
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
     // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
     if (run.finishing && !run.outcome) await this.endWritten(run);
-    if (run.kind === "agentic" && statusOf(run).status === "completed") await this.reopen(run);
+    if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     const mode = status === "queued" || (status === "working" && state === "working") ? "steer" : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
