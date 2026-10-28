@@ -40,6 +40,37 @@ export function spentIn(storeFile: string): number {
   }
 }
 
+/** The most output tokens one request may take: the model's ceiling, else its context window. A thinking budget can
+ *  raise a request's ceiling up to the model's, whatever maxTokens it asked for. */
+export const ceilingTokens = (model: Pick<Model<Api>, "maxTokens" | "contextWindow">) => (model.maxTokens > 0 ? model.maxTokens : model.contextWindow);
+
+/** The cap of a run on another harness, before each of its requests: the runner's booking says what the run has spent
+ *  (its session, across processes) and which of its requests are still in flight. */
+export interface CapGuard {
+  beforeRequest(request: { spentUsd: number | null; inFlight: readonly unknown[] }): undefined | { refuse: string };
+}
+
+/** A run on another harness: before each request, what the run has spent, plus the worst case of each request still in
+ *  flight, plus this request's, must stay within `cap`, else the request is refused with spend_cap_reached. A request's
+ *  worst case is its output ceiling at the run model's price (its input is not known before the harness sends it; a
+ *  request on a cheaper model is held at that price too, which only refuses sooner). Requests in flight hold theirs until
+ *  they answer, as pi's own cap holds them, so requests sent side by side cannot pass the cap together. A spend that is
+ *  unknown (a request a crash cut) cannot be kept within a cap, so it is refused too; a model with no price never reaches
+ *  a cap, as on pi. */
+export async function capBefore(cap: number | undefined, model: Model<Api> | undefined): Promise<CapGuard | undefined> {
+  if (cap === undefined || model === undefined) return undefined;
+  const { calculateCost } = await import("@earendil-works/pi-ai");
+  const worst = calculateCost(model, { input: 0, output: ceilingTokens(model), cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }).total;
+  return {
+    beforeRequest({ spentUsd, inFlight }) {
+      if (spentUsd === null) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. What the run has spent is unknown, so its cap of $${cap} cannot be kept: the run is out of budget.` };
+      const held = worst * inFlight.length;
+      if (spentUsd + held + worst > cap) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
+      return undefined;
+    },
+  };
+}
+
 /** `models`, refusing each request whose worst case would take the run past `cap` after `spent` USD. */
 export async function capModels<M extends Models>(models: M, cap: number, spent: number): Promise<M> {
   const [{ calculateCost, createAssistantMessageEventStream }, { estimateContextTokens }, { clampMaxTokensToContext }] = await Promise.all([
@@ -53,10 +84,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const worstCase = (model: Model<Api>, context: Context, options?: { maxTokens?: number }) => {
     const transcript = context as unknown as Parameters<typeof clampMaxTokensToContext>[1];
     const input = estimateContextTokens(transcript).tokens;
-    // A thinking budget can raise a request's ceiling up to the model's, whatever maxTokens it asked for; a model that
-    // names no ceiling sends none, and answers within its context window.
-    const ceiling = model.maxTokens > 0 ? model.maxTokens : model.contextWindow;
-    const output = clampMaxTokensToContext(model, transcript, Math.max(options?.maxTokens ?? 0, ceiling));
+    const output = clampMaxTokensToContext(model, transcript, Math.max(options?.maxTokens ?? 0, ceilingTokens(model)));
     return Math.max(priced(model, { input, output }), priced(model, { cacheWrite: input, output }));
   };
   const refusal = (model: Model<Api>, worst: number): AssistantMessage => ({
