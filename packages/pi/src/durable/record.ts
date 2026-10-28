@@ -206,13 +206,16 @@ function itemsOf(schema: unknown, root: unknown): unknown {
 const NULL_SPELLINGS: ReadonlySet<string> = new Set(["null", "none", "n/a"]);
 const spellsNull = (value: unknown): value is string => typeof value === "string" && NULL_SPELLINGS.has(value.trim().toLowerCase());
 
-/** Whether a field's schema lists the string itself as a value: its `const`, or a member of its `enum`, in any branch. */
-function listsValue(value: string, schema: unknown, root: unknown): boolean {
-  schema = deref(schema, root);
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+/** Whether a field's schema lists the string itself as a value: its own `const`, or a member of its own `enum`, or the
+ *  same in the schema its local `$ref` names, or in any branch. A schema's own listed values count beside its `$ref`,
+ *  never in place of it. */
+function listsValue(value: string, schema: unknown, root: unknown, hops = 0): boolean {
+  if (hops > 16 || !schema || typeof schema !== "object" || Array.isArray(schema)) return false;
   const spec = schema as Record<string, unknown>;
   if (spec.const === value || (Array.isArray(spec.enum) && spec.enum.includes(value))) return true;
-  return [spec.anyOf, spec.oneOf].some((branches) => Array.isArray(branches) && branches.some((branch) => listsValue(value, branch, root)));
+  const target = deref(spec, root);
+  if (target !== spec && listsValue(value, target, root, hops + 1)) return true;
+  return [spec.anyOf, spec.oneOf].some((branches) => Array.isArray(branches) && branches.some((branch) => listsValue(value, branch, root, hops + 1)));
 }
 
 /** A string that spells "no value" in a field that admits JSON null. A string the field's own enum or const lists

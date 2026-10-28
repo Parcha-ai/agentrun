@@ -268,6 +268,14 @@ test("string-null normalization keeps a string the field's own enum or const lis
   const kept = { nested: "None", referenced: "N/A", defs: "null", inner: { status: "N/A" } };
   normalizeStringNullsForSchema(kept, deep);
   assert.deepEqual(kept, { nested: "None", referenced: "N/A", defs: "null", inner: { status: "N/A" } });
+  // A field's own enum beside its $ref still lists the value: the reference adds to what the field lists, never replaces it.
+  const beside = { type: "object", definitions: { S: { type: ["string", "null"] } }, properties: {
+    own: { $ref: "#/definitions/S", type: ["string", "null"], enum: ["None", null] },
+    bare: { $ref: "#/definitions/S", type: ["string", "null"] },
+  } };
+  const sided = { own: "None", bare: "None" };
+  normalizeStringNullsForSchema(sided, beside);
+  assert.deepEqual(sided, { own: "None", bare: null });
   const loose = { hold: "none" };
   normalizeStringNullsForSchema(loose, schema);
   assert.equal(loose.hold, null, "only the exact listed string is a value");

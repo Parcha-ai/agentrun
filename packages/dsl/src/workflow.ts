@@ -545,16 +545,17 @@ export function buildReferenceContext(files: Record<string, string>): { referenc
   return { references, references_parsed: referencesParsed };
 }
 
-/** Whether a field's schema lists the value itself: its `const`, or a member of its `enum`, in any `anyOf` or `oneOf`
- *  branch at any depth, through a local `$ref` into the root schema's `definitions` or `$defs`. */
+/** Whether a field's schema lists the value itself: its own `const`, or a member of its own `enum`, or the same in the
+ *  schema a local `$ref` names in the root schema's `definitions` or `$defs`, or in any `anyOf` or `oneOf` branch, at any
+ *  depth. A schema's own listed values count beside its `$ref`, never in place of it. */
 function listsValue(value: unknown, spec: any, root: Record<string, unknown> | undefined, hops = 0): boolean {
   if (hops > 16 || !spec || typeof spec !== "object") return false;
+  if (spec.const === value || (Array.isArray(spec.enum) && spec.enum.includes(value))) return true;
   if (typeof spec.$ref === "string") {
     const match = spec.$ref.match(/^#\/(definitions|\$defs)\/([^/]+)$/);
     const target = match ? (root as any)?.[match[1]]?.[match[2]] : undefined;
-    return target ? listsValue(value, target, root, hops + 1) : false;
+    if (target && listsValue(value, target, root, hops + 1)) return true;
   }
-  if (spec.const === value || (Array.isArray(spec.enum) && spec.enum.includes(value))) return true;
   return [spec.anyOf, spec.oneOf].some((branches) => Array.isArray(branches) && branches.some((branch) => listsValue(value, branch, root, hops + 1)));
 }
 

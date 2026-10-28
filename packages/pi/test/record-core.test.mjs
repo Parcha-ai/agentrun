@@ -120,6 +120,11 @@ test('a string the field\'s own enum or const lists exactly is a value, never a 
   // The scalar repair runs first: a "null" the field lists as its const is never coerced to JSON null there either.
   const literal = { type: 'object', properties: { mark: { anyOf: [{ const: 'null' }, { type: 'null' }] }, ref: { anyOf: [{ $ref: '#/definitions/Lit' }, { type: 'null' }] } }, definitions: { Lit: { const: 'null' } } };
   assert.deepEqual(repairRecord({ mark: 'null', ref: 'null' }, literal), { mark: 'null', ref: 'null' });
+  // A field's own enum beside its $ref still lists the value: the reference adds to what the field lists, never replaces it.
+  const beside = { type: 'object', definitions: { S: { type: ['string', 'null'] } }, properties: {
+    own: { $ref: '#/definitions/S', type: ['string', 'null'], enum: ['None', null] }, bare: { $ref: '#/definitions/S', type: ['string', 'null'] } } };
+  assert.deepEqual(nullSpellings({ own: 'None', bare: 'None' }, beside), ['bare']);
+  assert.deepEqual(repairRecord({ own: 'None', bare: 'None' }, beside), { own: 'None', bare: null });
 });
 
 test('a null the record as a whole refuses is not written: the spelling stays, and the submission is refused naming the field', async () => {
