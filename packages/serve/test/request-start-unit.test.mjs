@@ -159,3 +159,42 @@ test("a cancelled run's request whose abort came before it was refused ends abor
   assert.equal(called, 0);
   assert.deepEqual(marks, []);
 });
+
+// A cancel can land while a request's start mark waits (for the app's open, or the store's commit). The request is
+// checked again after its mark, and one the cancel caught there never leaves: its start is withdrawn, so the run's
+// cost reads what was sent.
+const priced = { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop", usage: { input: 1, output: 1, cost: { total: 0.01 } } }] };
+
+test("a run cancelled while its request's start mark waits sends no model request, and the run's cost leaves it out", async () => {
+  const { marks, run } = store();
+  let called = 0;
+  let cancelled = false;
+  const { models, open } = await markRequests({ streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) }, () => cancelled, { refusalWaitMs: 20 });
+  const stream = models.streamSimple(summaryModel, { messages: [] }, {});
+  cancelled = true;
+  open(run);
+  const result = await stream.result();
+  assert.equal(called, 0, "nothing was sent");
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage, /cancelled/);
+  assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: {} }, { kind: REQUEST_ENDED, data: { unsent: true } }, { kind: REQUEST_REFUSED, data: {} }]);
+  const refusal = { kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason: "error", errorMessage: result.errorMessage, usage: { input: 0, output: 0, cost: { total: 0 } } }] };
+  const rows = timelineOf([{ kind: REQUEST_STARTED, data: {} }, priced, ...marks, refusal], { settled: true });
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.01, requests: 1 }, "the one request sent, at its cost");
+  assert.equal(rows.filter((r) => r.kind === "error").length, 0, "no failure to show");
+});
+
+test("a run cancelled while its summary's start mark waits sends no summary request, and the run's cost leaves it out", async () => {
+  const { marks, run } = store();
+  let called = 0;
+  let cancelled = false;
+  const { models, open } = await markRequests({ completeSimple: async () => (called++, {}) }, () => cancelled, { refusalWaitMs: 20 });
+  const summary = models.completeSimple(summaryModel, { messages: [] }, {});
+  cancelled = true;
+  open(run);
+  const result = await summary;
+  assert.equal(called, 0, "nothing was sent");
+  assert.equal(result.stopReason, "error");
+  assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: { request: "compaction" } }, { kind: REQUEST_ENDED, data: { request: "compaction", unsent: true } }]);
+  assert.deepEqual(timelineOf([{ kind: REQUEST_STARTED, data: {} }, priced, ...marks], { settled: true }).at(-1).usage, { usd: 0.01, requests: 1 });
+});

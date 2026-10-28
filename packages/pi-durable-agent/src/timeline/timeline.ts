@@ -48,6 +48,7 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
  *  end and no entry is in flight when it is the latest, unless the run is settled, and was cut by a crash when a later
  *  one followed it or the run settled without it. A cut request's cost is unknown. */
 export const REQUEST_STARTED = "agentrun.request_started";
+/** An end with `unsent: true` withdraws its start: the request was refused after its mark, and never left. */
 export const REQUEST_ENDED = "agentrun.request_ended";
 /** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
  *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. */
@@ -57,6 +58,7 @@ export const REQUEST_COST = "agentrun.request_cost";
 export const REQUEST_REFUSED = "agentrun.request_refused";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
+const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -181,6 +183,7 @@ function createProjector(options: TimelineOptions) {
       compacting += 1;
       compactionOpen = true;
     } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
+      if (unsent(entry)) compacting -= 1;
       compactionOpen = false;
     } else if (entry.kind === REQUEST_COST) {
       compactions += 1;
@@ -191,6 +194,7 @@ function createProjector(options: TimelineOptions) {
       marked += 1;
       inFlight = true;
     } else if (entry.kind === REQUEST_ENDED) {
+      if (unsent(entry)) marked -= 1;
       inFlight = false;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;

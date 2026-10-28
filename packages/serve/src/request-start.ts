@@ -21,13 +21,14 @@ import { RUN_CANCELLED } from "./files.js";
 export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
 
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
- *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked. */
+ *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
+ *  mark when the cancel came while the mark waited, and then its start is withdrawn (an end mark, `unsent`). */
 export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false, { refusalWaitMs = 60_000 }: { refusalWaitMs?: number } = {}): Promise<{ models: M; open(run: DurableRun): void }> {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
   const opened = new Promise<DurableRun>((resolve) => (open = resolve));
-  const mark = async (kind: string, data: Record<string, string | number | null> = {}) => {
+  const mark = async (kind: string, data: Record<string, string | number | boolean | null> = {}) => {
     const run = await opened;
     await run.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT);
   };
@@ -55,13 +56,13 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   };
   const streamSimple = (model: Model<Api>, context: Context, options?: Parameters<Models["streamSimple"]>[2]) => {
     const outer = createAssistantMessageEventStream();
+    const refused = async () => {
+      const message = await refuse(model, "model request", options?.signal, true);
+      outer.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
+      outer.end(message);
+    };
     void (async () => {
-      if (cancelled()) {
-        const message = await refuse(model, "model request", options?.signal, true);
-        outer.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
-        outer.end(message);
-        return;
-      }
+      if (cancelled()) return refused();
       try {
         await mark(REQUEST_STARTED);
       } catch (error) {
@@ -69,6 +70,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
         outer.push({ type: "error", reason: "error", error: message });
         outer.end(message);
         return;
+      }
+      if (cancelled()) {
+        await mark(REQUEST_ENDED, { unsent: true }).catch(() => undefined);
+        return refused();
       }
       let result: AssistantMessage;
       try {
@@ -100,6 +105,10 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
       await mark(REQUEST_STARTED, COMPACTION);
     } catch (error) {
       return failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+    }
+    if (cancelled()) {
+      await mark(REQUEST_ENDED, { ...COMPACTION, unsent: true }).catch(() => undefined);
+      return refuse(model, "summary request", options?.signal, false);
     }
     let result: AssistantMessage;
     try {
