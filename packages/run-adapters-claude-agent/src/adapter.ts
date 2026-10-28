@@ -18,11 +18,11 @@ import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
-import { ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
+import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import { serialWriter } from "./serial.js";
-import { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
+import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
 /** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
@@ -187,7 +187,7 @@ export function claudeAgentCliPins(): { sha256?: string; version: string } {
 
 /** The CLI at `path`, checked against the pins: its path, or the typed reason it is not the pinned build. */
 export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgentCliPins()): { path: string } | ClaudeAgentPinMismatch | ClaudeAgentNotInstalled {
-  if (!path) return new ClaudeAgentNotInstalled(`no CLI: install @anthropic-ai/claude-agent-sdk@${CLAUDE_AGENT_SDK_VERSION} with its optional dependencies, or pass cliPath`);
+  if (!path) return new ClaudeAgentNotInstalled(`no CLI of @anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} for ${platformSuffix()} (its platform package, an optional dependency npm installs with it), and no cliPath`, CLAUDE_AGENT_SDK_INSTALL);
   let bytes: Buffer;
   try {
     bytes = readFileSync(path);
@@ -212,11 +212,11 @@ export function verifyClaudeAgentCli(path: string | undefined, pins = claudeAgen
  *  pinned build. `installed` looks a package's version up (default: where Node would import it from here). */
 export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk" | "sdkVersion" | "cliPath">, installed: (name: string) => string | undefined = installedVersion): { cliPath: string } {
   const sdkVersion = options.sdk ? options.sdkVersion : installed("@anthropic-ai/claude-agent-sdk");
-  if (!options.sdk && sdkVersion === undefined) throw new ClaudeAgentNotInstalled("@anthropic-ai/claude-agent-sdk is not installed beside the adapter, and no module was given (sdk)");
+  if (!options.sdk && sdkVersion === undefined) throw new ClaudeAgentNotInstalled(`@anthropic-ai/claude-agent-sdk ${CLAUDE_AGENT_SDK_VERSION} is not installed beside ${CLAUDE_AGENT_PACKAGE}, and no module was given (sdk)`, CLAUDE_AGENT_SDK_INSTALL);
   if (sdkVersion !== undefined && sdkVersion !== CLAUDE_AGENT_SDK_VERSION) throw new ClaudeAgentPinMismatch("sdk_version", CLAUDE_AGENT_SDK_VERSION, sdkVersion);
   // The session's tools are served by an MCP server built here (host/tool-server.ts), whichever SDK runs: an injected
   // SDK does not bring the MCP library, so a missing one is refused now, not at the first turn.
-  if (installed("@modelcontextprotocol/sdk") === undefined) throw new ClaudeAgentNotInstalled("@modelcontextprotocol/sdk is not installed beside the adapter (the Agent SDK's peer, which serves the session's tools)");
+  if (installed("@modelcontextprotocol/sdk") === undefined) throw new ClaudeAgentNotInstalled(`@modelcontextprotocol/sdk is not installed beside ${CLAUDE_AGENT_PACKAGE} (the Agent SDK's peer, which serves the session's tools; npm installs it with the SDK)`, CLAUDE_AGENT_SDK_INSTALL);
   const cli = verifyClaudeAgentCli(options.cliPath ?? findClaudeExecutable());
   if (cli instanceof Error) throw cli;
   return { cliPath: cli.path };
