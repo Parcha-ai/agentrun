@@ -39,8 +39,9 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
   /** A cancelled run's request, never sent. It waits for the cancel to reach the run (the request's abort), and then ends
    *  as aborted, as a request the cancel cut does: the turn, or a workflow's node, stops, never failing on the refusal.
-   *  Only if no abort comes within `refusalWaitMs` does it end as an error, and `markRefusal` lets the timeline skip
-   *  pi's entry for it. */
+   *  serve's cancel aborts a live run's turn and then stops its process, so the wait is short. `refusalWaitMs` is a
+   *  backstop for a process the cancel never reaches (an orphan of a server that died in between): it then ends as an
+   *  error, and `markRefusal` lets the timeline skip pi's entry for it. */
   const refuse = async (model: Model<Api>, what: string, signal: AbortSignal | undefined, markRefusal: boolean): Promise<AssistantMessage> => {
     if (signal && !signal.aborted) {
       await new Promise<void>((resolve) => {

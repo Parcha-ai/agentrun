@@ -111,14 +111,25 @@ test("a cancelled run's request waits for the cancel to reach the run and ends a
   const models = { streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }), completeSimple: async () => (called++, {}) };
   const { models: marked, open } = await markRequests(models, () => true, { refusalWaitMs: 30_000 });
   open(run);
-  for (const send of [(signal) => marked.streamSimple(summaryModel, { messages: [] }, { signal }).result(), (signal) => marked.completeSimple(summaryModel, { messages: [] }, { signal })]) {
+  /** A streamed request's events and its message. */
+  const streamed = async (signal) => {
+    const events = [];
+    const stream = marked.streamSimple(summaryModel, { messages: [] }, { signal });
+    for await (const event of stream) events.push(event);
+    return { events, result: await stream.result() };
+  };
+  const stopLater = () => {
     const stop = new AbortController();
-    const answer = send(stop.signal);
     setTimeout(() => stop.abort(new Error("cancelled")), 20);
-    const result = await answer;
-    assert.equal(result.stopReason, "aborted");
-    assert.equal(result.errorMessage, undefined, "no error to fail on");
-  }
+    return stop.signal;
+  };
+  const { events, result } = await streamed(stopLater());
+  assert.equal(result.stopReason, "aborted");
+  assert.equal(result.errorMessage, undefined, "no error to fail on");
+  assert.deepEqual(events.map((e) => [e.type, e.reason]), [["error", "aborted"]], "the stream says aborted too");
+  const summary = await marked.completeSimple(summaryModel, { messages: [] }, { signal: stopLater() });
+  assert.equal(summary.stopReason, "aborted");
+  assert.equal(summary.errorMessage, undefined);
   assert.equal(called, 0, "nothing was sent");
   assert.deepEqual(marks, [], "nothing to count or skip");
 });
@@ -127,8 +138,24 @@ test("a cancelled run's request that no abort reaches ends, after a bounded wait
   const { marks, run } = store();
   const { models: marked, open } = await markRequests({ streamSimple: () => ({}) }, () => true, { refusalWaitMs: 20 });
   open(run);
-  const result = await marked.streamSimple(summaryModel, { messages: [] }, { signal: new AbortController().signal }).result();
+  const result = await Promise.race([marked.streamSimple(summaryModel, { messages: [] }, { signal: new AbortController().signal }).result(), new Promise((resolve) => setTimeout(() => resolve("still waiting"), 40))]);
+  assert.notEqual(result, "still waiting", "it ends within twice its wait");
   assert.equal(result.stopReason, "error");
   assert.match(result.errorMessage, /cancelled/);
   assert.deepEqual(marks, [{ kind: REQUEST_REFUSED, data: {} }]);
+});
+
+test("a cancelled run's request whose abort came before it was refused ends aborted at once: nothing to wait for, nothing sent", async () => {
+  const { marks, run } = store();
+  let called = 0;
+  const { models: marked, open } = await markRequests({ streamSimple: () => (called++, {}), completeSimple: async () => (called++, {}) }, () => true, { refusalWaitMs: 30_000 });
+  open(run);
+  const stop = new AbortController();
+  stop.abort(new Error("cancelled"));
+  const soon = (answer) => Promise.race([answer, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 500))]);
+  const result = await soon(marked.streamSimple(summaryModel, { messages: [] }, { signal: stop.signal }).result());
+  assert.equal(result?.stopReason, "aborted", "at once, not after the wait");
+  assert.equal((await soon(marked.completeSimple(summaryModel, { messages: [] }, { signal: stop.signal })))?.stopReason, "aborted");
+  assert.equal(called, 0);
+  assert.deepEqual(marks, []);
 });
