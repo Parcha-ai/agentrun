@@ -83,6 +83,33 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   return { model: { provider, modelId } };
 }
 
+/** Why this host's gateway cannot serve a run, or undefined when it answers or there is none. It is asked `GET
+ *  {AGENT_MODEL_BASE_URL}/models`, which runs no model and spends nothing: any answer but a refused key is reachable.
+ *  The reason names the address and the fix, since a run that cannot reach it fails only at its first request. */
+export async function gatewayProblem(env: NodeJS.ProcessEnv, timeoutMs = 3_000): Promise<string | undefined> {
+  if (env[FAUX_ENV] || !env.AGENT_MODEL_BASE_URL) return undefined;
+  if (!URL.canParse(env.AGENT_MODEL_BASE_URL)) return "AGENT_MODEL_BASE_URL is not a URL: set it to the gateway's address, such as its https://.../v1.";
+  // The address asked and said, with no user or password a URL may carry: an error's text would repeat them.
+  const base = Object.assign(new URL(env.AGENT_MODEL_BASE_URL), { username: "", password: "" }).href.replace(/\/+$/, "");
+  const key = env.AGENT_MODEL_API_KEY;
+  let status: number;
+  try {
+    const answer = await fetch(`${base}/models`, { headers: key ? { authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(timeoutMs) });
+    await answer.body?.cancel();
+    status = answer.status;
+  } catch (error) {
+    const cause = (error as { cause?: { code?: string; errors?: { code?: string }[]; message?: string } }).cause;
+    const why = (error as Error).name === "TimeoutError" ? `no answer in ${timeoutMs / 1000} s` : (cause?.code ?? cause?.errors?.[0]?.code ?? cause?.message ?? (error as Error).message);
+    // In a container the host's loopback is not the server's: the gateway on this machine is out of its reach.
+    const loopback = /^https?:\/\/(localhost|127\.[\d.]+|\[::1\])(:|\/|$)/i.test(base)
+      ? " If agentrun-serve runs in a container, its 127.0.0.1 is the container's own: run the container with --network host (the serve README's \"A gateway on this machine\")."
+      : "";
+    return `The model gateway at ${base} (AGENT_MODEL_BASE_URL) does not answer: ${why}. Start the gateway, or set AGENT_MODEL_BASE_URL to the address it listens on.${loopback}`;
+  }
+  if (status === 401 || status === 403) return `The model gateway at ${base} refused ${!key ? "a request with no key" : "AGENT_MODEL_API_KEY"} (HTTP ${status}): set AGENT_MODEL_API_KEY to a key it takes.`;
+  return undefined;
+}
+
 /** A run's thinking level: its `effort`, else its revision's `thinking`, else the host's `AGENT_THINKING`, else medium.
  *  Never off. */
 export function thinkingOf(env: NodeJS.ProcessEnv, revision?: string): ModelThinkingLevel {

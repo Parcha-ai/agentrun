@@ -131,6 +131,24 @@ the address people open before the first start; without it, whoever opens the pa
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
 let a service with a disk change that.
 
+### A gateway on this machine
+
+In the container, `127.0.0.1` is the container's own loopback, not this machine's, so a gateway listening on this
+machine's loopback (`http://127.0.0.1:4000/v1`, say) does not answer there, and the server says so at start. On Linux,
+share this machine's network and keep the server on its loopback; the arguments replace the image's, so all of them
+are given:
+
+```sh
+docker run -d --name agentrun --network host -v agentrun:/data \
+  -e AGENT_MODEL_BASE_URL=http://127.0.0.1:4000/v1 -e AGENT_MODEL=<model id> -e AGENT_MODEL_API_KEY \
+  ghcr.io/parcha-ai/agentrun-server:beta --data /data --listen 127.0.0.1 --port 7340 --drain-timeout 6s
+```
+
+With `--network host`, `-p` does nothing, and the image's own `--listen 0.0.0.0` would serve every address of this
+machine, hence `--listen 127.0.0.1`. `host.docker.internal` (Docker Desktop, or `--add-host
+host.docker.internal:host-gateway` on Linux) reaches this machine only at an address beyond its loopback, so it works
+when the gateway listens there too.
+
 ## Upgrading from 0.1.0-beta.26
 
 0.1.0-beta.27 keeps every agent in one store, `DIR/store.sqlite`, with its revisions, and each run under `DIR/runs/<id>/`.
@@ -203,9 +221,12 @@ it starts:
 - What a setting of this host fixes saves, and the `201` or `200` carries it in `warnings` (`[{field, reason:
   "not_set_up_here", message}]`, empty when there is none): no key for the model's provider, no default model for a
   revision that names none, no model for a tier a workflow's nodes name. The page shows them before it leaves the form.
+- With `AGENT_MODEL_BASE_URL`, a save also asks the gateway `GET <base>/models`, which runs no model and costs nothing.
+  When it does not answer, or refuses the key, the save carries a warning naming the address and the fix; the server
+  says the same on stderr at start. A gateway with no `/models` route still answers, so it passes.
 
 A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
-fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
+fixed yet (except a gateway that did not answer, which a run tries again), or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
 workflow of fast nodes runs with `AGENT_MODEL_FAST` and no `AGENT_MODEL`. A run thinks at its `effort` (`low`, `medium`,
 `high`), else at its agentic revision's `thinking` (`low` to `max`), else at the host's `AGENT_THINKING`, else at medium;
 it is never off, and a model node that names its own thinking level keeps it.

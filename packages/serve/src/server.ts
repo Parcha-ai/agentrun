@@ -11,14 +11,14 @@ import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, revisionView, type AgentEntry } from "./agents.js";
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
-import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
+import { EFFORTS, FAUX_ENV, gatewayProblem, MODEL_NODES, modelSource, nodeTiers, THINKING_LEVELS } from "./model.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
-import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { blockersOf, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -354,7 +354,11 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow });
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
-    return blockers.map(issueOf);
+    const issues = blockers.map(issueOf);
+    const onModel = revision.kind === "agentic" || nodeTiers(revision.workflow).length > 0;
+    const unreachable = onModel ? await gatewayProblem(env) : undefined;
+    if (unreachable) issues.push({ field: revision.kind === "agentic" ? "definition.model" : "definition.workflow", reason: NOT_SET_UP, message: unreachable });
+    return issues;
   }
 
   /** A run's input: an agentic run's `{content: string}`, a workflow run's what its workflow's input schema takes. */
@@ -780,6 +784,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const port = options.port ?? DEFAULT_PORT;
   await new Promise<void>((done, reject) => (server.once("error", reject), server.listen(port, host, () => done())));
   const address = server.address() as AddressInfo;
+  // A gateway it cannot reach is said at start, with its address and the fix, not at a run's first request.
+  void gatewayProblem(env).then((why) => void (why && process.stderr.write(`agentrun-serve: ${why}\n`)));
   if (isLoopback(host)) names = new Set(["localhost", "127.0.0.1", "[::1]", host, ...(options.allowHosts ?? [])].map((h) => `${h.toLowerCase()}:${address.port}`));
   // An address of every interface is reached on this machine at its loopback one.
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
