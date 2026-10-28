@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 
 test("after a restart, a completed run takes a follow-up on the next server and completes again, the same run", { timeout: 60_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
@@ -59,4 +59,18 @@ test("a completed run's follow-up takes a place under the run cap: with every pl
   await follow(api, busy.run_id, ["cancelled"]);
   assert.equal((await api("POST", `/runs/${done.run_id}/messages`, { content: "go on" })).status, 202, "a place is free again");
   await follow(api, done.run_id, ["completed"]);
+});
+
+test("a follow-up to a completed run and new starts sent together under one place: exactly one gets it, never two", { timeout: 60_000 }, async (t) => {
+  const { api } = await serve(t, { maxRuns: 1 });
+  const done = await startRun(api, "calc", "What is six times seven?");
+  await follow(api, done.run_id, ["completed"]);
+  for (const id of ["one", "two", "three"]) assert.equal((await api("POST", "/agents", agent(id))).status, 201);
+  const answers = await Promise.all([
+    api("POST", `/runs/${done.run_id}/messages`, { content: "Take your time." }),
+    ...["one", "two", "three"].map((id) => api("POST", `/agents/${id}/runs`, { input: { content: "Take your time." } })),
+  ]);
+  const statuses = answers.map((a) => a.status);
+  assert.equal(statuses.filter((s) => s === 202).length, 1, `one place, one start: ${statuses.join(", ")}`);
+  assert.equal(statuses.filter((s) => s === 429).length, 3, statuses.join(", "));
 });
