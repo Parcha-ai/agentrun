@@ -1,20 +1,37 @@
-// bin/archil-scoped, run for real with its archil, systemd-run and cgroup file pointed at stubs: `mount` takes its token
-// as one line on stdin and puts it only in the environment of the exec; no token refuses the mount; other verbs pass
-// through without reading stdin. No Archil, no root.
+// bin/archil-scoped, run for real with its archil, systemd-run, cgroup file and mount table pointed at stubs: root runs
+// archil only in the shapes the claim uses, each with exact arguments, and refuses anything else with exit 2 before
+// archil runs. `mount` takes its token as one line on stdin and puts it only in the environment of the exec; no token
+// refuses the mount; the other verbs leave stdin unread. No Archil, no root.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ARCHIL_SCOPED } from "../src/claim.ts";
 import { disposeAfter } from "./_dispose.ts";
 
 const TOKEN = `tok-${"5".repeat(40)}`;
+const REGION = "aws-us-east-1";
 
-function wrapper(cgroup: string) {
+/**
+ * The wrapper over a real <root>/runs/r1 (listed as a fuse.archil mount) and an unlisted <root>/runs/r2. `rootLink`:
+ * the root is reached through a link; `mpLink`: runs/r1 is a link to a directory elsewhere.
+ */
+function wrapper(cgroup: string, opts: { rootLink?: boolean; mpLink?: boolean; untrusted?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "pda-scoped-"));
   const out = join(dir, "seen");
+  const real = join(dir, "mnt");
+  mkdirSync(join(real, "runs", "r2"), { recursive: true });
+  if (opts.mpLink) {
+    mkdirSync(join(dir, "elsewhere"));
+    symlinkSync(join(dir, "elsewhere"), join(real, "runs", "r1"));
+  } else mkdirSync(join(real, "runs", "r1"));
+  if (opts.rootLink) symlinkSync(real, join(dir, "link"));
+  for (const d of [real, join(real, "runs")]) chmodSync(d, 0o755);
+  const root = opts.rootLink ? join(dir, "link") : real;
+  const mp = join(root, "runs", "r1");
   const stub = (name: string, body: string) => {
     const p = join(dir, name);
     writeFileSync(p, `#!/bin/sh\n${body}\n`);
@@ -23,36 +40,49 @@ function wrapper(cgroup: string) {
   };
   // The stub archil records its argv, the token it was given, its environment's names and any stdin left for it.
   const archil = stub("archil", `{ echo "argv=$*"; echo "token=\${ARCHIL_MOUNT_TOKEN-<unset>}"; echo "env=$(env | cut -d= -f1 | sort | tr '\\n' ' ')"; IFS= read -r rest || true; echo "stdin=$rest"; } > '${out}'`);
+  // The stub fusermount records its argv the same way, as the command the wrapper's release ran.
+  const fusermount = stub("fusermount", `echo "argv=fusermount $*" > '${out}'`);
   // The stub systemd-run records its own argv, then runs the command after "--" as a real --scope would.
   const systemdRun = stub("systemd-run", `echo "scope=$*" > '${out}.scope'; while [ "$1" != -- ]; do shift; done; shift; exec "$@"`);
   const cgroupFile = join(dir, "cgroup");
   writeFileSync(cgroupFile, `${cgroup}\n`);
-  const script = readFileSync(ARCHIL_SCOPED, "utf8")
+  const mounts = join(dir, "mounts");
+  // As a kernel's table does: a mount under its real path, never under a link's name.
+  const listedAt = opts.mpLink ? join(dir, "elsewhere") : join(real, "runs", "r1");
+  writeFileSync(mounts, `dsk-1:/runs/r1[${REGION}] ${listedAt} fuse.archil rw,allow_other 0 0\nproc /proc proc rw 0 0\n`);
+  const source = readFileSync(ARCHIL_SCOPED, "utf8");
+  const script = source
     .replace("ARCHIL=/usr/bin/archil", `ARCHIL='${archil}'`)
+    .replace("MOUNTS=/proc/self/mounts", `MOUNTS='${mounts}'`)
+    .replace("FUSERMOUNT=/usr/bin/fusermount", `FUSERMOUNT='${fusermount}'`)
+    // This user stands in for root as the owner of the mount root, unless the test wants a root that is not root's.
+    .replace("TRUST=0", `TRUST=${opts.untrusted ? 0 : process.getuid!()}`)
     .replace("/usr/bin/systemd-run", systemdRun)
     .replace("/proc/self/cgroup", cgroupFile);
-  assert.notEqual(script, readFileSync(ARCHIL_SCOPED, "utf8"));
+  assert.notEqual(script, source);
   const path = stub("archil-scoped", script.replace(/^#!\/bin\/sh\n/, ""));
-  const run = (args: string[], input: string) => {
-    const r = spawnSync(path, args, { input, encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" } });
+  // Bounded, with stdin closed after `input`: a wrapper that should have refused and waits instead fails by name.
+  const run = (args: string[], input: string, env: Record<string, string> = {}) => {
+    const r = spawnSync(path, args, { input, encoding: "utf8", timeout: 15_000, env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8", ...env } });
     const seen = existsSync(out) ? Object.fromEntries(readFileSync(out, "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)])) : null;
     const scope = existsSync(`${out}.scope`) ? readFileSync(`${out}.scope`, "utf8").trim() : null;
     rmSync(out, { force: true });
     rmSync(`${out}.scope`, { force: true });
     return { status: r.status, stderr: r.stderr, seen, scope };
   };
-  return { run, archil, [Symbol.dispose]: () => rmSync(dir, { recursive: true, force: true }) };
+  return { run, archil, dir, real, root, mp, [Symbol.dispose]: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 const OUTSIDE = "0::/user.slice/user-1000.slice/session-3.scope";
 const SERVICE = "0::/system.slice/pda-r1.service";
+const mountOf = (mp: string, target = "dsk-1:/runs/r1") => ["mount", target, mp, "--region", REGION];
 
 test("mount takes the token from the first line of stdin and gives it only to archil", () => {
   const w = disposeAfter(wrapper(OUTSIDE));
   for (const [input, expect] of [[`${TOKEN}\n`, TOKEN], [TOKEN, TOKEN], [`${TOKEN}\nsecond line\n`, TOKEN]] as const) {
-    const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1", "--region", "aws-us-east-1"], input);
+    const r = w.run(mountOf(w.mp), input);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.seen?.argv, "mount dsk-1:/runs/r1 /mnt/archil/runs/r1 --region aws-us-east-1");
+    assert.equal(r.seen?.argv, `mount dsk-1:/runs/r1 ${w.mp} --region ${REGION}`);
     assert.equal(r.seen?.token, expect);
     assert.ok(!r.seen?.argv.includes(TOKEN));
     assert.equal(r.scope, null, "outside a system service there is no scope");
@@ -62,7 +92,7 @@ test("mount takes the token from the first line of stdin and gives it only to ar
 test("mount refuses no token: empty stdin or an empty first line, and archil never runs", () => {
   const w = disposeAfter(wrapper(OUTSIDE));
   for (const input of ["", "\n", "\nlater\n"]) {
-    const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1"], input);
+    const r = w.run(mountOf(w.mp), input);
     assert.equal(r.status, 2, JSON.stringify(input));
     assert.match(r.stderr, /no mount token on stdin/);
     assert.equal(r.seen, null);
@@ -71,23 +101,281 @@ test("mount refuses no token: empty stdin or an empty first line, and archil nev
 
 test("inside a system service, mount runs in its own scope and the token still reaches only archil", () => {
   const w = disposeAfter(wrapper(SERVICE));
-  const r = w.run(["mount", "dsk-1:/runs/r1", "/mnt/archil/runs/r1"], `${TOKEN}\n`);
+  const r = w.run(mountOf(w.mp), `${TOKEN}\n`);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.scope ?? "", new RegExp(`^scope=--scope --quiet --collect --unit=pda-r1-fuse-\\d+ -- ${w.archil} mount dsk-1:/runs/r1 /mnt/archil/runs/r1$`));
+  assert.match(r.scope ?? "", new RegExp(`^scope=--scope --quiet --collect --unit=pda-r1-fuse-\\d+ -- ${w.archil} mount dsk-1:/runs/r1 ${w.mp} --region ${REGION}$`));
   assert.ok(!r.scope?.includes(TOKEN), "the token is not an argument of systemd-run");
   assert.equal(r.seen?.token, TOKEN);
 });
 
-test("other verbs pass through untouched: no token, stdin left unread", () => {
-  const w = disposeAfter(wrapper(SERVICE));
-  for (const verb of [["sync", "/mnt/x"], ["unmount", "/mnt/x"], ["delegations", "--json", "/mnt/x"]]) {
-    const r = w.run(verb, "left-for-archil\n");
+test("each shape the claim uses reaches archil with exactly its arguments; only mount reads stdin", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const mounts: string[][] = [mountOf(w.mp), ["mount", "--force", "dsk-1:/runs/r1", w.mp, "--region", REGION], mountOf(w.mp, "dsk-1:/data/set.v2")];
+  for (const args of mounts) {
+    const r = w.run(args, `${TOKEN}\n`);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(r.seen?.argv, verb.join(" "));
+    assert.equal(r.seen?.argv, args.join(" "));
+    assert.equal(r.seen?.token, TOKEN);
+  }
+  for (const args of [["unmount", w.mp], ["checkin", w.mp], ["sync", w.mp], ["delegations", "--json", w.mp]]) {
+    const r = w.run(args, "left-for-archil\n");
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.seen?.argv, args.join(" "));
     assert.equal(r.seen?.token, "<unset>");
     assert.equal(r.seen?.stdin, "left-for-archil");
-    assert.equal(r.scope, null);
   }
+});
+
+test("release takes a dead mount off its listed mountpoint with fusermount -u, as root, with an argv it built", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const r = w.run(["release", w.mp], "left\n");
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.seen?.argv, `fusermount -u -- ${w.mp}`);
+});
+
+// Each refused before archil runs, with exit 2. `args` is built over the rig's paths.
+type Rig = { dir: string; root: string; mp: string };
+const REFUSED: [string, (w: Rig) => string[], { rootLink?: boolean; mpLink?: boolean }?][] = [
+  ["a mountpoint at /etc", () => mountOf("/etc")],
+  ["a mountpoint at /usr/local/bin", () => mountOf("/usr/local/bin")],
+  ["unmount /usr", () => ["unmount", "/usr"]],
+  ["a ../ in the mountpoint", (w) => mountOf(`${w.root}/runs/r1/../../../etc`)],
+  ["a ../ in the disk path", (w) => mountOf(w.mp, "dsk-1:/runs/../etc")],
+  ["a disk path with an absolute second root", (w) => mountOf(w.mp, "dsk-1://etc")],
+  ["a symlinked root", (w) => mountOf(w.mp), { rootLink: true }],
+  ["a symlinked mountpoint", (w) => mountOf(w.mp), { mpLink: true }],
+  ["unmount through a symlinked mountpoint", (w) => ["unmount", w.mp], { mpLink: true }],
+  ["unmount of a path no archil mount is listed at", (w) => ["unmount", `${w.root}/runs/r2`]],
+  ["a missing --region", (w) => ["mount", "dsk-1:/runs/r1", w.mp]],
+  ["an extra flag after the region", (w) => [...mountOf(w.mp), "--shared"]],
+  ["an extra flag before the target", (w) => ["mount", "--read-only", "dsk-1:/runs/r1", w.mp, "--region", REGION]],
+  ["--force after the target", (w) => ["mount", "dsk-1:/runs/r1", "--force", w.mp, "--region", REGION]],
+  ["--force at the end", (w) => [...mountOf(w.mp), "--force"]],
+  ["an unknown verb", (w) => ["checkout", w.mp]],
+  ["no verb", () => []],
+  ["delegations without --json", (w) => ["delegations", w.mp]],
+  ["checkin with an extra argument", (w) => ["checkin", w.mp, "--all"]],
+  ["release with an extra argument", (w) => ["release", w.mp, "-z"]],
+  // Resolved, this is the listed runs/r1: only the refusal of a .. segment stops it.
+  ["release through a .. segment", (w) => ["release", `${w.root}/runs/r2/../r1`]],
+  // Listed, but not at <root>/runs/<run>: only the path's own checks stop it.
+  ["release of a listed archil mount outside <root>/runs", (w) => ["release", join(w.dir, "elsewhere")], { mpLink: true }],
+  ["release /usr", () => ["release", "/usr"]],
+  ["release of a path no archil mount is listed at", (w) => ["release", `${w.root}/runs/r2`]],
+  ["a bad disk token", (w) => mountOf(w.mp, "dsk-1;id:/runs/r1")],
+  ["a bad region token", (w) => ["mount", "dsk-1:/runs/r1", w.mp, "--region", "aws-us-east-1/x"]],
+  ["a newline in the mountpoint", (w) => mountOf(`${w.mp}\n/etc`)],
+  ["a newline in an unmount's mountpoint", (w) => ["unmount", `${w.mp}\n/usr`]],
+];
+for (const [name, args, opts] of REFUSED) {
+  test(`refused: ${name}`, () => {
+    const w = disposeAfter(wrapper(OUTSIDE, opts));
+    const r = w.run(args(w), `${TOKEN}\nleft-for-archil\n`);
+    assert.equal(r.status, 2, `exit ${r.status}: ${r.stderr}`);
+    assert.match(r.stderr, /^archil-scoped: /m);
+    assert.equal(r.seen, null, `archil ran with ${JSON.stringify(r.seen?.argv)}`);
+  });
+}
+
+// ---- every call the package makes, read from its source, is one the wrapper takes ---------------------------------------
+
+const SRC = fileURLToPath(new URL("../src/", import.meta.url));
+const MOUNT_ARGV = 'const args = [host.archil, "mount", ...(force ? ["--force"] : []), `${target.disk}:/${path}`, mountpoint, "--region", target.region];';
+/** Verbs the wrapper acts on itself; the rest reach archil. */
+const OWN = new Set(["prepare", "release", "retire", "stray", "stale"]);
+
+/** Each `archil(host, [...])` in the package's source, as the expressions it passes. */
+function callSites(): string[][] {
+  const files = readdirSync(SRC, { recursive: true }).map(String).filter((f) => f.endsWith(".ts"));
+  const sites: string[][] = [];
+  for (const f of files) {
+    for (const m of readFileSync(join(SRC, f), "utf8").matchAll(/\barchil\(host, \[([^\]]*)\]/g)) sites.push(m[1].split(", "));
+  }
+  return sites;
+}
+
+test("every archil call in the package's source is one the wrapper takes, with exactly its arguments, and the wrapper takes no other verb", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const ids = { SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()) };
+  const sites = callSites();
+  assert.ok(sites.length >= 9, `found ${sites.length} archil(host, [...]) calls`);
+  const claim = readFileSync(join(SRC, "claim.ts"), "utf8");
+  assert.ok(claim.includes(MOUNT_ARGV), "mount's argv in claim.ts changed: build the new shape here");
+  // A call's expressions as the claim fills them: its mountpoint (a fresh one for prepare, the unlisted runs/r2 for the
+  // cleanup verbs that need no mount), a tag, and string literals as written. Anything else needs a value here.
+  const value = (verb: string, expr: string) => {
+    const literal = /^"([^"]*)"$/.exec(expr);
+    if (literal) return literal[1];
+    if (expr === "mountpoint" || expr === "dir") return verb === "prepare" ? `${w.root}/runs/r3` : verb === "stray" || verb === "stale" ? `${w.root}/runs/r2` : w.mp;
+    if (expr === "tag" || expr === "Date.now().toString(36)") return "t1";
+    throw new Error(`no value for ${expr} in a call of ${verb}`);
+  };
+  const calls = sites.map((exprs) => {
+    const verb = value("", exprs[0]);
+    return [verb, ...exprs.slice(1).map((e) => value(verb, e))];
+  });
+  calls.push(mountOf(w.mp), ["mount", "--force", "dsk-1:/runs/r1", w.mp, "--region", REGION]);
+  for (const args of calls) {
+    const r = w.run(args, `${TOKEN}\n`, ids);
+    if (OWN.has(args[0])) {
+      assert.notEqual(r.status, 2, `${args.join(" ")}: refused: ${r.stderr}`);
+      assert.doesNotMatch(r.stderr, /refused: /, args.join(" "));
+    } else {
+      assert.equal(r.status, 0, `${args.join(" ")}: ${r.stderr}`);
+      assert.equal(r.seen?.argv, args.join(" "));
+    }
+  }
+  // The verbs the wrapper's dispatch names are exactly the verbs the package calls.
+  const script = readFileSync(ARCHIL_SCOPED, "utf8");
+  const dispatch = script.slice(script.indexOf('case "${1:-}" in'), script.indexOf("\nesac", script.indexOf('case "${1:-}" in')));
+  const taken = [...dispatch.matchAll(/^ {2}([a-z]+(?: \| [a-z]+)*)\)/gm)].flatMap((m) => m[1].split(" | "));
+  assert.deepEqual([...new Set(taken)].sort(), [...new Set(calls.map((c) => c[0]))].sort());
+});
+
+test("every mountpoint the package's source builds is <mountRoot>/runs/<segment> under a mount root it is given", () => {
+  const files = readdirSync(SRC, { recursive: true }).map(String).filter((f) => f.endsWith(".ts"));
+  const found: string[] = [];
+  const wrong: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(join(SRC, f), "utf8");
+    // A path built on a mount root continues with runPath(...) or "runs", or is the wrapper's own .stray holding.
+    for (const m of text.matchAll(/\bjoin\(\s*([\w.]*[mM]ountRoot)\s*,\s*([^,)]+)/g)) {
+      found.push(`${f}: join(${m[1]}, ${m[2]}`);
+      if (!/^(runPath\(|"runs"$|"\.stray"$)/.test(m[2].trim())) wrong.push(`${f}: join(${m[1]}, ${m[2]}...)`);
+    }
+    // A mount root handed on is the caller's own, never one derived from it.
+    for (const m of text.matchAll(/\bmountRoot:\s*([^,}\n]+)/g)) {
+      if (/join\(|`|\+/.test(m[1])) wrong.push(`${f}: mountRoot: ${m[1].trim()}`);
+    }
+  }
+  assert.ok(found.length >= 4, `found ${found.length} paths built on a mount root`);
+  assert.deepEqual(wrong, [], "a mountpoint or mount root outside <mountRoot>/runs/<segment>");
+});
+
+test("every sudoers line this package writes or documents names the archil wrapper alone", () => {
+  const pkg = fileURLToPath(new URL("..", import.meta.url));
+  const files = readdirSync(pkg, { recursive: true }).map(String).filter((f) => !/(^|\/)(node_modules|dist|\.tmp)(\/|$)/.test(f) && /\.(ts|mjs|js|md|sh)$|Dockerfile$/.test(f) && f !== "CHANGELOG.md");
+  const lines: string[] = [];
+  const wrong: string[] = [];
+  for (const f of files) {
+    // A rule, as sudoers writes one: <who> ALL=(<as>) NOPASSWD: <commands>.
+    for (const m of readFileSync(join(pkg, f), "utf8").matchAll(/\bALL=\([^)]*\)\s*NOPASSWD:\s*([^'"\n]*)/g)) {
+      lines.push(`${f}: ${m[1].trim()}`);
+      // One command, the wrapper: a second entry, a list, or a wildcard argument grants more than the wrapper bounds.
+      if (/[,*]|fusermount|umount|mkdir|rmdir|\bALL\b/.test(m[1])) wrong.push(`${f}: ${m[1].trim()}`);
+    }
+  }
+  assert.ok(lines.length >= 3, `found ${lines.length} sudoers lines`);
+  assert.deepEqual(wrong, []);
+});
+
+// ---- the mount root is root's, so only root names entries under runs/ --------------------------------------------------
+
+/** Every verb, over the rig's paths, as the claim would call it (the cleanup verbs on the unlisted runs/r2). */
+const EVERY_VERB = (w: Rig): string[][] => [
+  mountOf(w.mp), ["unmount", w.mp], ["checkin", w.mp], ["sync", w.mp], ["delegations", "--json", w.mp], ["release", w.mp],
+  ["prepare", `${w.root}/runs/r3`], ["retire", w.mp, "t1"], ["stray", `${w.root}/runs/r2`, "t1"], ["stale", `${w.root}/runs/r2`],
+];
+
+test("every verb refuses a mount root and runs/ that root does not own", () => {
+  const w = disposeAfter(wrapper(OUTSIDE, { untrusted: true }));
+  for (const args of EVERY_VERB(w)) {
+    const r = w.run(args, `${TOKEN}\n`, { SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()) });
+    assert.equal(r.status, 2, `${args[0]}: exit ${r.status}: ${r.stderr}`);
+    assert.match(r.stderr, /runs must be owned by root and writable by no one else/, args[0]);
+    assert.equal(r.seen, null, `${args[0]}: archil ran`);
+  }
+  assert.equal(existsSync(join(w.root, "runs", "r3")), false, "prepare made nothing");
+});
+
+test("every verb refuses a runs/ or a mount root that group or others may write", () => {
+  for (const at of ["runs", "root"] as const) {
+    const w = disposeAfter(wrapper(OUTSIDE));
+    chmodSync(at === "runs" ? join(w.real, "runs") : w.real, 0o775);
+    for (const args of EVERY_VERB(w)) {
+      const r = w.run(args, `${TOKEN}\n`, { SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()) });
+      assert.equal(r.status, 2, `${at}, ${args[0]}: exit ${r.status}: ${r.stderr}`);
+      assert.match(r.stderr, /must be owned by root and writable by no one else/, `${at}, ${args[0]}`);
+      assert.equal(r.seen, null);
+    }
+  }
+});
+
+test("a directory above the mount root that others may write refuses every verb, unless it is sticky", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  chmodSync(w.dir, 0o777);
+  for (const args of EVERY_VERB(w)) {
+    const r = w.run(args, `${TOKEN}\n`, { SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()) });
+    assert.equal(r.status, 2, `${args[0]}: exit ${r.status}: ${r.stderr}`);
+    assert.match(r.stderr, /above .* must be root's and not writable by others/, args[0]);
+  }
+  chmodSync(w.dir, 0o1777);
+  const r = w.run(mountOf(w.mp), `${TOKEN}\n`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.seen?.argv, mountOf(w.mp).join(" "));
+});
+
+test("prepare makes the run's mountpoint, 0755 and owned by the caller sudo names, and leaves an existing one as it is", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const ids = { SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()) };
+  const r3 = join(w.root, "runs", "r3");
+  const made = w.run(["prepare", r3], "", ids);
+  assert.equal(made.status, 0, made.stderr);
+  const st = statSync(r3);
+  assert.deepEqual([st.isDirectory(), st.mode & 0o7777, st.uid, st.gid], [true, 0o755, process.getuid!(), process.getgid!()]);
+  writeFileSync(join(r3, "kept"), "x");
+  const again = w.run(["prepare", r3], "", ids);
+  assert.equal(again.status, 0, again.stderr);
+  assert.deepEqual(readdirSync(r3), ["kept"], "an existing mountpoint is left as it is");
+  assert.equal(made.seen, null, "prepare never runs archil");
+});
+
+// The test runs as an ordinary user, whose mkdir already gives its own uid and gid: a supplementary group as SUDO_GID is
+// what shows the owner comes from sudo's caller, not from the process.
+const OTHER_GID = process.getgroups?.().find((g) => g !== process.getgid!());
+test("prepare gives the mountpoint the group sudo's caller names, not the process's", { skip: OTHER_GID === undefined && "this user has no supplementary group" }, () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const r3 = join(w.root, "runs", "r3");
+  const r = w.run(["prepare", r3], "", { SUDO_UID: String(process.getuid!()), SUDO_GID: String(OTHER_GID) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual([statSync(r3).uid, statSync(r3).gid], [process.getuid!(), OTHER_GID]);
+});
+
+test("prepare hands the mountpoint to sudo's caller with exactly one chown", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const bin = mkdtempSync(join(tmpdir(), "pda-chown-"));
+  const log = join(bin, "argv");
+  // chown as the wrapper finds it on PATH: records its argv, then does the real thing.
+  writeFileSync(join(bin, "chown"), `#!/bin/sh\necho "$*" >> '${log}'\nexec /usr/bin/chown "$@"\n`);
+  chmodSync(join(bin, "chown"), 0o755);
+  try {
+    const r3 = join(w.root, "runs", "r3");
+    const r = w.run(["prepare", r3], "", { PATH: `${bin}:/usr/bin:/bin`, SUDO_UID: "4242", SUDO_GID: "4343" });
+    assert.ok(existsSync(log), `chown was never called: exit ${r.status}: ${r.stderr}`);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [`4242:4343 ${r3}`]);
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test("prepare refuses without sudo's caller, over a link or a file, and outside <root>/runs/<run>", () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const ids = { SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()) };
+  symlinkSync(join(w.dir, "elsewhere-r4"), join(w.root, "runs", "r4"));
+  writeFileSync(join(w.root, "runs", "r5"), "");
+  for (const [args, env] of [
+    [["prepare", `${w.root}/runs/r3`], {}],
+    [["prepare", `${w.root}/runs/r3`], { SUDO_UID: "x1", SUDO_GID: "1" }],
+    [["prepare", `${w.root}/runs/r4`], ids],
+    [["prepare", `${w.root}/runs/r5`], ids],
+    [["prepare", "/etc/r3"], ids],
+    [["prepare", `${w.root}/runs/r3`, "extra"], ids],
+  ] as [string[], Record<string, string>][]) {
+    const r = w.run(args, "", env);
+    assert.equal(r.status, 2, `${args.join(" ")} ${JSON.stringify(env)}: exit ${r.status}: ${r.stderr}`);
+  }
+  assert.equal(existsSync(join(w.root, "runs", "r3")), false);
+  assert.equal(existsSync(join(w.dir, "elsewhere-r4")), false, "nothing was made through the link");
 });
 
 // ---- retire: move a mount the kernel will not unmount (Sysbox) aside and kill exactly its daemon ----------------------
@@ -98,6 +386,7 @@ function retireRig(procs: Record<string, string[]>, opts: { moveFails?: boolean;
   const real = join(dir, "mnt");
   mkdirSync(join(real, "runs", "r1"), { recursive: true });
   mkdirSync(join(real, "runs", "r2"), { recursive: true });
+  for (const d of [real, join(real, "runs")]) chmodSync(d, 0o755);
   if (opts.rootLink) symlinkSync(real, join(dir, "link"));
   const root = opts.rootLink ? join(dir, "link") : real;
   const mp = join(root, "runs", "r1");
@@ -125,7 +414,8 @@ function retireRig(procs: Record<string, string[]>, opts: { moveFails?: boolean;
     .replace("MOUNTS=/proc/self/mounts", `MOUNTS='${mounts}'`)
     .replace("PROC=/proc", `PROC='${proc}'`)
     .replace("KILL=kill", `KILL='${kill}'`)
-    .replace("OWNER=0", `OWNER=${opts.owner ?? process.getuid!()}`);
+    .replace("OWNER=0", `OWNER=${opts.owner ?? process.getuid!()}`)
+    .replace("TRUST=0", `TRUST=${process.getuid!()}`);
   const path = stub("archil-scoped", script.replace(/^#!\/bin\/sh\n/, ""));
   const run = (args: string[]) => {
     const r = spawnSync(path, args, { encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" }, timeout: 15_000 });
@@ -246,6 +536,7 @@ function strayRig(seed: Record<string, string>, opts: { owner?: number; rootLink
   const dir = mkdtempSync(join(tmpdir(), "pda-stray-"));
   const real = join(dir, "mnt");
   mkdirSync(join(real, "runs"), { recursive: true });
+  for (const d of [real, join(real, "runs")]) chmodSync(d, 0o755);
   if (opts.rootLink) symlinkSync(real, join(dir, "link"));
   const root = opts.rootLink ? join(dir, "link") : real;
   const mp = join(root, "runs", "r1");
@@ -265,7 +556,8 @@ function strayRig(seed: Record<string, string>, opts: { owner?: number; rootLink
   writeFileSync(mounts, (opts.listed ? `dsk-1:/runs/r1[aws-us-east-1] ${mp} fuse.archil rw 0 0\n` : "") + "proc /proc proc rw 0 0\n");
   const script = readFileSync(ARCHIL_SCOPED, "utf8")
     .replace("MOUNTS=/proc/self/mounts", `MOUNTS='${mounts}'`)
-    .replace("OWNER=0", `OWNER=${opts.owner ?? process.getuid!()}`);
+    .replace("OWNER=0", `OWNER=${opts.owner ?? process.getuid!()}`)
+    .replace("TRUST=0", `TRUST=${process.getuid!()}`);
   const path = join(dir, "archil-scoped");
   writeFileSync(path, script);
   chmodSync(path, 0o755);

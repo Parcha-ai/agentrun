@@ -24,7 +24,8 @@ const context = BACKGROUND_CONTEXT;
 const STATE = statePath("PDA_P3_STATE", "P3-STATE.json");
 const SUFFIX = Date.now().toString(36);
 const SUBPATH = `runs/p3-${SUFFIX}`;
-const MOUNTPOINT = `/mnt/pda/p3/${SUFFIX}`;
+// <root>/runs/<run>: the only mountpoint shape the archil wrapper mounts at.
+const MOUNTPOINT = `/mnt/pda/p3/runs/${SUFFIX}`;
 
 type State = {
   lane: string;

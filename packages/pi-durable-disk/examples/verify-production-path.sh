@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verifies the README's "Setting up a host for production" on a DISPOSABLE root machine: a dedicated run user, the
-# root-owned archil wrapper, a sudoers drop-in for exactly that wrapper and `fusermount -u`, the supervisor as root with
+# root-owned archil wrapper, a sudoers drop-in for exactly that wrapper and nothing else, the supervisor as root with
 # `--user`, and the agent's commands under no_new_privs. It then runs example 02 (kill) the production way and checks what
 # only a production host can show: the instances run as the run user and never as root, the run user can use sudo for
 # the wrapper and for nothing else, no_new_privs takes even that away from a command, no mount token reaches the journal,
@@ -76,14 +76,15 @@ setup() {
   for root in "$MOUNT_ROOT_A" "$MOUNT_ROOT_B"; do
     [ -d "$root" ] || do_ touch "$STATE/created-root-$(basename "$root")"
     do_ mkdir -p "$root/runs"
-    do_ chown "$RUN_USER" "$root/runs"
+    do_ chown root:root "$root" "$root/runs"
+    do_ chmod 0755 "$root" "$root/runs"
   done
   # Step 2 of the README: the wrapper, root-owned, because root executes it.
   do_ install -D -o root -g root -m 0755 "$PACKAGE_DIR/bin/archil-scoped" "$WRAPPER"
-  # Step 3: the sudoers drop-in for exactly the wrapper and `fusermount -u` under the mount roots; no env_keep.
+  # Step 3: the sudoers drop-in for exactly the wrapper (its release cleans a dead mount); no env_keep.
   local tmp
   if [ "$DRY_RUN" = 1 ]; then tmp=/tmp/pda-sudoers.dry; else tmp=$(mktemp); fi
-  printf '%s ALL=(root) NOPASSWD: %s, /usr/bin/fusermount -u %s/runs/*, /usr/bin/fusermount -u %s/runs/*\n' "$RUN_USER" "$WRAPPER" "$MOUNT_ROOT_A" "$MOUNT_ROOT_B" > "$tmp"
+  printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$WRAPPER" > "$tmp"
   echo "sudoers drop-in:"; sed 's/^/    /' "$tmp"
   if [ "$DRY_RUN" = 1 ]; then echo "+ visudo -cf $tmp"; else visudo -cf "$tmp" >/dev/null || die "visudo rejects the drop-in; nothing was installed" 3; fi
   do_ install -o root -g root -m 0440 "$tmp" "$SUDOERS"
@@ -107,13 +108,14 @@ setup() {
 
 run() {
   say "run: what sudo lets $RUN_USER do"
-  if [ "$DRY_RUN" = 1 ]; then echo "+ sudo -l -U $RUN_USER; assert it names $WRAPPER and fusermount -u, and nothing with ALL"; echo "+ runuser -u $RUN_USER -- sudo -n $WRAPPER version   (must work)"; echo "+ runuser -u $RUN_USER -- sudo -n true   (must be refused)"; echo "+ runuser -u $RUN_USER -- setpriv --no-new-privs sudo -n $WRAPPER version   (must be refused: no new privileges)"; else
+  if [ "$DRY_RUN" = 1 ]; then echo "+ sudo -l -U $RUN_USER; assert it names $WRAPPER and nothing else"; echo "+ runuser -u $RUN_USER -- sudo -n $WRAPPER   (the wrapper must answer: refused, no verb)"; echo "+ runuser -u $RUN_USER -- sudo -n true   (must be refused)"; echo "+ runuser -u $RUN_USER -- setpriv --no-new-privs sudo -n $WRAPPER   (must be refused: no new privileges)"; else
     local listing; listing=$(sudo -l -U "$RUN_USER" 2>&1 || true)
     echo "$listing" | sed 's/^/    /'
-    if echo "$listing" | grep -q "$WRAPPER" && echo "$listing" | grep -q "fusermount -u" && ! echo "$listing" | grep -Eq '\(ALL.*\) *(NOPASSWD: *)?ALL'; then pass "sudo -l: the wrapper and fusermount -u, not ALL"; else fail "sudo -l shows more or less than the wrapper and fusermount -u"; fi
-    if runuser -u "$RUN_USER" -- sudo -n "$WRAPPER" version >/dev/null 2>&1; then pass "$RUN_USER can run the wrapper through sudo -n"; else fail "$RUN_USER cannot run the wrapper through sudo -n"; fi
+    if echo "$listing" | grep -q "$WRAPPER" && ! echo "$listing" | grep -Eq 'fusermount|umount|mkdir|rmdir' && ! echo "$listing" | grep -Eq '\(ALL.*\) *(NOPASSWD: *)?ALL'; then pass "sudo -l: the wrapper alone"; else fail "sudo -l shows more or less than the wrapper alone"; fi
+    # No verb: the wrapper itself refuses it, which shows sudo ran it as root (sudo's own refusal reads differently).
+    if runuser -u "$RUN_USER" -- sudo -n "$WRAPPER" 2>&1 | grep -q "archil-scoped: refused"; then pass "$RUN_USER can run the wrapper through sudo -n"; else fail "$RUN_USER cannot run the wrapper through sudo -n"; fi
     if runuser -u "$RUN_USER" -- sudo -n true >/dev/null 2>&1; then fail "$RUN_USER can sudo something other than the wrapper"; else pass "$RUN_USER cannot sudo anything else"; fi
-    local nnp; nnp=$(runuser -u "$RUN_USER" -- setpriv --no-new-privs sudo -n "$WRAPPER" version 2>&1 || true)
+    local nnp; nnp=$(runuser -u "$RUN_USER" -- setpriv --no-new-privs sudo -n "$WRAPPER" 2>&1 || true)
     if echo "$nnp" | grep -qi "no new privileges"; then pass "under no_new_privs, sudo refuses even the wrapper (\"no new privileges\")"; else fail "no_new_privs did not stop sudo: $nnp"; fi
   fi
 
