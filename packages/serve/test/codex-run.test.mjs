@@ -11,6 +11,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { agent, follow, scratch, serve } from "./support.mjs";
 
+/** The gateway's key in these tests: no real one. */
+const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 
 /** serve's gateway, on loopback: each Responses request streamed back as one short answer with its usage, once the
@@ -61,7 +63,7 @@ async function codexServe(t, gw) {
     AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
     AGENT_MODEL_BASE_URL: gw.origin,
     AGENT_MODEL: "gpt-test",
-    AGENT_MODEL_API_KEY: "gateway-key",
+    AGENT_MODEL_API_KEY: GATEWAY_KEY,
     AGENT_MODEL_PRICE: "1,2,0.5",
   });
   const { api } = await serve(t, { faux: undefined });
@@ -101,7 +103,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");
-  assert.equal(gw.seen[0].authorization, "Bearer gateway-key", "the gateway's key, from serve, at the proxy");
+  assert.equal(gw.seen[0].authorization, `Bearer ${GATEWAY_KEY}`, "the gateway's key, from serve, at the proxy");
   const usage = rows.findLast((r) => r.kind === "usage")?.usage;
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million");
 });

@@ -16,6 +16,7 @@ import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPo
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
 import { fileTools, type ToolResults } from "./host-tools.js";
+import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -71,12 +72,12 @@ export function adapterRun(
   budgetUsd?: number,
   tools: readonly string[] = [],
   dir?: string,
-  beforeRequest?: (request: { spentUsd: number | null }) => undefined | { refuse: string },
+  cap?: CapGuard,
 ): AdapterRun {
   // The run's cap refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
-  const guard = beforeRequest && ((request: { spentUsd: number | null }) => {
-    const answer = beforeRequest(request);
+  const guard = cap && ((request: { turn: number; spentUsd: number | null }) => {
+    const answer = cap.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;
   });
@@ -133,7 +134,11 @@ export function adapterRun(
 
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") void flush();
-    else costed.push({ request: event.turn, usage: event.usage });
+    else {
+      // Answered (or booked cut): its cost is in what the run has spent, and it holds nothing against the cap.
+      cap?.settled(event.turn);
+      costed.push({ request: event.turn, usage: event.usage });
+    }
   };
 
   const onEvent = (event: AdapterEvent) => {

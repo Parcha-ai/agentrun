@@ -102,13 +102,13 @@ Optional peer/dependency names absent from this lockfile: `bufferutil`, `utf-8-v
 | @hyzyla/pdfium | 2.1.13 | MIT | harness, pi-vision | no | 1 |
 | @modelcontextprotocol/sdk | 1.32.2 | MIT | run-adapters-claude-agent | no | 1 |
 | @nodable/entities | 3.1.0 | MIT | harness, pi-durable-disk, serve | no | 1 |
-| @openai/codex | 0.164.0 | Apache-2.0 | run-adapters-codex | no | 1 |
-| @openai/codex | 0.164.0-darwin-arm64 | Apache-2.0 | run-adapters-codex | yes | 1 |
-| @openai/codex | 0.164.0-darwin-x64 | Apache-2.0 | run-adapters-codex | yes | 1 |
-| @openai/codex | 0.164.0-linux-arm64 | Apache-2.0 | run-adapters-codex | yes | 1 |
-| @openai/codex | 0.164.0-linux-x64 | Apache-2.0 | run-adapters-codex | yes | 1 |
-| @openai/codex | 0.164.0-win32-arm64 | Apache-2.0 | run-adapters-codex | yes | 1 |
-| @openai/codex | 0.164.0-win32-x64 | Apache-2.0 | run-adapters-codex | yes | 1 |
+| @openai/codex | 0.164.0 | Apache-2.0 | run-adapters-codex, serve | no | 1 |
+| @openai/codex | 0.164.0-darwin-arm64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-darwin-x64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-linux-arm64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-linux-x64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-win32-arm64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
+| @openai/codex | 0.164.0-win32-x64 | Apache-2.0 | run-adapters-codex, serve | yes | 1 |
 | @opentelemetry/api | 1.9.1 | Apache-2.0 | harness, pi-browser | no | 1 |
 | @opentelemetry/core | 2.9.0 | Apache-2.0 | harness, pi-browser | no | 1 |
 | @opentelemetry/semantic-conventions | 1.43.0 | Apache-2.0 | harness, pi-browser | no | 1 |
