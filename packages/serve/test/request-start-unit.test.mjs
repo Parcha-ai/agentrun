@@ -2,7 +2,7 @@
 // writes its entry), never leaving the turn waiting; an aborted one marks its end, with the provider's id.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_ENDED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { markRequests } from "../dist/request-start.js";
 
 /** Until `list` holds `n` items, or a second passes: the end mark follows the answer, which a terminal event settles. */
@@ -64,7 +64,7 @@ test("a cancelled run sends no model request: the request is refused before it i
   assert.equal(result.stopReason, "error");
   assert.match(result.errorMessage, /cancelled/);
   assert.equal(called, 0, "the model is never called");
-  assert.deepEqual(marks, [], "nothing is marked: no request left");
+  assert.deepEqual(marks, [{ kind: REQUEST_REFUSED, data: {} }], "only its refusal is marked: no request left");
 });
 
 /** A run whose store keeps the marks it is given. */
@@ -92,4 +92,15 @@ test("an aborted compaction summary is closed with its end, never priced: the ru
   const answered = { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "a" }], stopReason: "stop", usage: { input: 1, output: 1, cost: { total: 0.01 } } }] };
   const usage = timelineOf([{ kind: REQUEST_STARTED, data: {} }, answered, ...marks]).at(-1).usage;
   assert.deepEqual(usage, { usd: null, requests: 2 });
+});
+
+test("a cancelled run sends no summary request either: the model is never called, and nothing is marked", async () => {
+  const { marks, run } = store();
+  let called = 0;
+  const { models, open } = await markRequests({ completeSimple: async () => (called++, {}) }, () => true);
+  open(run);
+  const result = await models.completeSimple(summaryModel, { messages: [] }, {});
+  assert.equal(result.stopReason, "error");
+  assert.equal(called, 0);
+  assert.deepEqual(marks, []);
 });

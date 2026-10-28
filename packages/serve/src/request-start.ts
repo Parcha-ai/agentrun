@@ -8,11 +8,17 @@
 // cost is written as REQUEST_COST: the run's total, and /usage with it, include it, and one cut before its answer reads
 // unknown. Only `streamSimple`, the generation's request: pi's
 // compaction completes its summary another way and is not a request of the run's turns.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-works/pi-ai";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
+import { RUN_CANCELLED } from "./files.js";
+
+/** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
+export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
 
 /** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
  *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked. */
@@ -36,6 +42,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
     void (async () => {
       if (cancelled()) {
         const message = failed(model, "the run was cancelled: the model request was not sent");
+        // Marked first, so the timeline skips the error entry pi writes for it: it never left.
+        await mark(REQUEST_REFUSED).catch(() => undefined);
         outer.push({ type: "error", reason: "error", error: message });
         outer.end(message);
         return;
@@ -72,6 +80,8 @@ export async function markRequests<M extends Models>(models: M, cancelled: () =>
   };
   const COMPACTION = { request: "compaction" };
   const completeSimple = async (model: Model<Api>, context: Context, options?: Parameters<Models["completeSimple"]>[2]): Promise<AssistantMessage> => {
+    // A cancelled run sends no summary either; pi writes no entry for a failed summary, so nothing needs marking.
+    if (cancelled()) return failed(model, "the run was cancelled: the summary request was not sent");
     try {
       await mark(REQUEST_STARTED, COMPACTION);
     } catch (error) {

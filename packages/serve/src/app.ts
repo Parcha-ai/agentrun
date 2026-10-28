@@ -6,7 +6,6 @@
 //     agentrun-pi's durable workflow task, each model node on the host's model of its tier with the file tools it names. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { TSchema } from "@earendil-works/pi-ai";
@@ -14,8 +13,8 @@ import { createRegistry, defineExtension, defineTool, type Extension, type ToolE
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capModels, capOf, spentIn } from "./cap.js";
-import { markRequests } from "./request-start.js";
-import { readJson, RUN_CANCELLED, RUN_META } from "./files.js";
+import { cancelledIn, markRequests } from "./request-start.js";
+import { readJson, RUN_META } from "./files.js";
 import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
 import { isObject, skillNames } from "./validate.js";
 
@@ -81,7 +80,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves.
-  const marked = await markRequests(chosen.models, () => existsSync(join(where.root, RUN_CANCELLED)));
+  const marked = await markRequests(chosen.models, cancelledIn(where.root));
   const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)));
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();

@@ -52,6 +52,9 @@ export const REQUEST_ENDED = "agentrun.request_ended";
 /** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
  *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. */
 export const REQUEST_COST = "agentrun.request_cost";
+/** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
+ *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
+export const REQUEST_REFUSED = "agentrun.request_refused";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 
@@ -100,6 +103,7 @@ function createProjector(options: TimelineOptions) {
   let usd: number | null = 0;
   let marked = 0;
   let inFlight = false;
+  let refused = 0;
   // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
   let compactions = 0;
   let compacting = 0;
@@ -165,7 +169,12 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
+    if (entry.kind === REQUEST_REFUSED) {
+      refused += 1;
+    } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
+      // pi's answer to a request that never left: nothing to count or show.
+      refused -= 1;
+    } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
       compacting += 1;
       compactionOpen = true;
     } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
