@@ -274,6 +274,17 @@ test("prepare makes the run's mountpoint, 0755 and owned by the caller sudo name
   assert.equal(made.seen, null, "prepare never runs archil");
 });
 
+// The test runs as an ordinary user, whose mkdir already gives its own uid and gid: a supplementary group as SUDO_GID is
+// what shows the owner comes from sudo's caller, not from the process.
+const OTHER_GID = process.getgroups?.().find((g) => g !== process.getgid!());
+test("prepare gives the mountpoint the group sudo's caller names, not the process's", { skip: OTHER_GID === undefined && "this user has no supplementary group" }, () => {
+  const w = disposeAfter(wrapper(OUTSIDE));
+  const r3 = join(w.root, "runs", "r3");
+  const r = w.run(["prepare", r3], "", { SUDO_UID: String(process.getuid!()), SUDO_GID: String(OTHER_GID) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual([statSync(r3).uid, statSync(r3).gid], [process.getuid!(), OTHER_GID]);
+});
+
 test("prepare refuses without sudo's caller, over a link or a file, and outside <root>/runs/<run>", () => {
   const w = disposeAfter(wrapper(OUTSIDE));
   const ids = { SUDO_UID: String(process.getuid!()), SUDO_GID: String(process.getgid!()) };
