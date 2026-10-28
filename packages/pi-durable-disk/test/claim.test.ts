@@ -564,13 +564,13 @@ test("a dead mount that fusermount cannot clean fails DEAD_MOUNT_CLEANUP_FAILED"
   assert.equal(r.calls("archil", "mount").length, 0);
 });
 
-test("a mountpoint that cannot be created is MOUNT_FAILED; under a root-owned root it is created through sudo", { skip: process.getuid?.() === 0 }, async () => {
+test("a mountpoint that cannot be created is MOUNT_FAILED; under a root-owned root it is made by the wrapper's prepare through sudo", { skip: process.getuid?.() === 0 }, async () => {
   for (const sudo of [false, true]) {
     const r = disposeAfter(rig({ sudo }));
     mkdirSync(r.mountRoot, { mode: 0o555 });
     await assert.rejects(acquire(r.opts), (e: unknown) => e instanceof ClaimError && e.code === "MOUNT_FAILED" && /cannot create/.test(e.message));
-    assert.deepEqual(r.calls("sudo").map((c) => c.argv), sudo ? [["-n", "mkdir", "-p", r.root]] : []);
-    assert.equal(r.calls("archil").length, 0);
+    assert.deepEqual(r.calls("sudo").map((c) => c.argv), sudo ? [["-n", r.host.archil, "prepare", r.root]] : []);
+    assert.deepEqual(r.calls("archil").map((c) => c.argv[0]), sudo ? ["prepare"] : []);
     chmodSync(r.mountRoot, 0o755);
   }
 });
