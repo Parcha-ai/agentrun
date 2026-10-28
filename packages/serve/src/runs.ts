@@ -751,11 +751,16 @@ export class Runs {
 
   /** Start a run of `revision` (number `version`) of `entry`'s agent: `startRun` in the store, then its process, then an
    *  agentic run's first message, `input.content`. */
-  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+  /** A place for one more live run, or 429 rate_limited. */
+  private placeFree(): void {
     const max = this.options.maxRuns;
     if (max !== undefined && [...this.runs.values()].filter((run) => this.live(run)).length + this.starting >= max) {
       throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
     }
+  }
+
+  async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+    this.placeFree();
     // Counted from here, so two starts at once cannot both take the last place.
     this.starting++;
     try {
@@ -800,6 +805,7 @@ export class Runs {
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
+    if (run.kind === "agentic" && statusOf(run).status === "completed") this.reopen(run);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     const mode = status === "queued" || (status === "working" && state === "working") ? "steer" : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
@@ -815,6 +821,27 @@ export class Runs {
       throw error;
     }
     return { mode, messageId };
+  }
+
+  /** A completed agentic run that gets a follow-up opens again: the same run on its own store and session, under its
+   *  cap, taking a place under the server's. Launched here, with no wait after the place is counted, so no start takes
+   *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
+  private reopen(run: Run): void {
+    if (this.store.readRun(run.id)?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
+    this.placeFree();
+    try {
+      this.store.reopenRun(run.id);
+    } catch (error) {
+      storeError(error, "run");
+    }
+    run.outcome = undefined;
+    run.settled = false;
+    run.endedAt = undefined;
+    run.error = undefined;
+    delete run.meta.error;
+    run.relaunches = 0;
+    this.refresh(run);
+    this.launch(run);
   }
 
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
