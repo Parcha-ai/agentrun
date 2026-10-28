@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-durable-agent
+kind: fix
+---
+A pi run's model request is counted when it leaves, not when its answer starts. serve marks each generation request on the run's root before sending it (`agentrun.request_started`), and again if its stream ends aborted (`agentrun.request_ended`, with the provider's `responseId` when it named one before the cut). The timeline (`REQUEST_STARTED`, `REQUEST_ENDED` from `@parcha/pi-durable-agent/timeline`) counts every marked request: one with no `pi.assistant` entry (cut before its first content, by a stop, a cancel or a crash), other than the latest still in flight while the run works, makes the run's cost unknown (once the run is settled, a last request with no entry was cut by the process that ended), with every request counted, never the sum of the others. A run's rows are as before otherwise: no usage row appears for a request still in flight, and one with no marks reads as it did. A request the cap refuses is never sent and never marked; pi's compaction is not marked. A model stream that throws while it is read ends the request as an error instead of leaving the turn waiting.
