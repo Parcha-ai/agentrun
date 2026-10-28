@@ -141,27 +141,27 @@ test("approve: a plan is held and main stays; approve lands it, refuse lands the
     return runId;
   };
   const one = await held();
-  assert.equal((await learning.approve("calc", one, "member:ana")).status, "landed");
+  assert.equal((await learning.approve("calc", one, "token")).status, "landed");
   const approved = await readRunState(data, "calc", one);
-  assert.deepEqual([approved.state, approved.decided_by, approved.decision], ["merged", "member:ana", "approve"]);
+  assert.deepEqual([approved.state, approved.decided_by, approved.decision], ["merged", "token", "approve"]);
   assert.ok(show(bare, "main", `learnings/${learningId(one, RATE_LIMIT)}.md`));
   assert.ok(!branches(bare).includes(`runs/${one}`), "its branch is deleted");
 
   const two = await held();
-  await assert.rejects(learning.refuse("calc", two, "member:bo", "two\nlines"), /one line/);
-  assert.equal((await learning.refuse("calc", two, "member:bo", "Too close to one case.")).status, "landed");
+  await assert.rejects(learning.refuse("calc", two, "token", "two\nlines"), /one line/);
+  assert.equal((await learning.refuse("calc", two, "token", "Too close to one case.")).status, "landed");
   const refused = await readRunState(data, "calc", two);
-  assert.deepEqual([refused.state, refused.decided_by, refused.decision], ["merged", "member:bo", "refuse"]);
+  assert.deepEqual([refused.state, refused.decided_by, refused.decision], ["merged", "token", "refuse"]);
   assert.equal(show(bare, "main", `learnings/${learningId(two, RATE_LIMIT)}.md`), undefined);
   assert.match(show(bare, "main", `memos/${two}.md`), /refused by a person: Too close to one case\./);
 
   const three = await held();
   await api("PUT", "/agents/calc/definition", { definition: { instructions: "Answer, briefly.", skills: [], tools: [] } });
-  assert.equal((await learning.approve("calc", three, "member:ana")).status, "stale", "main moved: the plan is stale");
+  assert.equal((await learning.approve("calc", three, "token")).status, "stale", "main moved: the plan is stale");
   const replanned = await readRunState(data, "calc", three);
   assert.equal(replanned.state, "awaiting_approval", "and is planned again, waiting for a decision");
-  assert.equal((await learning.approve("calc", three, "member:ana")).status, "landed");
-  await assert.rejects(learning.approve("calc", three, "member:ana"), /not waiting for approval/);
+  assert.equal((await learning.approve("calc", three, "token")).status, "landed");
+  await assert.rejects(learning.approve("calc", three, "token"), /not waiting for approval/);
 });
 
 test("approve survives a restart: the start-time pass never curates a held run without hold, and approving after it works", async (t) => {
@@ -176,7 +176,7 @@ test("approve survives a restart: the start-time pass never curates a held run w
   await again.learning.settled();
   assert.equal(tip(bareOf(again.data, "calc"), "main"), main, "the start-time pass landed nothing");
   assert.equal((await readRunState(again.data, "calc", runId)).state, "awaiting_approval");
-  assert.equal((await again.learning.approve("calc", runId, "member:ana")).status, "landed");
+  assert.equal((await again.learning.approve("calc", runId, "token")).status, "landed");
 });
 
 test("a held run is never judged again when the next run is reviewed", async (t) => {
