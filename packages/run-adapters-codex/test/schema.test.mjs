@@ -277,3 +277,24 @@ test('a cyclic schema (an object that contains itself, which only code can build
   assert.match(problems[0], /^cyc: \/: /);
   assert.match(problems[0], /JSON/);
 });
+
+test('the walk itself ends on a cyclic object, without the shared check in front, for every caller', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const script = `
+    const { codexSchemaProblems, describeDropped, describedDescription, stripDescribed } = await import('./dist/schema.js');
+    const cyclic = { type: 'object', properties: { n: { type: 'integer', minimum: 1 } }, not: {} }; cyclic.properties.self = cyclic; cyclic.properties.n.back = cyclic;
+    const out = {
+      problems: codexSchemaProblems('t', cyclic),
+      described: describeDropped(cyclic),
+      description: describedDescription('d', cyclic).length > 0,
+      stripped: typeof stripDescribed(cyclic),
+    };
+    process.stdout.write(JSON.stringify(out));`;
+  const run = spawnSync(process.execPath, ['--max-old-space-size=200', '--input-type=module', '-e', script], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 20_000 });
+  assert.equal(run.status, 0, `the walk ended: ${String(run.stderr).slice(0, 200)} (signal ${run.signal})`);
+  const out = JSON.parse(run.stdout);
+  assert.deepEqual(out.problems, ['t: /not: not is not supported by Codex 0.164.0 (it drops or retypes it)']);
+  assert.deepEqual(out.described, ['n: integer, at least 1']);
+  assert.equal(out.description, true);
+  assert.equal(out.stripped, 'object');
+});

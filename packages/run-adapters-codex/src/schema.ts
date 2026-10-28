@@ -85,7 +85,12 @@ function positions(schema: unknown): Position[] {
   const out: Position[] = [];
   if (!isObject(schema)) return out;
   const stack: Position[] = [{ pointer: "", path: "", node: schema, inAllOf: false }];
+  // A node already visited is skipped, so a cycle (an object that contains itself, which only code can build) ends
+  // here whichever caller reaches it. A node shared by two places (not a cycle) is walked at the first.
+  const seen = new WeakSet<object>();
   for (let here = stack.pop(); here; here = stack.pop()) {
+    if (seen.has(here.node)) continue;
+    seen.add(here.node);
     out.push(here);
     const below = childrenOf(here);
     for (let i = below.length - 1; i >= 0; i -= 1) stack.push(below[i]!);
