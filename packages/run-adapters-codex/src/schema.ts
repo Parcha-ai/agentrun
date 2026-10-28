@@ -29,9 +29,10 @@ const DESCRIBED: Readonly<Record<string, (value: unknown) => string | undefined>
   readOnly: (v) => (v === true ? "read only" : undefined),
   writeOnly: (v) => (v === true ? "write only" : undefined),
 });
-/** Keywords Codex strips that mean nothing to a model: a comment for people, and the DSL's own `criteria`, which the DSL
- *  removes from the model's copy itself. Dropped without a word. */
-const NOISE: readonly string[] = Object.freeze(["$comment", "criteria"]);
+/** Keywords Codex strips that mean nothing to a model: a comment for people, the dialect marker `$schema` (Codex drops it
+ *  whatever it names, and the shared check has already refused one that names no dialect the harnesses take), and the
+ *  DSL's own `criteria`, which the DSL removes from the model's copy itself. Dropped without a word. */
+const NOISE: readonly string[] = Object.freeze(["$comment", "$schema", "criteria"]);
 /** The order the words of one position are written in. */
 const ORDER = ["pattern", "format", "exclusiveMinimum", "exclusiveMaximum", "minimum", "maximum", "multipleOf", "minLength", "maxLength", "maxItems", "minProperties", "maxProperties", "uniqueItems", "nullable", "readOnly", "writeOnly", "deprecated", "default", "examples", "title"];
 export const CODEX_DESCRIBED_KEYWORDS: readonly string[] = Object.freeze(Object.keys(DESCRIBED));

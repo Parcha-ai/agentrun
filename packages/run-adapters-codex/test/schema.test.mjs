@@ -217,3 +217,25 @@ test("the shared problems come before Codex's own, and a place both refuse is re
   assert.equal(tuple.length, 1, JSON.stringify(tuple));
   assert.match(tuple[0], /not valid JSON Schema 2020-12/);
 });
+
+test('Codex drops `$schema` whatever it names, so a dialect marker the harnesses take is not a difference: it is forwarded without it and accepted', { skip, timeout: 60_000 }, async () => {
+  const schema = { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { a: { type: 'string', minLength: 2 } } };
+  assert.deepEqual(stripDescribed(schema), { type: 'object', properties: { a: { type: 'string' } } });
+  assert.deepEqual(describeDropped(schema), ['a: string, at least 2 characters'], '$schema is dropped without a word');
+  const tool = { name: 'draft', description: 'A draft-07 schema.', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) };
+  const seen = [];
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };
+    const events = [{ type: 'response.created', response: { id: 'r' } }, { type: 'response.output_item.done', item: { type: 'message', role: 'assistant', id: 'm', content: [{ type: 'output_text', text: 'done' }] } }, { type: 'response.completed', response: { id: 'r', usage } }];
+    return new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, 'draft'), fetch });
+  const spec = { key: 'step:draft', label: 'x', system: [], tools: [tool], context: 'fresh' };
+  assert.deepEqual(codex.check(spec), [], 'a draft-07 $schema passes the check');
+  const session = await codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: AbortSignal.timeout(50_000), onEvent: () => {} });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  await session.close();
+  assert.equal(seen[0].tools.find((t) => t.name === 'draft').parameters.$schema, undefined, 'Codex forwarded it without $schema');
+});

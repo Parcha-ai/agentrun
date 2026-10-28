@@ -2715,6 +2715,198 @@
    "codex": "CHANGED",
    "providerStatus": 200,
    "argsIntact": true
+  },
+  {
+   "hash": "2c4b977e42c642a56d6b384652a69677a02b2c805de633a4f044d8fe7c41901d",
+   "source": "codex-probe: $schema 2020-12",
+   "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "fcaf614f202bb0b2c54387b7b96c995dfcdae9183c073aa5f1442cf47f82a389",
+   "source": "codex-probe: $schema 2019-09",
+   "schema": {
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "8fabbae4b6bd3fb9090de3b22400c6c3e1abebb92c2fb5989028606d2956ff23",
+   "source": "codex-probe: $schema draft-07",
+   "schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "4223bf7c9279b396b7a4f7cb4b0b0524065133b7125adeb66981ff59f047d419",
+   "source": "codex-probe: $schema draft-06",
+   "schema": {
+    "$schema": "http://json-schema.org/draft-06/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "cc45bc467eeb9ba64ef5c3728c353504d53e9bc9944539daddfbd81d5fab75a2",
+   "source": "codex-probe: $schema draft-04",
+   "schema": {
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "7cf89d76a6a2de87f58dbdfe31635c419a9d1603a56cb3f066bbd8ea095199b2",
+   "source": "codex-probe: $schema the number 42",
+   "schema": {
+    "$schema": 42,
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "1da03c9b06ecf708c9a9ca8bd5d0ac81b062a97ee10bce5b37ee018fedd05e6f",
+   "source": "codex-probe: $schema an unknown URL",
+   "schema": {
+    "$schema": "https://example.com/my-dialect",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "508112a748d20036ff7f7f28d8e9381c991ee48db9c90b6aa624e0f7fd37e418",
+   "source": "codex-probe: $schema http://json-schema.org/schema#",
+   "schema": {
+    "$schema": "http://json-schema.org/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
   }
  ]
 }
