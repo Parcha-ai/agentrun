@@ -7,6 +7,8 @@ import { Playground, type StartResult } from "@/components/Playground";
 import type { Agent } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
+import { SignIn } from "@/components/SignIn";
+import { type AuthMode, authMode, signInProblem } from "@/lib/auth";
 import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
 import type { Run } from "@/lib/v2";
 
@@ -25,9 +27,25 @@ function route(): Where {
   return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
 }
 
-/** The console over the server it is served from: agents, runs, and a run followed live. */
+/** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. */
 export function App() {
   const v2 = useMemo(() => createClient(), []);
+  const [auth, setAuth] = useState<AuthMode | null>(null);
+  useEffect(() => { v2.session().then((r) => setAuth(authMode(r))).catch(() => setAuth("sign_in")); }, [v2]);
+  if (auth === null) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+  if (auth !== "signed_in") {
+    const code = new URLSearchParams(location.hash.slice(1)).get("code");
+    return (
+      <SignIn mode={auth} code={code} onSubmit={async (password, setupCode) => {
+        try { await (auth === "setup" ? v2.setup(password, setupCode) : v2.signIn(password)); setAuth("signed_in"); return null; }
+        catch (e) { return e instanceof ClientError ? signInProblem(e) : String(e); }
+      }} />
+    );
+  }
+  return <Console v2={v2} onSignedOut={() => setAuth("sign_in")} />;
+}
+
+function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
   const [where, setWhere] = useState(route);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [runs, setRuns] = useState<Run[] | null>(null);
@@ -86,7 +104,7 @@ export function App() {
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   return (
-    <Shell active={where.section} onNavigate={nav}>
+    <Shell active={where.section} onNavigate={nav} onSignOut={() => { v2.signOut().catch(() => {}).finally(onSignedOut); }}>
       {where.section === "operator"
         ? agents && <Operator agents={agents} error={error} onStart={async (agentId, text, key) => { const r = await send(agentId, { input: { content: text } }, key); if (r.runId) { go(`#/runs/${encodeURIComponent(r.runId)}`); return null; } return (r.body as { error?: { message?: string } }).error?.message ?? `The server answered ${r.status}.`; }} />
         : where.section === "playground"

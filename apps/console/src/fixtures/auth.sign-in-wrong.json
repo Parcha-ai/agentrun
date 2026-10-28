@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/auth/sign-in",
+    "body": {
+      "password": "<the owner's password>"
+    }
+  },
+  "status": 401,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "unauthenticated",
+      "message": "that is not the password",
+      "retryable": false,
+      "request_id": "req_67f22ba04893454c"
+    }
+  }
+}

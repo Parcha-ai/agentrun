@@ -26,3 +26,14 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 - a workflow run with its typed input;
 - a workflow input its schema refuses (422);
 - a start with no key.
+
+`auth.*` are the owner's sign-in routes, recorded on a fresh server with accounts (the CLI's default) as the page meets them (same origin, the session cookie):
+- no password yet;
+- a password too short (422);
+- setting it (201);
+- signed in, and a read signed in (200) and without the session (401);
+- setting it again (403);
+- signing out;
+- a wrong password (401), then the right one.
+
+The password and the session value are replaced by placeholders.

@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/auth/sign-in",
+    "body": {
+      "password": "<the owner's password>"
+    }
+  },
+  "status": 200,
+  "headers": {
+    "set-cookie": "agentrun-7642-session=<session>; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000",
+    "content-type": "application/json"
+  },
+  "body": {
+    "signed_in": true
+  }
+}

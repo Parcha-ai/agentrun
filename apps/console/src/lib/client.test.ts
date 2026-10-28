@@ -147,3 +147,19 @@ describe("paging", () => {
     expect(all.map((a) => a.agent_id)).toEqual(["a", "b"]);
   });
 });
+
+describe("the owner's session", () => {
+  it("reads a server without accounts (404 on the session route) as such, instead of throwing", async () => {
+    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
+    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
+  });
+  it("signs in and sets up as same-origin JSON, and signs out", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { signed_in: true }));
+    const v2 = createClient({ fetch: fn });
+    await v2.signIn("pw-1"); await v2.setup("pw-2", "c-1"); await v2.signOut();
+    expect(calls.map((c) => `${c.init?.method} ${c.url} ${c.init?.body}`)).toEqual([
+      'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}",
+    ]);
+    expect(calls.every((c) => c.init?.credentials === "same-origin")).toBe(true);
+  });
+});

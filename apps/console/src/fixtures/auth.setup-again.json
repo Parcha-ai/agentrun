@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/setup",
+    "body": {
+      "password": "<the owner's password>"
+    }
+  },
+  "status": 403,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "forbidden",
+      "message": "this server has its owner, or is being set up: sign in",
+      "retryable": false,
+      "request_id": "req_aa4a71d253f77aa1"
+    }
+  }
+}

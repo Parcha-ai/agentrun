@@ -47,6 +47,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
+    /** The owner's session; its status too, since a server without accounts answers 404. */
+    session: () => callTagged<{ password_set: boolean; signed_in: boolean }>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown }), (e) => {
+      if (e instanceof ClientError && e.status === 404) return { status: 404, body: null as unknown };
+      throw e;
+    }),
+    signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
+    setup: (password: string, code?: string) => call<{ signed_in: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}) } }),
+    signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
     listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
     listAgentRuns: (id: string, limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
