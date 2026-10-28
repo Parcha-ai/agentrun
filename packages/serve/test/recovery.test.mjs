@@ -146,7 +146,7 @@ test("a run store still locked when the next server reads it is read again once 
  *  alive: what a server adopts when the run's process outlived the server before it. `release()` then writes the run's
  *  released record, still naming the live stand-in. */
 /** `script`: what the stand-in process runs (by default, nothing but staying alive), given `args`. */
-async function adoptedStandIn(t, script = "setInterval(() => {}, 1000)", args = []) {
+async function adoptedStandIn(t, script = "setInterval(() => {}, 1000)", env = {}) {
   const { data, runId, pid } = await crashMidRun(t, "Answer soon.");
   await sleep(2_500);
   process.kill(pid, "SIGTERM");
@@ -156,7 +156,7 @@ async function adoptedStandIn(t, script = "setInterval(() => {}, 1000)", args = 
   }
   const file = join(data, "runs", runId, "run.json");
   const released = JSON.parse(await readFile(file, "utf8"));
-  const standIn = spawn(process.execPath, ["-e", script, ...args], { stdio: "ignore" });
+  const standIn = spawn(process.execPath, ["-e", script], { stdio: "ignore", env: { ...process.env, ...env } });
   t.after(() => standIn.kill("SIGKILL"));
   const holder = { ...released.holder, pid: standIn.pid, serve: "http://127.0.0.1:9" };
   // Whole, through a temporary file and a rename, as a run writes it: the server reads run.json every 500 ms, and a
@@ -284,7 +284,7 @@ test("a start that needs the place of a cancelled run whose adopted process will
   // An orphan no SIGKILL timer reaches, and which ignores SIGTERM: it holds its place for as long as it lives. It says
   // when its SIGTERM is set, so the cancel never reaches it first.
   const ready = join(await scratch(t), "ready");
-  const { data, runId } = await adoptedStandIn(t, "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], ''); setInterval(() => {}, 1000)", [ready]);
+  const { data, runId } = await adoptedStandIn(t, "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.env.READY_FILE, ''); setInterval(() => {}, 1000)", { READY_FILE: ready });
   for (let i = 0; !existsSync(ready); i++) {
     assert.ok(i < 200, "the stand-in sets its SIGTERM");
     await sleep(50);
