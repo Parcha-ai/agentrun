@@ -13,7 +13,8 @@ import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type Run
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_META, writeWhole } from "./files.js";
-import { ASK_TOOL } from "./app.js";
+import { FAUX_WEB_ENV } from "./fetch-page.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -118,6 +119,8 @@ export type Run = {
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
+  /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
+  users: Set<string>;
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
@@ -209,7 +212,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -319,7 +322,7 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      working: false, submitted: 0, users: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
     };
   }
 
@@ -372,7 +375,11 @@ export class Runs {
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
   private take(run: Run, rows: TimelineEvent[]): void {
     run.rows = withAsks(rows);
-    run.submitted = Math.max(0, run.submitted - (usersOf(run.rows) - (run.log.rows().filter((r) => r.kind === "user_message").length)));
+    // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
+    // messages waiting, so a count of rows would leave the run working forever.
+    const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
+    for (const row of arrived) run.users.add(row.id);
+    run.submitted = Math.max(0, run.submitted - arrived.length);
     if (run.log.sync(run.rows)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
@@ -598,7 +605,11 @@ export class Runs {
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
-    const env: NodeJS.ProcessEnv = { ...childEnv(process.env, this.options.token), ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
+    const env: NodeJS.ProcessEnv = {
+      ...childEnv(process.env, this.options.token),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
+      ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
+    };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);

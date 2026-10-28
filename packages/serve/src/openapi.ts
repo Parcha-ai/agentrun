@@ -140,7 +140,15 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: [...HARNESSES] }, available: { type: "boolean" }, reason: { type: "string" } } },
       "x-agentrun-serve": "harness/1",
     },
-    tools: { type: "array", items: { type: "string" }, description: "The tools an agentic revision may name.", "x-agentrun-serve": "serve/1" },
+    tools: {
+      type: "array",
+      description: "Every tool a revision may name (this server's closed table): whether a workflow's model nodes may use it (`nodes`), whether its code may call it (`calls`), and whether it runs here, else the variables it is missing.",
+      items: {
+        type: "object", additionalProperties: false, required: ["name", "summary", "nodes", "calls", "available"],
+        properties: { name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, available: { type: "boolean" }, missing: { type: "array", items: { type: "string" } } },
+      },
+      "x-agentrun-serve": "serve/1",
+    },
     workflows: {
       type: "object", additionalProperties: false, required: ["nodes", "node_tools", "adapters"],
       properties: { nodes: { type: "array", items: { type: "string" } }, node_tools: { type: "array", items: { type: "string" } }, adapters: { type: "array", items: { type: "string" } } },

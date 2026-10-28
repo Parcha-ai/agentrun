@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/transcript.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; 2026-10-28: a call the CLI refuses itself (a tool the session doesn't have) is a `tool_refused` live event, never one that reached the session's tool server.
 import type { TranscriptEntry } from './host/process.js';
 
 /**
@@ -45,7 +45,11 @@ export interface TurnEnd {
   sessionId?: string;
 }
 
-type Block = { type?: string; text?: string; id?: string; name?: string };
+type Block = { type?: string; text?: string; id?: string; name?: string; input?: unknown };
+type ResultBlock = { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
+
+/** The CLI's own refusal of a call, before any hook or tool server sees it (a tool the session doesn't have, say). */
+const CLI_REFUSAL = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/;
 // The SDK's message union, structurally (the SDK is a peer dependency).
 type SdkMessage = { type: string; subtype?: string; parent_tool_use_id?: string | null; [k: string]: unknown };
 
@@ -53,6 +57,10 @@ export class TranscriptBuilder {
   private said = '';
   private readonly written = new Set<string>();
   private readonly waiters = new Map<string, (() => void)[]>();
+  /** Each call the model made, by its id: its name as the model gave it and its input. */
+  private readonly asked = new Map<string, { name: string; input: unknown }>();
+  /** Calls that reached the session's tool server (`beforeCall`): their error, whatever its text, is theirs, not a refusal. */
+  private readonly bridged = new Set<string>();
 
   constructor(private readonly sink: TranscriptSink) {}
 
@@ -68,7 +76,23 @@ export class TranscriptBuilder {
       const content = (m.message as { content?: unknown } | undefined)?.content;
       for (const block of Array.isArray(content) ? (content as Block[]) : []) {
         if (block.type === 'text' && block.text) this.said = this.said ? `${this.said}\n\n${block.text}` : block.text;
-        else if (block.type === 'tool_use' && block.id) this.call(block.id, bareToolName(block.name ?? 'tool'));
+        else if (block.type === 'tool_use' && block.id) {
+          this.asked.set(block.id, { name: bareToolName(block.name ?? 'tool'), input: block.input });
+          this.call(block.id, bareToolName(block.name ?? 'tool'));
+        }
+      }
+      return undefined;
+    }
+    if (m.type === 'user') {
+      // A call the CLI refused itself is answered at once with its error: the call never ran, and the host is told.
+      const content = (m.message as { content?: unknown } | undefined)?.content;
+      for (const block of Array.isArray(content) ? (content as ResultBlock[]) : []) {
+        if (block.type !== 'tool_result' || block.is_error !== true || !block.tool_use_id || this.bridged.has(block.tool_use_id)) continue;
+        const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? (block.content as { text?: string }[]).map((c) => c?.text ?? '').join('') : '';
+        const refused = CLI_REFUSAL.exec(text);
+        if (!refused) continue;
+        const asked = this.asked.get(block.tool_use_id);
+        this.sink.live({ type: 'tool_refused', callId: block.tool_use_id, name: asked?.name ?? 'tool', args: asked?.input ?? {}, reason: refused[1]!.replace(/^Error:\s*/, '').trim().slice(0, 300) });
       }
       return undefined;
     }
@@ -109,6 +133,7 @@ export class TranscriptBuilder {
    * block before it calls the tool); after `waitMs`, by this.
    */
   async beforeCall(id: string, name: string, waitMs = 1000): Promise<void> {
+    this.bridged.add(id);
     if (this.written.has(id)) return;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(done, waitMs);
