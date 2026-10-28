@@ -44,34 +44,29 @@ export function spentIn(storeFile: string): number {
  *  raise a request's ceiling up to the model's, whatever maxTokens it asked for. */
 export const ceilingTokens = (model: Pick<Model<Api>, "maxTokens" | "contextWindow">) => (model.maxTokens > 0 ? model.maxTokens : model.contextWindow);
 
-/** The cap of a run on another harness, before each of its requests. */
+/** The cap of a run on another harness, before each of its requests: the runner's booking says what the run has spent
+ *  (its session, across processes) and which of its requests are still in flight. */
 export interface CapGuard {
-  beforeRequest(request: { turn: number; spentUsd: number | null }): undefined | { refuse: string };
-  /** Request `turn` answered (its cost is in what the run has spent from now on): it holds nothing any more. */
-  settled(turn: number): void;
+  beforeRequest(request: { spentUsd: number | null; inFlight: readonly unknown[] }): undefined | { refuse: string };
 }
 
-/** A run on another harness: before each request, what the run has spent (from its session), plus the worst case of
- *  each request still in flight, plus this request's, must stay within `cap`, else the request is refused with
- *  spend_cap_reached. A request's worst case is its output ceiling at the model's price: its input is not known before
- *  the harness sends it. Each admitted request holds its worst case until it answers, as pi's own cap does, so requests
- *  sent side by side cannot pass the cap together. A spend that is unknown (a request a crash cut) cannot be kept within
- *  a cap, so it is refused too; a model with no price never reaches a cap, as on pi. */
+/** A run on another harness: before each request, what the run has spent, plus the worst case of each request still in
+ *  flight, plus this request's, must stay within `cap`, else the request is refused with spend_cap_reached. A request's
+ *  worst case is its output ceiling at the run model's price (its input is not known before the harness sends it; a
+ *  request on a cheaper model is held at that price too, which only refuses sooner). Requests in flight hold theirs until
+ *  they answer, as pi's own cap holds them, so requests sent side by side cannot pass the cap together. A spend that is
+ *  unknown (a request a crash cut) cannot be kept within a cap, so it is refused too; a model with no price never reaches
+ *  a cap, as on pi. */
 export async function capBefore(cap: number | undefined, model: Model<Api> | undefined): Promise<CapGuard | undefined> {
   if (cap === undefined || model === undefined) return undefined;
   const { calculateCost } = await import("@earendil-works/pi-ai");
   const worst = calculateCost(model, { input: 0, output: ceilingTokens(model), cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }).total;
-  const inFlight = new Map<number, number>();
   return {
-    beforeRequest({ turn, spentUsd }) {
+    beforeRequest({ spentUsd, inFlight }) {
       if (spentUsd === null) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. What the run has spent is unknown, so its cap of $${cap} cannot be kept: the run is out of budget.` };
-      const held = [...inFlight.values()].reduce((sum, usd) => sum + usd, 0);
+      const held = worst * inFlight.length;
       if (spentUsd + held + worst > cap) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
-      inFlight.set(turn, worst);
       return undefined;
-    },
-    settled(turn) {
-      inFlight.delete(turn);
     },
   };
 }

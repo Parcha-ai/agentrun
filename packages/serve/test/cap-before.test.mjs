@@ -10,10 +10,9 @@ const model = { id: "m", api: "openai-responses", provider: "p", maxTokens: 1000
 
 test("a request in flight holds its worst case: a second one sent beside it is refused, and goes once the first has answered", async () => {
   const cap = await capBefore(1, model);
-  assert.equal(cap.beforeRequest({ turn: 1, spentUsd: 0 }), undefined, "the first goes");
-  assert.match(cap.beforeRequest({ turn: 2, spentUsd: 0 })?.refuse ?? "", /^spend_cap_reached: /, "the second, beside it, would pass the cap with it");
-  cap.settled(1);
-  assert.equal(cap.beforeRequest({ turn: 3, spentUsd: 0.3 }), undefined, "once it answered, its own cost is what counts");
-  cap.settled(3);
-  assert.match(cap.beforeRequest({ turn: 4, spentUsd: 0.5 })?.refuse ?? "", /^spend_cap_reached: /, "spent and a request's worst case past the cap");
+  assert.equal(cap.beforeRequest({ spentUsd: 0, inFlight: [] }), undefined, "the first goes");
+  assert.match(cap.beforeRequest({ spentUsd: 0, inFlight: [{ turn: 1, model: "m" }] })?.refuse ?? "", /^spend_cap_reached: /, "the second, beside it, would pass the cap with it");
+  assert.equal(cap.beforeRequest({ spentUsd: 0.3, inFlight: [] }), undefined, "once the first answered, its own cost is what counts");
+  assert.match(cap.beforeRequest({ spentUsd: 0.5, inFlight: [] })?.refuse ?? "", /^spend_cap_reached: /, "spent and a request's worst case past the cap");
+  assert.match(cap.beforeRequest({ spentUsd: null, inFlight: [] })?.refuse ?? "", /spent is unknown/);
 });

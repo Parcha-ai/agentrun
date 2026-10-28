@@ -76,7 +76,7 @@ export function adapterRun(
 ): AdapterRun {
   // The run's cap refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
-  const guard = cap && ((request: { turn: number; spentUsd: number | null }) => {
+  const guard = cap && ((request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
     const answer = cap.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;
@@ -135,8 +135,6 @@ export function adapterRun(
   const onModel = (event: ModelPortEvent) => {
     if (event.type === "request_start") void flush();
     else {
-      // Answered (or booked cut): its cost is in what the run has spent, and it holds nothing against the cap.
-      cap?.settled(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
     }
   };
