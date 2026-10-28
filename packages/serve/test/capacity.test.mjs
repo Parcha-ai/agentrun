@@ -103,6 +103,32 @@ test("a run that has failed gives its place back once its process exits: a start
   await follow(api, started.body.run_id, ["failed"]);
 });
 
+test("a completed run's follow-up gives its place back when it ends again: the next new start still gets one", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  await follow(api, run.run_id, ["completed"]);
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "And again?" })).status, 202);
+  await follow(api, run.run_id, ["completed"]);
+  const next = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(next.status, 202, `the follow-up kept a place: ${JSON.stringify(next.body)}`);
+  await follow(api, next.body.run_id, ["completed"]);
+});
+
+test("a server full of runs that still work answers 429 at once: only a place being given back is waited for", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await serve(t, { maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
+  const working = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "go-1") } });
+  assert.equal(working.status, 202, JSON.stringify(working.body));
+  await follow(api, working.body.run_id, ["working"]);
+  const asked = Date.now();
+  const refused = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "never-1") } });
+  assert.equal(refused.status, 429, JSON.stringify(refused.body));
+  assert.ok(Date.now() - asked < 1_000, `answered at once, not after a wait: ${Date.now() - asked} ms`);
+  await writeFile(join(data, "go-1"), "");
+  await follow(api, working.body.run_id, ["completed"]);
+});
+
 test("a run whose process fails at its start is never started again while its end is written: one process, and its place is free once it reads failed", async (t) => {
   const { api, data } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-broken.mjs", import.meta.url).pathname });
   assert.equal((await api("POST", "/agents", agent("broken"))).status, 201);
