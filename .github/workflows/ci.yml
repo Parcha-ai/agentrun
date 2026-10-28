@@ -71,6 +71,9 @@ jobs:
       - if: matrix.shard == 'checks' && matrix.node == '22.19.0'
         run: node scripts/check-typescript-floor.mjs
       - if: matrix.shard != 'checks'
+        env:
+          # The Codex adapter's tool-off test runs on the pinned binary (a dev dependency): here a missing one fails, not skips.
+          AGENTRUN_CODEX_REQUIRE_BINARY: '1'
         run: node scripts/ci-shard.mjs ${{ matrix.shard }}
       - name: Retain package verification evidence
         if: always() && matrix.shard == 'checks'

@@ -1,0 +1,161 @@
+{
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "model": "gpt-5.4-mini",
+  "parallel_tool_calls": true,
+  "reasoning": {
+    "summary": "auto"
+  },
+  "store": false,
+  "stream": true,
+  "text": {
+    "format": {
+      "type": "json_schema",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "answer": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "additionalProperties": false
+      },
+      "name": "codex_output_schema"
+    }
+  },
+  "tool_choice": "auto",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Answer with the word ok in the answer field."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "function",
+      "name": "write_stdin",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "function",
+      "name": "request_user_input",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "function",
+      "name": "view_image",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1",
+      "tools": [
+        {
+          "type": "function",
+          "name": "close_agent",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "type": "function",
+          "name": "resume_agent",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "type": "function",
+          "name": "send_input",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "type": "function",
+          "name": "spawn_agent",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "type": "function",
+          "name": "wait_agent",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "get_goal",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "function",
+      "name": "create_goal",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "function",
+      "name": "update_goal",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "type": "web_search"
+    }
+  ],
+  "client_metadata": {
+    "root_turn_id": "<root_turn_id>",
+    "session_id": "<session_id>",
+    "thread_id": "<thread_id>",
+    "turn_id": "<turn_id>",
+    "x-codex-installation-id": "<x-codex-installation-id>",
+    "x-codex-turn-metadata": "<x-codex-turn-metadata>",
+    "x-codex-window-id": "<x-codex-window-id>"
+  },
+  "prompt_cache_key": "<prompt-cache-key>"
+}
