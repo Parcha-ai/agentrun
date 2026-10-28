@@ -128,7 +128,9 @@ const assetsLines = (await readFile(join(root, 'ASSETS.md'), 'utf8').catch(() =>
 function extension(path) { const leaf = path.split('/').at(-1); return leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.')).toLowerCase() : ''; }
 function excluded(path) {
   const parts = path.split('/');
-  return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /(?:^|\.)review(?:\.|$)/.test(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
+  // A review record is a file the author writes as `<n>.review.json`; a module or directory named review is source.
+  return parts.some(part => part === 'pi.config.mjs' || excludedComponents.has(part) || /^\.env(?:\.|$)/.test(part) || /\.local(?:\.|$)/.test(part)) ||
+    /^.+\.review\.json$/.test(parts.at(-1)) ||
     /\.(?:tgz|tar|gz|pem|key|p12|pfx|map|log)$/.test(path);
 }
 const forbidden = [
@@ -185,7 +187,7 @@ async function collect(relative = '') {
 }
 const receipt = {
   status: 'running', publicationReady: false, generatedAt: new Date().toISOString(), node: process.version,
-  packageLockSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.*', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files'],
+  packageLockSha256: sha256(lockBytes), exclusions: [...excludedComponents, '*.review.json', '.env*', '*.local.*', 'archives', 'source maps', 'logs', 'key files'],
   limitations: ['Heuristic scanning cannot prove the absence of every secret or private fact.', 'Binary assets are hashed and allowlisted by extension, not semantically inspected.', 'Export success does not authorize publication; source provenance, license and owner approval remain required.'],
   runtimeDependencies: { count: rows.length, packages: rows, flags: flagged, unresolvedOptional: missingOptional },
 };
