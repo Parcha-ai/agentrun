@@ -17,10 +17,10 @@ async function until(ready, what) {
 const ran = [];
 const tool = (name) => ({ name, description: `The ${name} tool.`, inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async (args) => { ran.push([name, args]); return { text: `${name} found` }; } });
 const LEAD_TOOLS = [tool('search'), tool('fetch'), tool('write')];
-const CHECKER = 'You are the fact-checker. Check each claim against its cited source.';
+const CHECKER = 'You check each claim against its cited source.';
 const AGENTS = {
-  'fact-checker': { description: 'Checks claims against their sources.', system: CHECKER, tools: ['fetch'] },
-  'data-analyst': { description: 'Works the numbers.', system: 'You are the data analyst.', tools: ['search', 'fetch'], deadlineShare: 0.25 },
+  'checker': { description: 'Checks claims against their sources.', system: CHECKER, tools: ['fetch'] },
+  'analyst': { description: 'Works the numbers.', system: 'You work the numbers.', tools: ['search', 'fetch'], deadlineShare: 0.25 },
 };
 const ANSWER = { answer: 'All three claims hold.', citations: [{ url: 'https://example.com/a', quote: 'q' }], gaps: [] };
 const call = (t, args, callId = 'toolu_1', signal = new AbortController().signal) => t.call(args, { callId, signal });
@@ -32,8 +32,8 @@ test('a delegate runs its agent as a child node: its system prompt verbatim, onl
   const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead', onEvent: (e) => events.push(e) });
   assert.equal(t.name, DELEGATE_TOOL);
   assert.equal(t.replay, 'safe');
-  assert.deepEqual(t.inputSchema.properties.agent.enum, ['fact-checker', 'data-analyst']);
-  const result = await call(t, { agent: 'fact-checker', task: 'Check the three claims.', context: 'Draft so far.' });
+  assert.deepEqual(t.inputSchema.properties.agent.enum, ['checker', 'analyst']);
+  const result = await call(t, { agent: 'checker', task: 'Check the three claims.', context: 'Draft so far.' });
   assert.deepEqual(JSON.parse(result.text), ANSWER);
   assert.equal(result.isError, undefined);
   const [spec] = specs;
@@ -42,7 +42,7 @@ test('a delegate runs its agent as a child node: its system prompt verbatim, onl
   assert.deepEqual(spec.tools.map((x) => x.name).sort(), ['fetch', 'submit'], 'only its own tools, and no delegate');
   assert.ok(ran.some(([name]) => name === 'fetch'));
   // Its events are the lead's call's: nested by the delegate tag.
-  assert.ok(events.length > 0 && events.every((e) => e.delegate?.agent === 'fact-checker' && e.delegate.callId === 'toolu_1' && e.delegate.parentKey === 'step:lead'));
+  assert.ok(events.length > 0 && events.every((e) => e.delegate?.agent === 'checker' && e.delegate.callId === 'toolu_1' && e.delegate.parentKey === 'step:lead'));
   assert.ok(events.some((e) => e.type === 'request_start') && events.some((e) => e.type === 'tool_start' && e.name === 'fetch'));
 });
 
@@ -58,14 +58,14 @@ test("a child never runs a tool outside its list, though the lead has it: the ca
   ran.length = 0;
   const adapter = fauxAdapter({ script: () => [{ call: 'write', args: { q: 'x' } }, { submit: ANSWER }] });
   const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead' });
-  await call(t, { agent: 'fact-checker', task: 'Check it.' });
+  await call(t, { agent: 'checker', task: 'Check it.' });
   assert.deepEqual(ran.filter(([name]) => name === 'write'), [], 'write never ran');
 });
 
 test('the fixed answer: a child submission outside {answer, citations, gaps} is refused, as any submit is, and the corrected one comes back', async () => {
   const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'no citations' } }, { submit: { ...ANSWER, extra: 1 } }, { submit: ANSWER }] });
   const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead' });
-  const result = await call(t, { agent: 'fact-checker', task: 'Check it.' });
+  const result = await call(t, { agent: 'checker', task: 'Check it.' });
   assert.deepEqual(JSON.parse(result.text), ANSWER);
   assert.deepEqual(adapter.calls.filter((c) => c === 'submit').length, 3, 'two refused, the third accepted');
   assert.deepEqual(DELEGATE_RESULT_SCHEMA.required, ['answer', 'citations']);
@@ -80,14 +80,14 @@ test("the money and the replay: a child cut off mid-run resumes from its own sto
   const dying = fauxAdapter({ script });
   const dead = new AbortController();
   const first = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: dying, store, parentKey: 'step:lead', beforeRequest });
-  const stalled = call(first, { agent: 'fact-checker', task: 'Check it.' }, 'toolu_7', dead.signal);
+  const stalled = call(first, { agent: 'checker', task: 'Check it.' }, 'toolu_7', dead.signal);
   await until(() => dying.requests >= 2 && dying.calls.length >= 1, 'two requests and a tool call');
   dead.abort(new Error('the process died'));
   await stalled;
   // The next process: the lead's harness runs the same call (same id) again; the child resumes, nothing is re-sent.
   const next = fauxAdapter({ script: () => script().filter((a) => !('hang' in a)) });
   const again = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: next, store, parentKey: 'step:lead', beforeRequest });
-  const result = await call(again, { agent: 'fact-checker', task: 'Check it.' }, 'toolu_7');
+  const result = await call(again, { agent: 'checker', task: 'Check it.' }, 'toolu_7');
   assert.deepEqual(JSON.parse(result.text), ANSWER);
   assert.deepEqual(next.opened.map((o) => o.state), ['open_turn'], 'the same child session, found open');
   assert.deepEqual([next.requests, next.calls], [1, ['submit']], 'only the submit was asked for again');
@@ -97,7 +97,7 @@ test("the money and the replay: a child cut off mid-run resumes from its own sto
   assert.equal((await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.request).length, 3, 'three paid requests booked in all');
   // Run once more after it finished: the recorded answer, nothing run.
   const finished = fauxAdapter({ script: () => [{ submit: { answer: 'NOT AGAIN', citations: [] } }] });
-  const replayed = await call(delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: finished, store, parentKey: 'step:lead' }), { agent: 'fact-checker', task: 'Check it.' }, 'toolu_7');
+  const replayed = await call(delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter: finished, store, parentKey: 'step:lead' }), { agent: 'checker', task: 'Check it.' }, 'toolu_7');
   assert.deepEqual([JSON.parse(replayed.text), finished.requests], [ANSWER, 0]);
 });
 
@@ -106,7 +106,7 @@ test("the deadline: a child gets its agent's share of the lead's time left, not 
   const deadline = Date.now() + 1_600;
   const t = delegateTool({ agents: AGENTS, tools: LEAD_TOOLS, adapter, store: memorySessionStore(), parentKey: 'step:lead', deadlineAt: () => deadline });
   const started = Date.now();
-  const result = await call(t, { agent: 'data-analyst', task: 'Work the numbers.' });
+  const result = await call(t, { agent: 'analyst', task: 'Work the numbers.' });
   const took = Date.now() - started;
   assert.equal(result.isError, true);
   assert.match(result.text, /timeout/);
@@ -120,7 +120,7 @@ test('one child at a time: a second delegate call waits for the first to finish'
   const slow = { name: 'fetch', description: 'slow', inputSchema: { type: 'object' }, replay: 'safe', call: async () => { live.now += 1; live.most = Math.max(live.most, live.now); await gate; live.now -= 1; return { text: 'ok' }; } };
   const adapter = fauxAdapter({ script: () => [{ call: 'fetch' }, { submit: ANSWER }] });
   const t = delegateTool({ agents: AGENTS, tools: [slow, tool('search'), tool('write')], adapter, store: memorySessionStore(), parentKey: 'step:lead' });
-  const both = Promise.all([call(t, { agent: 'fact-checker', task: 'one' }, 'toolu_a'), call(t, { agent: 'fact-checker', task: 'two' }, 'toolu_b')]);
+  const both = Promise.all([call(t, { agent: 'checker', task: 'one' }, 'toolu_a'), call(t, { agent: 'checker', task: 'two' }, 'toolu_b')]);
   await until(() => live.now === 1, 'the first child inside its fetch');
   for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 2));
   assert.equal(live.most, 1, 'the second child has not started while the first runs');
@@ -136,6 +136,6 @@ test('an unknown agent or an empty task is an error the lead reads, and runs not
   const unknown = await call(t, { agent: 'browser-bot', task: 'x' });
   assert.equal(unknown.isError, true);
   assert.match(unknown.text, /not one of the agents \(fact-checker, data-analyst\)/);
-  assert.equal((await call(t, { agent: 'fact-checker', task: '  ' })).isError, true);
+  assert.equal((await call(t, { agent: 'checker', task: '  ' })).isError, true);
   assert.equal(adapter.requests, 0);
 });
