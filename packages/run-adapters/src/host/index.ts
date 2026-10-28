@@ -2,3 +2,5 @@
 // provider's rules in a `ProviderPolicy`. Written for AgentRun.
 export { matchRoute, parseStrict, ProxyRefusal, sameKey, startModelProxy } from "./proxy.js";
 export type { ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRoute, ProxyUsage } from "./proxy.js";
+export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from "./parent-death.js";
+export type { LaunchCommand, ParentWatch } from "./parent-death.js";
