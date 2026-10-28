@@ -111,13 +111,15 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
   });
   const ran = [];
   const lookup = { name: 'lookup', description: 'Look a thing up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async (args) => { ran.push(args); return { text: 'found' }; } };
-  const started = [];
-  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup], maxTurns: 60, timeoutMs: 200_000, onEvent: (e) => { if (e.type === 'tool_start') started.push(e.name); } });
+  const toolEvents = [];
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup], maxTurns: 60, timeoutMs: 200_000, onEvent: (e) => { if (e.type === 'tool_start' || e.type === 'tool_end') toolEvents.push(e); } });
   const output = await runNode({ kind: 'agent', label: 'probe', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['lookup'] });
 
   assert.deepEqual(output, { answer: 'ok' });
   assert.deepEqual(ran, [{ q: 'x' }]);
-  assert.deepEqual(started, ['lookup', 'submit']);
+  // Only the host's tools ran; every other call the model made is shown to the host as a call that failed, by its name.
+  assert.deepEqual(toolEvents.filter((e) => e.type === 'tool_end' && !e.isError).map((e) => e.name), ['lookup', 'submit']);
+  for (const [name] of attacks) assert.ok(toolEvents.some((e) => e.type === 'tool_end' && e.name === name && e.isError), `${name} is shown as a failed call`);
   assert.equal(main >= plan.length, true, `the model got to ask for everything (${main} of ${plan.length})`);
   for (const [name] of attacks) assert.equal(existsSync(canary(name.toLowerCase())), false, `${name} wrote`);
   for (const name of ['bash', 'bg', 'write', 'edit', 'task', 'agent', 'nb', 'cron', 'mcp']) assert.equal(existsSync(canary(name)), false, name);
