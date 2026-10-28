@@ -44,6 +44,8 @@ export interface LocalMachineOptions {
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
     auth?: AnthropicPolicyOptions["auth"];
+    /** Headers the host adds to every forwarded request (a gateway's spend tags). */
+    headers?: ModelProxyOptions["headers"];
     log?: ModelProxyOptions["log"];
     fetch?: typeof fetch;
   };
@@ -159,6 +161,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
       ...(options.proxy.price ? { price: options.proxy.price } : {}),
+      ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
       ...(options.proxy.log ? { log: options.proxy.log } : {}),
       onResponse: ({ path, status }) => {
         if (path !== "/v1/messages/count_tokens" || counted) return;
