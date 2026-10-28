@@ -14,6 +14,29 @@ import { pageNotice, wallFailure, wallOf } from "./web.js";
 import type { Geo, PendingEffectFacts, ReleaseReason } from "./host.js";
 
 /** One action of a run's batch, as the contract's schema admits it. */
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...body: string[]) => unknown;
+
+/** How a function expression begins: `function`, `async function`, an arrow's parameter list or single parameter. */
+const FUNCTION_START = /^(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/;
+
+/** `run` code is the body of an async function with `page`, `context` and `browser` in scope. Code written instead as one
+ *  function expression (`async () => { ... }`) would only define that function and return nothing, so such code is
+ *  called: a function with no parameters is awaited and its value returned, and one that declares parameters fails
+ *  with the body form spelled out. The code counts as one function expression when it begins like one and the parser
+ *  compiles the whole of it as a single expression (compiled, never run). Any other code reaches the driver unchanged. */
+export function runnableCode(code: string): string {
+  const expression = code.trim().replace(/;+$/, "").trimEnd();
+  if (!FUNCTION_START.test(expression)) return code;
+  try { new AsyncFunction(`return (\n${expression}\n);`); } catch { return code; }
+  return [
+    `const __runCode = (\n${expression}\n);`,
+    "if (typeof __runCode === \"function\") {",
+    "  if (__runCode.length > 0) throw new TypeError(\"run code is a function that takes parameters. Write the steps as the code itself (the body of a function): page, context and browser are already in scope, and `return` gives a value back.\");",
+    "  return await __runCode();",
+    "}",
+  ].join("\n");
+}
+
 export type RunAction =
   | { op: "click"; id: string }
   | { op: "hover"; id: string }
@@ -349,16 +372,16 @@ export function pageTools({ guards = new Map<number, RepeatGuard>(), reconnect: 
         const stop = s.effects?.record((row) => { sent.push({ method: row.method, url: call.redact(`${row.origin}${row.path}`), held: row.held }); return port.journal(row); });
         let value: unknown;
         try {
-          value = await s.driver.run(args.code !== undefined ? { code: args.code } : { actions: args.actions });
+          value = await s.driver.run(args.code !== undefined ? { code: runnableCode(args.code) } : { actions: args.actions });
         } finally {
           await s.effects?.flush(call.signal).catch(() => undefined);
           stop?.();
         }
         const url = await s.driver.url().catch(() => null);
         // Compared as custody keeps it, so a page with a query value never looks new on every run.
-        if (url && scrubPageUrl(url, call.redact) !== s.record.lastUrl) await port.navigated(url);
+        if (url && scrubPageUrl(url, call.redact) !== s.record.lastUrl) { guardOf(call.conversationId, call.redact).moved(); await port.navigated(url); }
         const reported = args.actions !== undefined && value && typeof value === "object" && typeof (value as { url?: unknown }).url === "string" ? { ...(value as object), url: pageUrl(call, (value as { url: string }).url) } : value;
-        const shown = typeof reported === "string" ? reported : reported === undefined ? "(run completed; no return value)" : JSON.stringify(reported, null, 2) ?? String(reported);
+        const shown = typeof reported === "string" ? reported : reported === undefined ? "(run completed; the code returned no value: end it with `return <value>` to get one back)" : JSON.stringify(reported, null, 2) ?? String(reported);
         return { ...text(withNews(news, shown)), ...(sent.length ? { details: { sent } } : {}) };
       });
     },
