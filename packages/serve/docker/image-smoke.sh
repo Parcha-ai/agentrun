@@ -1,8 +1,9 @@
 #!/bin/sh
 # The image serves: a container of <image>, published on a loopback port only, answers GET /v2/health with 200 and
-# status ok, and GET /v2/capabilities with the contract. Where capabilities list the harnesses, pi is available and every
-# harness the image does not carry (image-check.sh) is unavailable with a reason a person can act on, not an import
-# error: a reason that says it is not installed gives the one line that installs it. The container is stopped and removed
+# status ok, and GET /v2/capabilities with the contract. Where capabilities list the harnesses, pi is available;
+# claude-agent, whose SDK the image does not carry (image-check.sh), is unavailable as not installed, with the one line
+# that installs it; and any other harness is available, or unavailable with a reason a person can act on, not an import
+# error (a reason that says it is not installed gives the line that installs it). The container is stopped and removed
 # by its own name, its anonymous /data volume with it. Needs docker and node. Arguments after the image go to
 # `docker run` (`-e AGENT_MODEL=...`, say), so a model can be configured and each adapter's own install check is reached.
 #   image-smoke.sh <image> [docker run arguments...]    (IMAGE_SMOKE_WAIT_S: how long health may take, default 60)
@@ -49,13 +50,13 @@ if (Array.isArray(caps.harnesses)) {
   for (const h of caps.harnesses) {
     if (h.id === "pi") {
       if (h.available !== true) fail(`pi is not available: ${JSON.stringify(h)}`);
-    } else {
+    } else if (h.available !== true) {
       const reason = String(h.reason ?? "");
-      if (h.available !== false) fail(`${h.id} is available, but the image carries none of its CLI`);
       if (!reason) fail(`${h.id} is unavailable with no reason`);
       if (/ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)|ERR_PACKAGE_PATH|SyntaxError|TypeError/.test(reason)) fail(`${h.id}'s reason is an error, not words a person can act on: ${reason}`);
+      if (h.id === "claude-agent" && !/not installed/i.test(reason)) fail(`claude-agent is unavailable, but not as not installed: ${reason}`);
       if (/not installed/i.test(reason) && !/npm install (?:--?[A-Za-z][A-Za-z-]* )*@/.test(reason)) fail(`${h.id} says it is not installed but gives no install line: ${reason}`);
-    }
+    } else if (h.id === "claude-agent") fail("claude-agent is available, but the image carries no Claude Agent SDK");
     lines.push(`${h.id}: ${h.available ? "available" : `unavailable (${h.reason})`}`);
   }
 } else lines.push("capabilities list no harnesses (this serve predates them)");

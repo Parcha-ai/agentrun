@@ -34,7 +34,7 @@ const kept = ["node_modules/@anthropic-ai/sdk/package.json", "node_modules/@open
 test("a tree with none of the CLIs passes the image check", async (t) => {
   const result = check(await tree(t, kept));
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /no Claude Agent SDK, Claude CLI or Codex CLI/);
+  assert.match(result.stdout, /no Claude Agent SDK or Claude CLI/);
 });
 
 // Each case: what the tree holds beside the kept packages, and the path the check names (where it prunes).
@@ -42,8 +42,6 @@ for (const [what, file, named] of [
   ["the Claude Agent SDK", "node_modules/@anthropic-ai/claude-agent-sdk/package.json", "node_modules/@anthropic-ai/claude-agent-sdk"],
   ["a platform package of the SDK, which holds the Claude CLI", "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/package.json", "node_modules/@anthropic-ai/claude-agent-sdk-linux-x64"],
   ["the Claude CLI package", "node_modules/@anthropic-ai/claude-code/package.json", "node_modules/@anthropic-ai/claude-code"],
-  ["the Codex CLI", "node_modules/@openai/codex/package.json", "node_modules/@openai/codex"],
-  ["a platform package of the Codex CLI", "node_modules/@openai/codex-linux-arm64/package.json", "node_modules/@openai/codex-linux-arm64"],
   ["a copy nested under a workspace package", "packages/run-adapters-claude-agent/node_modules/@anthropic-ai/claude-agent-sdk/package.json", "packages/run-adapters-claude-agent/node_modules/@anthropic-ai/claude-agent-sdk"],
 ]) {
   test(`the image check refuses ${what}, and names it`, async (t) => {
@@ -55,17 +53,25 @@ for (const [what, file, named] of [
 }
 
 test("the image check refuses a bin link left behind, even a dangling one", async (t) => {
-  const root = await tree(t, kept, { "node_modules/.bin/codex": "../@openai/codex/bin/codex.js", "node_modules/.bin/claude": "../@anthropic-ai/claude-code/cli.js" });
+  const root = await tree(t, kept, { "node_modules/.bin/claude": "../@anthropic-ai/claude-code/cli.js" });
   const result = check(root);
   assert.equal(result.status, 1, `exit ${result.status}: ${result.stdout}`);
-  for (const link of ["node_modules/.bin/codex", "node_modules/.bin/claude"]) assert.ok(result.stderr.split("\n").includes(join(root, link)), `stderr names ${link}: ${result.stderr}`);
+  assert.ok(result.stderr.split("\n").includes(join(root, "node_modules/.bin/claude")), `stderr names the link: ${result.stderr}`);
+});
+
+// The Codex CLI (Apache-2.0) is not held back: it ships with its adapter, from the lock.
+test("the image check passes a tree that holds the Codex CLI", async (t) => {
+  const root = await tree(t, [...kept, "node_modules/@openai/codex/package.json", "node_modules/@openai/codex-linux-x64/package.json"], { "node_modules/.bin/codex": "../@openai/codex/bin/codex.js" });
+  const result = check(root);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("the Dockerfile removes the CLIs after the build and runs the check on the final image's tree", async () => {
   const dockerfile = await readFile(DOCKERFILE, "utf8");
   const [build, final] = dockerfile.split(/^FROM /m).slice(1);
-  for (const name of ["@anthropic-ai/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk-*", "@anthropic-ai/claude-code", ".bin/claude", "@openai/codex", "@openai/codex-*", ".bin/codex"])
+  for (const name of ["@anthropic-ai/claude-agent-sdk", "@anthropic-ai/claude-agent-sdk-*", "@anthropic-ai/claude-code", ".bin/claude"])
     assert.ok(build.includes(` node_modules/${name} `) || build.includes(` node_modules/${name} \\`), `the build stage removes node_modules/${name}`);
+  assert.ok(!/@openai\/codex|\.bin\/codex/.test(build), "the build stage leaves the Codex CLI alone");
   const copy = final.indexOf("COPY --from=build");
   const run = final.indexOf("RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun");
   assert.ok(copy >= 0 && run > copy, "the final stage runs the image check after it copies the build");
