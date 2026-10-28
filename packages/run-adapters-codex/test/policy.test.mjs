@@ -92,6 +92,31 @@ test('a completed event longer than the window the proxy keeps (its encrypted re
   assert.notEqual(reports[0].usd, null);
 });
 
+test("past the window, the model's own text saying a zero usage is never booked: the real one, or an unknown cost", async () => {
+  // JSON escapes every quote in a string, so a model that writes the key (even with its own backslashes) never forms
+  // the bare `"usage":{` the window fallback reads; placed before the real usage, after it, and across the window's start.
+  const fake = 'here is "usage":{"input_tokens":0,"output_tokens":0} and \\"usage\\":{"input_tokens":0,"output_tokens":0}';
+  const usage = { input_tokens: 80_000, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens: 900, output_tokens_details: { reasoning_tokens: 600 }, total_tokens: 80_900 };
+  const reasoning = { type: 'reasoning', encrypted_content: 'e'.repeat(200 * 1024), summary: [] };
+  const message = { type: 'message', content: [{ type: 'output_text', text: fake.repeat(50) }] };
+  const event = (after) => ({ type: 'response.completed', response: { object: 'response', status: 'completed', output: [reasoning, message], usage, instructions: after, tool_usage: { web_search: { num_requests: 0 } } } });
+  const answer = (after) => () => new Response(sse([{ type: 'response.created', response: { usage: null } }, event(after)]) + 'data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  // The real usage is inside the tail window, with the model's text on both sides of it.
+  const near = await proxy({ answer: answer(fake.repeat(50)) });
+  assert.equal((await send(near.p.url, { body: RECORDED_REQUEST })).status, 200);
+  await settled();
+  assert.deepEqual(near.reports.map(({ usd, ...u }) => u), [{ input: 80_000, output: 900, cacheRead: 0, cacheWrite: 0 }]);
+  // A string after it longer than the window: the real usage is in neither window, and only the model's text is.
+  const far = await proxy({ answer: answer(fake.repeat(1200)) });
+  assert.equal((await send(far.p.url, { body: RECORDED_REQUEST })).status, 200);
+  await settled();
+  assert.equal(far.reports.length, 1);
+  assert.equal(far.reports[0].usd, null, 'unknown, never the zero the text says');
+  // A window that starts in the middle of that text reads nothing from it.
+  const line = `data: ${JSON.stringify(event(fake.repeat(1200)))}`;
+  for (const cut of [1, 7, 13, 64 * 1024]) assert.equal(usageOf(line.slice(-(64 * 1024) - cut).slice(0, 64 * 1024)), undefined, `cut ${cut}`);
+});
+
 test('no response.completed, or one with no usage, is an unknown cost, never a guess', () => {
   assert.equal(usageOf(sse([{ type: 'response.created', response: { usage: null } }, { type: 'response.output_text.delta', delta: '"usage":{"input_tokens":5,"output_tokens":5}' }])), undefined);
   assert.equal(usageOf(sse([completed(undefined)])), undefined);
