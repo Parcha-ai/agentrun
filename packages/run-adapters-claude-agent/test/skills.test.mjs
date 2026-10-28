@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { claudeAgentAdapter, skillProblems, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+import { CLAUDE_AGENT_CLI_SKILL_NAMES, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, skillProblems, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
 import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
 
 let problem;
@@ -60,6 +60,61 @@ test("a host's skill: the Skill tool is offered, the model is shown that skill a
   assert.deepEqual(toolResults(last).filter((r) => r.error), [], 'loading it was no error');
 });
 
+test("a prompt's bare Skill(\"research-method\") loads the host's skill: the call is rewritten to agentrun:research-method and its SKILL.md reaches the model", { skip, timeout: 120_000 }, async (t) => {
+  const { output, last } = await node(t, { skills: [SKILL], call: 'research-method' });
+  assert.deepEqual(output, { answer: 'ok' });
+  const results = toolResults(last);
+  assert.ok(results.some((r) => !r.error && r.text.includes('Launching skill: agentrun:research-method')), JSON.stringify(results));
+  assert.ok(JSON.stringify(last).includes(CANARY), "the skill's SKILL.md reached the model");
+});
+
+test("a name that is no skill of the session's is refused, and none of it reaches the model", { skip, timeout: 120_000 }, async (t) => {
+  const { output, last } = await node(t, { skills: [SKILL], call: 'research-methods' });
+  assert.deepEqual(output, { answer: 'ok' });
+  const refused = toolResults(last).filter((r) => r.error);
+  assert.ok(refused.length === 1 && /Unknown skill|not one of this session's skills/.test(refused[0].text), JSON.stringify(refused));
+  assert.ok(!JSON.stringify(last).includes(CANARY), 'nothing was loaded');
+});
+
+// The CLI answers Skill("<name>") itself for its own commands and bundled skills, before any hook sees the call, so a host
+// skill by one of those names would never load by its bare name. CLAUDE_AGENT_CLI_SKILL_NAMES lists them for the pinned
+// CLI: each one is the CLI's (none is "Unknown skill"), and every command and skill the CLI reports at its start is in it.
+test("the CLI's own skill names, pinned: each is the CLI's, and every command and skill it reports at its start is listed", { skip, timeout: 240_000 }, async (t) => {
+  const names = [...CLAUDE_AGENT_CLI_SKILL_NAMES];
+  let step = 0;
+  const provider = await fakeAnthropic({ reply: (r) => {
+    if (r.model !== MODEL) return { text: 'ok' };
+    const name = names[step++];
+    return name ? { tool: { name: 'Skill', input: { skill: name } } } : { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } };
+  } });
+  t.after(() => provider.close());
+  const real = await import('@anthropic-ai/claude-agent-sdk');
+  let init;
+  const sdk = { ...real, query: (args) => {
+    const q = real.query(args);
+    const iterate = q[Symbol.asyncIterator].bind(q);
+    return Object.assign(Object.create(q), { [Symbol.asyncIterator]: () => {
+      const it = iterate();
+      return { next: async () => { const r = await it.next(); if (r.value?.type === 'system' && r.value?.subtype === 'init') init ??= r.value; return r; }, return: (v) => it.return?.(v) ?? { done: true, value: v } };
+    } });
+  } };
+  const adapter = claudeAgentAdapter({ sdk, sdkVersion: CLAUDE_AGENT_SDK_VERSION, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'owned-')), 'sessions'), skills: [SKILL] });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: names.length + 10, timeoutMs: 220_000 });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'owned', system: ['Answer.'], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
+  const last = provider.messages().filter((r) => r.model === MODEL).at(-1)?.body;
+  const asked = new Map();
+  const unknown = [];
+  for (const m of last?.messages ?? []) for (const b of Array.isArray(m.content) ? m.content : []) {
+    if (b?.type === 'tool_use' && b.name === 'Skill') asked.set(b.id, b.input.skill);
+    if (b?.type === 'tool_result' && asked.has(b.tool_use_id) && /Unknown skill/.test(JSON.stringify(b.content))) unknown.push(asked.get(b.tool_use_id));
+  }
+  assert.equal(asked.size, names.length, 'every listed name was asked');
+  assert.deepEqual(unknown, [], 'every listed name is one the CLI has');
+  const reported = [...(init?.slash_commands ?? []), ...(init?.terminal_slash_commands ?? []), ...(init?.skills ?? [])].filter((n) => !n.startsWith('agentrun:'));
+  assert.ok(reported.length > 0, 'the CLI reported its commands');
+  assert.deepEqual(reported.filter((n) => !CLAUDE_AGENT_CLI_SKILL_NAMES.has(n)), [], 'each command and skill the CLI reports is listed');
+});
+
 test("a skill that is not the host's (one the CLI bundles) is refused, and none of it reaches the model", { skip, timeout: 120_000 }, async (t) => {
   const { output, last } = await node(t, { skills: [SKILL], call: 'simplify' });
   assert.deepEqual(output, { answer: 'ok' });
@@ -106,6 +161,7 @@ test('the skills are checked when the adapter is made: a plain name, a SKILL.md 
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a', 'other: x') } }), /no description/);
   for (const path of ['../escape.md', '/abs.md', 'a/../../b.md', 'a//b.md', '.hidden', 'a/./b']) assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), [path]: 'x' } }), /not a plain relative path/, path);
   assert.match(skillProblems([{ name: 'a', files: { 'SKILL.md': md('a') } }, { name: 'a', files: { 'SKILL.md': md('a') } }]).join(';'), /given twice/);
+  for (const name of ['simplify', 'help', 'review']) assert.match(wrong({ name, files: { 'SKILL.md': md(name) } }), /one of the Claude Agent CLI's own commands or skills/, name);
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), 'big.md': 'x'.repeat(1024 * 1024) } }), /more than 1048576/);
   assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, skills: [{ name: 'a', files: {} }], sdk: {}, standIn: { command: process.execPath } }), /agentrun-claude-agent: the skill a has no SKILL.md/);
 });

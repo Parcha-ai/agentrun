@@ -556,10 +556,15 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                 async (hook) => {
                   try {
                     if (hook.hook_event_name !== 'PreToolUse' || bridged(hook.tool_name)) return {};
-                    // A skill only loads text into the conversation: one of the session's own, by its exact name.
+                    // A skill only loads text into the conversation: one of the session's own, by its plugin-qualified
+                    // name or by its bare one. A bare name is rewritten to the qualified one, so it loads the session's
+                    // skill even where one of the CLI's bundled skills has the same name (the CLI would pick that one).
                     if (skills && hook.tool_name === 'Skill') {
-                      const asked = (hook.tool_input as { skill?: unknown } | undefined)?.skill;
-                      return typeof asked === 'string' && skills.names.includes(asked) ? allow() : deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
+                      const input = (hook.tool_input ?? {}) as { skill?: unknown };
+                      const asked = input.skill;
+                      const name = typeof asked === 'string' ? skills.names.find((n) => n === asked || n.slice(n.indexOf(':') + 1) === asked) : undefined;
+                      if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
+                      return name === asked ? allow() : allow({ ...input, skill: name });
                     }
                     if (!builtinsOn) return deny("Not run: this session's only tools are its own.");
                     if (ctx.signal.aborted) return deny('the session stopped');

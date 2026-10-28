@@ -26,8 +26,26 @@ import { CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from 
 /** The pinned CLI's tools the copied harness leaves undecided, off by name in every session. */
 export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
 
-/** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`. */
+/** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
+ *  that name or its bare one. */
 export const CLAUDE_AGENT_SKILLS_PLUGIN = "agentrun";
+
+/**
+ * The names the pinned CLI (2.1.286) answers `Skill("<name>")` with itself, whatever the session's skills: its commands
+ * and bundled skills. A host skill by one of these names is reachable only as `agentrun:<name>`, never by the bare name a
+ * prompt writes, so it is refused when the adapter is made. Measured: each name's call is refused by the CLI's own
+ * check, before any hook (test/skills.test.mjs pins the list against the CLI's own).
+ */
+export const CLAUDE_AGENT_CLI_SKILL_NAMES: ReadonlySet<string> = new Set([
+  "__remote-workflow", "add-dir", "agents", "auto-mode-setup", "autocompact", "batch", "btw", "bug", "claude-api",
+  "clear", "code-review", "color", "compact", "config", "context", "copy", "cost", "dataviz", "debug", "doctor",
+  "effort", "exit", "export", "fast", "feedback", "fewer-permission-prompts", "focus", "goal", "heapdump", "help",
+  "hooks", "ide", "init", "insights", "keybindings-help", "list-agents", "login", "logout", "mcp", "memory", "model",
+  "output-style", "permissions", "plugin", "plugin-authoring", "plugin-types", "plugins", "quit", "recap",
+  "release-notes", "reload-plugins", "reload-skills", "rename", "resume", "review", "rewind", "run",
+  "run-skill-generator", "sandbox", "security-review", "simplify", "skills", "stats", "status", "statusline",
+  "tasks", "team-onboarding", "terminal-setup", "theme", "update-config", "usage", "verify", "workflow-launch-exec",
+]);
 
 /** A skill the model may load (the Skill tool): its name, and its files by path, `SKILL.md` among them. */
 export interface ClaudeAgentSkill {
@@ -51,6 +69,7 @@ export function skillProblems(skills: readonly ClaudeAgentSkill[]): string[] {
     const name = String(skill?.name ?? "");
     if (!SKILL_NAME.test(name)) { problems.push(`the skill name ${JSON.stringify(name.slice(0, 80))} is not lowercase letters, digits and dashes`); continue; }
     if (seen.has(name)) problems.push(`the skill ${name} is given twice`);
+    if (CLAUDE_AGENT_CLI_SKILL_NAMES.has(name)) problems.push(`the skill ${name} has the name of one of the Claude Agent CLI's own commands or skills, which Skill("${name}") would reach instead; rename it`);
     seen.add(name);
     const files = skill.files ?? {};
     const md = files["SKILL.md"];
@@ -122,8 +141,9 @@ export interface ClaudeAgentAdapterOptions {
   maxOutputTokens?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
-  /** The host's skills, which the model may load with the Skill tool (as `agentrun:<name>`), and no others: never the
-   *  CLI's bundled ones or any in a home directory. Written into each session's private directory. Default none. */
+  /** The host's skills, which the model may load with the Skill tool (as `agentrun:<name>` or by the bare name), and no
+   *  others: never the CLI's bundled ones or any in a home directory. Written into each session's private directory.
+   *  Default none. */
   skills?: readonly ClaudeAgentSkill[];
   /** Diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
