@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -223,6 +223,19 @@ test("cost: a request marked as it left and cut before its first content counts,
   assert.deepEqual(timelineOf([a]).at(-1).usage, { usd: 0.01, requests: 1 });
 });
 
+test("cost: a compaction's summary is a paid request: its cost is summed; one aborted, or open when the run settles, makes the cost unknown; one in flight beside a generation does not", () => {
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const compacting = { kind: REQUEST_STARTED, data: { request: "compaction" } };
+  const summarized = (usd) => ({ kind: REQUEST_COST, data: { request: "compaction", usd } });
+  const aborted = { kind: REQUEST_ENDED, data: { request: "compaction" } };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  assert.deepEqual(timelineOf([started, a, compacting, summarized(0.005)]).at(-1).usage, { usd: 0.015, requests: 2 });
+  assert.deepEqual(timelineOf([started, a, compacting, summarized(null)]).at(-1).usage, { usd: null, requests: 2 }, "a summary of unknown price");
+  assert.deepEqual(timelineOf([started, a, compacting, aborted]).at(-1).usage, { usd: null, requests: 2 }, "aborted before its answer");
+  assert.deepEqual(timelineOf([started, a, compacting, started]).at(-1).usage, { usd: 0.01, requests: 3 }, "a compaction and a generation both in flight");
+  assert.deepEqual(timelineOf([started, a, compacting], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
+});
+
 test("an unknown entry kind and an unknown event are skipped, never thrown on", () => {
   const entries = [custom("app.note", { text: "opened a file" }), { kind: "x" }, { nope: 1 }, user("hi", 0)];
   assert.deepEqual(summaries(timelineOf(entries)), ["You: hi"]);
@@ -343,6 +356,16 @@ test("a snapshot rebuilds from its entries and drops what it no longer holds", (
   const out = reducer.apply([{ type: "snapshot", entries: entries.slice(0, 1) }]);
   assert.deepEqual(out.rows.map((r) => r.summary), ["You: one"]);
   assert.deepEqual(out.drop.sort(), before.filter((id) => id !== out.rows[0].id).sort());
+});
+
+test("isLive tells a live row (a phase the events made) from a committed one (an entry's)", () => {
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "run_start" }, { type: "message_end", entry: user("one", 0) }]);
+  const rows = reducer.rows();
+  const phase = rows.find((r) => r.kind === "phase");
+  const message = rows.find((r) => r.kind === "user_message");
+  assert.equal(reducer.isLive(phase.id), true);
+  assert.equal(reducer.isLive(message.id), false);
 });
 
 test("a host labels its own tools; agent_label names the conversation", () => {

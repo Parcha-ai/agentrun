@@ -655,7 +655,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | Export | Does |
 |---|---|
 | `timelineOf(entries, options?)` | The rows of a stored conversation, in log order. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
-| `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order |
+| `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order; `isLive(id)` says whether a row is live (one the events made, which goes when it ends) rather than one a committed entry made, which a host keeps showing though a later snapshot of a compacted conversation no longer holds it |
 | `groupTimeline(rows)` | Rows to groups, for a page: rounds of calls, folds and nested calls, each a `Group` |
 | `foldCalls(calls)` | Adjacent calls of one tool, folded into `Fold`s. A call with inner rows keeps its own line |
 | `failedCall(call)` | Whether a call's result has `tool_status` `failed` |
@@ -665,7 +665,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
-| `REQUEST_STARTED`, `REQUEST_ENDED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted. The usage row counts each marked request; one with no `pi.assistant` entry (cut before its first content) other than the latest still in flight makes the cost unknown. A conversation with no marks reads as before |
+| `REQUEST_STARTED`, `REQUEST_ENDED`, `REQUEST_COST` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted; and the cost of a request with no `pi.assistant` entry of its own (a compaction summary, marked `request: "compaction"`). The usage row counts each marked request and sums each cost; one with no entry or cost (cut before its answer) other than the latest still in flight makes the cost unknown. A conversation with no marks reads as before |
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,

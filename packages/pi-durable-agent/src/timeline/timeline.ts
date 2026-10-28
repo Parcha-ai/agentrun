@@ -49,6 +49,11 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
  *  one followed it or the run settled without it. A cut request's cost is unknown. */
 export const REQUEST_STARTED = "agentrun.request_started";
 export const REQUEST_ENDED = "agentrun.request_ended";
+/** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
+ *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. */
+export const REQUEST_COST = "agentrun.request_cost";
+const COMPACTION = "compaction";
+const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -95,6 +100,10 @@ function createProjector(options: TimelineOptions) {
   let usd: number | null = 0;
   let marked = 0;
   let inFlight = false;
+  // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
+  let compactions = 0;
+  let compacting = 0;
+  let compactionOpen = false;
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -156,7 +165,17 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === REQUEST_STARTED) {
+    if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
+      compacting += 1;
+      compactionOpen = true;
+    } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
+      compactionOpen = false;
+    } else if (entry.kind === REQUEST_COST) {
+      compactions += 1;
+      compactionOpen = false;
+      const cost = obj(entry.data)?.usd;
+      usd = typeof cost === "number" && usd !== null ? usd + cost : null;
+    } else if (entry.kind === REQUEST_STARTED) {
       marked += 1;
       inFlight = true;
     } else if (entry.kind === REQUEST_ENDED) {
@@ -286,10 +305,12 @@ function createProjector(options: TimelineOptions) {
   function usage(): TimelineEvent | undefined {
     // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
     // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
-    // A settled run has nothing in flight: its last request with no entry was cut by the process that ended.
-    const cut = marked - (inFlight && !options.settled ? 1 : 0) > requests;
-    if ((!requests && !cut) || root === undefined) return undefined;
-    const count = Math.max(requests, marked);
+    // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
+    // process that ended.
+    const open = (flying: boolean) => (flying && !options.settled ? 1 : 0);
+    const cut = marked - open(inFlight) > requests || compacting - open(compactionOpen) > compactions;
+    if ((!requests && !compactions && !cut) || root === undefined) return undefined;
+    const count = Math.max(requests, marked) + Math.max(compactions, compacting);
     const total = usd === null || cut ? null : Math.round(usd * 1e6) / 1e6;
     return make("usage", root, `${root}:usage`, {
       summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
@@ -330,6 +351,8 @@ const modelName = (agent: unknown): string | undefined => {
 
 /** Live rows from `watchEvents` batches. Committed entries go through the same projector `timelineOf` uses. */
 export function timelineReducer(options: TimelineOptions = {}) {
+  // Ids of live rows: events made them, and they go when they end (timelineReducer's isLive).
+  const liveIds = new Set<string>();
   const now = options.now ?? Date.now;
   const thinkingCap = options.caps?.thinking ?? CAPS.thinking;
   let projector = createProjector(options);
@@ -343,6 +366,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
     const put = (row: TimelineEvent) => { store.set(row.id, row); changed.set(row.id, row); dropped.delete(row.id); };
     const del = (id: string) => { if (store.delete(id)) { changed.delete(id); dropped.add(id); } };
     const live = (kind: TimelineKind, id: string, summary: string | undefined, fields: Partial<TimelineEvent> = {}) => {
+      liveIds.add(id);
       const old = store.get(id);
       if (summary === undefined) return del(id);
       if (old && old.summary === summary && old.text === (fields.text ?? null)) return;
@@ -509,5 +533,9 @@ export function timelineReducer(options: TimelineOptions = {}) {
     apply,
     /** Every row now, in log order. */
     rows: () => [...store.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+    /** Whether `id` is a live row (one the events made: a stream, a wait, a phase), not one a committed entry made.
+     *  A live row ends when it is gone; a committed one was shown and stays, though a snapshot of a compacted
+     *  conversation no longer holds it. */
+    isLive: (id: string) => liveIds.has(id),
   };
 }

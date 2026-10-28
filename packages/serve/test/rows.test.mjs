@@ -49,3 +49,12 @@ test("a page stops at the limit with has_more, and the next one from its cursor 
   assert.equal(log.page(1, 2).reset, true);
   assert.equal(log.page(Date.now() * 1000 - 10 ** 9, 2).reset, true);
 });
+
+test("a row `keep` names stays served when the rows no longer hold it; any other missing row is dropped", () => {
+  const log = new RowLog(new ChangeClock());
+  const row = (id, summary) => ({ id, kind: "user_message", summary, timestamp: "2026-01-01T00:00:00.000Z" });
+  log.sync([row("0:1", "one"), row("0:live", "working"), row("0:2", "two")]);
+  // A snapshot of a compacted conversation: only the newest row, and the live one ended.
+  log.sync([row("0:2", "two")], (id) => id !== "0:live");
+  assert.deepEqual(log.rows().map((r) => r.id), ["0:1", "0:2"], "the committed row stays, in its place; the live one is gone");
+});
