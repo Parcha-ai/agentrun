@@ -138,11 +138,12 @@ test('a session draining sends no new turn: send is refused until the pause is o
   const spec = { key: 'step:direct', label: 'task', system: [], tools: [search.tool], context: 'fresh' };
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
   const session = await adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  // Closed whatever the assertions find, so a turn this test did not expect never outlives it.
+  t.after(async () => { await session.interrupt().catch(() => {}); await session.close(); });
   await session.send('go');
   await search.started;
   const pausing = session.interrupt({ drainMs: 5_000 });
   await assert.rejects(session.send('and another'), /the session is pausing; no new turn/);
   await pausing;
-  await session.close();
   assert.equal(search.runs, 1);
 });
