@@ -19,7 +19,9 @@ export interface HostTool {
   inputSchema: Record<string, unknown>;
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
-  call(args: unknown, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; isError?: boolean }>;
+  /** `sessionDir` is the runner's own, when it has one: a tool that runs a node of its own (the delegate) gives its child a
+   *  private directory the same way, by the child's key. */
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string }): Promise<{ text: string; isError?: boolean }>;
 }
 
 /** One durable record of a session, in the order it was appended. */
@@ -74,9 +76,11 @@ export interface ModelUsage {
   output: number;
   cacheRead?: number;
   cacheWrite?: number;
-  /** Null when the price is unknown; `estimated` when it is not the provider's own figure. */
+  /** Null when the price is unknown; `estimated` when it is not the provider's own figure (the host's price table's). */
   usd: number | null;
   estimated?: boolean;
+  /** Beside the provider's own figure, what the host's price table makes of the same usage: kept to audit the table. */
+  tableUsd?: number | null;
   /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
    *  price is null; the provider may have billed it. */
   cut?: boolean;

@@ -76,6 +76,23 @@ test('a *.local.* file is excluded and a source file named local.ts is archived'
   assert.ok(receipt.exclusions.includes('*.local.*'));
 });
 
+test('a review file (*.review.*) is excluded and source named review is archived', async t => {
+  const f = await fixture(t);
+  // A review file is a file named `<name>.review.<ext>`, like the author's `<n>.review.json` beside each candidate; it and the
+  // `.review`/`.reviews` directories are review state. A module named review.ts, its test, a skill directory named `review`
+  // and a file inside a directory whose name looks like a review file are source.
+  const archived = ['packages/serve/src/review.ts', 'packages/serve/test/review.test.mjs', 'packages/learn/skills/review/SKILL.md', 'docs/x.review.y/notes.md'];
+  const excluded = ['examples/out/candidate-1/001.review.json', 'docs/candidate.review.json', 'docs/notes.review.md', 'docs/.review/findings.json', 'examples/.reviews/notes.md'];
+  for (const path of archived) await f.write(path, 'export const review = 1;\n');
+  for (const path of excluded) await f.write(path, 'PRIVATE_REVIEW_FIXTURE\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of archived) assert.ok(listing.includes(`agentrun-dsl-source/${path}`), `${path} is archived`);
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok(receipt.exclusions.includes('*.review.*'));
+});
+
 test('an audit finding blocks the source archive without exposing its content', async t => {
   const f = await fixture(t);
   const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');

@@ -665,6 +665,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | `foldLabel(tool, calls)` | One line for several calls of one tool, from their input and output previews |
 | `inputPreview(args, max)` | The input worth showing, or `null`: a `description`, `command`, `query`, `file_path`, `url`, `path` or `code` argument, with a URL's query values dropped, cut to `max` |
 | `CAPS` | The caps a row's `summary`, `preview`, `text` and `thinking` are cut to: 500, 500, 2000 and 100 |
+| `REQUEST_STARTED`, `REQUEST_ENDED` | The entry kinds a host writes to mark a model request: as it leaves, and as it ends aborted. The usage row counts each marked request; one with no `pi.assistant` entry (cut before its first content) other than the latest still in flight makes the cost unknown. A conversation with no marks reads as before |
 
 Its types: `TimelineEvent` (Grep's fields, plus the optional ones above) and `TimelineKind`, `TimelineOptions`,
 `EntryLike` (a pi conversation entry as stored), `AgentEventLike` (a pi event), `Call`, `Fold`, `Group`, `LabelFn`,
