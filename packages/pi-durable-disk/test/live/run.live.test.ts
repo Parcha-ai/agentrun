@@ -17,6 +17,7 @@ import { parseRunRecord, type RunRecord } from "../../src/status.ts";
 import { openArchilStore } from "../../src/store.ts";
 import { alive, ctx, killQuietly, scriptedHarness, waitGone } from "../_run-support.ts";
 import { LIVE, REGION, scratchDiskId } from "./_archil.ts";
+import { commitStall, readJournal, stallNote } from "./_commit-stall.ts";
 import { archilMounts, BASE, cleanMount, cleanupAll, control, daemonPid, LEDGER, ledger, newRun, prepareBase, ref, revokeRun, token } from "./_p4.ts";
 
 const ROOT_A = `${BASE}/a`;
@@ -39,6 +40,8 @@ class Instance {
   stderr = "";
   /** When the process exited (Date.now()), 0 while it runs. */
   exitedAt = 0;
+  /** When it was spawned (Date.now()): where a failure's journald window starts. */
+  readonly startedAt = Date.now();
   #waiters: Array<() => void> = [];
 
   constructor(options: { id: string; root: string; writer: string; token: string; lease?: object; blockHeartbeat?: boolean; execLog: string }) {
@@ -93,7 +96,11 @@ class Instance {
       const hit = this.events.slice(options.from ?? 0).find(match);
       if (hit) return hit;
       if (this.child.exitCode !== null || this.child.signalCode !== null) {
-        throw new Error(`instance exited (${this.child.exitCode ?? this.child.signalCode}) first; stderr: ${this.stderr.slice(-800)}; last: ${JSON.stringify(this.events.at(-1))}`);
+        // Diagnostics only: a stalled commit on this instance's own mount is named first; the failure is the same.
+        const last = this.events.at(-1);
+        const journal = readJournal(this.startedAt, Date.now());
+        const note = stallNote(journal && commitStall(journal, this.mountpoint, this.startedAt, this.exitedAt || Date.now()), `the instance exited (last event: ${last?.ev ?? "none"})`);
+        throw new Error(`${note}instance exited (${this.child.exitCode ?? this.child.signalCode}) first; stderr: ${this.stderr.slice(-800)}; last: ${JSON.stringify(last)}`);
       }
       if (Date.now() > deadline) throw new Error(`timed out; last event ${JSON.stringify(this.events.at(-1))}; stderr ${this.stderr.slice(-800)}`);
       await new Promise<void>((resolve) => {
@@ -263,7 +270,7 @@ async function withClaim<T>(id: string, purpose: string, use: (claim: Claim) => 
 
 before(() => {
   if (!LIVE) return;
-  prepareBase();
+  prepareBase([ROOT_A, ROOT_B, ROOT_C]);
   mkdirSync(WORK, { recursive: true, mode: 0o755 });
 });
 

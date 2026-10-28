@@ -130,10 +130,10 @@ export async function openAgentRepo(data: string, agentId: string, clone: string
 /** The host's commit on main of the agent's current revision, read by `current` when its turn in the queue comes:
  *  AGENTS.md (its instructions) and agent.json (its definition). Nothing for an agent that does not learn or on a host
  *  that cannot, and no commit when main holds both already. Main's other files stay. */
-export async function hostCommit(data: string, agentId: string, current: () => AgentEntry | null): Promise<{ sha: string; created: boolean } | undefined> {
+export async function hostCommit(data: string, agentId: string, current: () => AgentEntry | null | Promise<AgentEntry | null>): Promise<{ sha: string; created: boolean } | undefined> {
   if (await learningBlocker(process.env)) return undefined;
   return withAgentRepo(data, agentId, async () => {
-    const entry = current();
+    const entry = await current();
     const revision = entry?.revision;
     if (!entry || revision?.kind !== "agentic" || learningOf(revision) === "off") return undefined;
     const repo = await openAgentRepo(data, agentId, join(agentDir(data, agentId), HOST_CLONE));
@@ -146,7 +146,7 @@ export async function hostCommit(data: string, agentId: string, current: () => A
 
 /** Before a run of `revision` (number `version`) of `entry`'s agent starts: when it learns, main holds the current
  *  revision's host commit, or the run's own when the current one does not learn and main has none yet. */
-export async function readyToRun(data: string, entry: AgentEntry, current: () => AgentEntry | null, revision: Revision, version: number): Promise<void> {
+export async function readyToRun(data: string, entry: AgentEntry, current: () => AgentEntry | null | Promise<AgentEntry | null>, revision: Revision, version: number): Promise<void> {
   if (learningOf(revision) === "off") return;
   const id = entry.agent.id;
   if (learningOf(entry.revision) !== "off") return void (await hostCommit(data, id, current));
