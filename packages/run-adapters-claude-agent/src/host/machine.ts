@@ -41,6 +41,8 @@ export interface LocalMachineOptions {
   proxy: {
     hooks: ModelProxyHooks;
     tools: readonly string[];
+    /** The CLI's own tools the session has (`Skill`, with skills), offered beside its tools. */
+    builtins?: readonly string[];
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
     auth?: AnthropicPolicyOptions["auth"];
@@ -150,6 +152,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         model: route.models.model,
         ...(route.models.smallModel ? { smallModel: route.models.smallModel } : {}),
         tools: options.proxy.tools,
+        ...(options.proxy.builtins?.length ? { builtins: options.proxy.builtins } : {}),
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
         onThinkingDisabled: ({ model: main }) => options.proxy.log?.("claude-agent: thinking.disabled", { model: main }),
