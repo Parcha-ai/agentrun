@@ -3,6 +3,7 @@
 // archived run or a run of an archived agent: archiving closes it.
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
@@ -73,4 +74,27 @@ test("a follow-up to a completed run and new starts sent together under one plac
   const statuses = answers.map((a) => a.status);
   assert.equal(statuses.filter((s) => s === 202).length, 1, `one place, one start: ${statuses.join(", ")}`);
   assert.equal(statuses.filter((s) => s === 429).length, 3, statuses.join(", "));
+});
+
+test("a follow-up sent while a completed run's end is still being written waits for it, then continues the run", { timeout: 60_000 }, async (t) => {
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: Array(20).fill(200) } });
+  const { run_id } = await startRun(api, "calc", "What is six times seven?");
+  // Another writer holds the agent store, so the run's carry back waits: it reads completed before its end is written.
+  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  t.after(() => store.isOpen && store.close());
+  store.exec("BEGIN IMMEDIATE");
+  for (let i = 0; (await api("GET", `/runs/${run_id}`)).body.status !== "completed"; i++) {
+    assert.ok(i < 300, "the run answers");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(storeRun(data, run_id).state, "running", "its end is not written yet");
+  const sent = api("POST", `/runs/${run_id}/messages`, { content: "go on" });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  store.exec("ROLLBACK");
+  store.close();
+  const answer = await sent;
+  assert.equal(answer.status, 202, JSON.stringify(answer.body));
+  assert.equal(answer.body.mode, "follow_up");
+  const { rows } = await follow(api, run_id, ["completed"]);
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["What is six times seven?", "go on"]);
 });
