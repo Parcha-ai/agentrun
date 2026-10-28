@@ -23,7 +23,7 @@ after(() => rmSync(ROOT, { recursive: true, force: true }));
 
 // The scripted SDK's "CLI" is a node child, a stand-in no pin is checked against (tests only): check() needs no CLI.
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
-const adapter = claudeAgentAdapter({ sdk: fakeSdk(), standIn: { command: process.execPath }, model: 'claude-sonnet-5-5', provider: { origin: 'http://127.0.0.1:1', credential: () => 'x' }, sessionsDir: ROOT });
+const adapter = claudeAgentAdapter({ sdk: fakeSdk(), standIn: { command: process.execPath }, model: 'claude-sonnet-5-5', provider: { origin: 'https://x.invalid', credential: () => 'x' }, sessionsDir: ROOT });
 const spec = (inputSchema) => ({ key: 'k', label: 'l', system: [], context: 'fresh', tools: [{ name: 'lookup', description: 'Look.', inputSchema, replay: 'safe', call: async () => ({ text: '' }) }] });
 const pointers = (problems) => problems.map((p) => (p.startsWith('lookup: ') ? p.slice('lookup: '.length).split(': ')[0] : `(not by tool) ${p}`));
 
