@@ -1,5 +1,5 @@
 export { groupTimeline, foldCalls, failedCall, type Call, type Fold, type Group } from "./group.js";
-export { foldLabel, inputPreview, labelOf, registerLabel, type FoldSpec, type LabelFn, type ToolResultView } from "./labels.js";
+export { foldLabel, inputPreview, labelOf, registerLabel, registerTurnEnding, type FoldSpec, type LabelFn, type ToolResultView } from "./labels.js";
 export { renderText } from "./render-text.js";
 export {
   CAPS, REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer,

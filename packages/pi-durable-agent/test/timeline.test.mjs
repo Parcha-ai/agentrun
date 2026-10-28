@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -171,6 +171,24 @@ test("a user message, a steer after a tool round, a custom input kind with an au
     custom("chat.mention", { author: "ann" }, { model: [{ role: "user", content: "ann: can you check?\nthanks", timestamp: Date.UTC(2026, 9, 15, 20, 15) }] }),
   ]);
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Check the build", "You (steer): Use pnpm", "ann: ann: can you check?"]);
+});
+
+test("a message after a tool round that ends the turn is the person's next message, not a steer", () => {
+  registerTurnEnding("probe_ask");
+  const rows = timelineOf([
+    user("Pick a region", 0),
+    assistant([call("a", "probe_ask", { question: "Which one?" })], 1),
+    result("a", "probe_ask", "asked", 2),
+    user("EU", 3),
+    assistant([call("b", "bash", { command: "make" })], 4),
+    result("b", "bash", "ok", 5),
+    user("Use pnpm", 6),
+    assistant([call("c", "bash", { command: "ls" }), call("d", "probe_ask", { question: "Sure?" })], 7),
+    result("c", "bash", "ok", 8),
+    result("d", "probe_ask", "asked", 9),
+    user("Yes", 10),
+  ]);
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Pick a region", "You: EU", "You (steer): Use pnpm", "You (steer): Yes"], "a round that only partly ends the turn goes on, so what comes in it steers");
 });
 
 test("a failed model request is an error row; an aborted partial is nothing", () => {
