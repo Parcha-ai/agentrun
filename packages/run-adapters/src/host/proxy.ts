@@ -378,7 +378,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       // Its ids are kept before its body is read: from here the provider has seen it, whatever cuts it off.
       ids = route.free ? undefined : providerIdsOf(upstream.headers);
-      reported = route.free || !upstream.ok ? undefined : reportedCostOf(upstream.headers);
+      reported = route.free ? undefined : reportedCostOf(upstream.headers);
       if (ids && hooks.responded) {
         try {
           await hooks.responded(ids, ticket);
