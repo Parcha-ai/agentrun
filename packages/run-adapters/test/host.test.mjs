@@ -266,6 +266,33 @@ test('every paid request forwarded is booked once: its usage when it says it; an
   }
 });
 
+test("a client that hangs up once it has read the usage the provider reported (the stream still open) is booked at that usage, and a hang-up before any usage at an unknown cost", async (t) => {
+  // The provider sends its usage and then holds the stream open until the proxy aborts it; the client leaves at once.
+  const holding = (text) => async (_url, init) => new Response(new ReadableStream({
+    start(c) { c.enqueue(new TextEncoder().encode(text)); init.signal.addEventListener('abort', () => c.error(new Error('aborted')), { once: true }); },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const hangUp = (url, seen) => new Promise((resolve, reject) => {
+    const { port } = new URL(url);
+    const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/test', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      res.once('data', () => { req.destroy(); resolve(); });
+    });
+    req.on('error', () => resolve());
+    req.end(JSON.stringify({ model: 'other', input: 'hi' }));
+    setTimeout(() => reject(new Error(`no answer arrived ${seen}`)), 5_000).unref();
+  });
+  const settled = async (hooks) => { for (let i = 0; i < 100 && hooks.after.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); };
+
+  const reported = await proxy(t, { fetch: holding(sse({ in: 11, out: 4 })) });
+  await hangUp(reported.p.url, 'with usage');
+  await settled(reported.hooks);
+  assert.deepEqual(reported.hooks.after, [{ input: 11, output: 4, cacheRead: 0, usd: 0.001 }], 'the usage the provider reported is booked');
+
+  const silent = await proxy(t, { fetch: holding('data: {"delta":"hi"}\n\n') });
+  await hangUp(silent.p.url, 'without usage');
+  await settled(silent.hooks);
+  assert.deepEqual(silent.hooks.after, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }], 'no usage seen: an unknown cost');
+});
+
 test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {
   let admit;
   const waiting = new Promise((resolve) => { admit = resolve; });

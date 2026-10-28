@@ -308,6 +308,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let length = 0;
     /** The provider's answer, once it reached the client whole. */
     let answered: { ok: boolean } | undefined;
+    /** That the provider's answer began, with its status: what a client that left before the end had of it. */
+    let began: { ok: boolean } | undefined;
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
@@ -318,6 +320,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       } catch (error) {
         say(`model proxy (${policy.id}): onResponse threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       }
+      began = { ok: upstream.ok };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
       if (upstream.body) {
@@ -355,9 +358,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     if (route.free) return;
     let usage: ProxyUsage | undefined;
     let usd: number | null = null;
-    if (!answered) {
+    // A client may leave once it has read the response's usage (Codex does, at the completion event) while the provider
+    // still holds the stream open: what was read of a successful answer is read for its usage as a whole one is. With none
+    // in it, the cost is unknown, as for any answer cut short.
+    const seen = answered ?? (began?.ok ? began : undefined);
+    if (!seen) {
       usage = { input: 0, output: 0, cacheRead: 0 };
-    } else if (!answered.ok) {
+    } else if (!seen.ok) {
       // A provider's error answer was not a paid response: it costs nothing.
       usage = { input: 0, output: 0, cacheRead: 0 };
       usd = 0;
