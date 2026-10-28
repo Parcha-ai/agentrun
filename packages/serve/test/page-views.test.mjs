@@ -401,6 +401,9 @@ test("an agent's page: Archive posts to .../archive and the page is read again; 
   const archived = open("#/agents/calc", { "api/agents/calc": { ...AGENT_PAGE, agent: { ...AGENT_PAGE.agent, archivedAt: ARCHIVED_AT } }, "api/runs?agent=calc": [], "POST v2/agents/calc/unarchive": { agent_id: "calc", archived_at: null } });
   await archived.page.settle();
   assert.equal(buttonNamed(archived.page, "Archive"), undefined);
+  // An archived agent's runs are refused (409 agent_not_runnable), so its page offers no run form, and says why.
+  assert.equal(buttonNamed(archived.page, "Start run"), undefined, "no Start run on an archived agent");
+  assert.ok(all(archived.page.app).some((el) => el.tagName === "P" && el.textContent === "It is archived: unarchive it to start a run."));
   buttonNamed(archived.page, "Unarchive").click();
   await archived.page.settle();
   assert.deepEqual(archived.api.writes(), [["POST", "v2/agents/calc/unarchive", {}]]);
