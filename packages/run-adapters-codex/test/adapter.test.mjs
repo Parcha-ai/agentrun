@@ -277,3 +277,28 @@ test('a session runs exactly the binary that was checked when the adapter was ma
     if (before === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = before;
   }
 });
+
+test("a model Codex runs in code mode is refused when the session is checked, and one that runs classic function tools is not", { skip: !pinned && 'the pinned Codex binary is not installed here', timeout: 60_000 }, async () => {
+  const dir = scratch();
+  const make = (model) => codexAdapter({ model, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
+  const spec = { key: 'step:mode', label: 'x', system: [], tools: [], context: 'fresh' };
+  assert.deepEqual(make('gpt-5.4-mini').check(spec), [], 'a classic model');
+  const problems = make('gpt-5.6-luna').check(spec);
+  assert.equal(problems.length, 1, JSON.stringify(problems));
+  assert.match(problems[0], /runs tools in code mode, which this adapter does not support yet/);
+  assert.match(problems[0], /gpt-5\.6-luna/);
+  // A tier names the model that counts.
+  const tiered = codexAdapter({ model: { default: 'gpt-5.4-mini', strong: 'gpt-5.6-luna' }, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
+  assert.deepEqual(tiered.check(spec), []);
+  assert.equal(tiered.check({ ...spec, tier: 'strong' }).length, 1);
+  await assert.rejects(make('gpt-5.6-luna').open(spec, { writer: await memorySessionStore().open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} }), /code mode/);
+});
+
+test("the models Codex's catalog says run tools only in code mode are read from it, and nothing else is", async () => {
+  const { codeModeModels } = await import('../dist/code-mode.js');
+  const catalog = JSON.stringify({ models: [{ slug: 'a', tool_mode: 'code_mode_only' }, { slug: 'b' }, { slug: 'c', tool_mode: 'classic' }, { slug: 'd', tool_mode: 'code_mode_only' }] });
+  assert.deepEqual([...codeModeModels(catalog)].sort(), ['a', 'd']);
+  assert.deepEqual([...codeModeModels('{"models":[]}')], []);
+  assert.throws(() => codeModeModels('not json'), /catalog/);
+  assert.throws(() => codeModeModels('{"nope":1}'), /catalog/);
+});

@@ -12,6 +12,7 @@ import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agen
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION } from "./binary.js";
+import { readCodeModeModels } from "./code-mode.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
@@ -86,6 +87,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
   const checked = options.standIn ? undefined : verifyCodex().path;
+  // The models the binary runs in code mode, read from its own catalog the first time a session is checked.
+  let codeMode: ReadonlySet<string> | undefined;
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
@@ -103,6 +106,11 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
+      }
+      if (checked !== undefined) {
+        codeMode ??= readCodeModeModels(checked);
+        const model = modelFor(spec);
+        if (codeMode.has(model)) problems.push(`the model ${JSON.stringify(model.slice(0, 80))} runs tools in code mode, which this adapter does not support yet; use a model that calls tools as functions`);
       }
       return problems;
     },

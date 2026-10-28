@@ -1,7 +1,7 @@
 // The pinned Codex binary, through the adapter, with a scripted model that tries every way to run something: a classic
-// model calls Codex's built-ins by name, and a code-mode model (luna) uses code mode's own runtime (Node's modules, the
-// process, the network, nested built-ins, a sub-agent). Nothing may run, write or spawn; the only tool that runs is the
-// host's. No network: the provider is a scripted fetch behind the session's proxy.
+// model calls Codex's built-ins by name. Nothing may run, write or spawn; the only tool that runs is the host's. A
+// code-mode model is refused (this adapter runs classic function tools only). No network: the provider is a scripted
+// fetch behind the session's proxy.
 //
 // Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing or different binary fails.
 import assert from 'node:assert/strict';
@@ -85,33 +85,15 @@ test("a classic model's every built-in is refused by Codex itself; only the host
   for (const body of r.seen) assert.deepEqual(body.tools.map((t) => t.name), ['submit'], "the model is offered the host's tools only");
 });
 
-test("a code-mode model's runtime has no Node, no process, no network, no shell and no sub-agent; only the host's tool runs", { skip, timeout: 120_000 }, async () => {
-  const js = (dir) => [
-    `text('import: ' + await import('node:fs').then(() => 'loaded', (e) => 'refused'));`,
-    `text('require: ' + typeof require);`,
-    `text('process: ' + typeof process);`,
-    `text('fetch: ' + typeof fetch);`,
-    `text('nested: ' + Object.keys(tools).sort().join(','));`,
-    `text('exec_command: ' + typeof tools.exec_command);`,
-    `text('spawn: ' + typeof tools.multi_agent_v1__spawn_agent);`,
-    `try { await tools.apply_patch(${JSON.stringify(patch(join(dir, 'canary-patch')))}); } catch (e) { text('patch: ' + e.message); }`,
-    `try { await tools.apply_patch(${JSON.stringify(patch('canary-relative'))}); } catch (e) { text('patch: ' + e.message); }`,
-    `text('mcp: ' + JSON.stringify(await tools.list_mcp_resources({})));`,
-  ].join('\n');
-  const r = await attack('gpt-5.6-luna', (dir) => [{ type: 'custom_tool_call', name: 'exec', input: js(dir), call_id: 'call_js' }],
-    { type: 'custom_tool_call', name: 'exec', input: `text(JSON.stringify(await tools.submit({ value: { answer: 'ok' } })));`, call_id: 'call_js_submit' });
-
-  assert.deepEqual(r.output, { answer: 'ok' });
-  const said = r.outputs.get('call_js');
-  for (const line of ['import: refused', 'require: undefined', 'process: undefined', 'fetch: undefined', 'exec_command: undefined', 'spawn: undefined', 'mcp: "{\\"resources\\":[]}"']) assert.ok(said.includes(line), `${line} in ${JSON.stringify(said)}`);
-  // Codex's own nested tools, pinned: a new one at a version bump is looked at before it ships.
-  assert.ok(said.includes('nested: apply_patch,list_mcp_resource_templates,list_mcp_resources,read_mcp_resource,submit'), JSON.stringify(said));
-  assert.deepEqual([r.canaries, r.work], [[], []], 'nothing was written');
-  assert.deepEqual(r.started.map((e) => e.name), ['submit']);
-  assert.match(r.started[0].callId, /^exec-/, 'a nested call reaches the host under its own name');
-  for (const body of r.seen) {
-    assert.equal(body.tools, undefined);
-    const offered = body.input.filter((i) => i.type === 'additional_tools').flatMap((i) => i.tools.flatMap((ns) => ns.tools.map((t) => `${t.type}:${t.name}`)));
-    assert.deepEqual(offered, ['custom:exec', 'function:wait'], "the model is offered code mode's carriers only");
-  }
+test("a code-mode model is refused before any request leaves: this adapter runs classic function tools only", { skip, timeout: 120_000 }, async () => {
+  const dir = mkdtempSync(join(ROOT, 'run-'));
+  const seen = [];
+  const fetch = async (_url, init) => { seen.push(JSON.parse(init.body)); throw new Error('no request should leave'); };
+  const codex = codexAdapter({ model: 'gpt-5.6-luna', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), fetch });
+  const runNode = createHarnessRunner(codex, { store: memorySessionStore(), timeoutMs: 90_000 });
+  await assert.rejects(
+    runNode({ kind: 'agent', label: 'probe', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: [] }),
+    /runs tools in code mode, which this adapter does not support yet/,
+  );
+  assert.deepEqual(seen, [], 'nothing reached the provider');
 });
