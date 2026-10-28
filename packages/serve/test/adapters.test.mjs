@@ -25,13 +25,17 @@ test("codex's price is the catalog's per million tokens, cached input at its own
   assert.equal(priceOf({ model: { provider: "openai", modelId: "unpriced" }, models })("unpriced", { input: 1, output: 1 }), null);
 });
 
-test("claude-agent's provider: Anthropic Messages only, at ANTHROPIC_BASE_URL's origin or api.anthropic.com, with its key; never serve's OpenAI gateway", () => {
+test("claude-agent's provider: Anthropic Messages only, at ANTHROPIC_BASE_URL's origin or api.anthropic.com, with its key; serve's gateway neither disables it nor ever receives its requests", () => {
   const anthropic = { provider: "anthropic", modelId: "claude-haiku-4-5" };
   const key = `not-a-secret-${"a"}`;
   const direct = claudeProvider({ ANTHROPIC_API_KEY: key }, anthropic);
   assert.deepEqual([direct.origin, direct.credential()], ["https://api.anthropic.com", key]);
   assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://127.0.0.1:5000/" }, anthropic).origin, "http://127.0.0.1:5000");
-  assert.throws(() => claudeProvider({ ANTHROPIC_API_KEY: key, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000" }, anthropic), refused(/needs an Anthropic Messages endpoint \(ANTHROPIC_API_KEY\)/));
+  // The other harnesses' gateway beside it: Claude still runs, at its own endpoint, never the gateway's.
+  for (const [own, origin] of [[{}, "https://api.anthropic.com"], [{ ANTHROPIC_BASE_URL: "http://127.0.0.1:5000" }, "http://127.0.0.1:5000"]]) {
+    const beside = claudeProvider({ ANTHROPIC_API_KEY: key, AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000", AGENT_MODEL_API_KEY: "gw", ...own }, anthropic);
+    assert.deepEqual([beside.origin, beside.credential()], [origin, key]);
+  }
   assert.throws(() => claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "https://host.example/api" }, anthropic), refused(/path \/api/));
   assert.throws(() => claudeProvider({}, anthropic), refused(/ANTHROPIC_API_KEY/));
   assert.throws(() => claudeProvider({ ANTHROPIC_API_KEY: key }, { provider: "openai", modelId: "gpt-5.4-mini" }), refused(/claude-agent runs Anthropic models/));

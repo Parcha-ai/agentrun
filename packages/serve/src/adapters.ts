@@ -60,10 +60,9 @@ export function priceOf(needs: AdapterNeeds) {
 }
 
 /** Where claude-agent's requests go: Anthropic Messages only, at ANTHROPIC_BASE_URL's origin (an Anthropic-compatible
- *  endpoint) or api.anthropic.com, with ANTHROPIC_API_KEY. serve's AGENT_MODEL_BASE_URL is an OpenAI Responses
- *  gateway, which can never serve it. */
+ *  endpoint) or api.anthropic.com, with ANTHROPIC_API_KEY. Its own settings only: AGENT_MODEL_BASE_URL is the other
+ *  harnesses' gateway, and Claude's requests never go there. */
 export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
-  if (env.AGENT_MODEL_BASE_URL) throw new HarnessUnavailable("claude-agent needs an Anthropic Messages endpoint (ANTHROPIC_API_KEY); AGENT_MODEL_BASE_URL is an OpenAI Responses gateway.");
   if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${model.provider}/${model.modelId}.`);
   if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.");
   let origin = "https://api.anthropic.com";
@@ -73,6 +72,17 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origi
     origin = url.origin;
   }
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "" };
+}
+
+/** claude-agent's model: the revision's (or the server's default) as `provider/model-id`, its price from pi-ai's
+ *  catalog. Never the gateway's model or price, which serve the other harnesses. Whether it is an Anthropic model is
+ *  claudeProvider's to say. */
+export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { model: ModelRef } | { why: string; host: boolean } {
+  const named = ref ?? env.AGENT_MODEL;
+  if (!named) return { why: "The revision names no model, and this host has no default: name an anthropic/<model-id> in the definition.", host: true };
+  const slash = named.indexOf("/");
+  if (slash < 1) return { why: `claude-agent runs a model named anthropic/<model-id>; the run's model is ${named}.`, host: ref === undefined };
+  return { model: { provider: named.slice(0, slash), modelId: named.slice(slash + 1) } };
 }
 
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve

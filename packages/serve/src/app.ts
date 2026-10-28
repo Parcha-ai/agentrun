@@ -15,10 +15,10 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import { ArchilCodingTools, type AppContext, type AppOptions, type DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { readJson, RUN_META } from "./files.js";
-import { adapterFor, type ConfineChild, thinkingFor } from "./adapters.js";
-import { DEFAULT_HARNESS } from "./harness.js";
+import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
-import { nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
+import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf } from "./model.js";
 import { isObject, skillNames } from "./validate.js";
 
 export const ASK_TOOL = "ask_person";
@@ -63,6 +63,14 @@ export async function promptOf(instructions: string, skillFiles: Iterable<string
 // hold apart from this package's own: the options cross that boundary as values, typed on this side.
 const CodingTools = ArchilCodingTools as unknown as Extension;
 
+/** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
+async function claudeModels(ref: string | undefined) {
+  const choice = claudeModel(process.env, ref);
+  if ("why" in choice) throw new Error(choice.why);
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  return { models: builtinModels(), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]) };
+}
+
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
 function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
   const reader = openStoreReader(resolve(where.root, "..", ".."));
@@ -78,7 +86,7 @@ function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
 
 export default async function app(where: AppContext): Promise<AppOptions> {
   const { run, revision } = revisionOf(where);
-  const chosen = revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(revision.body.workflow));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !process.env[FAUX_HARNESS_ENV] ? await claudeModels(revision.body.model) : revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(revision.body.workflow));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);

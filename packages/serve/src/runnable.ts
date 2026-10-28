@@ -5,7 +5,7 @@
 import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
 import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
-import { DEFAULT_HARNESS, harnessOffers } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
 import { chooseModel, nodeTiers } from "./model.js";
 
 /** A revision's body as it is saved or stored. */
@@ -33,7 +33,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       // is pi's here and refuses the run, never runs without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
     });
-    const chosen = await chooseModel(env, revision.model);
+    // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
+    // harness every harness takes the run's usual model. A harness that does not run here has said why already.
+    const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
+    if (own && !offer?.available) return out;
+    const chosen = own ? (await import("./adapters.js")).claudeModel(env, revision.model) : await chooseModel(env, revision.model);
     if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
     // The harness runs here; whether it runs this revision's model (its own, or the server's default) is checked on it.
     else if (harness !== DEFAULT_HARNESS && offer?.available) {
