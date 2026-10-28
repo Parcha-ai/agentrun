@@ -357,6 +357,8 @@ const modelName = (agent: unknown): string | undefined => {
 
 /** Live rows from `watchEvents` batches. Committed entries go through the same projector `timelineOf` uses. */
 export function timelineReducer(options: TimelineOptions = {}) {
+  // Ids of live rows: events made them, and they go when they end (timelineReducer's isLive).
+  const liveIds = new Set<string>();
   const now = options.now ?? Date.now;
   const thinkingCap = options.caps?.thinking ?? CAPS.thinking;
   let projector = createProjector(options);
@@ -370,6 +372,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
     const put = (row: TimelineEvent) => { store.set(row.id, row); changed.set(row.id, row); dropped.delete(row.id); };
     const del = (id: string) => { if (store.delete(id)) { changed.delete(id); dropped.add(id); } };
     const live = (kind: TimelineKind, id: string, summary: string | undefined, fields: Partial<TimelineEvent> = {}) => {
+      liveIds.add(id);
       const old = store.get(id);
       if (summary === undefined) return del(id);
       if (old && old.summary === summary && old.text === (fields.text ?? null)) return;
@@ -536,5 +539,9 @@ export function timelineReducer(options: TimelineOptions = {}) {
     apply,
     /** Every row now, in log order. */
     rows: () => [...store.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+    /** Whether `id` is a live row (one the events made: a stream, a wait, a phase), not one a committed entry made.
+     *  A live row ends when it is gone; a committed one was shown and stays, though a snapshot of a compacted
+     *  conversation no longer holds it. */
+    isLive: (id: string) => liveIds.has(id),
   };
 }

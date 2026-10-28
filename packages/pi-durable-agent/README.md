@@ -655,7 +655,7 @@ No dependency, no Node built-in, and no thrown error of its own: a page, a viewe
 | Export | Does |
 |---|---|
 | `timelineOf(entries, options?)` | The rows of a stored conversation, in log order. The options (`TimelineOptions`) are `settled` (nothing is running: a call with no result is interrupted), `conversationId` (for entries and events that carry none), `agentLabel` (a row's `agent_label`, from its conversation id), `labels` (labels for this call only), `caps` (the cut lengths of `CAPS`), and `now`, the clock for retry and poll waits, which only live rows use |
-| `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order |
+| `timelineReducer(options?)` | Live rows, with the same options. `apply(events)` takes the `snapshot` event, then each batch from `watchEvents`, and returns `{ rows, drop }` (upsert the rows by id, delete the `drop` ids); `rows()` returns every row now, in log order; `isLive(id)` says whether a row is live (one the events made, which goes when it ends) rather than one a committed entry made, which a host keeps showing though a later snapshot of a compacted conversation no longer holds it |
 | `groupTimeline(rows)` | Rows to groups, for a page: rounds of calls, folds and nested calls, each a `Group` |
 | `foldCalls(calls)` | Adjacent calls of one tool, folded into `Fold`s. A call with inner rows keeps its own line |
 | `failedCall(call)` | Whether a call's result has `tool_status` `failed` |

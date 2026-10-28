@@ -125,6 +125,8 @@ export type Run = {
   submitted: number;
   /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
   users: Set<string>;
+  /** The rows the live path has shown as live, by id, over every connection to the run's door. */
+  live: Set<string>;
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
@@ -208,6 +210,13 @@ export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number },
 const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
 /** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
 export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
+
+/** The rows a snapshot that no longer holds them leaves served: those committed entries made. A row any connection
+ *  showed live is not one (`live` holds them for the run), so a live row that ended while the door was away goes. */
+export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[], isLive: (id: string) => boolean): (id: string) => boolean {
+  for (const row of rows) if (isLive(row.id)) live.add(row.id);
+  return (id) => !live.has(id) && !isLive(id);
+}
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -343,7 +352,7 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, users: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
     };
   }
 
@@ -394,14 +403,15 @@ export class Runs {
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
-  private take(run: Run, rows: TimelineEvent[]): void {
+  /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
+  private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
     run.rows = withAsks(rows);
     // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
     // messages waiting, so a count of rows would leave the run working forever.
     const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
     for (const row of arrived) run.users.add(row.id);
     run.submitted = Math.max(0, run.submitted - arrived.length);
-    if (run.log.sync(run.rows)) run.updatedAt = new Date().toISOString();
+    if (run.log.sync(run.rows, keep)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
 
@@ -554,7 +564,10 @@ export class Runs {
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
-        this.take(run, reducer.rows());
+        // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
+        // already shown, which stay; only live rows go when they end.
+        const rows = reducer.rows();
+        this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
         if (event === "snapshot" && run.finishStop) {
           run.finishStop = false;
           if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
