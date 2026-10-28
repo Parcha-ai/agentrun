@@ -45,11 +45,14 @@ function heldAdapter() {
   return { adapter, sent, turns, interrupts: () => interrupts };
 }
 
+/** A run in memory whose environment confines its commands under `prefix`. */
+const runOf = (harness, prefix = ["/usr/bin/setpriv", "--no-new-privs", "--"]) => ({ harness, env: async () => ({ confinePrefix: () => prefix }) });
+
 async function opened() {
   const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
   const held = heldAdapter();
-  const app = adapterRun(held.adapter, { key: "run:1", label: "a", system: ["Answer."], tools: [], context: "fresh" }, ctx);
-  await app.onOpen({ harness });
+  const app = adapterRun(async () => held.adapter, "held", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
+  await app.onOpen(runOf(harness));
   const events = [];
   const door = { run: { harness }, signal: new AbortController().signal, emit: (e) => events.push(e.type), adopt: () => {} };
   const submit = (text, whenBusy = "followUp") => app.door.submit({ requestId: text, content: text, whenBusy }, door);
@@ -90,4 +93,18 @@ test("a stop interrupts the turn, drops what waited, and sends nothing more; idl
   assert.deepEqual(held.sent, ["one"], "no second send, and the waiting message is dropped");
   assert.equal(app.door.busy(), false);
   assert.deepEqual(events, ["run_start", "run_end"]);
+});
+
+test("the harness's process starts under the prefix pi's commands get in the run; a run that confines nothing gives the adapter no confinement at all", async () => {
+  for (const [prefix, want] of [
+    [["/usr/bin/setpriv", "--no-new-privs", "--"], { command: "/usr/bin/setpriv", args: ["--no-new-privs", "--", "codex", "app-server"] }],
+    [[], undefined],
+  ]) {
+    const harness = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+    let given = "never called";
+    const app = adapterRun(async (confine) => ((given = confine), heldAdapter().adapter), "held", { key: "run:1", label: "a", system: [], context: "fresh" }, ctx);
+    await app.onOpen(runOf(harness, prefix));
+    if (want === undefined) assert.equal(given, undefined, "no ConfineChild that adds nothing: an adapter refuses one at its first spawn");
+    else assert.deepEqual(given({ command: "codex", args: ["app-server"] }), want);
+  }
 });

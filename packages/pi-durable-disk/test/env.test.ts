@@ -407,6 +407,17 @@ describe("temporary files live under <root>/tmp", () => {
   });
 });
 
+describe("the confinement prefix", () => {
+  it("is the argv every command here starts under, for a program the run starts beside pi: setpriv --no-new-privs -- by default on Linux, and [] when nothing is confined", { skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async () => {
+    await withRun(async ({ root, work }) => {
+      const confined = (await archilEnv({ root, work })({})) as unknown as { confinePrefix(): string[] };
+      assert.deepEqual(confined.confinePrefix(), ["/usr/bin/setpriv", "--no-new-privs", "--"]);
+      const open = (await archilEnv({ root, work }, { noNewPrivs: false })({})) as unknown as { confinePrefix(): string[] };
+      assert.deepEqual(open.confinePrefix(), []);
+    });
+  });
+});
+
 describe("on macOS, by default", () => {
   const flagOf = (text: string) => /^NoNewPrivs:\s+(\d)/m.exec(text)?.[1];
   const ownFlag = flagOf(readFileSync("/proc/self/status", "utf8"));
