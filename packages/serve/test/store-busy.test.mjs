@@ -230,3 +230,53 @@ test("a run's view is of one moment: a run that ends while its read waits is ans
   const viewed = await viewing;
   assert.deepEqual([viewed.status, viewed.body.status, viewed.body.result?.final_answer], [200, "completed", "Now."], JSON.stringify(viewed.body));
 });
+
+/** Holds each of the next two workflow commits until both have arrived: each read its current revision and passed its
+ *  checks, and both reach the store's own check of the body together, as two edits in flight at once do. */
+async function twoCommitsAtOnce(t) {
+  const probe = await scratch(t);
+  const store = openStore(probe);
+  const proto = Object.getPrototypeOf(store);
+  store.close();
+  const commit = proto.commitRevision;
+  t.after(() => void (proto.commitRevision = commit));
+  const arrived = [];
+  let armed = true;
+  proto.commitRevision = async function (agentId, input, options) {
+    if (armed && input.kind === "workflow") {
+      await new Promise((resolve) => {
+        arrived.push(resolve);
+        if (arrived.length === 2) (armed = false), arrived.forEach((go) => go());
+      });
+    }
+    return commit.call(this, agentId, input, options);
+  };
+  return () => assert.equal(arrived.length, 2, "both edits reached the store's commit together");
+}
+
+test("two workflow edits whose body checks are in flight together are each checked against the revision current when it commits", async (t) => {
+  const { api } = await serve(t);
+  assert.equal((await api("POST", "/agents", flowAgent("flowed"))).status, 201);
+  const put = (instructions, extra = {}, headers = {}) => api("PUT", "/agents/flowed/definition", flowAgent("flowed", answerFlow(instructions), extra), headers);
+  const count = async () => (await api("GET", "/agents/flowed/revisions")).body.revisions.length;
+  const outcome = (answers) => answers.map((answer) => [answer.status, answer.body.error?.code ?? null, answer.body.error?.fields?.[0]?.field ?? null]).sort();
+
+  // Without If-Match, both asking for version 2: the second is read again on the first's revision, and refused.
+  let both = await twoCommitsAtOnce(t);
+  assert.deepEqual(outcome(await Promise.all([put("Answer A.", { version: 2 }), put("Answer B.", { version: 2 })])), [[200, null, null], [422, "input_invalid", "definition.version"]]);
+  both();
+  assert.equal(await count(), 2);
+
+  // Without If-Match, the same edit twice: the second finds it current and makes nothing.
+  both = await twoCommitsAtOnce(t);
+  assert.deepEqual(outcome(await Promise.all([put("Answer C."), put("Answer C.")])), [[200, null, null], [200, null, null]]);
+  both();
+  assert.equal(await count(), 3, "the same edit twice made one revision");
+
+  // With If-Match on the same revision: the second is refused, 412.
+  const etag = (await api("GET", "/agents/flowed")).headers.get("etag");
+  both = await twoCommitsAtOnce(t);
+  assert.deepEqual(outcome(await Promise.all([put("Answer D.", {}, { "if-match": etag }), put("Answer E.", {}, { "if-match": etag })])), [[200, null, null], [412, "precondition_failed", null]]);
+  both();
+  assert.equal(await count(), 4);
+});
