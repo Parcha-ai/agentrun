@@ -120,7 +120,7 @@ test('--pin reports an upgrade in three parts: the pristine diff, the table agai
   await mkdir(dirname(join(clone, path)), { recursive: true });
   const git = (...args) => execFileSync('git', ['-C', clone, '-c', 'user.email=a@b.c', '-c', 'user.name=x', ...args], { encoding: 'utf8' });
   git('init', '-q');
-  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools']) {
+  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools', 'zod']) {
     const upstreamFile = `packages/harness-process/src/${file}.ts`;
     await writeFile(join(clone, upstreamFile), await readFile(join(packageDir, 'vendor/durable-harness/upstream', upstreamFile)));
   }
@@ -136,4 +136,26 @@ test('--pin reports an upgrade in three parts: the pristine diff, the table agai
   assert.deepEqual(report.pristine['packages/harness-process/src/tail.ts'], { removed: 1, added: 2 }, 'the pristine diff, by file');
   assert.match(report.imports.join('\n'), /tail\.ts: import from node:os: module node:os is not in the import table/, 'the table names what the new text imports');
   assert.match(report.patches.join('\n'), /patch 002-message-prefix does not apply/, 'and the patch whose line moved');
+});
+
+test('the Codex port is what the pristine files, the Codex patches and the one import table make, with the header after the shebang', async () => {
+  const codex = join(root, 'packages', 'run-adapters-codex');
+  assert.deepEqual(await checkPort(codex), []);
+  const { files } = await portPackage(codex);
+  const fake = files.get('test/fake-app-server.mjs').split('\n');
+  assert.equal(fake[0], '#!/usr/bin/env node');
+  assert.match(fake[1], /^\/\/ Copyright 2026 Vercel Inc\./);
+  assert.equal(fake[3], '// Changed by Parcha, patches: 005-fake-app-server-script, 006-comments');
+  assert.match(files.get('src/harness.ts').split('\n')[2], /^\/\/ Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments$/);
+  for (const patch of await readPatches(join(codex, PORT_DIR), 'harness-codex')) {
+    const without = await portPackage(codex, { drop: [patch.name], cascade: true });
+    assert.ok([...files].some(([path, text]) => without.files.get(path) !== text), `${patch.name} changes the output`);
+  }
+  const target = await copyOf(table((t) => { t.modules['harness-world-process'].symbols.ModelSteps = { 'harness-claude-code': 'ModelSteps' }; return t; }));
+  const codexCopy = join(scratch, 'codex-copy');
+  await cp(codex, codexCopy, { recursive: true, filter: (path) => !/\/(?:node_modules|dist)(?:\/|$)/.test(path) });
+  await cp(join(target, PORT_DIR, 'imports.json'), join(scratch, 'imports-no-codex.json'));
+  const manifest = join(codexCopy, PORT_DIR, 'harness-codex.json');
+  await writeFile(manifest, (await readFile(manifest, 'utf8')).replace(/"table": "[^"]*"/, `"table": ${JSON.stringify(join(scratch, 'imports-no-codex.json'))}`));
+  assert.match((await portPackage(codexCopy)).problems.join('\n'), /harness\.ts: import from harness-world-process: symbol ModelSteps is not in the import table for harness-world-process/, 'a symbol the table holds for another package only is unknown for this one');
 });

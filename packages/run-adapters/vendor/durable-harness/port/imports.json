@@ -11,7 +11,10 @@
       "keep": true
     },
     "harness-world": {
-      "to": "src/kernel/index.ts",
+      "to": {
+        "harness-process": "src/kernel/index.ts",
+        "harness-codex": "src/host/kernel.ts"
+      },
       "symbols": {
         "BLOB_PIECE_CHARS": "BLOB_PIECE_CHARS",
         "DriveContext": "DriveContext",
@@ -32,9 +35,13 @@
         "readBlobs": "readBlobs",
         "sha256Hex": "sha256Hex",
         "writeBlob": "writeBlob",
-        "Harness": "gap",
+        "Harness": {
+          "harness-codex": "Harness"
+        },
         "QUEUE_PREFIX": "gap",
-        "UNAVAILABLE_STEP": "gap",
+        "UNAVAILABLE_STEP": {
+          "harness-codex": "UNAVAILABLE_STEP"
+        },
         "Yield": "gap",
         "durableSessions": "gap",
         "chatRoute": "gap",
@@ -44,10 +51,139 @@
         "rawSessions": "gap",
         "readJsonLines": "gap",
         "vercelAnchors": "gap",
-        "workRemains": "gap"
+        "workRemains": "gap",
+        "Unavailable": "Unavailable"
       }
     },
     "zod": {
+      "keep": true
+    },
+    "harness-world-process": {
+      "to": {
+        "harness-codex": "src/host/process.ts"
+      },
+      "symbols": {
+        "AcquireMachine": {
+          "harness-codex": "AcquireMachine"
+        },
+        "BuiltinCalls": {
+          "harness-codex": "BuiltinCalls"
+        },
+        "BuiltinStart": {
+          "harness-codex": "BuiltinStart"
+        },
+        "CODEX_ROUTES": {
+          "harness-codex": "CODEX_ROUTES"
+        },
+        "failureText": {
+          "harness-codex": "failureText"
+        },
+        "GatewayLedger": {
+          "harness-codex": "GatewayLedger"
+        },
+        "gatewayCredential": {
+          "harness-codex": "gatewayCredential"
+        },
+        "gatewayHandler": {
+          "harness-codex": "gatewayHandler"
+        },
+        "gatewayUrl": {
+          "harness-codex": "gatewayUrl"
+        },
+        "isBrandedMachine": {
+          "harness-codex": "isBrandedMachine"
+        },
+        "LineChannel": {
+          "harness-codex": "LineChannel"
+        },
+        "MachineTail": {
+          "harness-codex": "MachineTail"
+        },
+        "ModelSteps": {
+          "harness-codex": "ModelSteps"
+        },
+        "Mutex": {
+          "harness-codex": "Mutex"
+        },
+        "NativeJournal": {
+          "harness-codex": "NativeJournal"
+        },
+        "placeSubmissions": {
+          "harness-codex": "placeSubmissions"
+        },
+        "recoveryNote": {
+          "harness-codex": "recoveryNote"
+        },
+        "restartEvent": {
+          "harness-codex": "restartEvent"
+        },
+        "SessionMachine": {
+          "harness-codex": "SessionMachine"
+        },
+        "SessionProcess": {
+          "harness-codex": "SessionProcess"
+        },
+        "settleAbandonedModelSteps": {
+          "harness-codex": "settleAbandonedModelSteps"
+        },
+        "ToolResult": {
+          "harness-codex": "ToolResult"
+        },
+        "toolBridge": {
+          "harness-codex": "toolBridge"
+        },
+        "toolKey": {
+          "harness-codex": "toolKey"
+        },
+        "transcriptOf": {
+          "harness-codex": "transcriptOf"
+        },
+        "TranscriptEntry": {
+          "harness-codex": "TranscriptEntry"
+        }
+      }
+    },
+    "harness-world-sandbox/cli": {
+      "to": {
+        "harness-codex": "src/host/sandbox.ts"
+      },
+      "symbols": {
+        "acknowledgeInDrive": {
+          "harness-codex": "acknowledgeInDrive"
+        },
+        "attachInDrive": {
+          "harness-codex": "attachInDrive"
+        },
+        "cliPath": {
+          "harness-codex": "cliPath"
+        },
+        "CODEX_CLI": {
+          "harness-codex": "CODEX_CLI"
+        },
+        "DriveFiles": {
+          "harness-codex": "DriveFiles"
+        },
+        "SANDBOX_DOC": {
+          "harness-codex": "SANDBOX_DOC"
+        }
+      }
+    },
+    "node:async_hooks": {
+      "keep": true
+    },
+    "node:module": {
+      "keep": true
+    },
+    "node:path": {
+      "keep": true
+    },
+    "node:process": {
+      "keep": true
+    },
+    "node:readline": {
+      "keep": true
+    },
+    "node:child_process": {
       "keep": true
     }
   }

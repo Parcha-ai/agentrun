@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, posix, relative } from 'node:path';
+import { dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { UPSTREAM, UPSTREAM_FILE, PRISTINE_DIR } from './upstream-attribution.mjs';
 import { gitBlob } from './vendor-durable-harness.mjs';
@@ -108,7 +108,12 @@ const forTarget = (value, target) => (value !== null && typeof value === 'object
 
 export function rewriteImports(text, { table, file, manifestFiles, problems, outDir, target }) {
   let rewritten = false;
-  for (const call of text.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)) problems.push(`${file}: a dynamic import or require of ${call[1]} is not supported by the port`);
+  // A dynamic import or require is not rewritten: it is allowed only for a module the table keeps as it is.
+  for (const call of text.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)) {
+    const entry = table.modules[call[1]];
+    if (!entry) problems.push(`${file}: a dynamic import or require of ${call[1]}: module ${call[1]} is not in the import table`);
+    else if (!entry.keep) problems.push(`${file}: a dynamic import or require of ${call[1]} is not supported by the port (the table rewrites it)`);
+  }
   const out = text.replace(IMPORT, (whole, keyword, typeOnly, namespace, named, def, named2, quote, spec) => {
     const at = `${file}: ${keyword} from ${spec}`;
     if (spec.startsWith('.')) {
@@ -206,7 +211,7 @@ export async function loadPort(dir) {
   for (const name of (await readdir(portDir)).filter((n) => n.endsWith('.json') && n !== 'imports.json').sort()) {
     const manifest = await readJson(join(portDir, name), `manifest ${name}`);
     manifest.patches = await readPatches(portDir, manifest.package);
-    manifest.tableFile = join(portDir, manifest.table ?? 'imports.json');
+    manifest.tableFile = resolve(portDir, manifest.table ?? 'imports.json');
     manifests.push(manifest);
   }
   return { portDir, upstream, manifests };
