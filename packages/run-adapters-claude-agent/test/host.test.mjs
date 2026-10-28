@@ -60,7 +60,8 @@ test('nothing the provider would run or fetch on its own passes: hosted tools, M
   for (const b of [{ type: 'server_tool_use', name: 'web_search', id: 's', input: {} }, { type: 'web_search_tool_result', tool_use_id: 's', content: [] }, { type: 'web_fetch_tool_result', tool_use_id: 's', content: {} }, { type: 'mcp_tool_use', id: 'm' }, { type: 'mcp_tool_result', tool_use_id: 'm' }, { type: 'container_upload', file_id: 'f' }, { type: 'bash_code_execution_tool_result', tool_use_id: 'b' }]) {
     refused(() => apply(block(b)), 403, /a block of a type this session does not send/);
   }
-  // A session sends no image or document (its tools answer in text): by URL, by Files API id or inline, none passes.
+  // A session sends no document, and an image only as a tool's own result, inline (below): by URL, by Files API id, or
+  // in a message of its own, none passes.
   const NOT_SENT = /a block of a type this session does not send/;
   refused(() => apply(block({ type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } })), 403, NOT_SENT);
   refused(() => apply(block({ type: 'document', source: { type: 'file', file_id: 'file_1' } })), 403, NOT_SENT);
@@ -69,6 +70,26 @@ test('nothing the provider would run or fetch on its own passes: hosted tools, M
   refused(() => apply(body({ system: [{ type: 'mcp_tool_result', tool_use_id: 'm' }] })), 403, NOT_SENT);
   // What the CLI sends passes: text, thinking, a tool call and its result, in a message, the system prompt and a result.
   assert.ok(apply(body({ system: [{ type: 'text', text: 's' }], messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: [{ type: 'thinking', thinking: 't', signature: 'x' }, { type: 'redacted_thinking', data: 'x' }, { type: 'tool_use', id: 't1', name: 'mcp__hands__lookup', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'found' }] }] }] })));
+});
+
+// A host tool may answer with an image (a screenshot): the CLI sends it inline inside the tool's result, with a text naming
+// the file it kept in its own session directory, which differs per directory and says nothing the image doesn't.
+test("an image passes only inline in a tool's result, of a type the API takes; the CLI's note of its own file beside it is dropped", () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const image = (mediaType = 'image/png') => ({ type: 'image', source: { type: 'base64', media_type: mediaType, data: PNG } });
+  const NOTE = { type: 'text', text: '[Image: source: /sessions/abc/config/projects/session/u/tool-results/mcp-hands-blob-1-x.png]' };
+  const result = (content) => body({ messages: [{ role: 'user', content: 'go' }, { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'mcp__hands__lookup', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content }] }] });
+  const forwarded = (out) => out.messages.at(-1).content[0].content;
+  for (const type of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+    assert.deepEqual(forwarded(apply(result([{ type: 'text', text: 'the page' }, image(type), NOTE]))), [{ type: 'text', text: 'the page' }, image(type)], type);
+  }
+  // The note stays where no image sits beside it, and a text that only resembles it stays.
+  assert.deepEqual(forwarded(apply(result([NOTE]))), [NOTE]);
+  assert.deepEqual(forwarded(apply(result([image(), { type: 'text', text: 'see [Image: source: x]' }]))), [image(), { type: 'text', text: 'see [Image: source: x]' }]);
+  const NOT_SENT = /a block of a type this session does not send/;
+  refused(() => apply(result([image('image/svg+xml')])), 403, NOT_SENT);
+  refused(() => apply(result([{ type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } }])), 403, NOT_SENT);
+  refused(() => apply(body({ messages: [{ role: 'user', content: [image()] }] })), 403, NOT_SENT);
 });
 
 // A block type the API adds later (a new server tool's result, say) is not one the session sends, whatever its name: in a
