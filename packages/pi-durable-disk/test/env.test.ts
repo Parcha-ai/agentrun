@@ -435,14 +435,16 @@ describe("a command when the process that started it dies", () => {
       const pidFile = join(root, "sleep.pid");
       writeFileSync(spawner, [
         `import { archilEnv } from ${JSON.stringify(new URL("../src/env.ts", import.meta.url).pathname)};`,
-        `import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";`,
+        `import { BACKGROUND_CONTEXT } from ${JSON.stringify(import.meta.resolve("@earendil-works/chord/context"))};`,
         `const env = await archilEnv({ root: ${JSON.stringify(root)}, work: ${JSON.stringify(work)} })({});`,
         `await env.exec(${JSON.stringify(`echo $$ > ${pidFile}; exec sleep 300`)}, {}, BACKGROUND_CONTEXT);`,
       ].join("\n"));
-      const child = spawn(process.execPath, [spawner], { stdio: "ignore", cwd: dirname(new URL(import.meta.url).pathname) });
+      const child = spawn(process.execPath, [spawner], { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
       let pid = 0;
       for (let i = 0; !pid; i++) {
-        assert.ok(i < 200, "the command started");
+        assert.ok(i < 200, `the command started: ${stderr}`);
         await new Promise((resolve) => setTimeout(resolve, 50));
         pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim() || 0) : 0;
       }

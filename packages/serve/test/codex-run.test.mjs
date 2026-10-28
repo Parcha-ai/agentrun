@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { copyFile, readdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -108,10 +108,10 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million");
 });
 
+/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
 const alive = (pid) => {
   try {
-    process.kill(pid, 0);
-    return true;
+    return !/^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8"));
   } catch {
     return false;
   }
@@ -132,7 +132,7 @@ test("a codex run whose process dies while its request is in flight leaves no Co
   const { holder } = JSON.parse(await readFile(join(data, "runs", run.body.run_id, "run.json"), "utf8"));
   process.kill(holder.pid, "SIGKILL");
   for (let i = 0; alive(child.pid); i++) {
-    assert.ok(i < 100, `the dead process's Codex (pid ${child.pid}) exits`);
+    assert.ok(i < 20, `the dead process's Codex (pid ${child.pid}) is gone within 2 s`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 });

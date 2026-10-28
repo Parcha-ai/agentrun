@@ -6,7 +6,7 @@
 // request is in flight resumes on the next process, books the cut request once as unknown, and leaves no CLI behind.
 // Every process the test reads is its own descendant.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -44,10 +44,10 @@ async function claudeProcess() {
   return undefined;
 }
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
+/** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
 const alive = (pid) => {
   try {
-    process.kill(pid, 0);
-    return true;
+    return !/^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8"));
   } catch {
     return false;
   }
@@ -154,12 +154,9 @@ test("a claude-agent run whose process dies while a request is in flight resumes
   assert.equal(usage?.requests, fake.messages().length, "every request the endpoint saw is booked once, the cut one included");
   assert.equal(usage?.usd, null, "the cut request's cost is unknown, so the run's is: never 0");
   t.after(() => alive(cli) && process.kill(cli, "SIGKILL"));
-  // The adapter starts the CLI in its own process group, so its run process dying does not kill it; it is meant to end
-  // when its stdin closes. It does not yet: it sleeps on, reparented. The adapter's to fix (localMachine).
-  await t.test("the dead process's CLI exits when its stdin closes", { todo: "the claude-agent adapter: an orphaned CLI outlives its run process (sleeping, reparented)" }, async () => {
-    for (let i = 0; alive(cli); i++) {
-      assert.ok(i < 100, `the dead process's CLI (pid ${cli}) exits when its stdin closes`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  });
+  // The CLI starts under the run's prefix (setpriv --pdeathsig KILL): it dies with the process that started it.
+  for (let i = 0; alive(cli); i++) {
+    assert.ok(i < 20, `the dead process's CLI (pid ${cli}) is gone within 2 s`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 });
