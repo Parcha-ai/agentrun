@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, storeRun } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -77,6 +77,30 @@ test("a start that fails gives its place back: after a store write refused, and 
     assert.equal(run.status, 202, `start ${i}: ${JSON.stringify(run.body)}`);
     await follow(broken.api, run.body.run_id, ["failed"]);
   }
+});
+
+test("a run that has failed gives its place back once its process exits: a start meanwhile waits for it, never refused for a place the failed run is giving back", { timeout: 90_000 }, async (t) => {
+  const gate = join(await scratch(t), "exit");
+  withEnv(t, { EXIT_GATE: gate });
+  const { api } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-slow-exit.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("fails"))).status, 201);
+  const first = await api("POST", "/agents/fails/runs", { input: { content: "hi" } });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  // It reads failed (not yet final: its end waits for its process), and its process, told to stop, cannot exit yet:
+  // its place is still held.
+  for (let i = 0; (await api("GET", `/runs/${first.body.run_id}`)).body.status !== "failed"; i++) {
+    assert.ok(i < 400, "the run reads failed");
+    await sleep(50);
+  }
+  let answeredAt;
+  const next = api("POST", "/agents/fails/runs", { input: { content: "hi" } }).then((answer) => ((answeredAt = Date.now()), answer));
+  await sleep(300);
+  const openedAt = Date.now();
+  await writeFile(gate, "");
+  const started = await next;
+  assert.equal(started.status, 202, `the next start waited for the place the failed run gave back: ${JSON.stringify(started.body)}`);
+  assert.ok(answeredAt >= openedAt, "admitted only once the failed run's process could exit, never two at once");
+  await follow(api, started.body.run_id, ["failed"]);
 });
 
 test("a run whose process fails at its start is never started again while its end is written: one process, and its place is free once it reads failed", async (t) => {

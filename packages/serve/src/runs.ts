@@ -782,18 +782,25 @@ export class Runs {
 
   /** Start a run of `revision` (number `version`) of `entry`'s agent: `startRun` in the store, then its process, then an
    *  agentic run's first message, `input.content`. */
-  /** A place for one more live run, or 429 rate_limited. */
-  private placeFree(): void {
+  /** A place for one more live run, taken for this start (counted in `starting` from here, so two starts at once cannot
+   *  both take the last place), or 429 rate_limited. A run that has ended (failed, completed, cancelled) still holds its
+   *  place until its process exits; a start that needs that place waits for it, up to that process's drain and kill,
+   *  never refused for a place already being given back. */
+  private async takePlace(): Promise<void> {
     const max = this.options.maxRuns;
-    if (max !== undefined && [...this.runs.values()].filter((run) => this.live(run)).length + this.starting >= max) {
-      throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+    for (const deadline = Date.now() + this.killAfterMs() + 1_000; max !== undefined; await sleep(50)) {
+      const holding = [...this.runs.values()].filter((run) => this.live(run));
+      if (holding.length + this.starting < max) break;
+      const leaving = holding.some((run) => run.outcome || run.finishing || run.cancel);
+      if (!leaving || Date.now() > deadline) {
+        throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+      }
     }
+    this.starting++;
   }
 
   async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
-    this.placeFree();
-    // Counted from here, so two starts at once cannot both take the last place.
-    this.starting++;
+    await this.takePlace();
     try {
       return await this.start(entry, revision, version, options);
     } finally {
@@ -839,7 +846,7 @@ export class Runs {
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
     // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
     if (run.finishing && !run.outcome) await this.endWritten(run);
-    if (run.kind === "agentic" && statusOf(run).status === "completed") this.reopen(run);
+    if (run.kind === "agentic" && statusOf(run).status === "completed") await this.reopen(run);
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
     const mode = status === "queued" || (status === "working" && state === "working") ? "steer" : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
@@ -864,27 +871,32 @@ export class Runs {
   }
 
   /** A completed agentic run that gets a follow-up opens again: the same run on its own store and session, under its
-   *  cap, taking a place under the server's. Launched here, with no wait after the place is counted, so no start takes
+   *  cap, taking a place under the server's. Launched here, with no wait after the place is taken, so no start takes
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
-  private reopen(run: Run): void {
+  private async reopen(run: Run): Promise<void> {
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    this.placeFree();
+    await this.takePlace();
     try {
-      this.store.reopenRun(run.id);
-    } catch (error) {
-      storeError(error, "run");
+      try {
+        this.store.reopenRun(run.id);
+      } catch (error) {
+        storeError(error, "run");
+      }
+      run.outcome = undefined;
+      run.settled = false;
+      run.endedAt = undefined;
+      run.error = undefined;
+      delete run.meta.error;
+      run.relaunches = 0;
+      this.refresh(run);
+      this.launch(run);
+    } finally {
+      // Launched, it holds its place as a live run.
+      this.starting--;
     }
-    run.outcome = undefined;
-    run.settled = false;
-    run.endedAt = undefined;
-    run.error = undefined;
-    delete run.meta.error;
-    run.relaunches = 0;
-    this.refresh(run);
-    this.launch(run);
   }
 
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
