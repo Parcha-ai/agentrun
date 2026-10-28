@@ -8,6 +8,7 @@ import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { Box, BoxProcess, BoxProvider, BoxSpec } from "../box/box.ts";
 import { finish } from "../box/files.ts";
 import { type BoxReceipts, boxReceipts } from "../box/receipts.ts";
+import { serveBoxes } from "../home/boxes.ts";
 import {
 	type CheckpointStats,
 	type CheckpointVault,
@@ -152,6 +153,12 @@ export type BoxPlaceOptions = {
 	 * new one. A box is named by its label in every line, never by its provider's id.
 	 */
 	readonly lines?: (kind: PlaceLineKind, data: Readonly<Record<string, unknown>>) => void;
+	/**
+	 * The providers of the session's tool boxes, on the host: they hold the credentials, and keep them. Every runner of
+	 * the place gets them over its link (`AppContext.boxes`, for `TransportHost.providers`) as handles named by label,
+	 * on the place's receipts ledger; no token goes into the home box. The place ends the boxes left at `release`.
+	 */
+	readonly pool?: Readonly<Record<string, BoxProvider>>;
 };
 
 /** A session's place in a box, made by `boxPlace`. */
@@ -184,6 +191,11 @@ export type BoxPlace = {
 	 * reaches the vault's log. Throws when no runner runs or the runner refuses the record (`invalid`).
 	 */
 	recordPlacement(record: PlacementRecord): Promise<void>;
+	/**
+	 * End the pool's boxes now, each with its receipt: for a host that sums the receipts before it lets the place go (a
+	 * result card once the run's last process exited). Safe to repeat; `release` ends any left.
+	 */
+	endPool(): Promise<void>;
 	release(): Promise<void>;
 	/** What the checkpoints of this place did. */
 	readonly stats: CheckpointStats;
@@ -383,6 +395,8 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 	// holds every commit, and a runner that comes back is answered what was paid for, not charged again.
 	const records = recordSink(options.vault, session, BACKGROUND_CONTEXT, options.recorder);
 	const server = serveModels(options.models);
+	// The pool's boxes are the host's: made with its providers, held across runners, named in the ledger's numbering.
+	const pool = options.pool === undefined ? undefined : serveBoxes({ providers: options.pool, receipts: ledger });
 	const queues = new Map<number, PlaceSignal[]>();
 	let attempt = 0;
 	let epoch = 0;
@@ -572,6 +586,7 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			session,
 			models: options.models,
 			server,
+			...(pool === undefined ? {} : { boxes: pool }),
 			records,
 			crossing,
 			crossingCount: counter,
@@ -913,11 +928,16 @@ export async function boxPlace(options: BoxPlaceOptions, context: Context): Prom
 			const kept = await handle.recordPlacement(record, context);
 			if (!kept.ok) throw kept.error;
 		},
+		async endPool() {
+			await pool?.release(context);
+		},
 		async release() {
 			if (released) return;
 			released = true;
 			handle?.close("the place is released");
 			server.close();
+			pool?.close();
+			await pool?.release(context);
 			for (const made of boxes) {
 				const destroyed = await made.destroy(context).catch(() => undefined);
 				if (destroyed?.ok === true) gone(made, false);

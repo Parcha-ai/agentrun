@@ -9,6 +9,14 @@ export {
 	stopLaunch,
 } from "../launch/index.ts";
 export { type App, type AppContext, AppError, type AppOptions, loadApp } from "./app.ts";
+export {
+	type BoxOp,
+	type BoxServer,
+	type ProxyBoxes,
+	proxyBoxes,
+	type ServeBoxesOptions,
+	serveBoxes,
+} from "./boxes.ts";
 export { CALLS_EXTENSION, type CallEvent } from "./calls.ts";
 export {
 	type Checkpoint,

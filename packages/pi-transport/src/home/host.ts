@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { err, ok, type Result } from "@earendil-works/pi-durable/env";
 import type { PlacementRecord } from "../place/placer.ts";
+import { BOX_REQUEST_FRAMES, type BoxServer } from "./boxes.ts";
 import { type Crossing, type CrossingCounter, crossingCounter } from "./crossing.ts";
 import type { Drained, DrainOptions } from "./gate.ts";
 import { type Frame, LINK_VERSION, type Link } from "./link.ts";
@@ -94,6 +95,11 @@ export type ConnectOptions = {
 	 * is not called again. Without it each handle makes its own, and a new link starts with nothing kept.
 	 */
 	readonly server?: ModelServer;
+	/**
+	 * The host's box providers for the runner (`serveBoxes`): the runner asks for pool boxes over the link and gets
+	 * handles, and no credential reaches it. Pass the same one to every link to one session: its boxes are held across.
+	 */
+	readonly boxes?: BoxServer;
 	/**
 	 * Where this session's record stream goes: with it the runner ships every commit's writes, and its recorder's lines,
 	 * and a seal waits until they are all here.
@@ -242,7 +248,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 			}
 			return;
 		}
-		if (MODEL_FRAMES.has(frame.t) || RECORD_FRAMES.has(frame.t)) {
+		if (MODEL_FRAMES.has(frame.t) || RECORD_FRAMES.has(frame.t) || BOX_REQUEST_FRAMES.has(frame.t)) {
 			// A home the lease left behind has no model, and writes nothing to the session's log.
 			if (frame.epoch !== epoch) {
 				link.send({
@@ -252,6 +258,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 				return;
 			}
 			if (MODEL_FRAMES.has(frame.t)) server.receive(frame, reply);
+			else if (BOX_REQUEST_FRAMES.has(frame.t)) options.boxes?.receive(frame, reply);
 			else if (records !== undefined) await receiveRecords(records, frame, reply);
 		} else if (frame.t === "ready") {
 			const ready = readyOf(frame);
@@ -288,6 +295,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 	});
 	link.onClose((reason) => {
 		server.down(reply);
+		options.boxes?.down(reply);
 		const lost = (): Result<never, RemoteError> => err(new RemoteError("link_lost", `the link went down: ${reason}`));
 		// At once, whatever the log is doing: the runner's ready is what it said, and an order it did not answer is lost.
 		settleReady(readyHeard ?? lost());
@@ -307,6 +315,7 @@ export function connectHome(link: Link, options: ConnectOptions): HomeHandle {
 		t: "hello",
 		v: LINK_VERSION,
 		catalog: catalogOf(options.models),
+		...(options.boxes === undefined ? {} : { boxes: options.boxes.names }),
 		...(records === undefined ? {} : { records: true }),
 		...(options.crossing === undefined ? {} : { crossing: true }),
 	});

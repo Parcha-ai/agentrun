@@ -5,6 +5,7 @@ import { registerBoxPlaceCases } from "./place-box-cases.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "place-box-runner.fixture.ts");
 const AGENT = join(dirname(fileURLToPath(import.meta.url)), "place-box-agent.fixture.ts");
+const POOL = join(dirname(fileURLToPath(import.meta.url)), "place-box-pool.fixture.ts");
 
 registerBoxPlaceCases("a session's place in a local box", {
 	provider: (root) => localBoxes({ root: join(root, "boxes") }),
@@ -12,4 +13,5 @@ registerBoxPlaceCases("a session's place in a local box", {
 	program: { argv: [process.execPath, "--experimental-strip-types", "--no-warnings", FIXTURE] },
 	hostFiles: true,
 	agentProgram: { argv: [process.execPath, "--experimental-strip-types", "--no-warnings", AGENT] },
+	poolProgram: { argv: [process.execPath, "--experimental-strip-types", "--no-warnings", POOL] },
 });
