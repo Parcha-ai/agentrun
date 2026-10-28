@@ -104,3 +104,31 @@ test("a cancelled run sends no summary request either: the model is never called
   assert.equal(called, 0);
   assert.deepEqual(marks, []);
 });
+
+test("a cancelled run's request waits for the cancel to reach the run and ends aborted, never failing: a workflow's node stops, it does not fail on the refusal", async () => {
+  const { marks, run } = store();
+  let called = 0;
+  const models = { streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }), completeSimple: async () => (called++, {}) };
+  const { models: marked, open } = await markRequests(models, () => true, { refusalWaitMs: 30_000 });
+  open(run);
+  for (const send of [(signal) => marked.streamSimple(summaryModel, { messages: [] }, { signal }).result(), (signal) => marked.completeSimple(summaryModel, { messages: [] }, { signal })]) {
+    const stop = new AbortController();
+    const answer = send(stop.signal);
+    setTimeout(() => stop.abort(new Error("cancelled")), 20);
+    const result = await answer;
+    assert.equal(result.stopReason, "aborted");
+    assert.equal(result.errorMessage, undefined, "no error to fail on");
+  }
+  assert.equal(called, 0, "nothing was sent");
+  assert.deepEqual(marks, [], "nothing to count or skip");
+});
+
+test("a cancelled run's request that no abort reaches ends, after a bounded wait, as the refusal the timeline skips", async () => {
+  const { marks, run } = store();
+  const { models: marked, open } = await markRequests({ streamSimple: () => ({}) }, () => true, { refusalWaitMs: 20 });
+  open(run);
+  const result = await marked.streamSimple(summaryModel, { messages: [] }, { signal: new AbortController().signal }).result();
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage, /cancelled/);
+  assert.deepEqual(marks, [{ kind: REQUEST_REFUSED, data: {} }]);
+});
