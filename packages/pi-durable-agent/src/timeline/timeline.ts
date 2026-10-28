@@ -48,12 +48,17 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
  *  end and no entry is in flight when it is the latest, unless the run is settled, and was cut by a crash when a later
  *  one followed it or the run settled without it. A cut request's cost is unknown. */
 export const REQUEST_STARTED = "agentrun.request_started";
+/** An end with `unsent: true` withdraws its start: the request was refused after its mark, and never left. */
 export const REQUEST_ENDED = "agentrun.request_ended";
 /** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
  *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. */
 export const REQUEST_COST = "agentrun.request_cost";
+/** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
+ *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
+export const REQUEST_REFUSED = "agentrun.request_refused";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
+const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
 
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
@@ -103,6 +108,7 @@ function createProjector(options: TimelineOptions) {
   let usd: number | null = 0;
   let marked = 0;
   let inFlight = false;
+  let refused = 0;
   // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
   // answer). Earlier answers are a run's from before requests were marked.
   let answered = 0;
@@ -171,10 +177,16 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
+    if (entry.kind === REQUEST_REFUSED) {
+      refused += 1;
+    } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
+      // pi's answer to a request that never left: nothing to count or show.
+      refused -= 1;
+    } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
       compacting += 1;
       compactionOpen = true;
     } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
+      if (unsent(entry)) compacting -= 1;
       compactionOpen = false;
     } else if (entry.kind === REQUEST_COST) {
       compactions += 1;
@@ -185,6 +197,7 @@ function createProjector(options: TimelineOptions) {
       marked += 1;
       inFlight = true;
     } else if (entry.kind === REQUEST_ENDED) {
+      if (unsent(entry)) marked -= 1;
       inFlight = false;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
