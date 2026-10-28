@@ -134,7 +134,7 @@ test("release takes a dead mount off its listed mountpoint with fusermount -u, a
 });
 
 // Each refused before archil runs, with exit 2. `args` is built over the rig's paths.
-type Rig = { root: string; mp: string };
+type Rig = { dir: string; root: string; mp: string };
 const REFUSED: [string, (w: Rig) => string[], { rootLink?: boolean; mpLink?: boolean }?][] = [
   ["a mountpoint at /etc", () => mountOf("/etc")],
   ["a mountpoint at /usr/local/bin", () => mountOf("/usr/local/bin")],
@@ -156,7 +156,10 @@ const REFUSED: [string, (w: Rig) => string[], { rootLink?: boolean; mpLink?: boo
   ["delegations without --json", (w) => ["delegations", w.mp]],
   ["checkin with an extra argument", (w) => ["checkin", w.mp, "--all"]],
   ["release with an extra argument", (w) => ["release", w.mp, "-z"]],
-  ["release through a .. segment", (w) => ["release", `${w.root}/runs/../../usr`]],
+  // Resolved, this is the listed runs/r1: only the refusal of a .. segment stops it.
+  ["release through a .. segment", (w) => ["release", `${w.root}/runs/r2/../r1`]],
+  // Listed, but not at <root>/runs/<run>: only the path's own checks stop it.
+  ["release of a listed archil mount outside <root>/runs", (w) => ["release", join(w.dir, "elsewhere")], { mpLink: true }],
   ["release /usr", () => ["release", "/usr"]],
   ["release of a path no archil mount is listed at", (w) => ["release", `${w.root}/runs/r2`]],
   ["a bad disk token", (w) => mountOf(w.mp, "dsk-1;id:/runs/r1")],
