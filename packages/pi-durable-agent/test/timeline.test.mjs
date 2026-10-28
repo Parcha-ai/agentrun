@@ -201,6 +201,23 @@ test("cost: a sum, and unknown when any answer carries none, never $0", () => {
   assert.equal(unknown.usage.usd, null);
 });
 
+test("cost: a request cut before its end makes the sum unknown, never $0, with or without the usage its stream had reported", () => {
+  const done = assistant([{ type: "text", text: "a" }], 0);
+  // The Responses API reports usage only at its end, so a cut stream leaves pi's zero usage, priced $0.
+  const cut = assistant([], 1, { stopReason: "aborted", usage: { input: 0, output: 0, cost: { total: 0 } } });
+  // Anthropic's message_start reports the input and the first output token; the rest never came.
+  const partial = assistant([{ type: "text", text: "Half an ans" }], 1, { stopReason: "aborted", usage: { input: 900, output: 1, cost: { total: 0.0027 } } });
+  for (const [name, aborted] of [["no usage", cut], ["partial usage", partial]]) {
+    const usage = timelineOf([done, aborted]).at(-1);
+    assert.equal(usage.summary, "Cost so far: unknown over 2 model requests", name);
+    assert.deepEqual(usage.usage, { usd: null, requests: 2 }, name);
+    // A later request that completes does not make it known again.
+    assert.equal(timelineOf([done, aborted, assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage.usd, null, name);
+  }
+  // Completed requests alone still sum to the cent.
+  assert.deepEqual(timelineOf([done, assistant([call("c1", "read")], 1), assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage, { usd: 0.03, requests: 3 });
+});
+
 test("an unknown entry kind and an unknown event are skipped, never thrown on", () => {
   const entries = [custom("app.note", { text: "opened a file" }), { kind: "x" }, { nope: 1 }, user("hi", 0)];
   assert.deepEqual(summaries(timelineOf(entries)), ["You: hi"]);
