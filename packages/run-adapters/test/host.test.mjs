@@ -429,7 +429,8 @@ test("a request for the session's smaller model is asked about and priced as tha
 test("the host's own headers go on every forwarded request, paid and free, over any the client sent by that name, and never the credential's", async (t) => {
   const tags = 'job:j1,purpose:research,run:r1';
   const { p, forwarded } = await proxy(t, { headers: { 'x-litellm-tags': tags, 'X-Beta': 'host-value' } });
-  assert.equal((await send(p.url, { path: '/v1/test?beta=true', headers: { 'x-beta': 'client-value', 'x-litellm-tags': 'job:forged' } })).status, 200);
+  // The client's x-beta is one the route forwards and the policy keeps (b1), so it reaches the host's headers: the host's wins.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', headers: { 'x-beta': 'b1', 'x-litellm-tags': 'job:forged' } })).status, 200);
   assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
   // A free route (count_tokens, on Anthropic's policy) is forwarded with them too.
   assert.equal((await send(p.url, { path: '/v1/count' })).status, 200);
