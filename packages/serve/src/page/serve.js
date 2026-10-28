@@ -244,7 +244,9 @@
     function agentActions(agent, revisions) {
       return [
         el("div", { class: "actions" }, el("a", { class: "btn quiet", href: "#/agents/" + enc(agent.id) + "/edit" }, revisions.length ? "Edit: commit a new revision" : "Write its first revision"), archiveButton("agents/" + enc(agent.id), agent.archivedAt, function () { kit.route(); })),
-        revisions.length ? runForm(agent, revisions) : el("p", { class: "none" }, "It has no revision to run yet."),
+        // The server refuses a run of an archived agent (agent_not_runnable), so its page offers none.
+        agent.archivedAt ? el("p", { class: "none" }, "It is archived: unarchive it to start a run.")
+          : revisions.length ? runForm(agent, revisions) : el("p", { class: "none" }, "It has no revision to run yet."),
       ];
     }
 
