@@ -187,8 +187,16 @@ test("a message after a tool round that ends the turn is the person's next messa
     result("c", "bash", "ok", 8),
     result("d", "probe_ask", "asked", 9),
     user("Yes", 10),
+    assistant([call("e", "probe_ask", { question: "Which city?" }), call("f", "probe_ask", { question: "Which day?" })], 11),
+    result("e", "probe_ask", "asked", 12),
+    result("f", "probe_ask", "asked", 13),
+    user("Paris, Monday", 14),
   ]);
-  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Pick a region", "You: EU", "You (steer): Use pnpm", "You (steer): Yes"], "a round that only partly ends the turn goes on, so what comes in it steers");
+  assert.deepEqual(
+    rows.filter((r) => r.kind === "user_message").map((r) => r.summary),
+    ["You: Pick a region", "You: EU", "You (steer): Use pnpm", "You (steer): Yes", "You: Paris, Monday"],
+    "a round that only partly ends the turn goes on, so what comes in it steers; one whose tools all end it does not",
+  );
 });
 
 test("a failed model request is an error row; an aborted partial is nothing", () => {
