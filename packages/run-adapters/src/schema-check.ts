@@ -56,17 +56,22 @@ export function toolSchemaProblems(tool: string, schema: unknown): string[] {
     }
   }
   // Only where a schema sits: a "$ref" inside default, examples, const or enum is a value, and a property's name is a name.
-  const walk = (node: unknown, at: string) => {
-    if (!isPlain(node)) return;
+  // A loop with its own stack, not recursion, so no depth of schema can overflow it.
+  const pending: [unknown, string][] = [[schema, ""]];
+  while (pending.length) {
+    const [node, at] = pending.pop()!;
+    if (!isPlain(node)) continue;
     const ref = node.$ref;
     if (typeof ref === "string" && !ref.startsWith("#")) problems.push(`${tool}: ${at}/$ref: a remote $ref (${JSON.stringify(ref).slice(0, 80)}) is refused; only a local one ("#/$defs/...") is followed`);
+    const next: [unknown, string][] = [];
     for (const [key, value] of Object.entries(node)) {
       const here = `${at}/${escape(key)}`;
-      if (SCHEMA_MAPS.has(key) && isPlain(value)) for (const [name, sub] of Object.entries(value)) walk(sub, `${here}/${escape(name)}`);
-      else if (SCHEMA_LISTS.has(key) && Array.isArray(value)) value.forEach((sub, i) => walk(sub, `${here}/${i}`));
-      else if (SCHEMA_ONE.has(key)) walk(value, here);
+      if (SCHEMA_MAPS.has(key) && isPlain(value)) for (const [name, sub] of Object.entries(value)) next.push([sub, `${here}/${escape(name)}`]);
+      else if (SCHEMA_LISTS.has(key) && Array.isArray(value)) value.forEach((sub, i) => next.push([sub, `${here}/${i}`]));
+      else if (SCHEMA_ONE.has(key)) next.push([value, here]);
     }
-  };
-  walk(schema, "");
+    // Children in reverse onto the stack, so they're visited in the schema's order.
+    for (let i = next.length - 1; i >= 0; i -= 1) pending.push(next[i]!);
+  }
   return problems;
 }
