@@ -12,6 +12,12 @@ export type NodeRequest = Parameters<NonNullable<WorkflowDeps["runNode"]>>[0] & 
   maxTurns?: number;
 };
 
+/** An image a tool answers with: its media type (`image/png`) and its bytes, base64. */
+export interface ToolImage {
+  mimeType: string;
+  data: string;
+}
+
 /** A tool the host gives a session. */
 export interface HostTool {
   name: string;
@@ -19,7 +25,9 @@ export interface HostTool {
   inputSchema: Record<string, unknown>;
   /** `safe`: may run again after a crash. `never`: at most once; a call a crash cut off is reported, never repeated. */
   replay: "safe" | "never";
-  call(args: unknown, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; isError?: boolean }>;
+  /** The tool's answer: its text, and any images it shows (a screenshot), which a harness that can show them sends the
+   *  model with the text. */
+  call(args: unknown, context: { callId: string; signal: AbortSignal }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[] }>;
 }
 
 /** One durable record of a session, in the order it was appended. */

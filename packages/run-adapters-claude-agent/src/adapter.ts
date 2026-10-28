@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type TurnStatus } from "@parcha/agentrun-adapters";
+import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import type { ModelProxyOptions } from "@parcha/agentrun-adapters/host";
@@ -127,6 +127,9 @@ export interface ClaudeAgentAdapterOptions {
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
+  /** The most one image a tool answers with may be, as base64 (default 5 MB, `CLAUDE_AGENT_MAX_IMAGE_BYTES`; at most
+   *  10 MB, Anthropic's API's own limit). A larger one is the call's error. */
+  maxImageBytes?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
   /** The host's skills, which the model may load with the Skill tool (as `agentrun:<name>` or by the bare name), and no
@@ -222,7 +225,28 @@ export function verifyClaudeAgent(options: Pick<ClaudeAgentAdapterOptions, "sdk"
 const standInAllowed = () => process.env.AGENTRUN_CLAUDE_AGENT_STANDIN === "1" && Boolean(process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === "test") && process.env.NODE_ENV !== "production";
 
 /** The kernel's tool for a host tool: the same name, schema and replay policy, reported to the host under that name. */
-function kernelTool(tool: HostTool, io: SessionIO): KernelTool {
+/** The most a tool's image may be, as base64, by default: the strictest of the platforms Claude runs on (Anthropic's API
+ *  takes 10 MB, Amazon Bedrock 5 MB), so one setting holds everywhere. */
+export const CLAUDE_AGENT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** The most `maxImageBytes` may be: Anthropic's API's own limit for one image, as base64. */
+const MAX_IMAGE_BYTES_CEILING = 10 * 1024 * 1024;
+/** The image types Anthropic's API takes. */
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/** Why a tool's images can't be sent, naming the tool and the image, or undefined: a type the API takes, base64, and at
+ *  most `maxBytes` of it. */
+export function toolImageProblems(tool: string, images: readonly ToolImage[], maxBytes = CLAUDE_AGENT_MAX_IMAGE_BYTES): string | undefined {
+  for (const [i, image] of images.entries()) {
+    const at = `the tool ${tool}'s image ${i + 1}`;
+    if (!IMAGE_TYPES.has(image?.mimeType)) return `${at} is ${String(image?.mimeType).slice(0, 40)}, not one the model takes (${[...IMAGE_TYPES].join(", ")})`;
+    if (typeof image.data !== "string" || !BASE64.test(image.data)) return `${at} is not base64`;
+    if (image.data.length > maxBytes) return `${at} is ${image.data.length} bytes of base64, more than ${maxBytes}`;
+  }
+  return undefined;
+}
+
+function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number): KernelTool {
   return {
     name: tool.name,
     description: tool.description,
@@ -237,7 +261,14 @@ function kernelTool(tool: HostTool, io: SessionIO): KernelTool {
         const result = await tool.call(input, { callId, signal: effect.signal });
         isError = result.isError === true;
         if (result.isError) throw new Error(result.text);
-        return result.text;
+        if (!result.images?.length) return result.text;
+        // An image the model can't be sent is the call's error, by the tool's name and the image, not a request refused later.
+        const wrong = toolImageProblems(tool.name, result.images, maxImageBytes);
+        if (wrong) {
+          isError = true;
+          throw new Error(wrong);
+        }
+        return { text: result.text, images: result.images.map((image) => ({ mimeType: image.mimeType, data: image.data })) };
       } finally {
         io.onEvent({ type: "tool_end", callId, name: tool.name, isError });
       }
@@ -253,6 +284,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
   const skills = options.skills ?? [];
   const skillsWrong = skillProblems(skills);
   if (skillsWrong.length) throw new Error(`agentrun-claude-agent: ${skillsWrong.join("; ")}`);
+  const maxImageBytes = options.maxImageBytes ?? CLAUDE_AGENT_MAX_IMAGE_BYTES;
+  if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1 || maxImageBytes > MAX_IMAGE_BYTES_CEILING) throw new Error(`agentrun-claude-agent: maxImageBytes must be a whole number of bytes from 1 to ${MAX_IMAGE_BYTES_CEILING}`);
   // The SDK and its CLI are checked once, here: a mismatch is the host's to report, before any run starts.
   let executable: string;
   if (options.standIn) {
@@ -318,7 +351,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           // The runner's turn cap and the host's beforeRequest bound the spend.
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
         },
-        tools: tools.map((tool) => kernelTool(tool, io)),
+        tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes)),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).

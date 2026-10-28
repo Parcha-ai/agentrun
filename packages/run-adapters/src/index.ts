@@ -5,6 +5,6 @@ export { READ_SKILL_FILE, readSkillFileTool } from "./skill-files.js";
 export type { SkillFileList } from "./skill-files.js";
 export type { HarnessRunReason } from "./errors.js";
 export type {
-  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, HarnessEvent, HostTool, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage,
+  AdapterCapabilities, AdapterEvent, AdapterSession, AgentAdapter, HarnessEvent, HostTool, ToolImage, JsonValue, ModelPort, ModelTicket, ModelRequest, ModelUsage,
   NodeRequest, SessionIO, SessionRecord, SessionSpec, SessionState, SessionStore, SessionWriter, TurnStatus,
 } from "./types.js";
