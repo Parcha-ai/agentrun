@@ -106,7 +106,7 @@ export async function gatewayProblem(env: NodeJS.ProcessEnv, timeoutMs = 3_000):
       : "";
     return `The model gateway at ${base} (AGENT_MODEL_BASE_URL) does not answer: ${why}. Start the gateway, or set AGENT_MODEL_BASE_URL to the address it listens on.${loopback}`;
   }
-  if (status === 401 || status === 403) return `The model gateway at ${base} refused ${key ? "AGENT_MODEL_API_KEY" : "a request with no key"} (HTTP ${status}): set AGENT_MODEL_API_KEY to a key it takes.`;
+  if (status === 401 || status === 403) return `The model gateway at ${base} refused ${!key ? "a request with no key" : "AGENT_MODEL_API_KEY"} (HTTP ${status}): set AGENT_MODEL_API_KEY to a key it takes.`;
   return undefined;
 }
 

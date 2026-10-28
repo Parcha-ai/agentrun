@@ -48,7 +48,8 @@ test("the check: a closed port names the address, the cause and the fix; a refus
   assert.match(await gatewayProblem({ AGENT_MODEL_BASE_URL: refused.url, AGENT_MODEL_API_KEY: "bad" }), /refused AGENT_MODEL_API_KEY \(HTTP 401\): set AGENT_MODEL_API_KEY/);
   assert.match(await gatewayProblem({ AGENT_MODEL_BASE_URL: refused.url }), /refused a request with no key \(HTTP 401\)/);
   assert.match(await gatewayProblem({ AGENT_MODEL_BASE_URL: (await answering(t, 403)).url, AGENT_MODEL_API_KEY: "bad" }), /refused AGENT_MODEL_API_KEY \(HTTP 403\)/);
-  const withUser = await gatewayProblem({ AGENT_MODEL_BASE_URL: base.replace("http://", "http://user:s3cret@") });
+  const credentialed = Object.assign(new URL(base), { username: "user", password: "s3cret" });
+  const withUser = await gatewayProblem({ AGENT_MODEL_BASE_URL: credentialed.href });
   assert.match(withUser, new RegExp(`^The model gateway at ${base} `), "the address is said without its user and password");
   assert.doesNotMatch(withUser, /s3cret|user:/);
   assert.match(withUser, /ECONNREFUSED/, "it asks the address without them");
