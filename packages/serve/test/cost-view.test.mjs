@@ -16,3 +16,7 @@ test("a usage row that says unknown reads unknown, never the store's figure from
   assert.equal(costView([usage(0.0009), usage(null, 2)], 0.0009), null);
   assert.equal(costView([usage(null, 2)], undefined), null);
 });
+
+test("a usage row without its usage reads unknown, never the store's figure", () => {
+  assert.equal(costView([{ id: "1:usage", kind: "usage", summary: "" }], 0.0009), null);
+});
