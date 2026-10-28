@@ -42,9 +42,11 @@ rest, never published; removing the flag lifts a hold. Release order: `scripts/r
 
 ## Setup and checks
 
-Use Node 22.19+ or 24.2+ (`.nvmrc` pins 22.23.2, the release toolchain) and npm 11.
+Use Node 22.19+ or 24.2+ (`.nvmrc` pins 22.23.2, the release toolchain) and npm 11 (CI pins 11.21.0).
 `scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`.
-Regenerate `package-lock.json` only with npm 11 (`npm install --package-lock-only`), never by hand.
+Regenerate `package-lock.json` only with npm 11 (`npm install --package-lock-only`), never by hand,
+then `npm run export:source` and commit `docs/dependencies.md`: CI's `check-generated.mjs` fails on
+a stale one and `npm run check` does not catch it.
 
 ```sh
 npm ci --ignore-scripts
@@ -113,8 +115,8 @@ effect, never resume a cancelled run). `spec/receipts/Door.tla` models the serve
 
 **A change to modeled behavior changes the model in the same pull request.** When a change touches
 what a model states (the recovery hooks in `workflow.ts`, the `RecoveryStore` contract, a driver
-over it, or the door in `packages/pi-durable-disk/src/door.ts`), update the TLA+ model, its mutants
-and `Frozen.lean` together and run the checks in
+over it, or the door in `packages/pi-durable-disk/src/door.ts`), update the TLA+ model and its
+mutants (plus `Frozen.lean` for a driver; the door is `Door.tla` only) and run the checks in
 [CONTRIBUTING.md](CONTRIBUTING.md#changing-recovery-behavior) (Java 11+ and `TLA2TOOLS` set to
 `tla2tools.jar`; `lake build` runs in `spec/lean`), or say in the pull request why the model does
 not move. A property that breaks is fixed in code or recorded with a test that reproduces its
