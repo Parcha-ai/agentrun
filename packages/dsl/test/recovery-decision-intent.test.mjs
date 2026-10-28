@@ -1,0 +1,104 @@
+// A decision under the recovery driver is never paid for twice across a crash: its request is committed before the
+// host's judge is asked, and a later open that finds it asked and never answered routes the run to review instead of
+// asking again. Every open of one store stands for a later process of the same run; the crash is a store that refuses
+// every write from the moment the judge answers, as a process that dies right after the provider's answer.
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
+
+const KEY = 'run-1';
+const INPUT = { text: 'a filing' };
+const SCHEMAS = {
+  Out: { type: 'object', required: ['ok'], properties: { ok: { type: 'boolean' } } },
+  Check: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is this filing a legitimate certificate of incorporation?' } } },
+};
+const workflow = { v: 2, name: 'decision-intent', schemas: SCHEMAS, output: { schemaId: 'Out', path: 'final' },
+  root: { node: 'chain', steps: [
+    { node: 'judge', label: 'check', state: { text: '{text}' }, out: 'Check', as: 'verdict' },
+    { node: 'code', label: 'finish', code: '() => ({ final: { ok: true } })' },
+  ] } };
+const answer = { answers: { legit: { type: 'noul', noul: 0.91 } }, model: 'judge-1', usage: { input_tokens: 40, output_tokens: 0 }, cost_usd: 0.003, request_sha256: 'provider-request-1' };
+const LAYOUTS = ['v3', 'v4'];
+
+/** A store over `inner` that refuses every write while `dead()` holds: what a process that died leaves unwritten. */
+const dying = (inner, dead) => ({ open: async (bound) => {
+  const journal = await inner.open(bound);
+  const held = Object.create(journal);
+  for (const write of ['save', 'note', 'admit', 'complete', 'called']) held[write] = async (...args) => { if (dead()) throw new Error('the process died'); return journal[write](...args); };
+  return held;
+} });
+
+/** A host's decision receipts, kept across processes: `recordDecision` and the `recovery.decision` it answers from. */
+function receiptStore() {
+  const receipts = [];
+  return {
+    receipts,
+    recordDecision: async (receipt) => { receipts.push(structuredClone(receipt)); },
+    decision: async (id) => receipts.findLast((receipt) => receipt.id === id && receipt.status === 'answered'),
+  };
+}
+
+/** One process of the run under the driver, with the host's receipts. */
+async function run(store, deps, kept, layout) {
+  const driver = await openRecovery(store, workflow, { key: KEY, layout });
+  const wrapped = withRecovery(driver, { ...deps, recordDecision: kept.recordDecision });
+  wrapped.recovery = { ...wrapped.recovery, decision: kept.decision };
+  try { return await runWorkflow(workflow, INPUT, wrapped); } finally { await driver.close(); }
+}
+
+/** The decision requests the run's last commit holds. */
+async function decisionsOf(inner, layout) {
+  const driver = await openRecovery(inner, workflow, { key: KEY, layout });
+  try { return Object.values(driver.decisionRequests?.() ?? {}); } finally { await driver.close(); }
+}
+
+for (const layout of LAYOUTS) {
+  test(`a decision asked and never answered is not asked again: the next process books it once at an unknown cost and routes the run to review (${layout})`, async () => {
+    const inner = memoryStore(); let dead = false; let asked = 0;
+    const store = dying(inner, () => dead);
+    const kept = receiptStore();
+    // The provider answers, and the process dies before anything after the answer is committed.
+    const first = { runJudge: async () => { asked += 1; dead = true; return structuredClone(answer); } };
+    await assert.rejects(run(store, first, kept, layout), /the process died/);
+    dead = false;
+    const second = { runJudge: async () => { asked += 1; return structuredClone(answer); } };
+    const result = await run(store, second, kept, layout);
+    assert.equal(asked, 1, 'runJudge is called exactly once across the two processes');
+    assert.equal(result.status, 'escalated', 'the run routes to review');
+    assert.deepEqual([result.escalation.kind, result.escalation.stage, result.escalation.label], ['decision_interrupted', 'decision', 'check'], 'the escalation says the decision was interrupted');
+    const [request, ...more] = await decisionsOf(inner, layout);
+    assert.equal(more.length, 0, 'one decision request');
+    assert.deepEqual({ record: request?.record, kind: request?.kind, label: request?.label, attempt: request?.attempt, status: request?.status, cost_usd: request?.cost_usd },
+      { record: 'decision.request', kind: 'judge', label: 'check', attempt: 1, status: 'interrupted', cost_usd: null }, 'the interrupted request is booked at an unknown cost, never 0');
+    const booked = kept.receipts.filter((receipt) => receipt.id === request?.decision_id);
+    assert.deepEqual(booked.map((receipt) => [receipt.status, receipt.cost_usd]), [['failed', null]], 'its receipt is booked once, at an unknown cost');
+  });
+
+  test(`a decision answered before a crash replays from its receipt at no cost and is not asked again (${layout})`, async () => {
+    const inner = memoryStore(); let dead = false; let asked = 0;
+    const store = dying(inner, () => dead);
+    const kept = receiptStore();
+    // The answer and its receipt land; the process dies at the next commit, before the node's own.
+    const first = { runJudge: async () => { asked += 1; return structuredClone(answer); } };
+    const recordThenDie = { ...kept, recordDecision: async (receipt) => { await kept.recordDecision(receipt); if (receipt.status === 'answered') dead = true; } };
+    await assert.rejects(run(store, first, recordThenDie, layout), /the process died/);
+    dead = false;
+    const result = await run(store, { runJudge: async () => { asked += 1; return structuredClone(answer); } }, kept, layout);
+    assert.equal(asked, 1, 'runJudge is called exactly once across the two processes');
+    assert.equal(result.status, 'complete');
+    assert.equal(result.state.verdict.legit, true);
+    const [request] = await decisionsOf(inner, layout);
+    assert.deepEqual([request?.status, request?.cost_usd, request?.attempt], ['answered', 0.003, 1], 'the answered request keeps its cost');
+  });
+
+  test(`a request that failed in its own process is asked again by the next as its next attempt (${layout})`, async () => {
+    const store = memoryStore(); let asked = 0;
+    const kept = receiptStore();
+    await assert.rejects(run(store, { runJudge: async () => { asked += 1; throw new Error('the provider refused'); } }, kept, layout), /the provider refused/);
+    const result = await run(store, { runJudge: async () => { asked += 1; return structuredClone(answer); } }, kept, layout);
+    assert.deepEqual([asked, result.status], [2, 'complete'], 'a request that ended in its process is asked again');
+    const [request] = await decisionsOf(store, layout);
+    assert.deepEqual([request?.status, request?.attempt, request?.cost_usd], ['answered', 2, 0.003], 'the second ask is the request\'s second attempt');
+  });
+}
