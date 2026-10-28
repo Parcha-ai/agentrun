@@ -88,7 +88,9 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
  *  The reason names the address and the fix, since a run that cannot reach it fails only at its first request. */
 export async function gatewayProblem(env: NodeJS.ProcessEnv, timeoutMs = 3_000): Promise<string | undefined> {
   if (env[FAUX_ENV] || !env.AGENT_MODEL_BASE_URL) return undefined;
-  const base = env.AGENT_MODEL_BASE_URL.replace(/\/+$/, "");
+  if (!URL.canParse(env.AGENT_MODEL_BASE_URL)) return "AGENT_MODEL_BASE_URL is not a URL: set it to the gateway's address, such as its https://.../v1.";
+  // The address asked and said, with no user or password a URL may carry: an error's text would repeat them.
+  const base = Object.assign(new URL(env.AGENT_MODEL_BASE_URL), { username: "", password: "" }).href.replace(/\/+$/, "");
   const key = env.AGENT_MODEL_API_KEY;
   let status: number;
   try {

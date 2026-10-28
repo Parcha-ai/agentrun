@@ -47,6 +47,12 @@ test("the check: a closed port names the address, the cause and the fix; a refus
   const refused = await answering(t, 401);
   assert.match(await gatewayProblem({ AGENT_MODEL_BASE_URL: refused.url, AGENT_MODEL_API_KEY: "bad" }), /refused AGENT_MODEL_API_KEY \(HTTP 401\): set AGENT_MODEL_API_KEY/);
   assert.match(await gatewayProblem({ AGENT_MODEL_BASE_URL: refused.url }), /refused a request with no key \(HTTP 401\)/);
+  assert.match(await gatewayProblem({ AGENT_MODEL_BASE_URL: (await answering(t, 403)).url, AGENT_MODEL_API_KEY: "bad" }), /refused AGENT_MODEL_API_KEY \(HTTP 403\)/);
+  const withUser = await gatewayProblem({ AGENT_MODEL_BASE_URL: base.replace("http://", "http://user:s3cret@") });
+  assert.match(withUser, new RegExp(`^The model gateway at ${base} `), "the address is said without its user and password");
+  assert.doesNotMatch(withUser, /s3cret|user:/);
+  assert.match(withUser, /ECONNREFUSED/, "it asks the address without them");
+  assert.equal(await gatewayProblem({ AGENT_MODEL_BASE_URL: "not a url s3cret" }), "AGENT_MODEL_BASE_URL is not a URL: set it to the gateway's address, such as its https://.../v1.");
   assert.equal(await gatewayProblem({}), undefined, "no gateway, nothing to check");
   assert.equal(await gatewayProblem({ AGENT_MODEL_BASE_URL: base, AGENTRUN_SERVE_FAUX: "/faux.mjs" }), undefined, "the faux models need no gateway");
 });
@@ -70,6 +76,11 @@ test("a save while the gateway is unreachable is kept, with a warning naming its
   const flow = await api("POST", "/agents", flowAgent("far-flow"));
   assert.equal(flow.status, 201, JSON.stringify(flow.body));
   assert.deepEqual(flow.body.warnings.map((w) => [w.field, w.reason]), [["definition.workflow", "not_set_up_here"]]);
+  // A workflow with no model node never asks the gateway, so it saves with no warning.
+  const In = { type: "object", required: ["question"], properties: { question: { type: "string" } } };
+  const gate = { v: 2, name: "gate", schemas: { In }, input: { schemaId: "In" }, output: { schemaId: "In", path: "question" }, root: { node: "chain", steps: [{ node: "escalate", label: "gate", when: { predicate: "field_equals", path: "question", value: "stop" }, kind: "review", stage: "check", summary: "asked to stop" }] } };
+  const modelless = await api("POST", "/agents", flowAgent("no-model", gate));
+  assert.deepEqual([modelless.status, modelless.body.warnings], [201, []], JSON.stringify(modelless.body));
 });
 
 test("a save while the gateway answers has no warning, and the gateway is asked only GET /models", async (t) => {
