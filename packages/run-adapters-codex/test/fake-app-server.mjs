@@ -181,7 +181,7 @@ async function stream(text, onPiece) {
     method: 'POST',
     // What Codex sends on a Responses call (P0.7): its own protocol headers, the provider key as the bearer.
     headers: { 'content-type': 'application/json', accept: 'text/event-stream', authorization: `Bearer ${modelKey()}`, originator: 'codex_cli_rs', version: '0.160.0', session_id: thread?.id ?? '' },
-    body: JSON.stringify({ model: modelId(), instructions: 'fake', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }], stream: true, store: false }),
+    body: JSON.stringify({ model: modelId(), input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }], stream: true, store: false }),
   });
   if (!res.ok || !res.body) throw new Error(`the model answered ${res.status}`);
   const decoder = new TextDecoder();

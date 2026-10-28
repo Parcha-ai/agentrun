@@ -14,7 +14,7 @@ import { FileTail } from "@parcha/agentrun-adapters/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
-import { codexPolicy } from "./policy-stub.js";
+import { codexPolicy } from "./policy.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
