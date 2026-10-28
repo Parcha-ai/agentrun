@@ -7,19 +7,27 @@
 // never as an entry the run's timeline sums. So it is marked the same way (`request: "compaction"`), and its answer's
 // cost is written as REQUEST_COST: the run's total, and /usage with it, include it, and one cut before its answer reads
 // unknown. Both are wrapped here: `streamSimple` for the generation's requests, `completeSimple` for the summary.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, AssistantMessage, Context, Model, Models } from "@earendil-works/pi-ai";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
+import { RUN_CANCELLED } from "./files.js";
 
-/** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). */
-export async function markRequests<M extends Models>(models: M): Promise<{ models: M; open(run: DurableRun): void }> {
+/** Whether the run in `root` (its directory) was cancelled: the mark serve's cancel writes there first. */
+export const cancelledIn = (root: string) => () => existsSync(join(root, RUN_CANCELLED));
+
+/** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
+ *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked, or after its
+ *  mark when the cancel came while the mark waited, and then its start is withdrawn (an end mark, `unsent`). */
+export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false, { refusalWaitMs = 60_000 }: { refusalWaitMs?: number } = {}): Promise<{ models: M; open(run: DurableRun): void }> {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
   const opened = new Promise<DurableRun>((resolve) => (open = resolve));
-  const mark = async (kind: string, data: Record<string, string | number | null> = {}) => {
+  const mark = async (kind: string, data: Record<string, string | number | boolean | null> = {}) => {
     const run = await opened;
     await run.harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind, data })), BACKGROUND_CONTEXT);
   };
@@ -29,9 +37,31 @@ export async function markRequests<M extends Models>(models: M): Promise<{ model
     errorMessage: why,
   });
   const reason = (error: unknown) => String((error as Error)?.message ?? error).slice(0, 200);
+  /** A cancelled run's request, never sent. It waits for the cancel to reach the run (the request's abort), and then ends
+   *  as aborted, as a request the cancel cut does: the turn, or a workflow's node, stops, never failing on the refusal.
+   *  serve's cancel aborts a live run's turn and then stops its process, so the wait is short. `refusalWaitMs` is a
+   *  backstop for a process the cancel never reaches (an orphan of a server that died in between): it then ends as an
+   *  error, and `markRefusal` lets the timeline skip pi's entry for it. */
+  const refuse = async (model: Model<Api>, what: string, signal: AbortSignal | undefined, markRefusal: boolean): Promise<AssistantMessage> => {
+    if (signal && !signal.aborted) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, refusalWaitMs);
+        signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+      });
+    }
+    if (signal?.aborted) return { ...failed(model, ""), stopReason: "aborted", errorMessage: undefined } as AssistantMessage;
+    if (markRefusal) await mark(REQUEST_REFUSED).catch(() => undefined);
+    return failed(model, `the run was cancelled: the ${what} was not sent`);
+  };
   const streamSimple = (model: Model<Api>, context: Context, options?: Parameters<Models["streamSimple"]>[2]) => {
     const outer = createAssistantMessageEventStream();
+    const refused = async () => {
+      const message = await refuse(model, "model request", options?.signal, true);
+      outer.push({ type: "error", reason: message.stopReason === "aborted" ? "aborted" : "error", error: message });
+      outer.end(message);
+    };
     void (async () => {
+      if (cancelled()) return refused();
       try {
         await mark(REQUEST_STARTED);
       } catch (error) {
@@ -39,6 +69,10 @@ export async function markRequests<M extends Models>(models: M): Promise<{ model
         outer.push({ type: "error", reason: "error", error: message });
         outer.end(message);
         return;
+      }
+      if (cancelled()) {
+        await mark(REQUEST_ENDED, { unsent: true }).catch(() => undefined);
+        return refused();
       }
       let result: AssistantMessage;
       try {
@@ -64,10 +98,16 @@ export async function markRequests<M extends Models>(models: M): Promise<{ model
   };
   const COMPACTION = { request: "compaction" };
   const completeSimple = async (model: Model<Api>, context: Context, options?: Parameters<Models["completeSimple"]>[2]): Promise<AssistantMessage> => {
+    // A cancelled run sends no summary either; pi writes no entry for a failed summary, so nothing needs marking.
+    if (cancelled()) return refuse(model, "summary request", options?.signal, false);
     try {
       await mark(REQUEST_STARTED, COMPACTION);
     } catch (error) {
       return failed(model, `the model request was not sent: its mark could not be written (${reason(error)})`);
+    }
+    if (cancelled()) {
+      await mark(REQUEST_ENDED, { ...COMPACTION, unsent: true }).catch(() => undefined);
+      return refuse(model, "summary request", options?.signal, false);
     }
     let result: AssistantMessage;
     try {

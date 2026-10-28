@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -239,6 +239,19 @@ test("cost: a compaction's summary is a paid request: its cost is summed; one ab
   assert.deepEqual(timelineOf([started, a, compacting, aborted]).at(-1).usage, { usd: null, requests: 2 }, "aborted before its answer");
   assert.deepEqual(timelineOf([started, a, compacting, started]).at(-1).usage, { usd: 0.01, requests: 3 }, "a compaction and a generation both in flight");
   assert.deepEqual(timelineOf([started, a, compacting], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
+});
+
+test("a request the host refused before it left (a cancelled run) is not a request: its error entry is neither counted nor shown", () => {
+  const refused = { kind: REQUEST_REFUSED, data: {} };
+  const answer = (stopReason, errorMessage) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason, errorMessage, usage: { input: 0, output: 0, cost: { total: 0 } } }] });
+  assert.deepEqual(timelineOf([user("hi", 0), refused, answer("error", "the run was cancelled")]).map((r) => r.kind), ["user_message"], "no request, no error row, no usage row");
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  const rows = timelineOf([user("hi", 0), started, a, refused, answer("error", "the run was cancelled")]);
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.01, requests: 1 });
+  assert.ok(!rows.some((r) => r.kind === "error"));
+  // A real failure after it still counts and shows.
+  assert.equal(timelineOf([started, answer("error", "overloaded")]).filter((r) => r.kind === "error").length, 1);
 });
 
 test("cost: a request cut before its end makes the sum unknown, never $0, with or without the usage its stream had reported", () => {
