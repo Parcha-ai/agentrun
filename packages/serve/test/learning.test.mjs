@@ -376,6 +376,100 @@ test("a writer holding the agent store makes the start-time catch-up and a propo
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
 });
 
+/** What the server process writes to stderr during test `t`: its warnings, the after-carry-back hook's among them. */
+function stderrOf(t) {
+  const lines = [];
+  const write = process.stderr.write;
+  process.stderr.write = function (chunk, ...rest) {
+    lines.push(String(chunk));
+    return write.call(this, chunk, ...rest);
+  };
+  t.after(() => (process.stderr.write = write));
+  return lines;
+}
+
+/** Another connection holding store.sqlite with `BEGIN IMMEDIATE`: no other writer, readers still read. */
+async function holdWrites(t, data) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const lock = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
+  lock.exec("BEGIN IMMEDIATE");
+  const release = () => lock.isOpen && (lock.isTransaction && lock.exec("ROLLBACK"), lock.close());
+  t.after(release);
+  return release;
+}
+
+/** A learning run that notes its lesson, then answers once its gate exists; its end is due when the gate is made. */
+async function gatedLearner(t, api) {
+  await api("POST", "/agents", agent("calc"));
+  const gate = join(await scratch(t), "go");
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${gate} exists.` } });
+  for (let i = 0; !(await api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "learn"); i++) {
+    assert.ok(i < 400, "the run notes its lesson");
+    await sleep(50);
+  }
+  return { runId: run.run_id, open: () => writeFile(gate, "") };
+}
+
+test("a run whose end the store refuses at first is proposed once the end lands later, exactly once, and not before", async (t) => {
+  const said = stderrOf(t);
+  let refused;
+  const endRefused = new Promise((resolve) => (refused = resolve));
+  // One retry, then the end waits for the server's later settle.
+  const { api, data } = await serve(t, { carryBackRetry: { delaysMs: [20], onBusy: (_id, attempt) => attempt === 1 && refused() }, settleRetryMs: 300 });
+  const { runId, open } = await gatedLearner(t, api);
+  const release = await holdWrites(t, data);
+  await open();
+  await endRefused;
+  const bare = bareOf(data, "calc");
+  assert.equal(storeRun(data, runId).state, "running", "the store has not got the run's end");
+  assert.equal(await readRunState(data, "calc", runId), undefined, "nothing is proposed before the end lands");
+  assert.equal(branches(bare).includes(`runs/${runId}`), false);
+  release();
+  const state = await stateOf(data, "calc", runId);
+  assert.equal(storeRun(data, runId).state, "completed");
+  assert.equal(state.state, "proposed");
+  assert.equal(git(bare, "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
+  assert.deepEqual(said.filter((line) => line.includes(runId) && /after its carry back|not proposed/.test(line)), [], "the hook ran once, after the end was written");
+});
+
+test("a server that stops while a run's end waits to be written proposes nothing; the next start writes the end and proposes it once", async (t) => {
+  const data = join(await scratch(t), "agents");
+  let refused;
+  const endRefused = new Promise((resolve) => (refused = resolve));
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", carryBackRetry: { delaysMs: [20], onBusy: (_id, attempt) => attempt === 1 && refused() }, settleRetryMs: 300 });
+  let closing;
+  const close = () => (closing ??= first.close());
+  t.after(close);
+  const { runId, open } = await gatedLearner(t, client(first.baseUrl, first.token));
+  const release = await holdWrites(t, data);
+  await open();
+  await endRefused;
+  await close();
+  release();
+  assert.equal(storeRun(data, runId).state, "running", "the stopped server never wrote the end");
+  assert.equal(await readRunState(data, "calc", runId), undefined, "nor proposed the run");
+  const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let closingNext;
+  const closeNext = () => (closingNext ??= next.close());
+  t.after(closeNext);
+  const state = await stateOf(data, "calc", runId);
+  await closeNext();
+  assert.equal(storeRun(data, runId).state, "completed");
+  assert.equal(state.state, "proposed");
+  assert.equal(git(bareOf(data, "calc"), "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
+});
+
+test("harness and learning sit side by side on a definition: both are kept, and an edit without either keeps both", async (t) => {
+  const { api, data } = await serve(t);
+  const made = await api("POST", "/agents", agent("both", { harness: "claude-agent", learning: "approve" }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual([made.body.definition.harness, made.body.definition.learning], ["claude-agent", "approve"]);
+  assert.deepEqual([storeRevision(data, made.body.revision).body.harness, storeRevision(data, made.body.revision).body.learning], ["claude-agent", "approve"]);
+  const edited = await api("PUT", "/agents/both/definition", { definition: { instructions: "Answer briefly.", skills: [], tools: [] } });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.deepEqual([edited.body.definition.harness, edited.body.definition.learning], ["claude-agent", "approve"]);
+});
+
 test("a cancelled run's memo says it stopped", async (t) => {
   const { api, data } = await serve(t);
   await api("POST", "/agents", agent("calc"));
