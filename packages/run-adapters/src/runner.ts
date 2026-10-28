@@ -27,6 +27,10 @@ export type BeforeRequest = (request: {
   turn: number; maxTurns: number | null;
   /** The node's `budget_usd`, if it set one, and what its session has spent so far (null when a price was unknown). */
   budgetUsd?: number; spentUsd: number | null;
+  /** This session's paid requests admitted and not yet answered (in this process), oldest first: a budget holds each
+   *  one's worst case until it answers, since `spentUsd` counts answered requests only. Requests are admitted one at a
+   *  time, so each check sees every request admitted before it. */
+  inFlight: readonly { turn: number; model: string }[];
 }) => void | { refuse: string } | Promise<void | { refuse: string }>;
 
 export interface HarnessRunnerOptions {
@@ -128,29 +132,37 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     spentUsd = spentUsd === null || data.usd === null ? null : spentUsd + (data.usd ?? 0);
   }
   if (inherited.some((t) => !answered.has(t))) spentUsd = null;
-  // This process's requests in flight, by the turn each was admitted as.
-  const open: number[] = [];
+  // This process's requests in flight, oldest first: the turn each was admitted as, and its model.
+  const open: { turn: number; model: string }[] = [];
+  // Admissions run one at a time (the turn limit, the host's check and the durable write), so two requests asked for at
+  // once can't both pass a limit only one fits; the requests themselves still run side by side once admitted.
+  let admitting: Promise<unknown> = Promise.resolve();
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
+  const admit = async (model: string): Promise<ModelTicket> => {
+    const stopped = options.stopped?.();
+    if (stopped) throw stopped;
+    if (limit !== null && turns >= limit) throw end("turn_limit");
+    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })) });
+    if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
+    // Durable before the request leaves: admitted, then sent.
+    const turn = turns + 1;
+    turns = turn;
+    await append([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
+    open.push({ turn, model });
+    emit({ type: "request_start", turn, model });
+    return { turn };
+  };
   const models: ModelPort = {
-    beforeRequest: async ({ model }: { model: string }) => {
-      const stopped = options.stopped?.();
-      if (stopped) throw stopped;
-      if (limit !== null && turns >= limit) throw end("turn_limit");
-      const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd });
-      if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
-      // Durable before the request leaves: admitted, then sent.
-      const turn = turns + 1;
-      turns = turn;
-      await append([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
-      open.push(turn);
-      emit({ type: "request_start", turn, model });
-      return { turn };
+    beforeRequest: ({ model }: { model: string }) => {
+      const admitted = admitting.then(() => admit(model));
+      admitting = admitted.catch(() => {});
+      return admitted;
     },
     afterRequest: async (usage: ModelUsage, ticket?: ModelTicket) => {
       // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
-      const turn = ticket?.turn ?? open[0] ?? turns;
-      const at = open.indexOf(turn);
+      const turn = ticket?.turn ?? open[0]?.turn ?? turns;
+      const at = open.findIndex((f) => f.turn === turn);
       if (at >= 0) open.splice(at, 1);
       spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
       try {
