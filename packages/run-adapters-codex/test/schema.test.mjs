@@ -169,8 +169,13 @@ test("on the pinned binary, the constraints Codex strips reach the model in the 
 test("Codex's check() runs the shared cases: every place the shared check refuses is refused, first, and nothing it allows is refused for a shared reason", () => {
   const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
   const spec = (schema) => ({ key: 'step:cases', label: 'x', system: [], tools: [{ name: 't', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
-  // What Codex refuses on top of the shared check, in the one case the shared table allows that Codex does not carry.
-  const codexOnly = { 'a generated schema (titles, defaults, formats, bounds, a nullable union, prefixItems)': ['/properties/pair/prefixItems', '/properties/pair/items'] };
+  // What Codex refuses on top of the shared check, in the cases the shared table allows that Codex does not carry.
+  const codexOnly = {
+    'a generated schema (titles, defaults, formats, bounds, a nullable union, prefixItems)': ['/properties/pair/prefixItems', '/properties/pair/items'],
+    // A const or enum holding an object is a value to the shared check and a non-scalar one to Codex, which refuses it.
+    'a "$ref" inside a const (a value)': ['/properties/c/const'],
+    'a "$ref" inside an enum (values)': ['/properties/e/enum'],
+  };
   for (const { name, schema, refusedAt } of SCHEMA_CHECK_CASES) {
     const problems = codex.check(spec(schema));
     const where = (list) => list.map((p) => /^[^:]*: (\S+):/.exec(p)?.[1]);
