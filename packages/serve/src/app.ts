@@ -89,8 +89,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const fileTools = new Map((CodingTools.tools ?? []).map((tool) => [tool.name, tool] as const));
   if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
     const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
-    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], tools: [], context: "fresh" as const };
-    const { door, onOpen } = adapterRun(await adapterFor(revision.body.harness, process.env), spec, BACKGROUND, cap);
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const };
+    // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
+    const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
+    const { door, onOpen } = adapterRun(await adapterFor(revision.body.harness, process.env), spec, BACKGROUND, cap, named);
     return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
   }
   if (revision.kind === "agentic") {

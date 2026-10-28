@@ -14,6 +14,7 @@ import type { Context } from "@earendil-works/chord";
 import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-adapters";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
+import { fileTools, type ToolResults } from "./host-tools.js";
 import { durableSessions } from "./sessions.js";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
@@ -55,15 +56,19 @@ export interface AdapterRun {
   onOpen(run: DurableRun): Promise<void>;
 }
 
-/** The door and the open of a run whose session is `spec` on `adapter`. `budgetUsd`: the run's spend cap. */
-export function adapterRun(adapter: AgentAdapter, spec: SessionSpec, context: Context, budgetUsd?: number): AdapterRun {
+/** The door and the open of a run whose session is `spec` on `adapter`, with the file tools `tools` names (built at the
+ *  open, over the run's environment). `budgetUsd`: the run's spend cap. */
+export function adapterRun(adapter: AgentAdapter, spec: Omit<SessionSpec, "tools">, context: Context, budgetUsd?: number, tools: readonly string[] = []): AdapterRun {
+  const results: ToolResults = new Map();
   let run: DurableRun | undefined;
   let session: AdapterSession | undefined;
   let opened: Promise<void> | undefined;
   let openedDone: () => void = () => {};
   opened = new Promise((resolve) => (openedDone = resolve));
   let turn: Promise<void> | undefined;
+  // The door's emit, from attach as the door opens: a recovered turn, started by no submit, reports through it too.
   let emit: ((event: DoorEvent) => void) | undefined;
+  let attached = false;
   const queue: string[] = [];
   const stop = new AbortController();
   // The current request's content, and the requests whose cost is in but whose entry is not written yet.
@@ -118,7 +123,7 @@ export function adapterRun(adapter: AgentAdapter, spec: SessionSpec, context: Co
       later(() =>
         commit(async (tx) => {
           await tx.appendEntry(ToolResultEntry, ROOT_CONVERSATION_ID, {
-            model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: event.isError ? "The tool failed." : "Done." }], isError: event.isError, timestamp: now() } as never],
+            model: [{ role: "toolResult", toolCallId: event.callId, toolName: event.name, content: [{ type: "text", text: results.get(event.callId)?.text ?? (event.isError ? "The tool failed." : "Done.") }], isError: event.isError, timestamp: now() } as never],
             data: { diagnostics: [] },
           });
         }).then(() => undefined),
@@ -171,8 +176,12 @@ export function adapterRun(adapter: AgentAdapter, spec: SessionSpec, context: Co
   };
 
   const door: DoorHook = {
+    attach(given) {
+      emit = given;
+      attached = true;
+    },
     async submit(input, ctx: DoorContext) {
-      emit = ctx.emit;
+      if (!attached) emit = ctx.emit;
       await opened;
       const content = textOf(input.content);
       if (turn) {
@@ -184,7 +193,7 @@ export function adapterRun(adapter: AgentAdapter, spec: SessionSpec, context: Co
       return { accepted: true };
     },
     async abort(ctx: DoorContext) {
-      emit = ctx.emit;
+      if (!attached) emit = ctx.emit;
       queue.length = 0;
       if (!turn) return "idle";
       await session?.interrupt();
@@ -216,7 +225,7 @@ export function adapterRun(adapter: AgentAdapter, spec: SessionSpec, context: Co
       // Each request the session booked and the root has no entry for: its cost, with no content.
       for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request)) costed.push({ request, usage });
       await flush();
-      session = await adapter.open(spec, { writer, models: booking.models, signal: stop.signal, onEvent });
+      session = await adapter.open({ ...spec, tools: fileTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent });
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
     },

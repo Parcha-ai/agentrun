@@ -40,6 +40,9 @@ export interface DoorHook {
   submit(input: DoorInput, ctx: DoorContext): Promise<{ accepted: true } | { accepted: false; reason: "busy" }>;
   abort(ctx: DoorContext): Promise<"aborted" | "idle">;
   busy(): boolean;
+  /** Called once as the door opens, with its emit: a turn the hook starts itself, with no submit (a recovery after a
+   *  restart), reports its start and end through it as a submit's turn does. */
+  attach?(emit: (event: DoorEvent) => void): void;
 }
 
 export type DoorRecord = { readonly status: DoorStatus; readonly message?: string };
@@ -175,6 +178,8 @@ export function openDoor(hook: DoorHook, run: DurableRun, base: Context, timeout
     }
   };
   const closeTurn = () => emit({ type: "run_end" });
+  // The hook's own turns belong to no call: a call's failure never ends one.
+  hook.attach?.((event) => emit(event, {}));
   // Adopted once the instance is stopping: killed at once, since the stop's kill may have passed it already.
   const adopt = (pid: number) => {
     const start = startOf(pid);
