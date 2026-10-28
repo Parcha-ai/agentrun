@@ -8,15 +8,23 @@ import { balancedBrowserSession, classesOf, CLASSES, cutBrowserAction, cutInEffe
 
 const failed = (ledger) => ledger.checks.filter((check) => !check.ok).map((check) => ({ check: check.name, detail: check.detail }));
 
-// The seeds are chosen for coverage, not for how the reference gates read them; every gate is asserted on each. Together the two cover every class of crossing
-// the random draw reaches; the browser's page action is cut on purpose below.
-//   21   model turn, judge, browser read, receipt filing, supervisor not applied, supervisor applied
-//   337  effect window, a release answer lost, model turn, receipt filing, supervisor applied, delivery
+// The seeded draws land where the order of a process's crossings puts them, and that order moves with timing: which classes a seed reaches is not fixed.
+// Every gate is asserted on each seed; the coverage of every class comes from the planted kills below, one at a point of each class, by name and in the
+// run's order. The browser's page action is cut on purpose below.
 const SEEDS = [21, 337];
 const ALL = Object.keys(CLASSES).filter((name) => name !== 'browser action');
+const PLANTED = [
+  { side: 'child', n: 0, point: 'effect.kept search' },
+  { side: 'child', n: 0, point: 'model.answered turn 0' },
+  { side: 'child', n: 0, point: 'receipt.filing browser_read' },
+  { side: 'child', n: 0, point: 'judge.asked verdict' },
+  { side: 'child', n: 0, point: 'deliver.writing' },
+  { side: 'supervisor', n: 0, point: 'browser.applied provider.release' },
+  { side: 'supervisor', n: 0, point: 'browser.applying provider.status' },
+  { side: 'supervisor', n: 0, point: 'browser.applied provider.status' },
+];
 
 test('ten kills at seeded random points, each resumed by a fresh process: every committed turn and every effect once, the record the uninterrupted run\'s', { timeout: 300_000 }, async () => {
-  const covered = new Set();
   for (const seed of SEEDS) {
     const ledger = await killAnywhere({ seed, kills: 10 });
     assert.deepEqual(failed(ledger), [], `seed ${seed}`);
@@ -25,14 +33,21 @@ test('ten kills at seeded random points, each resumed by a fresh process: every 
     // The reference gates ran on the final directory and every one passes (each is also a check above).
     assert.ok(ledger.gates.length >= 7, 'the reference gates ran on the final directory');
     assert.deepEqual(ledger.gates.filter((gate) => !gate.ok), [], `seed ${seed}`);
-    for (const name of ledger.covered) covered.add(name);
     const lines = render(ledger).join('\n');
     assert.match(lines, /page\.run +x[0-2]/);
     assert.match(lines, /applied at most once, counted from the provider/);
     assert.match(lines, /page\.read may repeat, each repeat tied to a kill inside it/);
     assert.match(lines, /Reference gates on the final directory/);
   }
-  assert.deepEqual(ALL.filter((name) => !covered.has(name)), [], 'every class of crossing the draw reaches is covered by a seed');
+});
+
+test('a kill planted at a point of each class of crossing lands there, and a fresh process resumes each: every class is cut, the record the uninterrupted run\'s', { timeout: 300_000 }, async () => {
+  const ledger = await killAnywhere({ seed: 1, kills: PLANTED.length, planted: PLANTED });
+  assert.deepEqual(failed(ledger), []);
+  assert.deepEqual(ledger.kills.map((kill) => kill.landed && `${kill.landed.side} ${kill.landed.point}`), PLANTED.map((plan) => `${plan.side} ${plan.point}`), 'each planted kill landed at its point');
+  assert.equal(ledger.final.status, 'complete');
+  assert.deepEqual(ledger.gates.filter((gate) => !gate.ok), []);
+  assert.deepEqual(ALL.filter((name) => !ledger.covered.includes(name)), [], 'every class of crossing is covered');
 });
 
 test('the browser\'s page action is cut before and after it is applied: applied at most once, and the lead looks before it decides', { timeout: 200_000 }, async () => {
