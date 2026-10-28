@@ -89,3 +89,13 @@ test("ask_person on a harness other than pi saves with a warning on the tool, an
   const onPi = await api("POST", "/agents", agent("pi-asker", { tools: ["ask_person"] }));
   assert.deepEqual(onPi.body.warnings, [], "on pi it is bound");
 });
+
+test("a workflow on a harness other than pi saves with a warning and its runs are refused naming the harness: it never runs on pi instead", async (t) => {
+  const { api } = await serve(t, { fauxHarness: new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname });
+  const made = await api("POST", "/agents", flowAgent("flow-codex", undefined, { harness: "codex" }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.warnings.map((w) => [w.field, w.reason]), [["definition.workflow", "not_set_up_here"]]);
+  const run = await api("POST", "/agents/flow-codex/runs", { input: { question: "q" } });
+  assert.deepEqual([run.status, run.body.error?.code, run.body.error?.details?.harness], [409, "agent_not_runnable", "codex"], JSON.stringify(run.body));
+  assert.equal((await api("GET", "/runs")).body.runs.length, 0);
+});
