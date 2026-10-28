@@ -72,6 +72,10 @@ jobs:
         run: node scripts/check-typescript-floor.mjs
       - if: matrix.shard != 'checks'
         run: node scripts/ci-shard.mjs ${{ matrix.shard }}
+        env:
+          # The Claude Agent adapter's real-CLI test runs on the pinned CLI (the SDK's platform package, a dev dependency):
+          # here a missing or different one fails, not skips.
+          AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
       - name: Retain package verification evidence
         if: always() && matrix.shard == 'checks'
         uses: actions/upload-artifact@v4

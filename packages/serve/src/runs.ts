@@ -172,6 +172,14 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
+/** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
+ *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
+ *  follow-up. */
+export function costView(rows: readonly TimelineEvent[], stored: number | undefined): number | null {
+  const usage = usageOf(rows);
+  if (!usage) return stored ?? 0;
+  return usage.usage?.usd ?? null;
+}
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
@@ -919,8 +927,7 @@ export class Runs {
 
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    const usage = usageOf(run.rows);
-    return { usd: usage ? (usage.usage?.usd ?? run.costUsd ?? null) : (run.costUsd ?? 0), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: costView(run.rows, run.costUsd), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */

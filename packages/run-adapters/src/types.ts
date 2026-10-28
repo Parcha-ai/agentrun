@@ -77,13 +77,30 @@ export interface ModelUsage {
   /** Null when the price is unknown; `estimated` when it is not the provider's own figure. */
   usd: number | null;
   estimated?: boolean;
+  /** A request a crash cut off: it left, and no answer came back to this run. Its tokens are unknown (0 here) and its
+   *  price is null; the provider may have billed it. */
+  cut?: boolean;
+  /** The ids the provider's response gave the request, by header name (the provider's `request-id`, a gateway's call
+   *  id such as LiteLLM's `x-litellm-call-id`): what joins this booking to the provider's own log. A cut request has
+   *  them only if its response had begun. */
+  providerIds?: Record<string, string>;
 }
 
 /** The session's model requests, through the runner: every paid request is announced before it is sent, and may be
  *  refused there (a turn cap, the host's budget); its usage is reported when it completes. */
 export interface ModelPort {
-  beforeRequest(request: ModelRequest): Promise<void>;
-  afterRequest(usage: ModelUsage): Promise<void>;
+  /** Admits a paid request, or throws to refuse it. It may return the request's ticket, which names the turn it was admitted as. */
+  beforeRequest(request: ModelRequest): Promise<ModelTicket | void>;
+  /** Books a completed request. `ticket` is what its own `beforeRequest` returned: requests may be in flight together, so
+   *  an answer is booked under the turn it was admitted as, not the latest one. */
+  afterRequest(usage: ModelUsage, ticket?: ModelTicket): Promise<void>;
+  /** Records the ids a paid request's response gave it, as its headers arrive and before its answer is read. */
+  responded?(ids: Record<string, string>, ticket?: ModelTicket): Promise<void>;
+}
+
+/** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
+export interface ModelTicket {
+  turn: number;
 }
 
 /** What the host lends a session. */
