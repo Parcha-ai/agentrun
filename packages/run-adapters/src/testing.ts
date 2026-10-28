@@ -5,6 +5,8 @@
 import { SessionFenced } from "./errors.js";
 import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
 
+export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
+
 /** A session store in memory: what one run's store holds, across the processes a test plays. Each `open` of a key
  *  counts one more holder at once, and a writer appends only while its count is the newest. */
 export function memorySessionStore(): SessionStore & { keys(): string[] } {
