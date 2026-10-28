@@ -194,12 +194,13 @@ export function adapterRun(
     );
   };
 
-  /** Turns until nothing waits: each with its start and end on the door, then the next waiting message. Busy throughout,
-   *  so a message that arrives meanwhile waits its place. */
+  /** Turns until nothing waits: the turn, then each message that waited for it, as one busy period on the door (as a pi
+   *  run's follow-ups are), so the server never reads the run idle, and done, while an accepted message is unanswered. A
+   *  message that arrives meanwhile waits its place. */
   const runTurns = (first: () => Promise<void>) => {
     turn = (async () => {
+      emit?.({ type: "run_start" });
       for (let start: (() => Promise<void>) | undefined = first; start; ) {
-        emit?.({ type: "run_start" });
         let failed: string | undefined;
         try {
           await start();
@@ -215,12 +216,12 @@ export function adapterRun(
           const why = refused ?? halted?.message ?? (failed === undefined ? undefined : `${harness}: ${failed}`);
           refused = undefined;
           if (why !== undefined) await commit(async (tx) => void (await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, undefined, "", [], why) as never] })));
-          emit?.({ type: "run_end" });
         }
         const next = queue.shift();
         start = next === undefined ? undefined : sendOf(next);
       }
       turn = undefined;
+      emit?.({ type: "run_end" });
     })();
   };
 

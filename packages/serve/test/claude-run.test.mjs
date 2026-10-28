@@ -138,7 +138,7 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });
 
-test("a claude-agent run whose process dies while a request is in flight resumes on the next process: the cut request booked once as unknown, and no CLI left behind", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+test("a claude-agent run whose process dies while a request is in flight resumes on the next process: the cut request booked once as unknown, a chat sent meanwhile answered, and no CLI left behind", { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
@@ -147,9 +147,13 @@ test("a claude-agent run whose process dies while a request is in flight resumes
   await untilRequest(fake);
   const cli = await claudeProcess();
   assert.ok(cli, "the Claude CLI runs, under this test");
+  // Accepted while the request is in flight: it waits for the turn, and outlives the process.
+  assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "And then?" })).status, 202);
   const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
   process.kill(holder.pid, "SIGKILL");
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 180_000 });
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["Say what you did.", "And then?"]);
+  assert.equal(rows.filter((r) => r.kind === "user_message" || r.kind === "final_answer").at(-1)?.kind, "final_answer", "the chat is answered");
   const usage = rows.findLast((r) => r.kind === "usage")?.usage;
   assert.equal(usage?.requests, fake.messages().length, "every request the endpoint saw is booked once, the cut one included");
   assert.equal(usage?.usd, null, "the cut request's cost is unknown, so the run's is: never 0");

@@ -66,8 +66,10 @@ const errorsOf = (entries) => entries.flatMap((e) => (e.model ?? []).filter((m) 
 async function opened(storage = new MemoryStorage(), held = heldAdapter()) {
   const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
   const app = adapterRun(async () => held.adapter, "held", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
-  await app.onOpen(runOf(harness));
   const events = [];
+  // As the door does when it opens: a turn the run starts itself (a recovery) reports through it too.
+  app.door.attach((e) => events.push(e.type));
+  await app.onOpen(runOf(harness));
   const door = { run: { harness }, signal: new AbortController().signal, emit: (e) => events.push(e.type), adopt: () => {} };
   const submit = (text, whenBusy = "followUp") => app.door.submit({ requestId: text, content: text, whenBusy }, door);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
@@ -92,7 +94,7 @@ test("a message while a turn runs waits for its end and is sent after it, in ord
   await settle();
   assert.deepEqual(held.sent, ["one", "two", "three"]);
   assert.equal(app.door.busy(), false);
-  assert.deepEqual(events, ["run_start", "run_end", "run_start", "run_end", "run_start", "run_end"]);
+  assert.deepEqual(events, ["run_start", "run_end"], "one busy period: the messages that waited are its turns, as a pi run's follow-ups are");
 });
 
 test("a stop interrupts the turn, drops what waited, and sends nothing more; idle, it says so", async () => {
@@ -201,4 +203,28 @@ test("a request whose cost cannot be written stops the turn: the booking admits 
   await settle();
   assert.match(second ?? "", /could not be recorded/, "the next request is refused for the cost the booking could not write");
   assert.ok(interrupts >= 1, "the turn is stopped");
+});
+
+test("a run reopened with a turn to recover and a message that waited for it is busy until both are done: no run_end between them, so the server never reads it idle with the message unanswered", async () => {
+  const first = await opened();
+  await first.submit("one");
+  await first.settle();
+  await first.submit("two");
+  // The next process: its session has the cut turn to recover, and "two" waits on the root.
+  const held = heldAdapter();
+  const open = held.adapter.open;
+  held.adapter.open = async (...args) => {
+    const session = await open(...args);
+    return Object.assign(session, { state: "open_turn", async recover() { held.turns.push(Object.assign(deferred(), {})); } , turnEnd: () => held.turns.at(-1).promise });
+  };
+  const next = await opened(first.storage, held);
+  await next.settle();
+  assert.deepEqual(held.sent, [], "the cut turn first");
+  held.turns[0].resolve({ status: "completed" });
+  await next.settle();
+  assert.deepEqual(held.sent, ["two"], "then the message that waited");
+  assert.deepEqual(next.events, ["run_start"], "still busy: the server must not read the run idle between them");
+  held.turns[1].resolve({ status: "completed" });
+  await next.settle();
+  assert.deepEqual(next.events, ["run_start", "run_end"]);
 });
