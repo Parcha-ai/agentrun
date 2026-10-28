@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ClientError, createClient, follow } from "./client";
+import { ClientError, allPages, createClient, follow } from "./client";
 import type { TimelinePage } from "./v2";
 import page412 from "../fixtures/error.definition-stale-etag.json";
 import running from "../fixtures/run.working.working.1.timeline.json";
@@ -125,5 +125,25 @@ describe("review fixes", () => {
     const { fn, calls } = fakeFetch(() => json(200, { runs: [], next_cursor: null }));
     await createClient({ fetch: fn }).listRuns(50, "c2");
     expect(calls[0].url).toBe("/v2/runs?limit=50&cursor=c2");
+  });
+});
+
+describe("paging", () => {
+  it("asks for the next page of agents, revisions and an agent's runs with the server's cursor", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { agents: [], revisions: [], runs: [], next_cursor: null }));
+    const v2 = createClient({ fetch: fn });
+    await v2.listAgents({ cursor: "a2" });
+    await v2.listAgents({ archived: true, cursor: "a3" });
+    await v2.listRevisions("x", "r2");
+    await v2.listAgentRuns("x", 50, "u2");
+    expect(calls.map((c) => c.url)).toEqual(["/v2/agents?cursor=a2", "/v2/agents?archived=true&cursor=a3", "/v2/agents/x/revisions?cursor=r2", "/v2/agents/x/runs?limit=50&cursor=u2"]);
+  });
+
+  it("reads every page: all() follows next_cursor to the end", async () => {
+    const pages = [{ agents: [{ agent_id: "a" }], next_cursor: "c2" }, { agents: [{ agent_id: "b" }], next_cursor: null }];
+    const { fn } = fakeFetch(() => json(200, pages.shift()));
+    const v2 = createClient({ fetch: fn });
+    const all = await allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents);
+    expect(all.map((a) => a.agent_id)).toEqual(["a", "b"]);
   });
 });

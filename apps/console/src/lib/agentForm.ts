@@ -5,22 +5,43 @@ export type Definition = { version: number; name: string; description?: string; 
 export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number } };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools">>;
 
-/** The body of a definition edit: the current definition with the edited fields, as the next revision; name and
+/** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
  *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
-export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string } {
+export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
   // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
   const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
-  const edited: Definition = { ...agent.definition, ...editable, version: agent.revisions + 1 };
-  if (agent.kind === "workflow") delete edited.thinking;
+  const edited: Definition = { ...agent.definition, ...editable };
+  // A workflow revision takes no instructions, model or thinking beside its workflow (validate.ts refuses each).
+  if (agent.kind === "workflow") { delete edited.thinking; delete edited.instructions; delete edited.model; }
+  // An empty model is no model: the server's default.
+  if (edited.model === "") delete edited.model;
   for (const key of Object.keys(edited)) if (edited[key] === undefined) delete edited[key];
-  return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}) };
+  // serve makes no revision for a definition equal to the current one (a note alone changes nothing): then the version
+  // is the current one's. A changed definition is the next revision, number revisions + 1.
+  const unchanged = same({ ...edited, version: 0 }, { ...agent.definition, version: 0 });
+  edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
+  return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
+}
+
+/** Deep equality of two JSON values, whatever their keys' order. */
+function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a as object).filter((k) => (a as Record<string, unknown>)[k] !== undefined);
+  const kb = Object.keys(b as object).filter((k) => (b as Record<string, unknown>)[k] !== undefined);
+  return ka.length === kb.length && ka.every((k) => same((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
 }
 
 /** The body that creates an agent: its first revision, with what the form names and no skills yet. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[] }): { definition: Definition } {
-  return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness, skills: [], tools: f.tools } };
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; thinking?: string; model?: string }): { definition: Definition } {
+  return {
+    definition: {
+      version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), skills: [], tools: f.tools,
+    },
+  };
 }
 
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };

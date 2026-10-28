@@ -21,6 +21,8 @@ export type EditorProps = {
   onBack?: () => void;
   step?: Step;
   problem?: SaveProblem | null;
+  /** A message about an action outside the form (make current, archive) or after a save. */
+  notice?: string | null;
 };
 type Step = "context" | "tools" | "settings" | "history";
 
@@ -34,7 +36,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initial = "context", problem: initialProblem = null }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initial = "context", problem: initialProblem = null, notice }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initial);
@@ -74,6 +76,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
           <Button size="sm" onClick={onReload}>Reload</Button>
         </div>
       )}
+      {notice && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-warning-text md:px-8" role="alert">{notice}</p>}
+      {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         <ol className="flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:w-[240px] md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4">

@@ -26,8 +26,33 @@ describe("editBody", () => {
     expect(bare.definition).not.toHaveProperty("description");
   });
 
+  it("numbers a changed definition as the next revision, even when the current one is an earlier revision", () => {
+    // serve: a new revision is number revisions + 1 (agents.ts, the commit's checkVersion).
+    const earlier = { ...(agent.body as object), revisions: 3, definition: { ...agent.body.definition, version: 1 } } as never;
+    expect(editBody(earlier, { instructions: "Again." }, "")).toMatchObject({ unchanged: false, definition: { version: 4 } });
+  });
+
+  it("says when nothing changed: the same definition makes no new revision, a note alone included", () => {
+    // serve: a definition equal to the current revision makes none, and its version must be the current one.
+    const same = editBody(a, { instructions: agent.body.definition.instructions }, "Only a note");
+    expect(same.unchanged).toBe(true);
+    expect(same.definition.version).toBe(agent.body.definition.version);
+    expect(editBody(w, { instructions: "", tools: (workflow.body.definition as { tools: string[] }).tools }, "").unchanged).toBe(true);
+  });
+
   it("sends no note when there is none", () => {
     expect(editBody(a, { name: "Invoice checker 2" }, "  ")).not.toHaveProperty("note");
+  });
+
+  it("sends a workflow no instructions, model or thinking: the server refuses them beside a workflow", () => {
+    const body = editBody(w, { instructions: "", model: "faux/faux-1", thinking: "high", tools: [] }, "");
+    expect(body.definition).not.toHaveProperty("instructions");
+    expect(body.definition).not.toHaveProperty("model");
+    expect(body.definition).not.toHaveProperty("thinking");
+  });
+
+  it("sends no empty model: empty means the server's default", () => {
+    expect(editBody(a, { model: "" }, "").definition).not.toHaveProperty("model");
   });
 
   it("keeps a workflow's workflow and never gives it a thinking level", () => {
@@ -38,6 +63,12 @@ describe("editBody", () => {
 });
 
 describe("createBody", () => {
+  it("keeps the thinking level and model the form chose, and leaves an empty model out", () => {
+    const body = createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [], thinking: "high", model: "faux/faux-1" });
+    expect(body.definition).toMatchObject({ thinking: "high", model: "faux/faux-1" });
+    expect(createBody({ name: "A", description: "", instructions: "Do it.", harness: "pi", tools: [], model: "" }).definition).not.toHaveProperty("model");
+  });
+
   it("is a first revision with what the form names, and an empty skill set", () => {
     expect(createBody({ name: "Changelog checker", description: "", instructions: "Read the change.", harness: "pi", tools: ["read"] })).toEqual({
       definition: { version: 1, name: "Changelog checker", instructions: "Read the change.", harness: "pi", skills: [], tools: ["read"] },

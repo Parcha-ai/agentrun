@@ -63,7 +63,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       const r = await callTagged<Agent>("PUT", `${agent(id)}/definition`, { body, headers: etag ? { "if-match": etag } : {} });
       return { agent: r.body, etag: r.etag };
     },
-    listRevisions: (id: string) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions`),
+    listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     setCurrent: (id: string, revision: string) => call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }),
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
@@ -82,6 +82,19 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
+}
+
+/** Every item of a listing the server pages (`next_cursor`), read to its end (at most `max` pages). */
+export async function allPages<P extends { next_cursor: string | null }, T>(page: (cursor: string | null) => Promise<P>, items: (p: P) => T[], max = 100): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < max; i++) {
+    const p = await page(cursor);
+    out.push(...items(p));
+    if (!p.next_cursor) break;
+    cursor = p.next_cursor;
+  }
+  return out;
 }
 
 /** Follows a run's timeline from its cursor until the server says the timeline is final and has no more rows (or
