@@ -1,8 +1,8 @@
 // Codex as an AgentRun harness adapter. Written for AgentRun.
 //
 // A session is the copied Codex harness (harness.ts) driven over the session's own records (the kernel's openDrive on
-// the store the host lends), on a local machine (host/machine.ts): Codex's app-server with its built-in tools off, its
-// model behind the session's loopback proxy (host/proxy.ts), and the host's tools, exactly those `spec.tools` names,
+// the writer the runner lends, `io.writer`), on a local machine (host/machine.ts): Codex's app-server with its built-in tools off, its
+// model behind the session's loopback proxy (@parcha/agentrun-adapters/host), and the host's tools, exactly those `spec.tools` names,
 // as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
 // `afterRequest`.
 import { createHash, randomUUID } from "node:crypto";
@@ -16,7 +16,7 @@ import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION, codexBinary, codexTarget } from "./binary.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
 import { localMachine } from "./host/machine.js";
-import type { ModelProxyOptions } from "./host/proxy.js";
+import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 
 /** The pinned binary's sha256, per target, where it is recorded; any other target is checked by its version alone. */
 export const CODEX_DIGESTS: Readonly<Record<string, string>> = Object.freeze({
@@ -153,6 +153,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             proxy: {
               hooks: io.models,
               tools: spec.tools.map((t) => t.name),
+              ...(options.log ? { log: options.log } : {}),
               ...(options.price ? { price: options.price } : {}),
               ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
               ...(options.fetch ? { fetch: options.fetch } : {}),
@@ -166,7 +167,10 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         const mapped = adapterEvent(event);
         if (mapped) io.onEvent(mapped);
       };
-      const open = () => openDrive({ store: io.store, key: spec.key, signal: io.signal, live });
+      // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
+      // once the halted drive's last writes are in.
+      const writer = serialWriter(io.writer);
+      const open = () => openDrive({ writer, signal: io.signal, live });
       let drive = await open();
       const initial = drive.state();
       let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
@@ -195,7 +199,8 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         })();
         return running;
       };
-      // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one.
+      // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
+      // writer (the adapter never opens the session itself).
       const ready = async () => {
         if (closed) throw new Error("agentrun-codex: the session is closed");
         if (running) await running;

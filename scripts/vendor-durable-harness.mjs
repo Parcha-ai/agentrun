@@ -51,6 +51,13 @@ export async function provenanceProblems(dir) {
   return problems;
 }
 
+/** A copy's three header lines, and the rest of it: an executable script keeps its `#!` line first, the header after it. */
+function headerOf(text) {
+  const lines = text.split('\n');
+  const at = lines[0]?.startsWith('#!') ? 1 : 0;
+  return { head: lines.slice(at, at + 3), body: [...lines.slice(0, at), ...lines.slice(at + 3)].join('\n') };
+}
+
 /** The kind of record for a file written for AgentRun that keeps a few named upstream declarations. */
 export const MATCHED = 'interfaces matched';
 
@@ -81,7 +88,7 @@ export async function changedLines(dir, { diff: command = 'diff' } = {}) {
   const out = {};
   for (const [path, record] of Object.entries(upstream.files ?? {})) {
     if (record.kind === MATCHED) continue;
-    const ours = (await readFile(join(dir, path), 'utf8')).split('\n').slice(3).join('\n');
+    const ours = headerOf(await readFile(join(dir, path), 'utf8')).body;
     let diff = '';
     try {
       execFileSync(command, ['-U0', join(dir, PRISTINE_DIR, record.upstream), '-'], { input: ours, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });

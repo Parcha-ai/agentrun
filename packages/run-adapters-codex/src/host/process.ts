@@ -1,6 +1,6 @@
 // The process-harness names the copied Codex harness imports: the copied layer from @parcha/agentrun-adapters/process,
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
-// harness describes for its model proxy (proxy.ts), and model-step tracking (nothing to track locally).
+// harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
 import type { DriveContext } from "./kernel.js";
 
 export {
@@ -107,7 +107,7 @@ export interface GatewayLedger {
   add(usd: number, info: { method: string; path: string; model?: string; estimated?: boolean }): void;
 }
 
-/** What the harness says about its model route; the machine's proxy serves it (proxy.ts). */
+/** What the harness says about its model route; the machine's proxy serves it (machine.ts). */
 export interface GatewayHandlerOptions {
   routes: readonly GatewayRoute[];
   models: { model: string };

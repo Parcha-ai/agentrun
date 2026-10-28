@@ -4,7 +4,7 @@
 //  - A child's environment is an allowlist: PATH, LANG and TZ from this process, plus what the harness names (its homes,
 //    and the per-session proxy key). Nothing else is inherited, so no provider key, token or host secret reaches it.
 //  - Each child runs in its own process group, which kill() and close() end whole.
-//  - The model proxy (proxy.ts) starts with the machine and stops with it.
+//  - The model proxy (@parcha/agentrun-adapters/host, with the Codex policy) starts with the machine and stops with it.
 import { spawn as spawnChild } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -13,7 +13,8 @@ import { createInterface } from "node:readline";
 import { FileTail } from "@parcha/agentrun-adapters/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
-import { startModelProxy, type ModelProxyOptions } from "./proxy.js";
+import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
+import { codexPolicy } from "./policy-stub.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -23,8 +24,16 @@ const STDERR_TAIL = 8 * 1024;
 export interface LocalMachineOptions {
   /** The session's own directory. The machine makes its private directories in it and deletes only those. */
   dir: string;
-  /** The model proxy's hooks and limits; its route comes from the harness. */
-  proxy: Omit<ModelProxyOptions, "route">;
+  /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
+   *  from the harness. */
+  proxy: {
+    hooks: ModelProxyHooks;
+    tools: readonly string[];
+    price?: ModelProxyOptions["price"];
+    maxOutputTokens?: number;
+    log?: ModelProxyOptions["log"];
+    fetch?: typeof fetch;
+  };
   /** For tests: the process environment the allowlist reads. Default `process.env`. */
   env?: Readonly<Record<string, string | undefined>>;
 }
@@ -112,7 +121,17 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     for (const dir of [...Object.values(dirs), root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
     const key = randomBytes(32).toString("base64url");
-    const proxy = await startModelProxy({ ...options.proxy, route: model.options }, key);
+    const route = model.options;
+    const proxy = await startModelProxy({
+      policy: codexPolicy({ model: route.models.model, tools: options.proxy.tools, ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}) }),
+      hooks: options.proxy.hooks,
+      model: route.models.model,
+      origin: route.target,
+      credential: async () => (await route.credential()) ?? "",
+      ...(options.proxy.price ? { price: options.proxy.price } : {}),
+      ...(options.proxy.log ? { log: options.proxy.log } : {}),
+      ...(options.proxy.fetch ? { fetch: options.proxy.fetch } : {}),
+    }, key);
     const lost = new AbortController();
     const children = new Set<SessionProcess>();
     let closed = false;

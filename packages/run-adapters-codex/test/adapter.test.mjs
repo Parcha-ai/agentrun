@@ -99,7 +99,7 @@ test("a crash inside a never tool's call: the next process recovers the turn, an
 
   // The first process: the call starts, then the process dies (its signal), with no outcome written.
   const first = new AbortController();
-  const a = await codex.open(spec, { store, models, signal: first.signal, onEvent: () => {} });
+  const a = await codex.open(spec, { writer: await store.open(spec.key), models, signal: first.signal, onEvent: () => {} });
   assert.equal(a.state, 'new');
   await a.send('pay');
   await reached;
@@ -108,7 +108,7 @@ test("a crash inside a never tool's call: the next process recovers the turn, an
   await a.close();
 
   // The next process: the turn is open; recovering it reports the call interrupted and does not run it again.
-  const b = await codex.open(spec, { store, models, signal: new AbortController().signal, onEvent: () => {} });
+  const b = await codex.open(spec, { writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
   assert.equal(b.state, 'open_turn');
   await b.recover();
   assert.equal((await b.turnEnd()).status, 'completed');
