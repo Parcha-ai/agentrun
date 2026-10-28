@@ -1,6 +1,6 @@
 // The host's tools as the model meets them on the pinned Claude Agent CLI, through the adapter and the real Agent SDK,
 // with a scripted model behind the session's proxy: each tool's JSON Schema reaches the model as the host gave it,
-// byte for byte; a description longer than the CLI's default cut reaches it whole; and the arguments the model sends,
+// every key and value (the CLI puts some of the root's keys first); a description longer than the CLI's default cut reaches it whole; and the arguments the model sends,
 // an open object's keys included, reach the host's tool as sent.
 //
 // Without the pinned CLI this skips; with AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1 (CI) a missing or different one fails.
@@ -45,15 +45,16 @@ const OPEN = { type: 'object', additionalProperties: true };
 // Longer than the CLI's default cut (2048), with its end marked: a cut description loses the marker.
 const LONG = `${'Write one record. '.repeat(1_700)}The last line: END-OF-DESCRIPTION.`;
 
-// The CLI writes a tool's root as `{ type, properties, required, ...the rest }`: those keys first (when there), everything else in the host's
-// order, every key and value the host's (measured over the public schema corpus on the pinned CLI). JSON Schema has no
-// key order, so this is the host's schema; anything more than that order on the wire fails here.
-const onWire = ({ type, properties, required, ...rest }) => JSON.stringify({ type, properties, required, ...rest });
+// The CLI writes a tool's root as `{ type, properties, required, ...the rest }`: those keys first (when there), everything
+// else in the host's order, every key and value the host's (measured over the public schema corpus on the pinned CLI).
+// JSON Schema has no key order, so the bar is the host's schema after sorting keys at every depth: key order is the only
+// thing this comparison forgives.
+const canonical = (v) => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 
 const RECORD_ARGS = { id: 'abc', score: 3, tags: ['x'], when: null, owner: { name: 'Zoë' }, value: { nested: { deep: [1, { x: null }] }, 'ünï': 'ç', empty: {} } };
 const OPEN_ARGS = { anything: { a: 1, b: [true, 'two'] }, text: 'naïve — ok' };
 
-test("the host's tool schemas reach the model byte for byte, a long description reaches it whole, and an open object's arguments reach the tool as sent", { skip, timeout: 240_000 }, async (t) => {
+test("the host's tool schemas reach the model with every key and value, a long description reaches it whole, and an open object's arguments reach the tool as sent", { skip, timeout: 240_000 }, async (t) => {
   const dir = mkdtempSync(join(ROOT, 'run-'));
   const plan = [
     { tool: { name: 'mcp__hands__record', input: RECORD_ARGS } },
@@ -80,7 +81,7 @@ test("the host's tool schemas reach the model byte for byte, a long description 
   t.diagnostic(`the record tool's root on the wire: ${Object.keys(wire).join(', ')}; $defs ${JSON.stringify(wire.$defs)}`);
   for (const r of requests) {
     const offered = new Map((r.body.tools ?? []).map((x) => [x.name, x]));
-    assert.equal(JSON.stringify(offered.get('mcp__hands__record')?.input_schema), onWire(RECORD), "the record tool's schema, byte for byte but the root's order");
+    assert.equal(canonical(offered.get('mcp__hands__record')?.input_schema), canonical(RECORD), "the record tool's schema, every key and value the host's");
     assert.equal(JSON.stringify(offered.get('mcp__hands__open')?.input_schema), JSON.stringify(OPEN), "the open tool's schema, byte for byte");
     assert.equal(offered.get('mcp__hands__record')?.description, LONG, `the long description whole (${offered.get('mcp__hands__record')?.description?.length} of ${LONG.length} characters)`);
     assert.equal(offered.get('mcp__hands__open')?.description, 'Take anything.');
