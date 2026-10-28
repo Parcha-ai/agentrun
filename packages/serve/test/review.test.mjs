@@ -5,16 +5,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { learningId, proposeLearning, recordsOf } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
-import { childEnv } from "../dist/runs.js";
 import { readRunState, writeRunState } from "../dist/learning.js";
+import { childEnv } from "../dist/runs.js";
 import { agent, client, FAUX, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
@@ -333,7 +333,10 @@ test("a judge that never answers cannot hold shutdown: close() ends within the d
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   let asked = false;
-  const hung = () => ((asked = true), new Promise(() => {}));
+  const hung = () => {
+    asked = true;
+    return new Promise(() => {});
+  };
   const server = await startServe({ data: join(dir, "agents"), port: 0, faux: FAUX, drainTimeout: "5s", learning: { screen: SCREEN, judge: hung } });
   const api = client(server.baseUrl, server.token);
   await api("POST", "/agents", agent("calc", { learning: "auto" }));
@@ -351,7 +354,11 @@ test("a judge that never answers cannot hold shutdown: close() ends within the d
 function holdStore(t, data) {
   const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
   store.exec("BEGIN EXCLUSIVE");
-  const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
+  const release = () => {
+    if (!store.isOpen) return;
+    if (store.isTransaction) store.exec("ROLLBACK");
+    store.close();
+  };
   t.after(release);
   return release;
 }
