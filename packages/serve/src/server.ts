@@ -19,6 +19,7 @@ import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { type LearningOptions, Review } from "./learning-review.js";
+import { answerLearning, LEARNING_ROUTES, type LearningContext } from "./learning-routes.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, hostSecrets, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
@@ -148,6 +149,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", capability: "files.upload" },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
+  ...LEARNING_ROUTES,
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -304,6 +306,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     .catch((error: Error) => void process.stderr.write(`agentrun-serve: learning catch-up: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
+
+  /** The learning routes' view of this server. */
+  const learningContext: LearningContext = {
+    data, agents, review, secrets, runOf: (id) => needRun(id), bodyOf: (req) => bodyOf(req),
+    ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}),
+  };
 
   /** The host commit of an agent's current revision on its learning repository's main. The revision is written either
    *  way: a failed commit is said, and the agent's next run makes it before it starts. */
@@ -782,6 +790,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "getUsage":
         return send(res, 200, await usage(url));
     }
+    if (LEARNING_ROUTES.some((r) => r.name === found.name)) return answerLearning(found.name, req, res, url, id, second, learningContext);
     throw new ApiError("not_found", `no route ${path}`);
   }
 

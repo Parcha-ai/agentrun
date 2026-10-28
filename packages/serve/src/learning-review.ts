@@ -15,7 +15,10 @@ import { CATCH_UP_BUSY_MS, learningOf, learningRunsDir, openAgentRepo, type RunS
 
 /** What a host gives review: the injection screen (the browser lane's page judge and its threshold) and, in tests, the
  *  judge. Without `judge`, the judge is Jev's, on the server's TYPESAFE_API_KEY. */
-export type LearningOptions = { screen?: InjectionScreen; judge?: Judge };
+export type LearningOptions = {
+  screen?: InjectionScreen;
+  judge?: Judge;
+};
 
 export const NO_SCREEN = "no injection screen on this server";
 export const NO_JUDGE = "no judge on this server";
