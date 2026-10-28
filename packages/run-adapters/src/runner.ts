@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore } from "./types.js";
+import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 export type HarnessRunner = (request: NodeRequest) => Promise<unknown>;
 
@@ -63,6 +63,112 @@ const positive = (value: number, name: string): number => {
  *  refused answer, a misconfigured model) would be sent turns forever, on microtasks no timer can interrupt. */
 export const NO_PROGRESS_TURNS = 3;
 
+/** What a paid request tells a host, beside its session's key and label. */
+export type ModelPortEvent = { type: "request_start"; turn: number; model: string } | { type: "request_end"; turn: number; usage: ModelUsage };
+
+export interface ModelPortOptions {
+  /** The session's key: what `beforeRequest` and every event carry. */
+  key: string;
+  label?: string;
+  executionPath?: string;
+  /** The most paid requests (turns) the session may make in this attempt; null (the default) for no limit. */
+  maxTurns?: number | null;
+  budgetUsd?: number;
+  /** Asked before every paid request; a `refuse` ends the attempt. */
+  beforeRequest?: BeforeRequest;
+  onEvent?: (event: ModelPortEvent & { key: string; label: string; executionPath?: string }) => void;
+  /** The session's records, as already read (default: read from the writer). */
+  records?: readonly SessionRecord[];
+  /** How a record is written (default: the writer's append, which a newer open fences). */
+  append?: (records: SessionRecord[]) => Promise<void>;
+  /** The attempt has stopped: the error a new paid request is refused with. */
+  stopped?: () => Error | undefined;
+  /** The port ends the attempt (the turn limit, the host's refusal, a cost it could not record): the error it throws. */
+  stop?: (reason: "turn_limit" | "refused" | "model_error", message?: string) => Error;
+}
+
+/** A session's booking of paid model requests: the adapter's model port, and what it has counted. */
+export interface ModelBooking {
+  /** The port the adapter's session reports every paid request to (`SessionIO.models`). */
+  readonly models: ModelPort;
+  /** Paid requests that left in this session, one a crash cut off included. */
+  turns(): number;
+  /** What they cost; null once one's price is unknown. */
+  spentUsd(): number | null;
+  /** Books, once, each paid request a crash cut off (a `runner.request` with no `runner.turn`): a `runner.turn` marked
+   *  `cut` at an unknown price, and a `request_end` saying so. A booked request is answered, so this is idempotent.
+   *  Call it before the session sends anything. */
+  bookCut(): Promise<void>;
+}
+
+/** The runner's booking of paid model requests, for a host that drives an adapter session itself (a chat run): the same
+ *  records (`runner.request` before a request leaves, `runner.turn` with its cost when it answers), the same turn limit
+ *  and `beforeRequest`, the same events. `createHarnessRunner` is built on it. */
+export async function modelPortFor(writer: SessionWriter, options: ModelPortOptions): Promise<ModelBooking> {
+  return bookingFor(writer, { ...options, records: options.records ?? (await writer.read()) });
+}
+
+function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records: readonly SessionRecord[] }): ModelBooking {
+  const node = { key: options.key, label: options.label ?? options.key, ...(options.executionPath === undefined ? {} : { executionPath: options.executionPath }) };
+  const limit = options.maxTurns ?? null;
+  const append = options.append ?? ((records: SessionRecord[]) => writer.append(records));
+  const emit = (event: ModelPortEvent) => options.onEvent?.({ ...event, ...node });
+  // A turn is a paid request that left: counted from the records written before each one left, so a request a crash cut
+  // off still counts against the turn cap. What it cost is unknown, so the session's spend is too from then on.
+  let turns = options.records.filter((r) => r.kind === RUNNER_RECORDS.request).length;
+  const booked = options.records.filter((r) => r.kind === RUNNER_RECORDS.turn);
+  let answered = booked.length;
+  let spentUsd: number | null = answered < turns ? null : booked.reduce<number | null>((sum, r) => {
+    const usd = (r.data as { usd?: number | null }).usd;
+    return sum === null || usd === null ? null : sum + (usd ?? 0);
+  }, 0);
+  const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
+    options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
+  const models: ModelPort = {
+    beforeRequest: async ({ model }: { model: string }) => {
+      const stopped = options.stopped?.();
+      if (stopped) throw stopped;
+      if (limit !== null && turns >= limit) throw end("turn_limit");
+      const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd });
+      if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
+      // Durable before the request leaves: admitted, then sent.
+      await append([{ kind: RUNNER_RECORDS.request, data: { turn: turns + 1, model } }]);
+      turns += 1;
+      emit({ type: "request_start", turn: turns, model });
+    },
+    afterRequest: async (usage: ModelUsage) => {
+      spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
+      try {
+        await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
+      } catch (error) {
+        // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
+        if (!options.stopped?.()) end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+        throw error;
+      }
+      answered += 1;
+      emit({ type: "request_end", turn: turns, usage });
+    },
+  };
+  return {
+    models,
+    turns: () => turns,
+    spentUsd: () => spentUsd,
+    async bookCut() {
+      // A paid request a crash cut off kept its runner.request and has no runner.turn: the provider may have billed it.
+      // Each is booked once, as cut, at an unknown price, and the host is told as for any answered request, so its ledger
+      // shows the possible spend instead of nothing. Booked, it is answered: a later attempt never books it again.
+      const unanswered = turns - answered;
+      if (unanswered <= 0) return;
+      const cut: ModelUsage = { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true };
+      const numbers = Array.from({ length: unanswered }, (_, i) => answered + i + 1);
+      await append(numbers.map((turn) => ({ kind: RUNNER_RECORDS.turn, data: { usd: null, cut: true, turn } })));
+      answered = turns;
+      spentUsd = null;
+      for (const turn of numbers) emit({ type: "request_end", turn, usage: cut });
+    },
+  };
+}
+
 const NUDGE = "You finished without an accepted submission. Call submit with the complete result; plain text does not deliver it.";
 
 export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunnerOptions): HarnessRunner {
@@ -107,21 +213,16 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const validator = Compile(request.schema as never);
     const parameters = submitParameters(request.schema);
     const envelope = Compile(parameters as never);
-    // A turn is a paid request that left: counted from the records written before each one left, so a request a crash cut
-    // off still counts against the turn cap. What it cost is unknown, so the session's spend is too from then on.
-    let turns = earlier.filter((r) => r.kind === RUNNER_RECORDS.request).length;
     let submissions = earlier.filter((r) => r.kind === RUNNER_RECORDS.submit).length;
-    const answered = earlier.filter((r) => r.kind === RUNNER_RECORDS.turn);
-    let spentUsd: number | null = answered.length < turns ? null : answered.reduce<number | null>((sum, r) => {
-      const usd = (r.data as { usd?: number | null }).usd;
-      return sum === null || usd === null ? null : sum + (usd ?? 0);
-    }, 0);
+    // The session's paid requests, counted and booked by its model port (modelPortFor), made once `append` exists below.
+    let booking!: ModelBooking;
+    const turnsSoFar = () => booking?.turns() ?? 0;
     let accepted = false;
     let submission: unknown;
     let lastTool: string | undefined;
     let stopped: HarnessRunError | undefined;
     const failure = (reason: HarnessRunError["reason"], message?: string) =>
-      new HarnessRunError(reason, turns, submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
+      new HarnessRunError(reason, turnsSoFar(), submissions, { maxTurns: limit, ...(lastTool === undefined ? {} : { lastTool }), ...(message === undefined ? {} : { message }) });
 
     const controller = new AbortController();
     let rejectStopped!: (error: unknown) => void;
@@ -143,6 +244,14 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
         throw error;
       }
     };
+    booking = bookingFor(writer, {
+      ...node, maxTurns: limit, records: earlier, append,
+      ...(request.budgetUsd === undefined ? {} : { budgetUsd: request.budgetUsd }),
+      ...(options.beforeRequest ? { beforeRequest: options.beforeRequest } : {}),
+      onEvent: (event) => emit(event),
+      stopped: () => stopped,
+      stop: (reason, message) => { stop(failure(reason, message)); return stopped!; },
+    });
 
     const submit: HostTool = {
       name: SUBMIT_TOOL,
@@ -199,35 +308,7 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       ...adapter.check(spec),
     ];
     if (problems.length) throw refuse(problems.join("; "));
-    const models = {
-      beforeRequest: async ({ model }: { model: string }) => {
-        if (stopped) throw stopped;
-        if (limit !== null && turns >= limit) {
-          stop(failure("turn_limit"));
-          throw stopped;
-        }
-        const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(request.budgetUsd === undefined ? {} : { budgetUsd: request.budgetUsd }), spentUsd });
-        if (verdict && "refuse" in verdict) {
-          stop(failure("refused", verdict.refuse));
-          throw stopped;
-        }
-        // Durable before the request leaves: admitted, then sent.
-        await append([{ kind: RUNNER_RECORDS.request, data: { turn: turns + 1, model } }]);
-        turns += 1;
-        emit({ type: "request_start", turn: turns, model });
-      },
-      afterRequest: async (usage: ModelUsage) => {
-        spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
-        try {
-          await append([{ kind: RUNNER_RECORDS.turn, data: { usd: usage.usd } }]);
-        } catch (error) {
-          // A paid request whose cost can't be kept: the node stops, saying so, rather than spend on uncounted.
-          if (!stopped) stop(failure("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`));
-          throw error;
-        }
-        emit({ type: "request_end", turn: turns, usage });
-      },
-    };
+    const models = booking.models;
 
     let session: Awaited<ReturnType<AgentAdapter["open"]>> | undefined;
     let opening: Promise<Awaited<ReturnType<AgentAdapter["open"]>>> | undefined;
@@ -238,6 +319,8 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
     const timer = timeoutMs === null ? undefined : setTimeout(() => stop(failure("timeout")), timeoutMs);
     try {
       if (stopped) throw stopped;
+      // A paid request a crash cut off is booked once, as cut, at an unknown price, before this attempt sends anything.
+      await booking.bookCut();
       session = await bounded(opening = adapter.open(spec, {
         writer,
         models,
@@ -259,19 +342,19 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       let sends = 0;
       let idle = 0;
       const progressed = (before: number) => {
-        idle = accepted || turns > before ? 0 : idle + 1;
+        idle = accepted || turnsSoFar() > before ? 0 : idle + 1;
         if (idle >= NO_PROGRESS_TURNS && !accepted) stop(failure("no_progress", `harness node stopped: no_progress, ${idle} turns in a row made no paid request and delivered nothing`));
       };
       if (session.state === "open_turn") {
-        const before = turns;
+        const before = turnsSoFar();
         sends += 1;
         await bounded(session.recover());
         await turnOf();
         progressed(before);
       }
       let prompt = session.state === "new" ? request.user : NUDGE;
-      while (!accepted && !stopped && (limit === null || turns < limit) && sends < sendLimit) {
-        const before = turns;
+      while (!accepted && !stopped && (limit === null || turnsSoFar() < limit) && sends < sendLimit) {
+        const before = turnsSoFar();
         sends += 1;
         await bounded(session.send(prompt));
         await turnOf();
@@ -280,9 +363,9 @@ export function createHarnessRunner(adapter: AgentAdapter, options: HarnessRunne
       }
       if (accepted) return submission;
       if (stopped) throw stopped;
-      if (limit !== null && turns >= limit) throw failure("turn_limit");
+      if (limit !== null && turnsSoFar() >= limit) throw failure("turn_limit");
       // The sends ran out first: say so, since the turns reported are below the limit.
-      throw failure("turn_limit", `harness node stopped: turn_limit, ${sends} turns sent (the cap on sends) made ${turns} paid requests and ${submissions} submissions`);
+      throw failure("turn_limit", `harness node stopped: turn_limit, ${sends} turns sent (the cap on sends) made ${turnsSoFar()} paid requests and ${submissions} submissions`);
     } catch (error) {
       if (accepted) return submission;
       if (stopped) throw stopped;

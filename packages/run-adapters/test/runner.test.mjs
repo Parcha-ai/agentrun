@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, openJournal, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
-import { createHarnessRunner, HarnessRunError, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
+import { createHarnessRunner, HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { fauxAdapter as scriptedAdapter, memorySessionStore, FAUX_RECORDS } from '@parcha/agentrun-adapters/testing';
 
 /** Every test fails in 30 s at most: a node a regression leaves waiting fails the run instead of hanging it. */
@@ -357,6 +357,28 @@ test("after a crash cut a paid request off, the host's beforeRequest sees it: th
   assert.deepEqual(outcome.value, { answer: 'ok' });
 });
 
+test('a paid request a crash cut off is booked once as cut, at an unknown price, however many times the session is recovered', async () => {
+  const store = memorySessionStore();
+  const ends = [];
+  const onEvent = (e) => { if (e.type === 'request_end') ends.push({ turn: e.turn, ...e.usage }); };
+  // The first process: its paid request leaves and the process dies before an answer.
+  const dying = fauxAdapter({ script: () => [{ cut: true }] });
+  const died = new AbortController();
+  const first = createHarnessRunner(dying, { store, onEvent, signal: died.signal, timeoutMs: 5_000 })(stepRequest());
+  await until(() => dying.requests >= 1, 'a paid request');
+  died.abort(new Error('the process died'));
+  await assert.rejects(first);
+  // The second process dies before its harness opens; the third delivers.
+  const gone = { id: 'gone', version: '0', capabilities: () => ({ fork: false }), check: () => [], open: async () => { throw new Error('the box was lost'); } };
+  await assert.rejects(createHarnessRunner(gone, { store, onEvent, timeoutMs: 5_000 })(stepRequest()));
+  const next = fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }] });
+  assert.deepEqual(await createHarnessRunner(next, { store, onEvent })(stepRequest()), { answer: 'ok' });
+  const cuts = (await store.read('step:s1')).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true);
+  assert.deepEqual(cuts.map((r) => r.data), [{ usd: null, cut: true, turn: 1 }], 'one cut booking, for turn 1');
+  assert.deepEqual(ends.filter((e) => e.cut), [{ turn: 1, input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }], 'the host was told once');
+  assert.equal(ends.filter((e) => !e.cut).length, 1, "the third process's own request");
+});
+
 test('a session that opens after the run was stopped is interrupted and closed, so no harness outlives the node', async () => {
   const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'late' } }], openDelayMs: 200 });
   const stop = new AbortController();
@@ -462,4 +484,43 @@ test('a stop that lands while the session store is being read rejects aborted at
     assert.ok(Date.now() - released < 200, `${via}: promptly`);
     assert.equal(adapter.opened.length, 0, `${via}: no session was opened`);
   }
+});
+
+test("modelPortFor, alone (a chat run's session): the runner's records and events, its turn limit and refusal, and a cut request booked once across processes", async () => {
+  const store = memorySessionStore();
+  const key = 'chat:c1';
+  const events = [];
+  const asked = [];
+  const port = async (extra = {}) => modelPortFor(await store.open(key), { key, maxTurns: 3, beforeRequest: (r) => { asked.push([r.key, r.turn, r.spentUsd]); }, onEvent: (e) => events.push(e), ...extra });
+  const runnerRecords = async () => (await store.read(key)).filter((r) => r.kind.startsWith('runner.')).map((r) => [r.kind, r.data]);
+
+  // The first process: one answered request, then one a crash cuts off (it left, no answer came back).
+  const first = await port();
+  await first.models.beforeRequest({ model: 'm' });
+  await first.models.afterRequest({ input: 10, output: 2, cacheRead: 0, usd: 0.5 });
+  await first.models.beforeRequest({ model: 'm' });
+  assert.deepEqual(await runnerRecords(), [[RUNNER_RECORDS.request, { turn: 1, model: 'm' }], [RUNNER_RECORDS.turn, { usd: 0.5 }], [RUNNER_RECORDS.request, { turn: 2, model: 'm' }]], "the runner's own records");
+  assert.deepEqual([first.turns(), first.spentUsd()], [2, 0.5]);
+
+  // The next process: the cut request counts as a turn, the spend is unknown, and it is booked once, as cut.
+  events.length = 0;
+  const second = await port();
+  assert.deepEqual([second.turns(), second.spentUsd()], [2, null]);
+  await second.bookCut();
+  await second.bookCut();
+  const third = await port();
+  await third.bookCut();
+  const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
+  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2 }], 'booked once, across processes');
+  assert.deepEqual(events, [{ type: 'request_end', turn: 2, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }, key, label: key }], "the host is told once, with the session's key and the request's turn");
+
+  // The turn limit counts the cut request; the host's beforeRequest saw the session's key, its turn and the spend.
+  await third.models.beforeRequest({ model: 'm' });
+  await assert.rejects(third.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'turn_limit');
+  assert.deepEqual(asked, [[key, 1, 0], [key, 2, 0.5], [key, 3, null]]);
+  // A refusal from the host refuses the request, and nothing is written for it.
+  const refusing = await port({ maxTurns: null, beforeRequest: () => ({ refuse: 'over budget' }) });
+  const before = (await store.read(key)).length;
+  await assert.rejects(refusing.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'refused');
+  assert.equal((await store.read(key)).length, before);
 });
