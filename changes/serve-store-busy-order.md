@@ -4,5 +4,6 @@ kind: ci
 ---
 **The agent store's busy tests check that the server answers by order, not by a clock**
 - The five tests that hold the agent store from another connection asserted that `GET /capabilities` answered in under 200 ms while a request waited. Under CI load that bound tripped with no stall in the server (277 ms on a Node 24 runner).
-- They now send five `GET /capabilities` while the store is still held, and require every answer before the waiting request answers (for a run's end, before its next try of the store). A store wait that blocked the event loop answers none of them until it ends, so the test fails by order whatever the runner's speed.
+- They now send five `GET /capabilities` while the store is still held, and require every answer before the waiting request answers. A store wait that blocked the event loop answers none of them until it ends, so the test fails by order whatever the runner's speed.
+- Each test also watches the server's busy tries of the store and requires a turn of the event loop between every two of them: a callback set at one try must have run by the next. A wait that blocks the loop at any step of the backoff, not only the first, fails that check.
 - The store-timing contracts stay: a create or an edit still waits about as long as the store is held, and a request held past about 2 s still answers `home_busy`.
