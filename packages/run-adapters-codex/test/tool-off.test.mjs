@@ -12,7 +12,8 @@ import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { codexAdapter } from '@parcha/agentrun-codex';
-import { findCodex, verifyCodexBinary } from '../dist/binary.js';
+import { findCodex } from '../dist/binary.js';
+import { verifyCodexBinary } from '../dist/verify.js';
 
 const binary = verifyCodexBinary(findCodex());
 const problem = binary instanceof Error ? binary.message : undefined;

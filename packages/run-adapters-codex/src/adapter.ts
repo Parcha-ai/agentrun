@@ -11,7 +11,8 @@ import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, S
 import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
-import { CODEX_VERSION, verifyCodex } from "./binary.js";
+import { CODEX_VERSION } from "./binary.js";
+import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
 import { localMachine } from "./host/machine.js";
 import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
