@@ -232,3 +232,16 @@ test('a paid answer cut at its output limit (response.incomplete) is booked at i
   await settled();
   assert.deepEqual(reports, [{ input: 2000, output: 32_000, cacheRead: 1000, cacheWrite: 0, usd: (2000 + 32_000 + 1000) / 1e6 }]);
 });
+
+test("a code-mode request (its exec and wait carriers) is refused at the proxy: this adapter runs classic tools only", async () => {
+  const { p, forwarded } = await proxy();
+  const carriers = { type: 'additional_tools', tools: [{ type: 'namespace', name: 'code_mode', tools: [{ type: 'custom', name: 'exec' }, { type: 'function', name: 'wait', parameters: { type: 'object', properties: {} } }] }] };
+  for (const input of [[carriers], [...RECORDED_REQUEST.input, carriers], [{ type: 'additional_tools', tools: [] }]]) {
+    const r = await send(p.url, { body: { ...RECORDED_REQUEST, input } });
+    assert.equal(r.status, 400, JSON.stringify(input).slice(0, 80));
+    assert.match(r.text, /code mode/);
+  }
+  // A top-level carrier is not the session's tool either: it is dropped, so no code-mode runtime is offered.
+  assert.equal((await send(p.url, { body: { ...RECORDED_REQUEST, tools: [{ type: 'custom', name: 'exec' }, { type: 'function', name: 'wait' }, { type: 'function', name: 'lookup' }] } })).status, 200);
+  assert.deepEqual(forwarded.map((f) => f.body.tools.map((t) => t.name)), [['lookup']]);
+});

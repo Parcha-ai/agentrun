@@ -12,8 +12,8 @@
 // format (plain text, or the JSON schema a node's output schema becomes) and a verbosity, and the model is the session's.
 // `max_output_tokens` is clamped. No tool the provider runs on its own passes: web search, which the CLI
 // adds whatever its config says, is dropped, and any other provider-hosted tool is refused. A function or custom tool
-// that is not one of the session's names is dropped, so the model is offered exactly the host's tools (or, in code
-// mode, the carriers it calls them through).
+// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. This adapter
+// runs classic function tools only: a code-mode request (its `additional_tools` carriers, exec and wait) is refused.
 //
 // Usage is read from the stream's `response.completed` (or `response.incomplete`, a paid response cut at its output
 // limit), each `data:` line parsed as JSON on its own, never matched as text. OpenAI counts cached and cache-write tokens
@@ -38,8 +38,6 @@ const DROPPED_KEYS = new Set(["client_metadata"]);
 const INCLUDE = new Set(["reasoning.encrypted_content"]);
 /** Provider-hosted tools the CLI adds to every request whatever its config says: dropped, never offered. */
 const DROPPED_TOOLS = new Set(["web_search", "web_search_preview"]);
-/** Code mode's carriers: the tools a code-mode model calls the session's tools through. */
-const CODE_MODE: Readonly<Record<string, string>> = Object.freeze({ exec: "custom", wait: "function" });
 
 export interface CodexPolicyOptions {
   /** The session's model: the body's model is set to it. */
@@ -52,8 +50,8 @@ export interface CodexPolicyOptions {
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A list of tool definitions with no provider-hosted tool, less any not the session's own (or code mode's carriers). */
-function ownTools(tools: unknown, allowed: ReadonlySet<string>, carriers: boolean): unknown[] {
+/** A list of tool definitions with no provider-hosted tool, less any not the session's own. */
+function ownTools(tools: unknown, allowed: ReadonlySet<string>): unknown[] {
   if (!Array.isArray(tools)) throw new ProxyRefusal(400, "tools is not a list");
   const out: unknown[] = [];
   for (const tool of tools) {
@@ -62,14 +60,13 @@ function ownTools(tools: unknown, allowed: ReadonlySet<string>, carriers: boolea
     const name = typeof tool.name === "string" ? tool.name : "";
     if (DROPPED_TOOLS.has(type)) continue;
     if (type === "namespace") {
-      // A namespace holds the tools of a built-in family (or code mode's own): only the session's own ones stay, and an
-      // empty one goes.
-      const kept = ownTools(tool.tools, allowed, carriers);
-      if (carriers || kept.length) out.push({ ...tool, tools: kept });
+      // A namespace holds the tools of a built-in family: only the session's own ones stay, and an empty one goes.
+      const kept = ownTools(tool.tools, allowed);
+      if (kept.length) out.push({ ...tool, tools: kept });
       continue;
     }
     if (type !== "function" && type !== "custom") throw new ProxyRefusal(403, "a provider-hosted or unknown kind of tool is not offered to this session's model");
-    if (allowed.has(name) || (carriers && CODE_MODE[name] === type)) out.push(tool);
+    if (allowed.has(name)) out.push(tool);
   }
   return out;
 }
@@ -200,10 +197,10 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (out.stream !== undefined && typeof out.stream !== "boolean") throw new ProxyRefusal(400, "stream is not a boolean");
       if (out.reasoning !== undefined && !isPlain(out.reasoning)) throw new ProxyRefusal(400, "reasoning is not an object");
       if (out.text !== undefined) out.text = textOptions(out.text);
-      if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed, false);
+      if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed);
       if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed);
       if (Array.isArray(out.input)) {
-        out.input = out.input.map((item) => (isPlain(item) && item.type === "additional_tools" ? { ...item, tools: ownTools(item.tools, allowed, true) } : item));
+        if (out.input.some((item) => isPlain(item) && item.type === "additional_tools")) throw new ProxyRefusal(400, "code mode is not supported by this adapter yet: its tools run as classic function calls only");
       }
       const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
       return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
