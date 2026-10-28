@@ -9,8 +9,9 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { REQUEST_ENDED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import type { DurableRun } from "@parcha/pi-durable-disk";
 
-/** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). */
-export async function markRequests<M extends Models>(models: M): Promise<{ models: M; open(run: DurableRun): void }> {
+/** `models` with each generation request marked before it leaves, once `open` hands over the run (its Harness). Once
+ *  `cancelled` says the run was cancelled, no request is sent: each is refused here, before it is marked. */
+export async function markRequests<M extends Models>(models: M, cancelled: () => boolean = () => false): Promise<{ models: M; open(run: DurableRun): void }> {
   const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
   let open!: (run: DurableRun) => void;
   // A request a resumed turn sends before the app's open waits for it: the mark needs the run's store.
@@ -28,6 +29,12 @@ export async function markRequests<M extends Models>(models: M): Promise<{ model
   const streamSimple = (model: Model<Api>, context: Context, options?: Parameters<Models["streamSimple"]>[2]) => {
     const outer = createAssistantMessageEventStream();
     void (async () => {
+      if (cancelled()) {
+        const message = failed(model, "the run was cancelled: the model request was not sent");
+        outer.push({ type: "error", reason: "error", error: message });
+        outer.end(message);
+        return;
+      }
       try {
         await mark(REQUEST_STARTED);
       } catch (error) {

@@ -52,3 +52,17 @@ test("a request cut before its first content, after the provider named it, ends 
   await until(marks, 2);
   assert.deepEqual(marks, [{ kind: REQUEST_STARTED, data: {} }, { kind: REQUEST_ENDED, data: { responseId: "resp_cut_1" } }]);
 });
+
+test("a cancelled run sends no model request: the request is refused before it is marked, and the model is never called", async () => {
+  let called = 0;
+  const models = { streamSimple: () => (called++, { async *[Symbol.asyncIterator]() {}, result: async () => ({}) }) };
+  const marks = [];
+  const run = { harness: { commit: async (change) => change({ appendEntry: async (_conversation, entry) => void marks.push(entry) }) } };
+  const { models: marked, open } = await markRequests(models, () => true);
+  open(run);
+  const result = await marked.streamSimple({ api: "faux", provider: "faux", id: "m" }, { messages: [] }, {}).result();
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage, /cancelled/);
+  assert.equal(called, 0, "the model is never called");
+  assert.deepEqual(marks, [], "nothing is marked: no request left");
+});

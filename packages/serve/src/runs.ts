@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { readJson, RUN_META, writeWhole } from "./files.js";
+import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { ASK_TOOL } from "./app.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
@@ -879,6 +879,8 @@ export class Runs {
   async cancel(run: Run): Promise<boolean> {
     if (run.outcome) return false;
     run.cancel = true;
+    // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
+    await writeWhole(join(run.dir, RUN_CANCELLED), "").catch((error: Error) => warn(run.id, `its cancel mark is not written: ${error.message}`));
     if (this.live(run)) {
       // The turn is aborted first, so the drain that SIGTERM starts does not wait for it.
       await this.abortTurn(run);
