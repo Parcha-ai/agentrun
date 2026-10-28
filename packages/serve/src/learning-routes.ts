@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import type { Agents } from "./agents.js";
 import { ApiError, invalid } from "./errors.js";
 import { learningOf, openAgentRepo, type RunState, readRunState, repoOf, withAgentRepo } from "./learning.js";
-import type { Review } from "./review.js";
+import type { Review } from "./learning-review.js";
 import type { Json } from "./validate.js";
 
 export type LearningRoute = { method: string; pattern: RegExp; name: string };
