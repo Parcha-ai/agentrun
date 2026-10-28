@@ -100,6 +100,9 @@ function createProjector(options: TimelineOptions) {
   let usd: number | null = 0;
   let marked = 0;
   let inFlight = false;
+  // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
+  // answer). Earlier answers are a run's from before requests were marked.
+  let answered = 0;
   // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
   let compactions = 0;
   let compacting = 0;
@@ -182,6 +185,7 @@ function createProjector(options: TimelineOptions) {
       inFlight = false;
     } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
+      if (marked > 0) answered += 1;
       const cost = obj(obj(message.usage)?.cost)?.total;
       usd = typeof cost === "number" && usd !== null ? usd + cost : null;
       if (message.stopReason === "error") {
@@ -308,9 +312,9 @@ function createProjector(options: TimelineOptions) {
     // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
     // process that ended.
     const open = (flying: boolean) => (flying && !options.settled ? 1 : 0);
-    const cut = marked - open(inFlight) > requests || compacting - open(compactionOpen) > compactions;
+    const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
     if ((!requests && !compactions && !cut) || root === undefined) return undefined;
-    const count = Math.max(requests, marked) + Math.max(compactions, compacting);
+    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
     const total = usd === null || cut ? null : Math.round(usd * 1e6) / 1e6;
     return make("usage", root, `${root}:usage`, {
       summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
