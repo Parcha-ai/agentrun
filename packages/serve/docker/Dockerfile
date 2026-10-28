@@ -26,7 +26,8 @@ RUN apt-get update -qq \
 RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40 \
  || { echo "git $v is older than 2.40" >&2; exit 1; }
 COPY --from=build --chown=root:root /src /opt/agentrun
-# The build fails if any of it is left anywhere in the tree, a nested copy included.
+# The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
+# is not the build its adapter is pinned to.
 RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
 WORKDIR /opt/agentrun
 USER node
