@@ -319,7 +319,12 @@ export async function upgradeReport(dir, { sha, upstreamClone }) {
     const present = new Set();
     for (const { from: path } of manifestEntries(manifest)) {
       let after;
-      try { after = (await read(path)).toString('utf8').split('\n'); } catch { report.missing.push(`${path}: not at ${sha}`); continue; }
+      try { after = (await read(path)).toString('utf8').split('\n'); } catch (error) {
+        // Only git's own "no such path" answers mean upstream dropped the file; a corrupt clone or an unreadable object fails as itself.
+        if (!/does not exist|exists on disk, but not in/.test(String(error.stderr ?? error.message))) throw error;
+        report.missing.push(`${path}: not at ${sha}`);
+        continue;
+      }
       present.add(path);
       report.pristine[path] = lineChanges((await old(path)).toString('utf8').split('\n'), after);
     }

@@ -309,3 +309,42 @@ test('--pin names a listed file that is not at the new pin, still reports every 
   assert.match(run.stdout, new RegExp(`journal\\.ts: not at ${pin}`));
   assert.match(run.stdout, /tail\.ts: 0 lines removed, 0 added/, 'the whole report is printed');
 });
+
+/** A throwaway upstream repository holding every file of the process manifest, committed once; returns its helpers. */
+async function throwawayUpstream(name) {
+  const clone = join(scratch, name);
+  const git = (...args) => execFileSync('git', ['-C', clone, '-c', 'user.email=a@b.c', '-c', 'user.name=x', ...args], { encoding: 'utf8' });
+  await mkdir(clone, { recursive: true });
+  git('init', '-q');
+  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools', 'zod']) {
+    const upstreamFile = `packages/harness-process/src/${file}.ts`;
+    await mkdir(dirname(join(clone, upstreamFile)), { recursive: true });
+    await writeFile(join(clone, upstreamFile), await readFile(join(packageDir, 'vendor/durable-harness/upstream', upstreamFile)));
+  }
+  git('add', '-A'); git('commit', '-qm', 'same');
+  return { clone, git };
+}
+
+test('--pin fails on a missing file even when that is the only problem: no import and no patch is written against it', async () => {
+  const { clone, git } = await throwawayUpstream('upstream-only-missing');
+  await rm(join(clone, 'packages/harness-process/src/inbox.ts'));
+  git('add', '-A'); git('commit', '-qm', 'deleted');
+  const pin = git('rev-parse', 'HEAD').trim();
+  const report = await upgradeReport(packageDir, { sha: pin, upstreamClone: clone });
+  assert.deepEqual(report.missing, [`packages/harness-process/src/inbox.ts: not at ${pin}`]);
+  assert.deepEqual([report.imports, report.patches], [[], []], 'the missing file is the only problem');
+  const run = spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), '--pin', pin, '--upstream', clone, packageDir], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 1, run.stdout);
+  assert.match(run.stdout, /inbox\.ts: not at /);
+});
+
+test('--pin reports only git\'s own missing-path answers as a missing file: a corrupt clone fails as itself', async () => {
+  const { clone, git } = await throwawayUpstream('upstream-corrupt');
+  const path = 'packages/harness-process/src/tail.ts';
+  await writeFile(join(clone, path), `${await readFile(join(clone, path), 'utf8')}// moved\n`);
+  git('add', '-A'); git('commit', '-qm', 'moved');
+  const pin = git('rev-parse', 'HEAD').trim();
+  const blob = git('rev-parse', `${pin}:${path}`).trim();
+  await rm(join(clone, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+  await assert.rejects(upgradeReport(packageDir, { sha: pin, upstreamClone: clone }), (error) => !/not at /.test(error.message) && /unable to read|bad object|Command failed/.test(error.message));
+});
