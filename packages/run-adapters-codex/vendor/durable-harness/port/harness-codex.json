@@ -1,0 +1,32 @@
+{
+  "package": "harness-codex",
+  "upstream": "packages/harness-codex",
+  "out": "",
+  "table": "../../../../run-adapters/vendor/durable-harness/port/imports.json",
+  "files": [
+    {
+      "from": "src/app-server.ts",
+      "to": "src/app-server.ts"
+    },
+    {
+      "from": "src/rollout.ts",
+      "to": "src/rollout.ts"
+    },
+    {
+      "from": "src/config.ts",
+      "to": "src/config.ts"
+    },
+    {
+      "from": "src/binary.ts",
+      "to": "src/binary.ts"
+    },
+    {
+      "from": "src/harness.ts",
+      "to": "src/harness.ts"
+    },
+    {
+      "from": "test/fake-app-server.mjs",
+      "to": "test/fake-app-server.mjs"
+    }
+  ]
+}

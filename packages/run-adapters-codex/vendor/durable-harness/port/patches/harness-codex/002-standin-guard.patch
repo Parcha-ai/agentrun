@@ -1,0 +1,24 @@
+Patch: 002-standin-guard
+Reason: the stand-in app-server is a test seam, and the platform flags upstream tested for do not exist here; it is refused outside a test run by this package's own flag
+Upstream: ours
+Pins: a DSL agent node runs on Codex: the host tool, then submit, through the proxy to the provider
+Pins: the same call delivered twice runs its tool once, and both deliveries are answered with the one result
+---
+diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
+index 3465484..15d7228 100644
+--- a/packages/harness-codex/src/harness.ts
++++ b/packages/harness-codex/src/harness.ts
+@@ -284,10 +284,9 @@ export class RolloutTailError extends Error {
+ 
+ /** The stand-in's guard (`test`), the same as harness-world-sandbox's. */
+ function testGuard(): void {
+-  if (process.env.DH_TEST_LOCAL_SANDBOX !== '1') throw new TypeError('harness-world-codex: codexHarness({ test }) needs DH_TEST_LOCAL_SANDBOX=1 (the stand-in, docs/workspaces.md §5.8)');
+-  if (!process.env.VITEST && process.env.NODE_ENV !== 'test') throw new TypeError('harness-world-codex: codexHarness({ test }) runs only under a test runner');
+-  if (process.env.VERCEL) throw new TypeError('harness-world-codex: codexHarness({ test }) refuses to run with VERCEL set');
+-  if (process.env.NODE_ENV === 'production') throw new TypeError('harness-world-codex: codexHarness({ test }) refuses to run in production');
++  if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
++  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-codex: a stand-in app-server runs only under a test runner');
++  if (process.env.NODE_ENV === 'production') throw new TypeError('agentrun-codex: a stand-in app-server refuses to run in production');
+ }
+ 
+ /** When this invocation ends: the World's runtime deadline if it reports one, at most the kernel's default bound away. */

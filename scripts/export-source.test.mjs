@@ -335,3 +335,14 @@ test('vendored code an app keeps is listed apart, with its source, licenses and 
   await f.run('--inventory-only');
   assert.match(await readFile(join(f.root, 'docs/dependencies.md'), 'utf8'), /\*\*some-lib@1\.2\.3:\*\* GPL-3\.0-only — Restrictive or reciprocal metadata needs release-owner review\./);
 });
+
+test('a port patch is archived and scanned as text; a patch anywhere else still stops the export', async t => {
+  const f = await fixture(t);
+  await f.write('packages/run-adapters/vendor/durable-harness/port/patches/harness-process/001-begin-reservation.patch', 'Patch: 001-begin-reservation\nReason: r\nUpstream: ours\nPins: t\n---\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/packages/run-adapters/vendor/durable-harness/port/patches/harness-process/001-begin-reservation.patch\n'));
+  assert.equal(receipt.files.find(file => file.path.endsWith('001-begin-reservation.patch'))?.kind, 'text');
+  await f.write('packages/run-adapters/vendor/durable-harness/other.patch', 'x\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/run-adapters\/vendor\/durable-harness\/other\.patch/);
+});
