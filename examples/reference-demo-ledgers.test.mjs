@@ -49,6 +49,13 @@ test('the judge seam prices at Jev\'s public list price when the answer reports 
   const own = await priceJudge(async () => ({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 }, cost_usd: 0.5 }))({ label: 'q' });
   assert.equal(own.cost_usd, 0.5);
 });
+test('a judge answer that reports neither a price nor its usage keeps its cost unknown: it is never priced at $0', async () => {
+  const unpriced = await priceJudge(async () => ({ answers: {} }))({ label: 'q' });
+  assert.equal(unpriced.cost_usd, undefined, 'no price and no usage: the cost is not known, never 0');
+  assert.ok(!('cost_usd' in unpriced), 'and no price is invented');
+  const zero = await priceJudge(async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }))({ label: 'q' });
+  assert.equal(zero.cost_usd, 0, 'a reported usage of nothing is priced at what it is');
+});
 test('a scripted tool is handed the run\'s place, so it can read the run\'s evidence files and the job\'s files', async (t) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
@@ -328,17 +335,18 @@ test('a kill line carries the crossing\'s own number: a held kill the point\'s c
 });
 // ---- the live host's crossings ------------------------------------------------------------------------------------------------------------------
 
-test('a kill at "judge.asked <label>" or "model.request turn <n>" lands on a live-shaped host (no tapFakes: the judge and model are the live host\'s), the resume pays the judge once, and repeated is 0', { timeout: 300_000 }, async (t) => {
+test('a kill at "judge.asked <label>" or "model.request turn <n>" lands on a live-shaped host (no tapFakes: the judge and model are the live host\'s): a kill inside the question routes the run to review with the judge never paid twice, a kill at the model request resumes and pays the judge once, and repeated is 0', { timeout: 300_000 }, async (t) => {
   const programs = [{ name: 'fixture spec', env: 'DEMO_SPEC' }, { name: 'fixture probe', env: 'DEMO_LIVE_PROBE' }];
   const keys = [[{ env: 'BROWSERBASE_API_KEY' }, { env: 'BROWSERBASE_PROJECT_ID' }]];
   const browser = Object.fromEntries(['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'].map((name) => [name, `value-for-${name.toLowerCase()}`]));
   const judged = (dir) => readFileSync(join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((row) => JSON.parse(row)).filter((row) => row.kind === 'judge');
-  for (const point of ['judge.asked verdict', 'model.request turn 1']) {
+  // Killed inside the question, the run goes to review and the judge is never asked: it was cut before its call.
+  for (const [point, ended, paid] of [['judge.asked verdict', 'escalated', 0], ['model.request turn 1', 'complete', 1]]) {
     const { result, recording } = await run(t, { keys, programs, kills: [{ point, why: `a kill at ${point} on a live host` }] }, ['--live', '--kill', '--json'], { DEMO_LIVE_PROBE: '1', ...browser });
-    assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, 'complete']], `${point}: ${JSON.stringify(result.processes)}`);
+    assert.deepEqual(result.processes.map((process) => [process.signal, process.outcome?.status ?? null]), [['SIGKILL', null], [null, ended]], `${point}: ${JSON.stringify(result.processes)}`);
     assert.deepEqual(result.kills.map((kill) => kill.point), [point]);
     assert.deepEqual(result.unlanded, []);
-    assert.equal(judged(result.dir).length, 1, `${point}: the judge was paid for once across the kill and the resume`);
+    assert.equal(judged(result.dir).length, paid, `${point}: the judge was paid for at most once across the kill and the resume`);
     const counted = fold(readEvents(recording));
     assert.deepEqual([counted.processes, counted.kills, counted.repeated], [2, 1, 0], point);
   }

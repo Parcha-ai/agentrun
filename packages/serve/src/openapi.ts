@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
+import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
 
 type Json = Record<string, unknown>;
 
@@ -178,6 +179,25 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   "Features/timeline": { live_workflow_rows: { type: "boolean", description: "Whether a workflow run's rows arrive while it runs.", "x-agentrun-serve": "serve/1" } },
 };
 
+/** What a run refused `409 agent_not_runnable` holds in `error.details` here: what keeps its revision from running
+ *  (server.ts, from runnable.ts's blockers), or, for an archived agent, when it was archived (server.ts, runs.ts). */
+const BLOCKED_DETAILS = {
+  type: "object", additionalProperties: false, required: ["unbound", "missing"],
+  properties: {
+    unbound: { type: "array", items: { type: "string" }, description: "The tools the revision names that this server does not bind, or does not bind on its harness." },
+    missing: { type: "object", additionalProperties: { type: "array", items: { type: "string" } }, description: "Each bound tool this host cannot run yet, with the variables it is missing." },
+    harness: { enum: [...HARNESSES], description: "The revision's harness, when this server does not run it (capabilities.harnesses)." },
+    adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
+    code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
+    tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },
+  },
+};
+const ARCHIVED_DETAILS = {
+  type: "object", additionalProperties: false, required: ["archived_at"],
+  properties: { archived_at: { type: "string", format: "date-time", description: "When the agent was archived: unarchive it to run it." } },
+};
+const NOT_RUNNABLE_DETAILS = { oneOf: [BLOCKED_DETAILS, ARCHIVED_DETAILS] };
+
 /** The contract as vendored, read once. */
 function contract(): Json {
   vendored ??= JSON.parse(readFileSync(new URL("./openapi/agentrun-v2.openapi.json", import.meta.url), "utf8")) as Json;
@@ -208,6 +228,16 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       fields.push([name, ...down, field].join("."));
     }
   }
+  // The contract's definition fields this server refuses (validate.ts), each marked with the reason its 422 gives.
+  const definition = schemas.DefinitionInput as Json & { properties: Record<string, Json> };
+  const refused: string[] = [];
+  for (const field of Object.keys(definition.properties)) {
+    if (DEFINITION_FIELDS.includes(field)) continue;
+    definition.properties[field] = { ...definition.properties[field], "x-agentrun-serve-unsupported": { reason: NOT_KEPT[field] ?? `The definition keeps no field ${field}.` } };
+    refused.push(`DefinitionInput.${field}`);
+  }
+  const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
+  details["x-agentrun-serve-details"] = { agent_not_runnable: NOT_RUNNABLE_DETAILS };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {
     for (const [method, op] of Object.entries(item)) {
@@ -216,9 +246,11 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     }
   }
   doc.info["x-agentrun-serve"] = {
-    description: "Served by @parcha/agentrun-serve: the contract as vendored, unchanged, with this server's marks. Operations and schema properties marked x-agentrun-serve are this server's own, outside the contract (fields lists the properties, each marked with the addition that made it); operations marked x-agentrun-serve-unsupported answer 501 unsupported_here here. servers is this server, relative to this document; the contract's own are in contract_servers.",
+    description: "Served by @parcha/agentrun-serve: the contract as vendored, unchanged, with this server's marks. Operations and schema properties marked x-agentrun-serve are this server's own, outside the contract (fields lists the properties, each marked with the addition that made it); operations marked x-agentrun-serve-unsupported answer 501 unsupported_here here, and a contract property marked so is one this server refuses (unsupported_fields, with why); x-agentrun-serve-details gives what a code's details hold here (details lists where). servers is this server, relative to this document; the contract's own are in contract_servers.",
     extensions,
     fields,
+    unsupported_fields: refused,
+    details: ["ErrorBody.details"],
     unsupported,
     contract_servers: doc.servers,
   };
