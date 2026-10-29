@@ -3,6 +3,7 @@ import { LiveRun } from "@/components/LiveRun";
 import { RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { type Capabilities, ClientError, createClient } from "@/lib/client";
+import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
 
 const route = () => {
@@ -46,7 +47,7 @@ export function App() {
       {where.run
         ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => { location.hash = `#/runs/${encodeURIComponent(id)}`; }} loadingMore={more}
-            onMore={cursor ? () => { setMore(true); v2.listRuns(50, cursor).then((r) => { setRuns((x) => [...(x ?? []), ...r.runs]); setCursor(r.next_cursor); }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            onMore={cursor ? () => { setMore(true); v2.listRuns(50, cursor).then((r) => { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }
