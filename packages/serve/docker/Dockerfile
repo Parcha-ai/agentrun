@@ -18,7 +18,7 @@ RUN npm ci --ignore-scripts && npm run build \
  && rm -rf packages/harness node_modules/@parcha/agentrun-harness \
  && if [ -z "$CLAUDE_AGENT_SDK" ]; then \
       rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
-        node_modules/@anthropic-ai/claude-code node_modules/.bin/claude; \
+        node_modules/@anthropic-ai/claude-code node_modules/.bin/claude ; \
     else \
       v="$(node -p 'require("./node_modules/@anthropic-ai/claude-agent-sdk/package.json").version')" \
       && { [ "$v" = "$CLAUDE_AGENT_SDK" ] || { echo "CLAUDE_AGENT_SDK=$CLAUDE_AGENT_SDK, but the lock installs $v" >&2; exit 1; }; }; \
@@ -37,8 +37,9 @@ RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40
 COPY --from=build --chown=root:root /src /opt/agentrun
 # The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
 # is not the build its adapter is pinned to.
+# The stage's build arg is in the check's environment: with it, the check is that the SDK and its CLI are found.
 ARG CLAUDE_AGENT_SDK=
-RUN CLAUDE_AGENT_SDK="$CLAUDE_AGENT_SDK" sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
+RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
 WORKDIR /opt/agentrun
 USER node
 ENV NODE_ENV=production
