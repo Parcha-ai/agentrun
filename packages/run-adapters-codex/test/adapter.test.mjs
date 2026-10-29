@@ -1,7 +1,7 @@
 // The Codex adapter behind createHarnessRunner, as a DSL host runs it, on the stand-in app-server (fake-app-server.mjs)
 // with its model requests going through the session's real proxy to a scripted provider. No network, no Codex binary.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -143,6 +143,54 @@ const until = async (done, what, ms = 15_000) => {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 };
+
+
+/** Every call in a Codex rollout's history has its output: the history a new turn sends is valid on its own. */
+function unansweredCalls(root) {
+  const files = readdirSync(root, { recursive: true }).filter((f) => /rollout-.*\.jsonl$/.test(String(f)));
+  assert.equal(files.length, 1, 'one rollout');
+  const items = readFileSync(join(root, String(files[0])), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === 'response_item').map((l) => l.payload);
+  const answered = new Set(items.filter((i) => i.type === 'function_call_output').map((i) => i.call_id));
+  return items.filter((i) => i.type === 'function_call' && !answered.has(i.call_id)).map((i) => i.call_id);
+}
+
+test("a crash inside a never tool's call, then the turn settled: the next send runs a new turn, the call is never run again, and Codex's history answers every call", async () => {
+  const dir = scratch();
+  const file = join(dir, 'script.json');
+  writeFileSync(file, JSON.stringify(['call charge {"amount":5}']));
+  const codex = codexAdapter({
+    model: 'luna-test',
+    provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' },
+    sessionsDir: join(dir, 'sessions'),
+    standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_SCRIPT: file } },
+  });
+  let charged = 0;
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:s1', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+
+  const first = new AbortController();
+  const a = await codex.open(spec, { writer: await store.open(spec.key), models, signal: first.signal, onEvent: () => {} });
+  await a.send('pay');
+  await reached;
+  first.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+
+  // The next process settles the cut turn instead of resuming it; a person's next message is a new turn.
+  const b = await codex.open(spec, { writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn');
+  await b.settleOpenTurn();
+  assert.equal(b.state, 'idle');
+  await b.send('next');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 1, 'the cut call is never run again');
+  assert.deepEqual(unansweredCalls(join(dir, 'sessions')), [], 'every call in the history the new turn sends has its output');
+});
 
 test("an interrupt while a never tool's outcome is still being written: the next turn's drive folds the outcome, never takes it for abandoned", async () => {
   let charged = 0;

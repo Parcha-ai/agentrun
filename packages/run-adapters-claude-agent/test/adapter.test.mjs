@@ -9,6 +9,7 @@ import { after, test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
 import { foldSession } from '@parcha/agentrun-kernel/kernel';
+import { journalRecords } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { ClaudeAgentThinkingOff, claudeAgentAdapter, thinkingOf } from '@parcha/agentrun-harness-claude';
 import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-harness-claude/testing';
@@ -29,6 +30,10 @@ const agent = (extra = {}) => ({ node: 'agent', label: 'task', instructions: 'An
 async function until(ready, what) {
   for (const end = Date.now() + 5_000; !ready(); await new Promise((resolve) => setTimeout(resolve, 5))) if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
 }
+
+/** The CLI's transcript as a session's records hold it: the mirrored `claude` stream. */
+const transcript = (records) => journalRecords(foldSession('step:s1', records), 'claude').map((r) => r.data).filter(Boolean);
+const toolUses = (lines) => lines.filter((e) => e.type === 'assistant' && Array.isArray(e.message?.content)).flatMap((e) => e.message.content.filter((c) => c.type === 'tool_use').map((c) => c.id));
 
 async function claude(t, { script = [], sdk: sdkOptions = {}, ...extra } = {}) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
@@ -303,4 +308,43 @@ test("the same crash, the next process in a NEW session directory (a fresh box):
   assert.equal(charged, 1, 'the charge ran once');
   const ended = (await store.read('step:s1')).filter((r) => r.kind === 'kernel.end').map((r) => r.data);
   assert.ok(ended.some((e) => e.status === 'failed' && e.error?.interrupted === true), JSON.stringify(ended));
+});
+
+test("a crash inside a never tool's call, then the turn settled: the next send runs a new turn, the call is never run again, and every tool_use in the history has its tool_result", async (t) => {
+  let charged = 0;
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:s1', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const dir = scratch();
+
+  const first = await claude(t, { script: ['call charge {"amount":5}'], sessionsDir: dir });
+  const died = new AbortController();
+  const a = await first.adapter.open(spec, { store, writer: await store.open('step:s1'), models, signal: died.signal, onEvent: () => {} });
+  await a.send('pay');
+  await reached;
+  // The assistant entry that makes the call is mirrored after the call starts: the cut turn's history holds the tool_use.
+  for (const end = Date.now() + 5_000; toolUses(transcript(await store.read('step:s1'))).length === 0; await new Promise((resolve) => setTimeout(resolve, 5))) {
+    if (Date.now() > end) throw new Error('timed out waiting for the call in the mirrored transcript');
+  }
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+
+  // The next process settles the cut turn instead of resuming it; a person's next message is a new turn.
+  const next = await claude(t, { sessionsDir: dir });
+  const b = await next.adapter.open(spec, { store, writer: await store.open('step:s1'), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn');
+  await b.settleOpenTurn();
+  assert.equal(b.state, 'idle');
+  await b.send('next');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 1, 'the cut call is never run again');
+  const lines = transcript(await store.read('step:s1'));
+  const results = new Set(lines.filter((e) => e.type === 'user' && Array.isArray(e.message?.content)).flatMap((e) => e.message.content.filter((c) => c.type === 'tool_result').map((c) => c.tool_use_id)));
+  assert.ok(toolUses(lines).length > 0, 'the history holds the cut call');
+  assert.deepEqual(toolUses(lines).filter((id) => !results.has(id)), [], 'every tool_use in the resumed history has its tool_result');
 });
