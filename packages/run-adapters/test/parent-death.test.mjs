@@ -18,11 +18,13 @@ const pdeathsig = linux && parentWatchHere() === 'pdeathsig';
 /** A child that outlives the end of its stdin, as the pinned CLI does. */
 const STUBBORN = ['-e', 'process.stdin.resume(); process.stdin.on("end", () => {}); setInterval(() => {}, 1000);'];
 
-/** Whether `pid` runs: a zombie (exited, not yet reaped) does not. */
+/** Whether `pid` runs: a zombie (exited, not yet reaped, which a PID 1 that does not reap leaves for good) or a dead
+ *  task does not, as processAlive reads it. */
 function alive(pid) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
+    const state = stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3);
+    return state !== 'Z' && state !== 'X';
   } catch {
     return false;
   }
