@@ -38,9 +38,11 @@ const suites = [
   ["examples", /\.test\.mjs$/],
 ];
 const problems = [];
+/** The finished captures; a `.tmp` file is a write a process died before renaming into place. */
+const captures = () => readdirSync(capture).filter((file) => !file.endsWith(".tmp"));
 for (const [dir, pattern] of suites) {
   const files = readdirSync(join(root, dir)).filter((f) => pattern.test(f)).map((f) => join(dir, f));
-  const before = readdirSync(capture).length;
+  const before = captures().length;
   try {
     execFileSync(process.execPath, ["--test", ...(concurrency === undefined ? [] : [`--test-concurrency=${concurrency}`]), ...files], {
       cwd: root, stdio: ["ignore", "ignore", "pipe"], maxBuffer: 64 * 1024 * 1024,
@@ -49,7 +51,7 @@ for (const [dir, pattern] of suites) {
   } catch (error) {
     problems.push(`${dir}: the suite failed under the capture hook (exit ${error.status}); its corpus would be incomplete`);
   }
-  const captured = readdirSync(capture).length - before;
+  const captured = captures().length - before;
   if (captured === 0) problems.push(`${dir}: the suite contributed no workflows; the capture hook is not reaching it`);
   console.log(`${dir}: ${files.length} test files, ${captured} new validations captured`);
 }
@@ -63,7 +65,7 @@ const add = (source, workflow, inputKeys) => {
   const text = JSON.stringify({ workflow, inputKeys });
   if (!entries.has(text)) entries.set(text, { source, workflow, inputKeys });
 };
-for (const file of readdirSync(capture)) {
+for (const file of captures()) {
   const entry = JSON.parse(readFileSync(join(capture, file), "utf8"));
   add(relative(root, entry.source), entry.workflow, entry.inputKeys);
 }
