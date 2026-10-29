@@ -287,8 +287,9 @@ export type ConfidenceSource = "provider" | "derived";
  *  one derived from the probabilities (deriveConfidence), else 0, which validation then refuses with the probabilities
  *  that left nothing to derive from. `confidence_source` names each choice and score answer's source. */
 export function completeConfidence(questions: Record<string, SystemOneQuestion>, answers: Record<string, unknown>): { answers: Record<string, unknown>; confidence_source: Record<string, ConfidenceSource> } {
-  const out: Record<string, unknown> = {};
-  const confidence_source: Record<string, ConfidenceSource> = {};
+  // Null-prototype records: a question may be named __proto__, which on a plain object would set its prototype.
+  const out: Record<string, unknown> = Object.create(null);
+  const confidence_source: Record<string, ConfidenceSource> = Object.create(null);
   for (const [id, answer] of Object.entries(answers)) {
     const asked = Object.hasOwn(questions, id) ? questions[id] : undefined;
     if (!isRecord(answer) || (answer.type !== "choice" && answer.type !== "score") || asked?.type !== answer.type) { out[id] = answer; continue; }
@@ -296,5 +297,5 @@ export function completeConfidence(questions: Record<string, SystemOneQuestion>,
     out[id] = { ...answer, confidence: deriveConfidence(answer) ?? 0 };
     confidence_source[id] = "derived";
   }
-  return { answers: out, confidence_source };
+  return { answers: { ...out }, confidence_source: { ...confidence_source } };
 }

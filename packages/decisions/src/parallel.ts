@@ -70,7 +70,8 @@ function readResponse(body: unknown, questions: Record<string, SystemOneQuestion
   const asked = Object.keys(questions);
   const given = Object.keys(body.answers);
   if (given.length !== asked.length || given.some((id) => !Object.hasOwn(questions, id))) throw invalid("answers that do not match the questions asked");
-  const answers: Record<string, ProviderAnswer> = {};
+  // A null-prototype record: a question may be named __proto__, which on a plain object would set its prototype.
+  const answers: Record<string, ProviderAnswer> = Object.create(null);
   for (const id of asked) {
     const a = body.answers[id];
     if (!isRecord(a)) throw invalid(`no answer for "${id}"`);
@@ -87,7 +88,7 @@ function readResponse(body: unknown, questions: Record<string, SystemOneQuestion
   }));
   const usage = isRecord(body.usage) && Number.isSafeInteger(body.usage.input_tokens) && (body.usage.input_tokens as number) >= 0 ? { input_tokens: body.usage.input_tokens as number, output_tokens: 0 } : null;
   return {
-    answers, evidence, model: typeof body.mode === "string" ? `parallel-${body.mode}` : null, usage,
+    answers: { ...answers }, evidence, model: typeof body.mode === "string" ? `parallel-${body.mode}` : null, usage,
     cost_usd: PARALLEL_LIST_PRICE_USD, cost_basis: "estimate", provider_request_id: typeof body.decision_id === "string" ? body.decision_id : null,
   };
 }
@@ -138,9 +139,14 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
           continue;
         }
         if (response.ok) {
+          // The headers say Parallel answered: a body cut off while it is read is a lost outcome; one that arrived whole and
+          // does not parse is an invalid response.
+          let text: string;
+          try { text = await response.text(); }
+          catch { throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, signal.aborted ? "passed its deadline" : "lost the connection while the answer was read"); }
           let parsed: unknown;
-          try { parsed = await response.json(); }
-          catch { if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline"); throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt }); }
+          try { parsed = JSON.parse(text); }
+          catch { throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt }); }
           return readResponse(parsed, request.questions, attempt);
         }
         const status = response.status;
