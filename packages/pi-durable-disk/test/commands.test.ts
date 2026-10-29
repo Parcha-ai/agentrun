@@ -467,11 +467,11 @@ describe("command records, from a scripted ps (macOS)", () => {
     const rows = [[4400, 1, 4400, 5], [4401, 1, 4401, 6], [4402, 1, 4402, 7]];
     const environments: Record<number, string> = {
       // Its arguments name the token; its environment does not.
-      4400: `/bin/echo ${word} HOME=/Users/a\n`,
+      4400: `/bin/echo ${word} LANG=C\n`,
       // It exec'd between the two reads: its arguments were `sh -c held`, the -E line is the new program's.
-      4401: `sleep 600 ${word} HOME=/Users/a\n`,
+      4401: `sleep 600 ${word} LANG=C\n`,
       // Its environment holds the mark.
-      4402: `sleep 600 HOME=/Users/a ${word}\n`,
+      4402: `sleep 600 LANG=C ${word}\n`,
     };
     const table = psTable(scriptedPs(() => rows, environments, { argv: { 4400: `/bin/echo ${word}`, 4401: "sh -c held" } }));
     const look = table.snapshot();
