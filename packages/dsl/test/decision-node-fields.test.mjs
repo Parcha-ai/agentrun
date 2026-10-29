@@ -53,11 +53,20 @@ test('T1: provider, model, evidence and timeoutMs validate on judge, pick, sift,
     const checked = validateWorkflow(doc([node]));
     assert.equal(checked.ok, true, `${kind} takes the four fields: ${JSON.stringify(checked.errors ?? [])}`);
   }
-  for (const [field, bad] of [['evidence', 'always'], ['timeoutMs', 0], ['timeoutMs', -5], ['timeoutMs', 1.5], ['provider', ''], ['model', '']]) {
+  for (const [field, bad] of [['evidence', 'always'], ['timeoutMs', 0], ['timeoutMs', -5], ['timeoutMs', 1.5], ['timeoutMs', 120_001], ['provider', ''], ['provider', 'Parallel AI'], ['model', '']]) {
     const checked = validateWorkflow(doc([judge({ [field]: bad })]));
     assert.equal(checked.ok, false, `${field}: ${JSON.stringify(bad)} is refused`);
     assert.match(checked.errors.join(' '), new RegExp(field), `the refusal names ${field}`);
   }
+  const asked = validateWorkflow(doc([{ ...nodes.ask, until: { ...nodes.ask.until, timeoutMs: 120_001, model: '' } }]));
+  assert.equal(asked.ok, false, 'an ask predicate\'s fields are checked too');
+  assert.match(asked.errors.join(' '), /ask\.timeoutMs/);
+  assert.match(asked.errors.join(' '), /ask\.model/);
+  const byValue = { node: 'route', label: 'desk', valuePath: 'text', branches: { calm: { body: { node: 'code', label: 'calm', code: '() => ({})' } }, odd: { body: { node: 'code', label: 'odd', code: '() => ({})' } } }, otherwise: 'calm' };
+  assert.equal(validateWorkflow(doc([byValue])).ok, true, JSON.stringify(validateWorkflow(doc([byValue])).errors ?? []));
+  const pinned = validateWorkflow(doc([{ ...byValue, provider: 'parallel' }]));
+  assert.equal(pinned.ok, false, 'a route by value asks no question, so it takes no provider');
+  assert.match(pinned.errors.join(' '), /provider/);
   const agent = { node: 'extract', label: 'read', instructions: 'Read it.', out: 'Check', as: 'read', provider: 'parallel' };
   assert.equal(validateWorkflow(doc([agent])).ok, false, 'an agent node takes no provider');
 });
@@ -157,6 +166,20 @@ test('T7: a call cut by its node\'s own timeoutMs after it was sent is outcome_u
   assert.equal(outcome.status, 'escalated', JSON.stringify(outcome).slice(0, 300));
   assert.equal(outcome.result.escalation.kind, 'decision_interrupted', 'it goes to review');
   assert.deepEqual(receipts.map((receipt) => [receipt.status, receipt.cost_usd]), [['failed', LIST_PRICE]], 'booked once, at the list-price estimate');
+});
+
+test('T7b: a provider that reports its cut call as aborted, as the conformance suite has it, is still outcome_unknown: never asked again, and the run goes to review', async () => {
+  const slow = { ...provider('parallel'), sent: 0, decide: async (_request, ctx) => {
+    slow.sent += 1;
+    await new Promise((resolve) => { if (ctx.signal.aborted) resolve(); else ctx.signal.addEventListener('abort', resolve, { once: true }); });
+    throw new DecisionProviderError('aborted', 'the request was cancelled', { attempts: 1 });
+  } };
+  const receipts = [];
+  const outcome = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', timeoutMs: 200 })]), INPUT, { ...hosted([slow], { deadlineMs: 60_000 }), recordDecision: async (receipt) => { receipts.push(receipt); } }));
+  assert.equal(slow.sent, 1, 'a call cut after it was sent is never asked again');
+  assert.equal(outcome.status, 'escalated', JSON.stringify(outcome).slice(0, 300));
+  assert.equal(outcome.result.escalation.kind, 'decision_interrupted', 'it goes to review');
+  assert.deepEqual(receipts.map((receipt) => [receipt.status, receipt.cost_usd]), [['failed', null]], 'booked once; the provider gave no estimate');
 });
 
 test('T6: the published schema and the author guide carry the four fields', () => {
