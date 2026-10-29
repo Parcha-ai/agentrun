@@ -4,10 +4,12 @@
 # any process's environment or command line, in a pipe any of them holds, or in PID 1 (tini, started by the launcher).
 # No process but PID 1 holds the launcher's pipe: tini inherits it and keeps it, and the server reads it empty first
 # thing, so PID 1's is checked to read empty. The run's process still got its model key, over its own pipe. The container
-# is stopped and removed by its own name. Needs docker.
-#   image-custody.sh <image>
+# is stopped and removed by its own name. Needs docker. Arguments after the image go to `docker run`: a reviewer can
+# bind-mount a changed launcher read-only over the image's to see it fail here.
+#   image-custody.sh <image> [docker run arguments...]
 set -eu
-image=${1:?usage: image-custody.sh <image>}
+image=${1:?usage: image-custody.sh <image> [docker run arguments...]}
+shift
 name="agentrun-image-custody-$$"
 canary="not-a-secret-image-$$-$(date +%s)"
 cleanup() { docker rm -f -v "$name" >/dev/null 2>&1 || true; }
@@ -15,9 +17,11 @@ trap cleanup EXIT INT TERM
 launcher=/opt/agentrun/packages/serve/launcher/agentrun-serve
 names=$(docker run --rm --entrypoint sh "$image" -c "sed -n \"s/^SECRETS='\\(.*\\)'\$/\\1/p\" $launcher")
 [ -n "$names" ] || { echo "image custody: the launcher in $image names no secrets" >&2; exit 1; }
-set --
-for n in $names; do set -- "$@" -e "$n=$canary-$n"; done
-docker run -d --name "$name" "$@" "$image" --data /data --port 7340 --faux /opt/agentrun/packages/serve/test/fixtures/faux-custody.mjs >/dev/null
+# Names and canaries have no spaces, so the -e arguments go as one word list.
+secrets=
+for n in $names; do secrets="$secrets -e $n=$canary-$n"; done
+# shellcheck disable=SC2086
+docker run -d --name "$name" $secrets "$@" "$image" --data /data --port 7340 --faux /opt/agentrun/packages/serve/test/fixtures/faux-custody.mjs >/dev/null
 docker exec -i -e CANARY="$canary" -e TOKEN="$canary-AGENTRUN_TOKEN" "$name" node --input-type=module - <<'EOF'
 import { closeSync, constants, openSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs";
 const fail = (why) => { console.error(`image custody: ${why}`); process.exit(1); };

@@ -12,6 +12,9 @@
 # run's process exists. A process of the same user started earlier could open the FIFO while it is named.
 SECRETS='AGENTRUN_TOKEN AGENTRUN_API_KEY AGENT_MODEL_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY BROWSERBASE_API_KEY'
 set -eu
+# Lengths in bytes: the C locale, for this shell only; the caller's own goes back before the exec.
+locale=${LC_ALL-}
+locale_set=${LC_ALL+x}
 LC_ALL=C
 
 # Every other process this launcher starts, it starts here, before it reads a secret.
@@ -29,9 +32,10 @@ for name in $SECRETS; do
   eval "value=\${$name}"
   total=$((total + ${#name} + ${#value} + 2))
 done
-# A pipe holds 64 KiB unread: more would block this shell before the server is there to read it.
-if [ "$total" -gt 65536 ]; then
-  echo "agentrun-serve: the secrets come to $total bytes, more than the 65536 a pipe holds" >&2
+# A pipe is sure to hold one page unread (a FIFO may get no more: Linux gives a new pipe two pages once its user is over
+# fs.pipe-user-pages-soft): more could block this shell before the server is there to read it.
+if [ "$total" -gt 4096 ]; then
+  echo "agentrun-serve: the secrets come to $total bytes, more than the 4096 a pipe is sure to hold" >&2
   exit 1
 fi
 for name in $SECRETS; do
@@ -41,6 +45,7 @@ for name in $SECRETS; do
   printf '%s=%s\000' "$name" "$value" >&3
 done
 value=
+if [ -n "$locale_set" ]; then LC_ALL=$locale; else unset LC_ALL; fi
 
 if [ "${1-}" = "--" ]; then
   shift

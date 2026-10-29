@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -93,8 +93,12 @@ function canaries() {
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment. */
 async function launched(t, env, args = ["--faux", CUSTODY]) {
-  const data = join(await scratch(t), "agents");
-  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
+  const tmp = join(dir, "tmp");
+  mkdirSync(tmp);
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env, TMPDIR: tmp } });
   t.after(() => {
     try {
       process.kill(-child.pid, "SIGKILL");
@@ -107,6 +111,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
     assert.ok(i < 300, `the server started: ${out}`);
     await sleep(50);
   }
+  assert.deepEqual(readdirSync(tmp), [], "the launcher's FIFO and its directory are gone");
   return { root: child.pid, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN) };
 }
 
@@ -149,7 +154,9 @@ function noSecretAnywhere(root, canary) {
 
 test("started by its launcher, no process of its user holds a secret in its environment, command line or a pipe, and a run's process gets its own over its pipe", { timeout: 120_000 }, async (t) => {
   const { canary, secrets } = canaries();
-  const { root, api } = await launched(t, secrets);
+  const { root, api } = await launched(t, { ...secrets, LC_ALL: "C.UTF-8" });
+  // The launcher counts bytes in the C locale, for its own shell only: the server gets the caller's locale back.
+  assert.ok(read(`/proc/${root}/environ`).toString().split("\0").includes("LC_ALL=C.UTF-8"), "the server keeps the caller's LC_ALL");
   assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
 
   // A run's process says what it was handed: each secret but the server's own, none in its environment, its pipe closed.
@@ -244,4 +251,14 @@ test("on claude-agent, with its turn held inside the Claude CLI, no process of t
   assert.equal(fake.messages()[0].authorized, true, "a key reached the CLI's request, through the run's proxy");
   const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.some((cmdline) => /claude-agent-sdk-[a-z0-9-]+\/claude /.test(`${cmdline} `)), `the Claude CLI is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
+});
+
+test("secrets past what a pipe is sure to hold are refused before the server starts, saying so, never a hang", async (t) => {
+  const tmp = await scratch(t);
+  const child = spawn(LAUNCHER, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TMPDIR: tmp, AGENT_MODEL_API_KEY: `not-a-secret-${"x".repeat(5_000)}` } });
+  let out = "";
+  child.stderr.on("data", (chunk) => (out += chunk));
+  const code = await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(10_000).then(() => "hung")]);
+  assert.equal(code, 1, out);
+  assert.match(out, /more than the 4096 a pipe is sure to hold/);
 });
