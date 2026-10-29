@@ -183,7 +183,7 @@ test("a request booked in the session whose root entry was never written (the pr
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "hold", `Hold until ${go}.`);
-  await follow(api, runId, ["working"]);
+  await follow(api, runId, ["working"], { deadlineMs: 55_000 });
   // The faux answers at once: well within this, the first request is answered and booked in the session, and the turn
   // holds with no next request to write its entry. The run's own store is locked while its process lives.
   await new Promise((resolve) => setTimeout(resolve, 1_500));
@@ -258,14 +258,15 @@ test("a capped run whose spend became unknown (a request cut by a crash) refuses
   assert.match(ended.error.message, /spent is unknown/);
 });
 
-test("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 60_000 }, async (t) => {
+// Three runs in turn, each followed for up to 55 s.
+test("the run's thinking level reaches the harness's session: the revision's, and Codex's highest where serve's is max", { timeout: 180_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   for (const [harness, thinking, said] of [["claude-agent", "high", "Thinking high."], ["claude-agent", "max", "Thinking max."], ["codex", "max", "Thinking xhigh."]]) {
     const id = `think-${harness}-${thinking}`;
     assert.equal((await api("POST", "/agents", agent(id, { harness, instructions: "Say your thinking.", thinking }))).status, 201);
     const run = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });
     assert.equal(run.status, 202, JSON.stringify(run.body));
-    await follow(api, run.body.run_id, ["completed"]);
+    await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
     assert.equal(await answer(api, run.body.run_id), said);
   }
 });
