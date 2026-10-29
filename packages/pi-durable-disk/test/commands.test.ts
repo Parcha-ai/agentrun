@@ -598,6 +598,17 @@ describe("a recorder's mark", () => {
       writeFileSync(join(records, `mark-${token}.json`), JSON.stringify({ boot: processTable().bootId(), token }));
       await until(() => existsSync(memberFile) && readFileSync(memberFile, "utf8").trim() !== "");
       member = Number(readFileSync(memberFile, "utf8"));
+      // $! is the forked shell child: it carries the mark until it execs env, and env execs sleep. Wait for that exec.
+      const unmarked = (pid: number) => {
+        try {
+          return readFileSync(`/proc/${pid}/comm`, "utf8").trim() === "sleep" && !readFileSync(`/proc/${pid}/environ`, "utf8").includes("PI_DURABLE_DISK_COMMANDS=");
+        } catch {
+          return false;
+        }
+      };
+      for (let i = 0; i < 500 && !unmarked(member); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(readFileSync(`/proc/${member}/comm`, "utf8").trim(), "sleep", "the member has exec'd sleep");
+      assert.ok(!readFileSync(`/proc/${member}/environ`, "utf8").includes(`${COMMANDS_MARK}=`), "the member carries no mark");
       assert.equal(processTable().snapshot().info(member)?.pgrp, pid, "the member is in the leader's group");
       // A kill that does nothing: both outlive the first reap's deadline, and the open refuses.
       await assert.rejects(reapOrRefuse(records, { kill: () => {}, timeoutMs: 100 }), (error: unknown) => error instanceof HeldError);

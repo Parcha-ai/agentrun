@@ -203,6 +203,16 @@ describe("localRun", () => {
       for (let i = 0; i < 500 && !(existsSync(`${pidFile}.member`) && readFileSync(`${pidFile}.member`, "utf8").trim() !== ""); i++) await new Promise((resolve) => setTimeout(resolve, 10));
       member = Number(readFileSync(`${pidFile}.member`, "utf8"));
       assert.ok(member > 0 && alive(member), "the command's member runs");
+      // $! is the forked shell child: it carries the mark until it execs env, and env execs sleep. Wait for that exec.
+      const unmarked = (pid: number) => {
+        try {
+          return readFileSync(`/proc/${pid}/comm`, "utf8").trim() === "sleep" && !readFileSync(`/proc/${pid}/environ`, "utf8").includes("PI_DURABLE_DISK_COMMANDS=");
+        } catch {
+          return false;
+        }
+      };
+      for (let i = 0; i < 500 && !unmarked(member); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(readFileSync(`/proc/${member}/comm`, "utf8").trim(), "sleep", "the member has exec'd sleep");
       assert.equal(processTable().snapshot().info(member)?.pgrp, command, "the member is in the command's group");
       assert.ok(!readFileSync(`/proc/${member}/environ`, "utf8").includes("PI_DURABLE_DISK_COMMANDS="), "the member carries no mark");
       assert.deepEqual((existsSync(commands) ? readdirSync(commands) : []).filter((name) => /^\d+-\d+\.json$/.test(name)), [], "no walk ran, so nothing recorded the command");
