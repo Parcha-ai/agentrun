@@ -196,3 +196,16 @@ describe("allPages and a 422", () => {
     expect(saveError(err)).toEqual({ kind: "invalid", message: invalid.body.error.message, fields: { "definition.harness": invalid.body.error.fields[0].message } });
   });
 });
+
+describe("the session's errors", () => {
+  it("only a 404 reads as a server without accounts: any other refusal on /auth/session is that refusal", async () => {
+    for (const status of [500, 401, 503]) {
+      const { fn } = fakeFetch(() => json(status, { error: { code: status === 401 ? "unauthenticated" : "internal", message: "refused", retryable: false } }));
+      const err = await createClient({ fetch: fn }).session().catch((e) => e);
+      expect(err).toBeInstanceOf(ClientError);
+      expect(err.status).toBe(status);
+    }
+    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
+    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
+  });
+});
