@@ -977,6 +977,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         const node = nodeAt(doc, at);
         if (node?.node !== "route") throw pathFault(at, "Only a route's answer is a decision");
         if (frame.routes[at]) throw pathFault(at, "A route is decided once");
+        // A refused route with no unsure branch took no branch: its answer is spent, and there is no decision.
         const taken = routeTaken(node, route.result.answers);
         if (taken) decision = { at, row: { label: route.label, ...taken, request_sha256: typeof route.result.request_sha256 === "string" ? route.result.request_sha256 : null, result: route.result, receipts: route.receipts } };
       }

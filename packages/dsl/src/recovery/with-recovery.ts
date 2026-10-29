@@ -1,3 +1,4 @@
+import { DecisionProviderError } from "../decision-provider.js";
 import { validateAnswers } from "../system-one.js";
 import { EscalationSignal, type WorkflowDeps } from "../workflow.js";
 import { canonicalHash } from "./canonical-hash.js";
@@ -79,6 +80,13 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
         let result: Awaited<ReturnType<typeof runJudge>>;
         try { result = await runJudge(params); }
         catch (error) {
+          // A request sent whose outcome was lost may have been answered and billed: it is interrupted, never asked again,
+          // and its estimate (or an unknown cost, which makes the spend read incomplete) is booked with that outcome.
+          if (error instanceof DecisionProviderError && error.code === "outcome_unknown") {
+            const lostCost = error.costUsd ?? null;
+            driver.decisionEnded(params.executionPath, decisionId, "interrupted", lostCost, () => driver.recordQuestionSpend(lostCost));
+            throw error;
+          }
           // A cut call (a cancel, the run's failure) has no outcome: a later open finds it asked and unanswered. A call
           // that ended on its own failed, and the next process asks again.
           if (!driver.signal.aborted && !params.signal?.aborted) driver.decisionEnded(params.executionPath, decisionId, "failed", null);

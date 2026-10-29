@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { runWorkflow } from '@parcha/agentrun-dsl';
+import { runWorkflow, DecisionProviderError } from '@parcha/agentrun-dsl';
 // The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
 // performance.now(). A test that needs either to pass holds both clocks and moves them itself.
 const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
@@ -375,6 +375,33 @@ test('a refused route with no unsure branch escalates, and records no decision: 
   assert.deepEqual([result.status, result.escalation.kind], ['escalated', 'decision_refused']);
   const journal = await operator(store, sure);
   assert.deepEqual([journal.state.pin.routes, journal.state.questionSpendUsd], [{}, 0.001]);
+});
+
+test('under recovery, a decision whose outcome was lost after sending is in the run\'s spend: at the provider\'s estimate, or unpriced', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const lost = (costUsd) => async () => { throw new DecisionProviderError('outcome_unknown', 'Parallel answered HTTP 503 after the request was sent.', { status: 503, attempts: 1, costUsd, costBasis: costUsd === null ? 'unknown' : 'estimate' }); };
+  const priced = memoryStore();
+  const result = await run(priced, judged, { runJudge: lost(0.001) });
+  assert.deepEqual([result.status, result.escalation.kind], ['escalated', 'decision_interrupted']);
+  const spent = await operator(priced, judged);
+  assert.deepEqual([spent.state.questionSpendUsd, spent.state.unpricedQuestionCount], [0.001, undefined]);
+  const unknown = memoryStore();
+  await run(unknown, judged, { runJudge: lost(null) });
+  const incomplete = await operator(unknown, judged);
+  assert.deepEqual([incomplete.state.questionSpendUsd, incomplete.state.unpricedQuestionCount], [undefined, 1], 'an unknown cost makes the spend read incomplete, never $0');
+});
+
+test('a decision whose outcome was lost after sending is never asked again by the next process: it was interrupted, not failed', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const store = memoryStore();
+  let asked = 0;
+  const judge = { runJudge: async () => { asked += 1; if (asked === 1) throw new DecisionProviderError('outcome_unknown', 'Parallel answered HTTP 503 after the request was sent.', { status: 503, attempts: 1, costUsd: 0.001, costBasis: 'estimate' }); return { answers: { legit: { type: 'noul', noul: 0.9 } } }; } };
+  const first = await run(store, judged, judge);
+  assert.deepEqual([first.status, first.escalation.kind], ['escalated', 'decision_interrupted']);
+  const second = await run(store, judged, judge);
+  assert.equal(asked, 1, 'a request that may have been answered and billed is not asked, and paid for, a second time');
+  assert.deepEqual([second.status, second.escalation.kind], ['escalated', 'decision_interrupted']);
+  assert.equal((await operator(store, judged)).state.questionSpendUsd, 0.001, 'booked once');
 });
 
 test('a route is decided once, only a route is decided, and its receipts are carried until the host has written them', async () => {
