@@ -810,3 +810,26 @@ test("a refused write of a response's ids is carried into the booking's next wri
   await reopen();
   assert.deepEqual((await of(RUNNER_RECORDS.turn)).filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
 });
+
+test("a carried response record whose own next write is refused stays carried: that request is refused, the next write carries it, and a later crash's cut keeps the ids", async (t) => {
+  // The writes that hold a response record, in order: turn 1's ids (refused), the next request's record carrying them
+  // (refused too), then everything after (written).
+  let writes = 0;
+  const { p, logged, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-restored', {
+    fetch: async (_url, init) => (JSON.parse(init.body).input === 'hangs' ? neverEnds(1) : answered(3)),
+    refuse: () => ++writes <= 2,
+  });
+  t.after(() => p.close());
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'hangs' } }).catch(() => {});
+  await until(() => logged.some((l) => /responded threw/.test(l.message)), "the refused write of turn 1's ids");
+  // The next request's record can't be written: it is refused, never sent, and costs no turn.
+  const refused = await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'refused' } });
+  assert.notEqual(refused.status, 200, 'a request whose record could not be written is refused');
+  assert.equal(writes, 2, 'its write carried turn 1 ids and was refused');
+  // The one after carries them, and is written.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'third' } })).status, 200);
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'the third request booked');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }, { turn: 2, providerIds: carriedIds(3) }], "turn 1's ids, carried past the refused write");
+  await reopen();
+  assert.deepEqual((await of(RUNNER_RECORDS.turn)).filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
+});
