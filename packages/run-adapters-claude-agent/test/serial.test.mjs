@@ -1,11 +1,11 @@
 // K11: a drive opened on a session's writer after another drive was halted must fold what the halted drive wrote last.
-// The adapter opens every drive on one serialized writer (src/serial.ts), so the new drive's first read waits for the
-// halted drive's queued write. (The probe is the DSL TL's, shaped on the adapter's reopen after an interrupt.)
+// The adapter opens every drive on one serialized writer (the kernel's host/serial.ts), so the new drive's first read
+// waits for the halted drive's queued write. (The probe is the DSL TL's, shaped on the adapter's reopen after an interrupt.)
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { foldSession, openDrive } from '@parcha/agentrun-kernel/kernel';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { serialWriter } from '../dist/serial.js';
+import { serialWriter } from '@parcha/agentrun-kernel/host';
 
 /** A session writer whose first outcome append is held until the test releases it. */
 async function holdingWriter() {

@@ -8,20 +8,18 @@
 // `beforeRequest` first, and its usage comes back through `afterRequest`. The runner alone accounts model spend.
 //
 // The Agent SDK is the host's: an exact optional peer dependency (`CLAUDE_AGENT_SDK_VERSION`), never shipped here.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
-import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
+import { CallsInFlight, openAdapterSession, READ_SKILL_FILE, readSkillFileTool, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage } from "@parcha/agentrun-kernel";
+import type { HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
-import { serialWriter } from "./serial.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
@@ -250,38 +248,6 @@ export function toolImageProblems(tool: string, images: readonly ToolImage[], ma
   return undefined;
 }
 
-/** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause waits for these to have
- *  their outcomes recorded; the host refuses new work meanwhile (the runner's stop does). */
-class CallsInFlight {
-  draining = false;
-  private readonly open = new Set<string>();
-  private readonly waiters = new Set<() => void>();
-  begin(callId: string) {
-    this.open.add(callId);
-  }
-  /** The call's outcome is recorded, or it never will be (the drive stopped). */
-  end(callId: string) {
-    if (this.open.delete(callId) && this.open.size === 0) for (const done of [...this.waiters]) done();
-  }
-  clear() {
-    this.open.clear();
-    for (const done of [...this.waiters]) done();
-  }
-  /** Every call in flight has its outcome recorded, or `ms` passed. */
-  idle(ms: number): Promise<void> {
-    if (this.open.size === 0) return Promise.resolve();
-    return new Promise((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        this.waiters.delete(done);
-        resolve();
-      };
-      const timer = setTimeout(done, ms);
-      this.waiters.add(done);
-    });
-  }
-}
-
 /** The kernel's tool for a host tool. The host hears of the call (`tool_start`) once its intent is in the session's
  *  records, and of its end only once the outcome is (the live `tool_end` the tool bridge sends after the effect). */
 function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls: CallsInFlight): KernelTool {
@@ -309,8 +275,6 @@ function kernelTool(tool: HostTool, io: SessionIO, maxImageBytes: number, calls:
     },
   };
 }
-
-const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
 /** Root keywords the pinned CLI (2.1.286) drops a tool for, with no word to the model or the host: measured, a root
  *  `{ "type": "object", "anyOf": [...] }` (or allOf, oneOf) never reaches the model while the session's other tools do. */
@@ -435,89 +399,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
         }
       };
-      // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
-      // once the halted drive's last writes are in (serial.ts).
-      const writer = serialWriter(io.writer);
-      const open = (attempt = 0) => openDrive({ writer, signal: io.signal, live, attempt });
-      let drive = await open();
-      const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
-        ? "open_turn"
-        : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
-
-      let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
-      let closed = false;
-      const run = () => {
-        const before = turnsIn(drive).length;
-        state = "idle";
-        running = (async () => {
-          let outcome: { status: TurnStatus; error?: string } | undefined;
-          for (let attempt = 0; !outcome; attempt += 1) {
-            const current = drive;
-            try {
-              await harness.drive(current);
-              const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
-              outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
-            } catch (error) {
-              if (current.signal.aborted) outcome = { status: "interrupted" };
-              // The CLI exited mid-turn: the drive is rebuilt from the log and the turn resumes, a few times.
-              else if (error instanceof Restart && attempt < RESTARTS) drive = await open(attempt + 1);
-              else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
-            }
-          }
-          io.onEvent({ type: "turn_end", status: outcome.status });
-          return outcome;
-        })();
-        return running;
-      };
-      // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
-      // writer (the adapter never opens the session itself).
-      const ready = async () => {
-        if (closed) throw new Error("agentrun-harness-claude: the session is closed");
-        if (running) await running;
-        if (drive.signal.aborted && !io.signal.aborted) drive = await open();
-      };
-
-      return {
-        get state() { return state; },
-        async send(text) {
-          if (calls.draining) throw new Error("agentrun-harness-claude: the session is pausing; no new turn");
-          await ready();
-          await drive.submit({ id: randomUUID(), kind: "prompt", text });
-          void run();
-        },
-        async recover() {
-          if (state !== "open_turn") throw new Error("agentrun-harness-claude: there is no turn to recover");
-          await ready();
-          void run();
-        },
-        async turnEnd() {
-          if (!running) throw new Error("agentrun-harness-claude: no turn is in flight");
-          return running;
-        },
-        async interrupt(interruptOptions = {}) {
-          const drainMs = interruptOptions.drainMs ?? 0;
-          if (!Number.isFinite(drainMs) || drainMs < 0) throw new Error("agentrun-harness-claude: drainMs must be a non-negative number of milliseconds");
-          // A pause: no new turn here (the host refuses new calls and requests); the calls in flight run on until their
-          // outcomes are recorded.
-          calls.draining = true;
-          try {
-            if (drainMs > 0) await calls.idle(drainMs);
-            drive.halt?.(new Error("interrupted"));
-            await running?.catch(() => {});
-          } finally {
-            // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
-            calls.clear();
-            calls.draining = false;
-          }
-        },
-        async close() {
-          if (closed) return;
-          closed = true;
-          drive.halt?.(new Error("closed"));
-          await running?.catch(() => {});
-        },
-      };
+      return openAdapterSession({ name: "agentrun-harness-claude", io, drive: (drive) => harness.drive(drive), live, calls, restarts: RESTARTS });
     },
   };
 }
