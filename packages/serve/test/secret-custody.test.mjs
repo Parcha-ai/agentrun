@@ -4,12 +4,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
 import { agent, client, follow, scratch } from "./support.mjs";
 
@@ -93,16 +96,32 @@ function canaries() {
 
 /** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment. */
 async function launched(t, env, args = ["--faux", CUSTODY]) {
-  const dir = await scratch(t);
+  // Its own directory, gone only once every process under the launcher is (below): a harness's CLI starts a session
+  // of its own, which a kill of the launcher's group does not reach, and it may still be writing there.
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = join(dir, "agents");
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
   const child = spawn(LAUNCHER, ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env, TMPDIR: tmp } });
-  t.after(() => {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {}
+  t.after(async () => {
+    // Every process under the launcher, found before it goes (its children then belong to init), killed, and waited for.
+    const tree = new Set([...treeOf(child.pid)]);
+    for (let round = 0; round < 2; round++) {
+      for (const pid of [...tree]) for (const under of treeOf(pid)) tree.add(under);
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {}
+      for (const pid of tree) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {}
+      }
+    }
+    for (const end = Date.now() + 10_000; [...tree].some((pid) => processAlive(pid)); await sleep(50)) {
+      if (Date.now() > end) throw new Error(`still running after the test: ${[...tree].filter((pid) => processAlive(pid)).map((pid) => `${pid} ${read(`/proc/${pid}/cmdline`)?.toString().replaceAll("\0", " ").slice(0, 80)}`).join("; ")}`);
+    }
+    await rm(dir, { recursive: true, force: true });
   });
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
