@@ -586,9 +586,13 @@ test("a judge's decision is a timeline row: its node, provider and each answer w
   assert.equal(last.status, "completed");
   const rows = await timeline(api, runId);
   const decisions = rows.filter((row) => row.kind === "decision");
-  assert.deepEqual(decisions.map((row) => [row.summary, row.agent_label, row.text, row.usage]), [["coi (jev): is_coi yes 0.92", "coi", null, { usd: null, requests: 1 }]]);
+  // The fake reports 120 input tokens and no cost: the decision is booked at TypeSafe's published price.
+  const estimate = (120 * 0.042 + 0 * 0) / 1_000_000;
+  assert.deepEqual(decisions.map((row) => [row.summary, row.agent_label, row.text, row.usage]), [["coi (jev): is_coi yes 0.92", "coi", null, { usd: estimate, requests: 1 }]]);
   const usage = rows.findLast((row) => row.kind === "usage");
-  assert.equal(usage.usage.usd, null, "the decision's unknown cost leaves the run's usage unknown, never a lower figure");
+  assert.equal(usage.usage.usd, estimate, "the model node is free under the fake, so the run's usage is the decision's estimate, unrounded");
+  assert.equal(usage.usage.usd, (await api("GET", `/runs/${runId}`)).body.cost.usd, "the usage row and the run's cost agree");
+  assert.match(usage.summary, /^Cost so far: <\$0\.0001 /, "a cost above zero never reads $0.0000");
   assert.equal(usage.usage.requests, 2, "the model node's request and the decision's");
 });
 
