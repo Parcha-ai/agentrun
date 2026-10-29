@@ -131,3 +131,26 @@ test("a request withdrawn as its record was written is no request when the run o
   assert.equal(usage?.requests ?? 0, 0, "no request counted");
   assert.equal(usage?.usd ?? 0, 0, "and nothing spent");
 });
+
+test("a request that left and was booked at $0 (a free model) is still the run's request when it opens again: counted once, at $0", async () => {
+  const storage = new MemoryStorage();
+  const first = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const writer = await durableSessions(first, ctx).open("run:1");
+  const booking = await modelPortFor(writer, { key: "run:1" });
+  const ticket = await booking.models.beforeRequest({ model: "m" });
+  await booking.models.afterRequest({ input: 10, output: 5, cacheRead: 0, usd: 0 }, ticket);
+  assert.deepEqual((await writer.read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data), [{ turn: 1, usd: 0 }]);
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const app = adapterRun(async () => fauxAdapter({ script: () => [] }), "codex", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
+  app.door.attach(() => {});
+  await app.onOpen(runOf(harness));
+  const entries = [];
+  const conversation = await harness.conversation(ROOT_CONVERSATION_ID, ctx);
+  for (let cursor; ; ) {
+    const page = await conversation.entries({ order: "ascending" }, 500, cursor, ctx);
+    entries.push(...page.items);
+    if (page.next === undefined) break;
+    cursor = page.next;
+  }
+  assert.deepEqual(timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage, { usd: 0, requests: 1 }, "one request, at $0");
+});
