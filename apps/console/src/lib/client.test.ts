@@ -163,3 +163,16 @@ describe("the owner's session", () => {
     expect(calls.every((c) => c.init?.credentials === "same-origin")).toBe(true);
   });
 });
+
+describe("follow's pace", () => {
+  it("waits at least minDelayMs between polls, even when the server says poll_after_ms 0 on unchanged pages", async () => {
+    const page = running.body as unknown as TimelinePage;
+    const pages = [page, ...[1, 2, 3].map((n) => ({ ...page, reset: false, rows: [], unchanged: true, poll_after_ms: 0, final: false, next_after: page.next_after + n })), { ...page, reset: false, rows: [], unchanged: true, final: true, has_more: false }];
+    const at: number[] = [];
+    const fn = (async () => { at.push(Date.now()); return json(200, pages.shift()); }) as typeof fetch;
+    await follow(createClient({ fetch: fn }), "r1", { onRows: () => {}, waitMs: 1, minDelayMs: 40 });
+    const gaps = at.slice(1).map((t, i) => t - at[i]);
+    expect(gaps.length).toBe(4);
+    for (const g of gaps) expect(g).toBeGreaterThanOrEqual(35);
+  });
+});
