@@ -147,7 +147,7 @@ export function judgeFromProviders(options: { providers: Readonly<Record<string,
     const timer = shorter ? setTimeout(() => cut.abort(new DOMException("The decision node's timeoutMs passed", "TimeoutError")), node) : undefined;
     const signal = params.signal ? AbortSignal.any([params.signal, cut.signal]) : cut.signal;
     try {
-      const result = await judgeFromProvider(provider, { deadlineMs })({ ...params, signal, ...(params.model !== undefined ? { model: params.model } : {}) });
+      const result = await judgeFromProvider(provider, { deadlineMs })({ ...params, signal });
       return { ...result, provider: id };
     } catch (error) {
       if (cut.signal.aborted && error instanceof DecisionProviderError && (error.code === "aborted" || error.code === "timeout")) {

@@ -2,7 +2,7 @@ import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
-import { DECISION_EVIDENCE_MODES, DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
+import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
 import { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
@@ -524,12 +524,12 @@ function predicateShapeErrors(pred: { predicate: string; path?: string; values?:
   return out;
 }
 
-/** The problems with a decision's provider, model, evidence and timeoutMs, each naming its field. */
+/** The problems with a decision's provider, model and timeoutMs, each naming its field; the schema refuses an evidence
+ *  mode it does not list. */
 function decisionFieldProblems(raw: Record<string, unknown>): string[] {
   const out: string[] = [];
   if (raw.provider !== undefined && !(typeof raw.provider === "string" && /^[a-z][a-z0-9_:.-]*$/.test(raw.provider))) out.push("provider must name a decision provider: lowercase letters, digits and _ : . -");
   if (raw.model !== undefined && !(typeof raw.model === "string" && raw.model.trim())) out.push("model must be a non-empty string");
-  if (raw.evidence !== undefined && !(DECISION_EVIDENCE_MODES as readonly unknown[]).includes(raw.evidence)) out.push(`evidence must be one of ${DECISION_EVIDENCE_MODES.join(", ")}`);
   if (raw.timeoutMs !== undefined && !(Number.isSafeInteger(raw.timeoutMs) && (raw.timeoutMs as number) > 0 && (raw.timeoutMs as number) <= DECISION_TIMEOUT_MAX_MS)) {
     out.push(`timeoutMs must be a whole number of milliseconds from 1 to ${DECISION_TIMEOUT_MAX_MS}`);
   }

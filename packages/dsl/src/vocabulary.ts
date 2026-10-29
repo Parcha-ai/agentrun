@@ -12,8 +12,6 @@ export const GENERATIVE_NODE_KINDS = ["agent", "decide", "extract", "report"] as
 /** What a decision node or an `ask` predicate may say about its provider: which one, a pinned model, the evidence it
  *  needs, and its own time bound. */
 export const DECISION_NODE_FIELDS = ["provider", "model", "evidence", "timeoutMs"] as const;
-/** The values `evidence` takes. */
-export const DECISION_EVIDENCE_MODES = ["off", "if_supported", "required"] as const;
 /** The longest a decision node may give its provider, in milliseconds. A node only ever shortens its provider's own deadline. */
 export const DECISION_TIMEOUT_MAX_MS = 120_000;
 /** Typed-question kinds: one judge request each, no tools and no session. */
