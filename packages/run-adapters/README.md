@@ -26,6 +26,11 @@ harness adapter the way they run on Pi, durable in AgentRun's own store. It is h
 - `./kernel` is the durable kernel an adapter runs on (`openDrive` over the session's writer): an effect's intent, then
   at most one outcome; after a crash a `safe` effect runs again and a `never` one is reported interrupted, never run
   again. So a tool that costs money per call (a paid search) is `never`: `safe` means free to run again. A drive whose writer was fenced gets a `Restart` at its next write, so it never runs a new effect.
+  `followUpOnce` sends one more turn into a session that has answered, with a prompt the host names, at most once: it
+  is a `never` effect on its own key (`followUpKey(session, name)`), so a crash inside it leaves it interrupted, and the
+  turn a crash cut off is settled (`settleOpenTurn`), never resumed. Its `beforeRequest` goes ahead of the host's and
+  holds the follow-up's paid requests to `reserveUsd`, counted from its first request; an unknown spend is refused.
+  `followUpState(records)` tells a host, before it resumes an open turn, whether that turn is a follow-up's.
   `./process` is the shared layer for harnesses that run as a child process: the native journal, the transcript, the
   recovery note, the tool bridge, the built-ins' hook-pair calls, the inbox (and `waitForSubmissions`, for a harness that
   waits for input while a turn runs), and `zodShapeFromJsonSchema`, for harness SDKs whose tool APIs take zod.

@@ -4,3 +4,5 @@ export { EffectFailure, EffectInterrupted, Fatal, Restart, Unavailable } from ".
 export { BLOB_PIECE_CHARS, BLOB_RECORD, blobStreamName, readBlobs, sha256Hex, writeBlob } from "./blobs.js";
 export { foldSession, hostToolIO, INTERRUPTED_TEXT, KERNEL_RECORDS, openDrive, pendingSubmissions } from "./drive.js";
 export type { Drive, OpenDriveOptions } from "./drive.js";
+export { FOLLOW_UP_BUDGET_REACHED, FOLLOW_UP_EFFECT, followUpKey, followUpOnce, followUpState } from "./follow-up.js";
+export type { FollowUp, FollowUpOptions, FollowUpResult, FollowUpState, FollowUpTarget } from "./follow-up.js";
