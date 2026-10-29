@@ -34,7 +34,7 @@ test('real adapter preserves all response invariants with one attempt and safe l
 test('HTTP statuses and exact structured capacity code survive without provider text', async () => {
   for (const status of [400, 401, 413, 422, 429, 503, 529]) {
     let calls = 0;
-    const runner = createJevRunner({ apiKey: 'fake-test-key', baseURL: 'https://fictional.invalid', maxAttempts: 1, fetch: async () => {
+    const runner = createJevRunner({ retryAfterSend: true, apiKey: 'fake-test-key', baseURL: 'https://fictional.invalid', maxAttempts: 1, fetch: async () => {
       calls++; return new Response(JSON.stringify({ detail: { error_type: 'max_tokens_exceeded', message: secret }, extra: secret }), { status,
         headers: { 'content-type': 'application/json', 'x-typesafe-request-id': secret } });
     } });
@@ -60,7 +60,7 @@ test('generic adapter does not parse broker messages, unknown codes or wrong pat
 test('HTTP retry ownership is unchanged and a capacity hint does not retry400', async () => {
   for (const status of [400, 401, 408, 429, 503, 529]) {
     let calls = 0; const retryable = [408, 429, 503, 529].includes(status);
-    const run = createJevRunner({ maxAttempts: 3, retryBaseMs: 0, retryMaxMs: 0, client: { async systemOne() {
+    const run = createJevRunner({ retryAfterSend: true, maxAttempts: 3, retryBaseMs: 0, retryMaxMs: 0, client: { async systemOne() {
       calls++; throw new APIError(status, { detail: { error_type: 'max_tokens_exceeded' } }, new Headers());
     } } });
     await assert.rejects(run(params), error => { assert.equal(error.attempts, retryable ? 3 : 1); return true; });
@@ -82,7 +82,7 @@ test('abort wins over lateinvalid response, late400, and retrybackoff', async ()
   for (const variant of ['response', 'http', 'backoff', 'before']) {
     const controller = new AbortController(); let calls = 0;
     if (variant === 'before') controller.abort();
-    const run = createJevRunner({ signal: controller.signal, timeoutMs: null, maxAttempts: 3, retryBaseMs: 50, retryMaxMs: 50,
+    const run = createJevRunner({ retryAfterSend: true, signal: controller.signal, timeoutMs: null, maxAttempts: 3, retryBaseMs: 50, retryMaxMs: 50,
       client: { async systemOne() { calls++;
         if (variant === 'backoff') setTimeout(() => controller.abort(), 0); else controller.abort();
         if (variant !== 'response') throw new APIError(variant === 'backoff' ? 503 : 400, { detail: { error_type: 'max_tokens_exceeded' } }, new Headers());

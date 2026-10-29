@@ -66,8 +66,9 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
         request_sha256: canonicalHash({ kind: params.kind, label: params.label, state: params.state, questions: params.questions }) });
       if (open) {
         // An earlier process asked and its answer never reached a receipt: never asked again, booked once at an unknown
-        // cost, and the run goes to review.
-        if (open.status === "requested") driver.decisionEnded(params.executionPath, decisionId, "interrupted", null);
+        // cost, and the run goes to review. The unknown cost is counted with the outcome in one commit, the way the
+        // answered and failed paths commit theirs, so the run's spend reads incomplete and never omits it.
+        if (open.status === "requested") driver.decisionEnded(params.executionPath, decisionId, "interrupted", null, () => driver.recordQuestionSpend(null));
         await driver.flush();
         throw new EscalationSignal({ kind: DECISION_INTERRUPTED, stage: "decision", executionPath: params.executionPath, label: params.label, state: driver.lastState(),
           summary: `The decision "${params.label}" was asked by an earlier process and its answer never reached a receipt; it is not asked again.` });
