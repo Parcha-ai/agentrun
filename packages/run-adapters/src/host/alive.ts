@@ -4,11 +4,17 @@
 // cannot be read, kill(pid, 0) is all there is.
 import { existsSync, readFileSync } from "node:fs";
 
-/** `readStat`: how /proc/<pid>/stat is read (a test's seam). */
-export function processAlive(pid: number, readStat: (pid: number) => string = (id) => readFileSync(`/proc/${id}/stat`, "utf8")): boolean {
+const statOf = (pid: number): string => readFileSync(`/proc/${pid}/stat`, "utf8");
+
+/**
+ * `readStat`: how /proc/<pid>/stat is read (a test's seam). It is used only when it is a function, so `processAlive` can
+ * be passed straight to an array method: `pids.filter(processAlive)` calls it with the index as the second argument.
+ */
+export function processAlive(pid: number, readStat?: unknown): boolean {
+  const read = typeof readStat === "function" ? (readStat as (pid: number) => string) : statOf;
   if (process.platform === "linux") {
     try {
-      const stat = readStat(pid);
+      const stat = read(pid);
       const state = stat.charAt(stat.lastIndexOf(")") + 2);
       return state !== "Z" && state !== "X";
     } catch (error) {
