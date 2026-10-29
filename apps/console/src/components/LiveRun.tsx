@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RunDetail } from "@/components/RunDetail";
 import { RunError } from "@/components/RunError";
 import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
-import { harnessSteers, NO_MESSAGES } from "@/lib/runState";
+import { type HarnessRead, messageOffer } from "@/lib/liveRun";
 import type { ApiError, Run, RunFile, TimelineRow } from "@/lib/v2";
 
 const asApiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: true });
@@ -19,8 +19,11 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const status = useRef<string>("");
   const toolResults = useRef(0);
   // The run's harness decides whether a message to a working run is a steer: until it is known, no message is offered.
-  const [harness, setHarness] = useState<{ id: string | undefined } | null>(null);
-  useEffect(() => { if (run && !harness) v2.agentHarness(run.agent_id).then((id) => setHarness({ id })).catch(() => setHarness({ id: undefined })); }, [run?.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [harness, setHarness] = useState<HarnessRead>({ state: "loading" });
+  useEffect(() => {
+    if (run && harness.state === "loading") v2.agentHarness(run.agent_id).then((id) => setHarness({ state: "read", id }), () => setHarness({ state: "failed" }));
+  }, [run?.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const offer = messageOffer(harness, caps);
 
   const refresh = async () => {
     try {
@@ -57,7 +60,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   return (
     <div className="flex h-full min-h-0 flex-col">
       {error && <div className="border-b p-3"><RunError title="The server refused the request" error={error} /></div>}
-      <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={(harness && caps?.features.messages) || NO_MESSAGES} harnessSteers={harnessSteers(harness?.id, caps?.harnesses ?? [])}
+      <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
         rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} onMessage={message}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), busy }} />
     </div>
