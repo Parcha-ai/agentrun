@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
@@ -13,7 +14,7 @@ import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } fr
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
@@ -63,6 +64,16 @@ async function processOf(data, runId, not) {
     if (record.status === "running" && record.holder?.serve && pid && pid !== not && existsSync(`/proc/${pid}`)) return pid;
     assert.ok(i < 400, "the run's process serves");
     await sleep(50);
+  }
+}
+
+/** The escalation kinds the run's ended tasks hold, from its released store. */
+function escalations(storePath) {
+  const db = new DatabaseSync(storePath, { readOnly: true });
+  try {
+    return db.prepare("SELECT record FROM tasks").all().map((row) => JSON.parse(row.record).state?.outcome?.result?.escalation?.kind).filter(Boolean);
+  } finally {
+    db.close();
   }
 }
 
@@ -157,6 +168,19 @@ test("with TYPESAFE_API_KEY set, a judge workflow runs on Jev and its decision i
   assert.equal(rows.length, 1, "the decision's receipt is a row of the run's store");
   assert.equal(rows[0].kind, "judge");
   assert.equal(rows[0].answers.is_coi.noul, 0.92);
+});
+
+test("a System One request that fails after it was sent (a 503) is sent once, and the run escalates as an interrupted decision", async (t) => {
+  const seen = await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_STATUS = "503";
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [judge, probe()]);
+  await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal((await seen()).length, 1, "a request that may have been answered and billed is never sent again");
+  assert.equal(run.status, "failed");
+  assert.equal(run.error?.code, "escalated", JSON.stringify(run.error));
+  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"], "the run waits for review as an interrupted decision");
 });
 
 test("a decision whose cost is unknown leaves the run's cost unknown, never $0", async (t) => {
