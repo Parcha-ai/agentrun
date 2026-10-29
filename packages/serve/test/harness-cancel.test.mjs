@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { modelPortFor, RUNNER_RECORDS } from "@parcha/agentrun-adapters";
 import { fauxAdapter } from "@parcha/agentrun-adapters/testing";
+import { timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { RUN_CANCELLED } from "../dist/files.js";
 import { adapterRun } from "../dist/harness-app.js";
+import { durableSessions } from "../dist/sessions.js";
 import { agent, FAUX, follow, serve, withEnv } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -96,3 +99,35 @@ for (const harness of ["codex", "claude-agent"]) {
     assert.match(assistant.map((m) => m.errorMessage ?? "").join(" "), /cancelled/, "the turn ended on the cancel");
   });
 }
+
+test("a request withdrawn as its record was written is no request when the run opens again: nothing is written for it, and the run has spent $0", async () => {
+  const storage = new MemoryStorage();
+  // The first process: the cancel lands while the request's record is written, and the runner withdraws the request.
+  const first = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const writer = await durableSessions(first, ctx).open("run:1");
+  let stopped;
+  const append = async (records) => {
+    if (records.some((r) => r.kind === RUNNER_RECORDS.request)) stopped = new Error("the run was cancelled");
+    return writer.append(records);
+  };
+  const booking = await modelPortFor(writer, { key: "run:1", append, stopped: () => stopped });
+  await assert.rejects(booking.models.beforeRequest({ model: "m" }), /cancelled/);
+  assert.deepEqual((await writer.read()).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data), [{ turn: 1, usd: 0, unsent: true }]);
+  // The next process opens the run: the withdrawn request is not booked as one.
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: {} }, ctx);
+  const app = adapterRun(async () => fauxAdapter({ script: () => [] }), "codex", { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx);
+  app.door.attach(() => {});
+  await app.onOpen(runOf(harness));
+  const entries = [];
+  const conversation = await harness.conversation(ROOT_CONVERSATION_ID, ctx);
+  for (let cursor; ; ) {
+    const page = await conversation.entries({ order: "ascending" }, 500, cursor, ctx);
+    entries.push(...page.items);
+    if (page.next === undefined) break;
+    cursor = page.next;
+  }
+  assert.equal(entries.flatMap((e) => (e.model ?? []).filter((m) => m.role === "assistant")).length, 0, "no answer written for a request that never left");
+  const usage = timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage;
+  assert.equal(usage?.requests ?? 0, 0, "no request counted");
+  assert.equal(usage?.usd ?? 0, 0, "and nothing spent");
+});

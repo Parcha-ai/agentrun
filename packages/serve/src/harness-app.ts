@@ -230,9 +230,10 @@ export function adapterRun(
     const out = new Map<number, ModelUsage>();
     let admitted = 0;
     for (const record of records) {
-      const data = (record.data ?? {}) as { turn?: number; usd?: number | null; cut?: boolean };
+      const data = (record.data ?? {}) as { turn?: number; usd?: number | null; cut?: boolean; unsent?: boolean };
       if (record.kind === RUNNER_RECORDS.request) admitted = typeof data.turn === "number" ? data.turn : admitted + 1;
-      else if (record.kind === RUNNER_RECORDS.turn) {
+      // A request withdrawn as its record was written (a stop came then) never left: it is no request of the run's.
+      else if (record.kind === RUNNER_RECORDS.turn && data.unsent !== true) {
         const request = typeof data.turn === "number" ? data.turn : admitted;
         out.set(request, { input: 0, output: 0, usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true });
       }
