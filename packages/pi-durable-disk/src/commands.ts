@@ -8,7 +8,9 @@
 // which holds the owner lock, kills whatever a previous incarnation recorded that is still the same process (pid, start
 // and boot all match), waits until it is gone, and clears the records, before the Harness opens. A recorded leader's
 // whole process group is ended and waited for, a member no walk recorded included; a descendant that left the group
-// (setsid or setpgid: a session or group of its own) is ended only if a walk recorded it. Only the instance writes
+// (setsid or setpgid: a session or group of its own) is ended only if a walk recorded it. The group is listed just
+// before its SIGKILL: a process forked in between gets the SIGKILL but is not waited for (it ends at once unless it is
+// in an uninterruptible wait). Only the instance writes
 // records: a command never does. Nothing stops a command from writing one too, and none needs stopping: a run's commands
 // run as the instance's user (or, with `runAs`, as another one that cannot write the instance's 0700 directory), so a
 // record a command forged names only what that command could already kill itself. A record grants nothing.
