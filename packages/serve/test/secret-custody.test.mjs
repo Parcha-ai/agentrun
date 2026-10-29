@@ -267,3 +267,17 @@ test("secrets past what a pipe is sure to hold are refused before the server sta
   assert.equal(code, 1, out);
   assert.match(out, /more than the 4096 a pipe is sure to hold/);
 });
+
+test("a secret is handed over byte for byte, never read as shell: one full of shell syntax runs nothing, and reaches the run whole", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const token = `not-a-secret-${"token"}-${process.pid}-${"t".repeat(24)}`;
+  // Command substitution, backticks, a separator, quotes and spaces, then enough to come near the 4096-byte limit.
+  const hostile = `not-a-secret-$(touch ${join(dir, "PWNED")})\`touch ${join(dir, "PWNED2")}\`;x 'y "z ${"k".repeat(3_600)}`;
+  const { api } = await launched(t, { AGENTRUN_TOKEN: token, BROWSERBASE_API_KEY: hostile });
+  assert.equal((await api("POST", "/agents", { definition: { id: "bytes", version: 1, name: "bytes", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
+  const { body: run } = await api("POST", "/agents/bytes/runs", { input: { content: "Report." } });
+  await follow(api, run.run_id, ["completed"]);
+  const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
+  assert.equal(report.handed.BROWSERBASE_API_KEY, digest(hostile), "the run got it byte for byte");
+  assert.deepEqual(readdirSync(dir).filter((name) => name.startsWith("PWNED")), [], "nothing in it ran");
+});
