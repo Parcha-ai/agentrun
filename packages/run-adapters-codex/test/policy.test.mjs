@@ -346,3 +346,18 @@ test("the proxy tells the session which exec an answer carries before the client
   assert.deepEqual(seenByClient.told, ['response', 'exec call_x'], 'told before the client read it');
   assert.equal(told.filter((x) => x === 'exec call_x').length, 1, 'once');
 });
+
+test("a watcher that fails mid-answer is told to the session (failed), the answer still reaches the client whole, and a policy with no watcher answers the same bytes", async () => {
+  const exec = { type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: 'call_x', input: 'text(1)' } };
+  const body = sse([exec, completed({ input_tokens: 5, output_tokens: 2 })]);
+  const told = [];
+  const answer = () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const watched = await proxy({ announce: { response: () => told.push('response'), exec: () => { throw new Error('the session could not take it'); }, failed: () => told.push('failed') }, answer });
+  const plain = await proxy({ answer });
+  const a = await send(watched.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  const b = await send(plain.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  assert.equal(a.status, 200);
+  assert.deepEqual(told, ['response', 'failed'], 'the failure was told, once');
+  assert.equal(a.text, body, 'the client has the whole answer');
+  assert.equal(b.text, a.text, 'a policy with no watcher answers the same bytes');
+});

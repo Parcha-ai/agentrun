@@ -51,7 +51,7 @@ export interface CodexPolicyOptions {
   /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
    *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
    *  latest answer, which is known here before Codex can run anything of it. */
-  announce?: { response(): void; exec(callId: string): void };
+  announce?: { response(): void; exec(callId: string): void; failed(): void };
 }
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -223,10 +223,12 @@ function codeModeCarrier(item: unknown, offerExec: boolean): unknown {
 }
 
 /** Reads an answer's server-sent events as they pass, and tells `announce` of each code-mode `exec` call it holds. */
-function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): { chunk(text: string): void } {
+function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): { chunk(text: string): void; failed(): void } {
   announce.response();
   let pending = "";
   return {
+    // The proxy stopped watching this answer: what the session knows of its exec is no longer whole.
+    failed: () => announce.failed(),
     chunk(text) {
       pending += text;
       let at: number;

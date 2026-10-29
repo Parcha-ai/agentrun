@@ -161,3 +161,69 @@ test("code mode: a model that writes a new exec while a cell still runs: a never
   assert.ok(messages.some((m) => /declined a nested call while two scripts are live/.test(m)), 'the barrier declined it for that reason');
   assert.match(toldAbout(seen, 'call_b').join('\n'), /Not run/, 'the model was told it did not run');
 });
+
+/** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
+async function crashed(after) {
+  let charged = 0;
+  let looked = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: 'found' }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:code-adversary', label: 'pay', system: [], tools: [charge, hold, lookup], context: 'fresh' };
+  const store = memorySessionStore();
+  const seen = [];
+  let resumed = false;
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const n = seen.length;
+    const items = n === 1 ? [exec('call_js', `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\ntext('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});\ntext('held');`)] : resumed ? after(seen, n) : [say(n)];
+    return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('pay');
+  await held;
+  assert.equal(charged, 1, 'the charge completed before the crash');
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  const before = seen.length;
+  resumed = true;
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  return { charged: () => charged, looked: () => looked, seen, before };
+}
+
+test("code mode: a crash after a never call completed, an exec answered as a custom tool output that says it completed, with its result; a model that re-calls whatever is labelled not run still runs it once", { skip, timeout: 240_000 }, async () => {
+  const labelled = /not executed|not run|did not report|interrupted|may have taken effect/i;
+  const r = await crashed((seen, n) => {
+    const told = toldAbout(seen.slice(0, n - 1), 'call_js').join('\n');
+    return labelled.test(told) ? [exec(`call_retry${n}`, `text(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)];
+  });
+  assert.equal(r.charged(), 1, 'the never tool ran once, even against a model that re-calls what is labelled not run');
+  const recoveredRequest = r.seen.slice(r.before).find((body) => (body.input ?? []).some((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? '')));
+  const output = recoveredRequest.input.find((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
+  assert.equal(output.type, 'custom_tool_call_output', 'an exec is answered with a custom tool output');
+  const text = Array.isArray(output.output) ? output.output.map((o) => o.text ?? '').join('\n') : String(output.output);
+  assert.match(text, /cut short after these calls/);
+  assert.match(text, /charge completed: "charged"/, 'the call and its result');
+  assert.match(text, /effect is done/);
+  assert.ok(!/not executed/i.test(text));
+});
+
+test("code mode: after a recovery, a new exec that calls a never tool again with the same arguments is answered from the log and does not run it", { skip, timeout: 240_000 }, async () => {
+  const r = await crashed((seen, n) => (n === seen.length && !seen.some((b, i) => i > 0 && JSON.stringify(b.input).includes('call_again')) ? [exec('call_again', `text(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)]));
+  assert.equal(r.charged(), 1, 'the never tool ran once');
+  const told = toldAbout(r.seen, 'call_again').join('\n');
+  assert.match(told, /Recorded earlier in this turn, not run again: charged/);
+});
+
+test("code mode: after a recovery, a safe tool called again is run again: only a never tool's completed call is answered from the log", { skip, timeout: 240_000 }, async () => {
+  const r = await crashed((seen, n) => (!seen.some((b, i) => i > 0 && JSON.stringify(b.input).includes('call_look')) ? [exec('call_look', `text(JSON.stringify(await tools.lookup({ q: 'x' })));`)] : [say(n)]));
+  assert.equal(r.looked(), 2, 'the safe tool ran again');
+  assert.equal(r.charged(), 1);
+});

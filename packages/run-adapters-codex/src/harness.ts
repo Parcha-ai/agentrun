@@ -47,7 +47,7 @@ import {
   THREAD_STREAM,
   type ThreadRecord,
 } from './rollout.js';
-import { NESTED_CALL, Scripts } from './scripts.js';
+import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, Scripts, settle } from './scripts.js';
 
 /**
  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
@@ -580,6 +580,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       const code = new Scripts();
       /** The exec each nested call was admitted under. */
       const execOf = new Map<string, string>();
+      /** After a recovery: the `never` calls the log holds a completed outcome for, by tool and arguments, until the turn ends. */
+      const recovered = new Map<string, { tool: string; text: string }>();
       for (const line of lines) {
         const id = callIdOf(line);
         if (id) logged.add(id);
@@ -836,6 +838,13 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           case 'item/tool/call': {
             const callId = String(p.callId ?? '');
             const tool = bridge.get(String(p.tool));
+            // After a recovery, a `never` call the log already holds a completed outcome for, called again (a script that was cut
+            // short and written again re-issues every call it made): answered from the log, run no more.
+            const again = tool?.replay === 'never' ? recovered.get(callKey(tool.name, p.arguments)) : undefined;
+            if (again) {
+              log('codex: answered a never call from the log: it completed before the interruption', { callId, tool: again.tool });
+              return { contentItems: [{ type: 'inputText', text: `Recorded earlier in this turn, not run again: ${again.text}` }], success: true };
+            }
             // A `never` tool's call: its own line in the log first (the barrier), else it is declined, never run.
             if (tool?.replay === 'never' && callId && !ctx.isMemoized(toolKey(callId)) && !(await barrier(callId))) {
               return { contentItems: [{ type: 'inputText', text: LAGGING_RESULT }], success: false };
@@ -1026,6 +1035,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         return { status, ...(error ? { error } : {}) };
       };
       const endTurn = async (outcome: TurnOutcome) => {
+        recovered.clear();
         journal.message({ type: 'turn', ...outcome });
         await guard(journal.flush());
         ledger.turnEnded();
@@ -1099,7 +1109,26 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         const owed = owedSubmissions(ctx.state(), note.turn.placed, summary.clientIds);
         if (resume && summary.dangling.length > 0) {
           // Calls the rollout has no output for get theirs from the log.
-          const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
+          const ties = (await journal.read<{ callId: string; exec: string }>(NESTED_STREAM)).map((r) => r.data);
+          const rolled = completedNested(lines);
+          const items = summary.dangling.map((c) => {
+            // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
+            if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
+            const facts: NestedFact[] = [];
+            for (const tie of ties.filter((t) => t.exec === c.callId)) {
+              const e = ctx.state().effects.get(toolKey(tie.callId));
+              const fact: NestedFact = {
+                callId: tie.callId,
+                tool: e ? e.name.replace(/^tool\./, '') : (rolled.get(tie.callId)?.tool ?? 'a tool'),
+                ...(e ? { store: { status: e.status === 'completed' ? 'completed' : e.status === 'failed' ? 'failed' : 'started', text: e.status === 'failed' ? (e.error?.message ?? '') : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact['store']> } : {}),
+                ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
+              };
+              facts.push(fact);
+              const settled = settle(fact);
+              if (settled.kind === 'completed' && e?.replay === 'never') recovered.set(callKey(fact.tool, e.input), { tool: fact.tool, text: settled.text });
+            }
+            return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(facts) };
+          });
           await guard(rpc.request('thread/inject_items', { threadId, items }));
           await guard(synced());
         }
