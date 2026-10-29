@@ -72,7 +72,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <span className="flex gap-4 text-[12px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
-            <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: a ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
+            <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
             {view === "json" ? (
               <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
             ) : (

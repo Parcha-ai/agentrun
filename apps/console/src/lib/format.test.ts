@@ -23,6 +23,13 @@ describe("cost", () => {
     expect(cost({ usd: 0, basis: "billed", charge_state: null, cap_usd: null })).toBe("$0.0000");
   });
 
+  it("never rounds a cost the server priced above zero down to $0", () => {
+    // A short run on a cheap model: $0.000043 is not $0.0000.
+    expect(cost({ usd: 0.000043, basis: "estimate", charge_state: null, cap_usd: null })).toBe("<$0.0001 est.");
+    expect(cost({ usd: 0.00004999, basis: "billed", charge_state: null, cap_usd: null })).toBe("<$0.0001");
+    expect(cost({ usd: 0.0001, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$0.0001 est.");
+  });
+
   it("says est. for a local estimate and not for a cost the server reports otherwise", () => {
     expect(cost({ usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null })).toContain("est.");
     expect(cost({ usd: 0.25, basis: "billed", charge_state: null, cap_usd: null })).not.toContain("est.");

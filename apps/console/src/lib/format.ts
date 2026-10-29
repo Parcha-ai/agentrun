@@ -17,7 +17,8 @@ export function bytes(n: number): string {
  *  no price). Never a billed amount, never an invented zero. */
 export function cost(c: Cost | null | undefined): string {
   if (!c || c.usd === null) return "Unknown";
-  const usd = c.usd < 0.01 ? `$${c.usd.toFixed(4)}` : `$${c.usd.toFixed(2)}`;
+  // A cost the server priced above zero never reads as $0: under a hundredth of a cent it reads "<$0.0001".
+  const usd = c.usd > 0 && c.usd < 0.0001 ? "<$0.0001" : c.usd < 0.01 ? `$${c.usd.toFixed(4)}` : `$${c.usd.toFixed(2)}`;
   return c.basis === "estimate" ? `${usd} est.` : usd;
 }
 
