@@ -82,3 +82,18 @@ test("a failed run's message is found past more than one read of harness lines, 
   await writeFile(join(dir, "process.log"), `${after}\n`);
   assert.equal(await lastLogLine({ dir }), "harness: model proxy (openai): refused 249");
 });
+
+test("a key is cut as literal text, whatever characters it holds: one full of a pattern's special characters is cut, and nothing else", () => {
+  const lines = [];
+  const special = `not-a-secret-${"sk+a.b*c(d[e$f?g|h\\i^j{2}"}`;
+  harnessLog("codex", { OPENAI_API_KEY: special }, (line) => lines.push(line))("model proxy (openai): refused", { userAgent: `curl ${special} and sk-a-b-c` });
+  assert.equal(JSON.parse(lines[0]).userAgent, "curl [redacted] and sk-a-b-c");
+});
+
+test("an empty or short value under a key-shaped name cuts nothing: an unset variable's empty string never redacts the whole line", () => {
+  const lines = [];
+  harnessLog("codex", { EMPTY_API_KEY: "", SHORT_TOKEN: "abc1234", UNSET_SECRET: undefined }, (line) => lines.push(line))("model proxy (openai): abc1234 refused", { status: 401 });
+  const said = JSON.parse(lines[0]);
+  assert.equal(said.message, "model proxy (openai): abc1234 refused");
+  assert.ok(!lines[0].includes("[redacted]"));
+});
