@@ -23,7 +23,7 @@ test("a choice and a score say their option and level with its probability, and 
     risk: { type: "score", score: 2, legend: { 0: "low", 1: "medium", 2: "high" }, confidence: 0.6 },
     age: { type: "refusal" },
   }, refused: ["age"] })]);
-  assert.equal(row.summary, "document_checks (jev): kind llc 0.70 · risk high 0.60 · age refused");
+  assert.equal(row.summary, "document_checks: kind llc 0.70 · risk high 0.60 · age refused", "a row whose receipt names no provider names none");
   assert.equal(row.text, "refused: age");
 });
 
