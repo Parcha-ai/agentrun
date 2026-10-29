@@ -14,7 +14,7 @@ function failures(mutant) {
   const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', runner], { env, encoding: 'utf8' });
   const failed = [...run.stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map(([, title]) => title.replace(`${mutant}: `, ''));
   assert.equal(run.status === 0, failed.length === 0, `${mutant}: exit ${run.status}\n${run.stdout.slice(-2000)}`);
-  assert.match(run.stdout, /^# tests 16$/m, `${mutant}: the whole suite ran`);
+  assert.match(run.stdout, /^# tests 17$/m, `${mutant}: the whole suite ran`);
   return failed;
 }
 
@@ -33,6 +33,7 @@ const EXPECTED = {
   'request-id-number': [/^evidence is a list of sources, and the request id a string or null/],
   'needs-a-value': [/^needs names environment variables, never their values/],
   'retries-after-send': [/^a provider that cannot replay never retries a failure after the request was sent/],
+  'declares-box': [/^it declares only what the seam can send/],
 };
 
 test('every mutant has an expectation, and the provider that keeps every rule passes the suite', () => {

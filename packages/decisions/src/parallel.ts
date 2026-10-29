@@ -93,11 +93,13 @@ function readResponse(body: unknown, questions: Record<string, SystemOneQuestion
   };
 }
 
-/** The wait a Retry-After header asks for, in milliseconds, when it is a number of seconds. */
+/** The wait a Retry-After header asks for, in milliseconds: a number of seconds, or an HTTP date (a past one is 0). */
 function retryAfterMs(response: Response): number | undefined {
-  const value = response.headers.get("retry-after");
-  if (value === null || !/^\d+(?:\.\d+)?$/.test(value.trim())) return undefined;
-  return Math.round(Number(value) * 1000);
+  const value = response.headers.get("retry-after")?.trim();
+  if (!value) return undefined;
+  if (/^\d+(?:\.\d+)?$/.test(value)) return Math.round(Number(value) * 1000);
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
 export function parallelProvider(options: ParallelOptions = {}): DecisionProvider {
@@ -118,7 +120,9 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
       const key = options.apiKey ?? process.env[KEY_VARIABLE];
       if (typeof key !== "string" || !key.trim()) throw new DecisionProviderError("configuration", `${KEY_VARIABLE} is not set.`);
       const body = JSON.stringify({ mode: "fast", state: request.state ?? null, questions: Object.fromEntries(Object.entries(request.questions).map(([id, q]) => [id, wireQuestion(q)])), include_excerpts: options.includeExcerpts ?? true });
-      const deadline = AbortSignal.timeout(Math.min(timeoutMs, ctx.deadlineMs ?? Infinity));
+      const budgetMs = Math.min(timeoutMs, ctx.deadlineMs ?? Infinity);
+      const deadlineAt = Date.now() + budgetMs;
+      const deadline = AbortSignal.timeout(budgetMs);
       const signal = AbortSignal.any([ctx.signal, deadline]);
       const stopped = (attempts: number) => ctx.signal.aborted
         ? new DecisionProviderError("aborted", "The Parallel request was cancelled.", { attempts })
@@ -153,7 +157,8 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         if (status === 408 || (status >= 500 && status <= 599)) { await response.body?.cancel().catch(() => {}); throw lost(attempt, `answered HTTP ${status}`, status); }
         // A 429 was refused unanswered; it is sent again only when Parallel says when.
         const wait = status === 429 ? retryAfterMs(response) : undefined;
-        if (wait !== undefined && attempt < maxAttempts) {
+        // A wait that would not end before the deadline is never started: the retry after it would have no time to answer.
+        if (wait !== undefined && attempt < maxAttempts && wait < deadlineAt - Date.now()) {
           await response.body?.cancel().catch(() => {});
           await sleep(wait, undefined, { signal }).catch(() => { throw stopped(attempt); });
           continue;

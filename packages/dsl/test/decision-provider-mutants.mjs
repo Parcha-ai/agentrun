@@ -27,7 +27,7 @@ function scripted(replies, breaks = {}) {
     return reply;
   };
   const provider = {
-    id: 'scripted', needs: breaks.needsValue ? [KEY] : ['SCRIPTED_API_KEY'], capabilities,
+    id: 'scripted', needs: breaks.needsValue ? [KEY] : ['SCRIPTED_API_KEY'], capabilities: breaks.declaresBox ? { ...capabilities, types: [...capabilities.types, 'box'], inputs: [...capabilities.inputs, 'image'] } : capabilities,
     async decide(request, ctx) {
       if (!breaks.sendsOverCapacity) checkCapabilities(capabilities, request);
       let reply;
@@ -76,6 +76,7 @@ export const MUTANTS = {
   'request-id-number': { requestIdNumber: true },
   'needs-a-value': { needsValue: true },
   'retries-after-send': { retriesAfterSend: true },
+  'declares-box': { declaresBox: true },
 };
 
 const mutant = process.env.DECISION_MUTANT;

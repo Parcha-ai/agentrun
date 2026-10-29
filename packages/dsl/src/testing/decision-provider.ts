@@ -174,6 +174,14 @@ export function registerDecisionProviderConformance(name: string, kit: DecisionP
     assert.ok(outcome.provider_request_id === null || typeof outcome.provider_request_id === "string");
   });
 
+  it("it declares only what the seam can send: noul, choice and score questions, from text, JSON or a URL", async () => {
+    // A box question needs an image, and a DecisionRequest carries none: a provider that declares one, or image or PDF
+    // input, cannot be asked for it through judgeFromProvider.
+    const { capabilities } = probe();
+    for (const type of capabilities.types) assert.ok(["noul", "choice", "score"].includes(type), `it declares ${type} questions, which the seam cannot send`);
+    for (const input of capabilities.inputs) assert.ok(["text", "json", "url"].includes(input), `it declares ${input} input, which the seam cannot carry`);
+  });
+
   it("needs names environment variables, never their values", async () => {
     const { needs } = probe();
     for (const variable of needs) {

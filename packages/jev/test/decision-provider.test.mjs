@@ -25,6 +25,13 @@ function build(replies) {
 
 registerDecisionProviderConformance('jev', { canary: KEY, refuses: false, build });
 
+test('a box question is refused before anything is sent: the seam carries no image', async () => {
+  let calls = 0;
+  const provider = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', model: 'jev-preview', fetch: async () => { calls++; return json({}); } });
+  await assert.rejects(judgeFromProvider(provider)({ label: 'x', kind: 'judge', state: 'a <photo>', questions: { spot: { type: 'box', instructions: 'Where is the door?' } } }), (error) => error.code === 'invalid_request' && /does not answer box questions/.test(error.message), 'refused by the declared capabilities, not inside the request');
+  assert.equal(calls, 0);
+});
+
 test('a question named __proto__ round-trips through Jev and the seam, and is accepted', async () => {
   const questions = JSON.parse('{"__proto__": {"type": "noul", "instructions": "Does it hold?"}}');
   const answers = JSON.parse('{"__proto__": {"type": "noul", "noul": 0.8}}');
@@ -38,7 +45,8 @@ test('jevProvider declares what Jev answers, and the key it reads by name', () =
   const provider = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway' });
   assert.equal(provider.id, 'jev');
   assert.deepEqual(provider.needs, ['TYPESAFE_API_KEY']);
-  assert.deepEqual(provider.capabilities.types, ['noul', 'choice', 'score', 'box']);
+  assert.deepEqual(provider.capabilities.types, ['noul', 'choice', 'score']);
+  assert.deepEqual(provider.capabilities.inputs, ['text', 'json']);
   assert.deepEqual([provider.capabilities.evidence, provider.capabilities.probability, provider.capabilities.grounding, provider.capabilities.replay], ['none', 'model', false, 'never']);
   assert.deepEqual(jevProvider({ provider: 'openrouter', apiKey: KEY }).needs, ['OPENROUTER_API_KEY']);
 });
