@@ -179,9 +179,8 @@ test("a System One request that fails after it was sent (a 503) is sent once, an
   await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal((await seen()).length, 1, "a request that may have been answered and billed is never sent again");
-  assert.equal(run.status, "failed");
-  assert.equal(run.error?.code, "escalated", JSON.stringify(run.error));
-  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"], "the run waits for review as an interrupted decision");
+  assert.deepEqual([run.status, run.error, run.review?.kind], ["completed", null, "decision_interrupted"], "the run waits for review as an interrupted decision");
+  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"]);
 });
 
 test("a decision whose cost is unknown leaves the run's cost unknown, never $0", async (t) => {
@@ -300,8 +299,9 @@ test("a workflow that escalates ends completed and waits for review: no error, n
   assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, null), [], "and so does no review");
   const listed = (await api("GET", "/runs")).body.runs.find((row) => row.run_id === runId);
   assert.deepEqual([listed.status, listed.error, listed.review], ["completed", null, run.review], "the list says the same");
+  // A workflow run takes no messages here, escalated or not: the refusal it always had.
   const message = await api("POST", `/runs/${runId}/messages`, { content: "approved" });
-  assert.deepEqual([message.status, message.body.error?.code], [409, "not_continuable"]);
+  assert.deepEqual([message.status, message.body.error?.code], [501, "unsupported_here"]);
   // A run that did not escalate has no review.
   assert.equal((await api("POST", "/agents", flowAgent("plain", flow([judge, probe()])))).status, 201);
   const plain = (await api("POST", "/agents/plain/runs", { input: { question: QUESTION } })).body.run_id;

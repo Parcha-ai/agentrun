@@ -118,11 +118,31 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
 };
 
 let vendored: Json | undefined;
+/** Why an escalated workflow run waits for a person. Such a run is `completed` with no error and no output; every other
+ *  run's review is null. */
+const REVIEW: Json = {
+  oneOf: [
+    {
+      type: "object", additionalProperties: false, required: ["kind", "node", "reason", "at"],
+      properties: {
+        kind: { type: ["string", "null"], description: "The escalation's kind, as its escalate node names it (`coi_review`, say)." },
+        node: { type: ["string", "null"], description: "The label of the node the run escalated at." },
+        reason: { type: "string", description: "The escalation's summary: what the person is to look at." },
+        at: { type: "string", format: "date-time", description: "When the run escalated." },
+      },
+    },
+    { type: "null" },
+  ],
+  description: "Set when a workflow run escalated: it completed, and waits for a person to review it. A message to it is still 409 not_continuable.",
+  "x-agentrun-serve": "review/1",
+};
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
  *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
  *  are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  Run: { review: REVIEW },
+  RunSummary: { review: REVIEW },
   DefinitionInput: {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
