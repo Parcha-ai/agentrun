@@ -15,7 +15,7 @@ export class ClientError extends Error {
   toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId }; }
 }
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
@@ -68,6 +68,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
+    /** An agent's harness (`definition.harness`; none means the default, pi). */
+    agentHarness: (agentId: string) => call<{ definition: { harness?: string } }>("GET", `/agents/${encodeURIComponent(agentId)}`).then((a) => a.definition.harness),
     getTimeline: (id: string, { after, waitMs, signal }: { after?: number; waitMs?: number; signal?: AbortSignal } = {}) => {
       const q = new URLSearchParams();
       if (after !== undefined) q.set("after", String(after));

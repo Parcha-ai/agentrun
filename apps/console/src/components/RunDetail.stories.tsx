@@ -16,7 +16,7 @@ const story = (name: string, extra: Partial<React.ComponentProps<typeof RunDetai
     const f = code ? failedWith(code, message ? new RegExp(message) : undefined) : runFixture(name);
     return (
       <Shell active="runs">
-        <RunDetail run={f.run} agentName={f.agentName} messages={messageFeatures} rows={f.page.rows} files={f.files} actions={{ onStop: noop, onCancel: noop }} onMessage={noop}
+        <RunDetail run={f.run} agentName={f.agentName} messages={messageFeatures} harnessSteers rows={f.page.rows} files={f.files} actions={{ onStop: noop, onCancel: noop }} onMessage={noop}
           readFile={async () => recordedFileText()} {...extra} />
       </Shell>
     );
@@ -44,7 +44,7 @@ export const ArtifactOpen: Story = {
     const f = runFixture("run.with-files");
     return (
       <Shell active="runs">
-        <RunDetail run={f.run} agentName={f.agentName} messages={messageFeatures} rows={f.page.rows} files={f.files} tab="files" openFile={f.files[0] as RunFile} readFile={async () => recordedFileText()} />
+        <RunDetail run={f.run} agentName={f.agentName} messages={messageFeatures} harnessSteers rows={f.page.rows} files={f.files} tab="files" openFile={f.files[0] as RunFile} readFile={async () => recordedFileText()} />
       </Shell>
     );
   },
