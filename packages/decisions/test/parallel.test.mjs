@@ -221,6 +221,19 @@ test('a request that provably never reached Parallel is retried, and only the an
   assert.deepEqual([result.cost_usd, result.cost_basis], [PARALLEL_LIST_PRICE_USD, 'estimate']);
 });
 
+test('a 429 whose Retry-After is an HTTP date waits until that date and retries; a date past the deadline gives up at once', async () => {
+  const questions = { holds: { type: 'noul', instructions: 'Q?' } };
+  const soon = fakeFetch([() => json({ type: 'error', error: {} }, 429, { 'retry-after': new Date(Date.now() + 1000).toUTCString() }), () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
+  const result = await parallelProvider({ ...settings, fetch: soon.fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx());
+  assert.equal(soon.seen.length, 2);
+  assert.equal(result.answers.holds.noul, 0.4);
+  const late = fakeFetch([() => json({ type: 'error', error: {} }, 429, { 'retry-after': new Date(Date.now() + 120_000).toUTCString() }), () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
+  const started = Date.now();
+  await assert.rejects(parallelProvider({ ...settings, fetch: late.fetch, timeoutMs: 5_000 }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx()), code('rate_limited'));
+  assert.equal(late.seen.length, 1);
+  assert.ok(Date.now() - started < 1_000, 'a wait that would not end before the deadline is never started');
+});
+
 test('a 429 is retried only when it says when: without Retry-After it is rate_limited at once', async () => {
   const { fetch, seen } = fakeFetch([json({ type: 'error', error: {} }, 429), () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
   await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx()), code('rate_limited'));
