@@ -22,19 +22,9 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
   return { ok: true, body };
 }
 
-/** One Idempotency-Key per request: sending the same request again (a retry after a lost answer) reuses its key, so the
- *  server answers with the run it already started; a changed request, or one after a run started, gets a new key. */
-export function keeper(newKey: () => string = () => crypto.randomUUID()) {
-  let held: { request: string; key: string } | null = null;
-  return {
-    keyFor(agentId: string, body: StartBody): string {
-      const request = JSON.stringify([agentId, body]);
-      if (held?.request !== request) held = { request, key: newKey() };
-      return held.key;
-    },
-    done() { held = null; },
-  };
-}
+// One Idempotency-Key per request, as messages use it too (lib/idempotency.ts).
+import { keeper } from "./idempotency";
+export { keeper };
 
 const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
