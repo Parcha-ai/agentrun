@@ -306,58 +306,88 @@ test("exec is not offered while a script that yielded still runs, only wait; it 
   assert.deepEqual(await ask([...RECORDED_REQUEST.input, { type: 'custom_tool_call', name: 'exec', call_id: 'call_b', input: 'text(1)' }, { type: 'custom_tool_call_output', call_id: 'call_b', output: 'Script completed\nWall time 0.0 seconds' }]), ['exec', 'wait'], 'an exec that finished at once');
 });
 
-test("the proxy tells the session which exec an answer carries before the client has that part of the answer", async () => {
+/** Sends `pieces` as one answer through a proxy whose session is told by `told`; resolves with what the client had, and what the session was told, when the client first held an event ending after `marker` (its dispatch: the blank line). */
+async function dispatchedBefore(pieces, marker, announce) {
   const told = [];
+  const encoder = new TextEncoder();
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
-  const exec = { type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: 'call_x', input: 'text(1)' } };
-  const other = { type: 'response.output_item.done', item: { type: 'function_call', name: 'wait', call_id: 'call_w', arguments: '{}' } };
-  const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      // The exec's event is split across two pieces, as a network may split it.
-      const first = sse([other, exec]);
-      controller.enqueue(encoder.encode(first.slice(0, 40)));
-      controller.enqueue(encoder.encode(first.slice(40)));
+      for (const piece of pieces) controller.enqueue(encoder.encode(piece));
       await gate;
-      controller.enqueue(encoder.encode(sse([completed({ input_tokens: 5, output_tokens: 2 })])));
       controller.close();
     },
   });
   const { p } = await proxy({
-    announce: { response: () => told.push('response'), exec: (id) => told.push(`exec ${id}`) },
+    announce: { response: () => told.push('response'), exec: (id) => told.push(`exec ${id}`), failed: () => told.push('failed'), end: () => told.push('end'), ...announce },
     answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
   });
   const { hostname, port } = new URL(p.url);
-  const seenByClient = await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
       let text = '';
+      let at;
       res.setEncoding('utf8');
       res.on('data', (c) => {
         text += c;
-        // The client has the exec item: the session must already have been told, while the answer is still open.
-        if (text.includes('"call_x"')) { resolve({ text, told: [...told] }); release(); }
+        // The client holds the exec event whole (its blank line is in): the session must already have been told.
+        if (at === undefined && new RegExp(`${marker}[\\s\\S]*?(\\r\\n\\r\\n|\\n\\n|\\r\\r)`).test(text)) { at = [...told]; setTimeout(() => { release(); }, 20); }
       });
+      res.on('end', () => resolve({ atDispatch: at, told, text }));
       res.on('error', reject);
     });
     req.on('error', reject);
     req.end(JSON.stringify({ ...RECORDED_REQUEST, parallel_tool_calls: false }));
   });
-  assert.deepEqual(seenByClient.told, ['response', 'exec call_x'], 'told before the client read it');
-  assert.equal(told.filter((x) => x === 'exec call_x').length, 1, 'once');
+}
+const execEvent = (id) => ({ type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: id, input: 'text(1)' } });
+
+test("the proxy tells the session which exec an answer carries before the client holds the event, however the event is split", async () => {
+  const whole = sse([{ type: 'response.output_item.done', item: { type: 'function_call', name: 'wait', call_id: 'call_w', arguments: '{}' } }, execEvent('call_x')]);
+  const at = whole.indexOf('call_x');
+  for (const cut of [at + 3, whole.length - 1, whole.length - 2, at]) {
+    const r = await dispatchedBefore([whole.slice(0, cut), whole.slice(cut)], 'call_x');
+    assert.deepEqual(r.atDispatch, ['response', 'exec call_x'], `split at ${cut}: told before the client held the event`);
+    assert.equal(r.told.filter((x) => x === 'exec call_x').length, 1, 'once');
+    assert.equal(r.told.at(-1), 'end', 'the answer is closed');
+  }
 });
 
+test("the reader takes an event as the format has it: data over several lines joined with LF, CRLF and bare-CR line ends", async () => {
+  const json = JSON.stringify(execEvent('call_x'));
+  const half = Math.floor(json.length / 2);
+  const multi = `data: ${json.slice(0, half)}\ndata: ${json.slice(half)}\n\n`;
+  const lineBreak = json.indexOf('"call_id"');
+  const joined = `data: ${json.slice(0, lineBreak)}\ndata:${json.slice(lineBreak)}\n\n`;
+  for (const [what, text] of [['an event over a CRLF', sse([execEvent('call_x')]).replace(/\n/g, '\r\n')], ['bare CRs', sse([execEvent('call_x')]).replace(/\n/g, '\r')], ['data on two lines (split inside the JSON at a space-free place)', joined], ['no space after data:', `data:${json}\n\n`]]) {
+    const r = await dispatchedBefore([text.slice(0, 20), text.slice(20)], 'call_x');
+    assert.deepEqual(r.told.filter((x) => x.startsWith('exec')), ['exec call_x'], what);
+  }
+  // A JSON string cannot hold a raw LF, so two data lines joined with LF must still parse where the LF fell between tokens.
+  const tokens = `data: {"type":"response.output_item.done",\ndata: "item":{"type":"custom_tool_call","name":"exec","call_id":"call_m","input":"x"}}\n\n`;
+  const r = await dispatchedBefore([tokens], 'call_m');
+  assert.deepEqual(r.told.filter((x) => x.startsWith('exec')), ['exec call_m'], multi.length ? 'data spread over several data: lines' : '');
+});
+
+test("an event over the cap is not read: the answer is reported as not watched, and the client still has it whole", async () => {
+  const huge = `data: {"type":"x","pad":"${'a'.repeat(4 * 1024 * 1024 + 10)}"}\n\n`;
+  const r = await dispatchedBefore([huge.slice(0, 1000), huge.slice(1000), sse([execEvent('call_after')])], 'call_after');
+  assert.ok(r.told.includes('failed'), 'reported as failed');
+  assert.ok(!r.told.some((x) => x.startsWith('exec')), 'nothing after the unread event is announced either');
+  assert.ok(r.text.includes('call_after'), 'the client has the whole answer');
+});
 test("a watcher that fails mid-answer is told to the session (failed), the answer still reaches the client whole, and a policy with no watcher answers the same bytes", async () => {
   const exec = { type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: 'call_x', input: 'text(1)' } };
   const body = sse([exec, completed({ input_tokens: 5, output_tokens: 2 })]);
   const told = [];
   const answer = () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const watched = await proxy({ announce: { response: () => told.push('response'), exec: () => { throw new Error('the session could not take it'); }, failed: () => told.push('failed') }, answer });
+  const watched = await proxy({ announce: { response: () => told.push('response'), exec: () => { throw new Error('the session could not take it'); }, failed: () => told.push('failed'), end: () => told.push('end') }, answer });
   const plain = await proxy({ answer });
   const a = await send(watched.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
   const b = await send(plain.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
   assert.equal(a.status, 200);
-  assert.deepEqual(told, ['response', 'failed'], 'the failure was told, once');
+  assert.deepEqual(told, ['response', 'failed', 'end'], 'the failure was told, once, and the answer closed');
   assert.equal(a.text, body, 'the client has the whole answer');
   assert.equal(b.text, a.text, 'a policy with no watcher answers the same bytes');
 });

@@ -51,7 +51,7 @@ export interface CodexPolicyOptions {
   /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
    *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
    *  latest answer, which is known here before Codex can run anything of it. */
-  announce?: { response(): void; exec(callId: string): void; failed(): void };
+  announce?: { response(): void; exec(callId: string): void; failed(): void; end(): void };
 }
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -222,33 +222,70 @@ function codeModeCarrier(item: unknown, offerExec: boolean): unknown {
   return { ...item, tools: kept };
 }
 
-/** Reads an answer's server-sent events as they pass, and tells `announce` of each code-mode `exec` call it holds. */
-function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): { chunk(text: string): void; failed(): void } {
+/** An event that is not whole by this many characters is not read: the answer is then reported as not watched. */
+const EVENT_CAP = 4 * 1024 * 1024;
+
+/** Reads an answer's server-sent events as they pass (lines end in LF, CRLF or a bare CR; an event is its `data:` lines joined
+ *  with LF, ended by a blank line), and tells `announce` of each code-mode `exec` call it holds. One that cannot be read to its
+ *  end (an event over the cap) is reported as failed. `end` closes the answer. */
+function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): { chunk(text: string): void; failed(): void; end(): void } {
   announce.response();
-  let pending = "";
+  let line = "";
+  let held = false; // a CR ended the last piece: an LF that starts the next belongs to it
+  let data: string[] = [];
+  let size = 0;
+  let broken = false;
+  const fail = () => {
+    if (broken) return;
+    broken = true;
+    announce.failed();
+  };
+  const dispatch = () => {
+    const text = data.join("\n");
+    data = [];
+    size = 0;
+    if (!text.includes("custom_tool_call")) return;
+    let event: unknown;
+    try {
+      event = JSON.parse(text);
+    } catch {
+      return;
+    }
+    const item = isPlain(event) && event.type === "response.output_item.done" && isPlain(event.item) ? event.item : undefined;
+    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id);
+  };
+  const endLine = () => {
+    const done = line;
+    line = "";
+    if (done === "") return dispatch();
+    if (done.startsWith("data:")) {
+      const value = done.slice(done.startsWith("data: ") ? 6 : 5);
+      size += value.length + 1;
+      if (size > EVENT_CAP) return fail();
+      data.push(value);
+    }
+  };
   return {
-    // The proxy stopped watching this answer: what the session knows of its exec is no longer whole.
-    failed: () => announce.failed(),
+    failed: () => fail(),
+    end: () => announce.end(),
     chunk(text) {
-      pending += text;
-      let at: number;
-      while ((at = pending.search(/\r?\n\r?\n/)) >= 0) {
-        const event = pending.slice(0, at);
-        pending = pending.slice(pending.slice(at).match(/^\r?\n\r?\n/)![0].length + at);
-        for (const line of event.split(/\r?\n/)) {
-          if (!line.startsWith("data:") || !line.includes("custom_tool_call")) continue;
-          let data: unknown;
-          try {
-            data = JSON.parse(line.slice(5));
-          } catch {
-            continue;
-          }
-          const item = isPlain(data) && data.type === "response.output_item.done" && isPlain(data.item) ? data.item : undefined;
-          if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id);
+      if (broken) return;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i]!;
+        if (held) {
+          held = false;
+          if (ch === "\n") continue;
         }
+        if (ch === "\n") endLine();
+        else if (ch === "\r") {
+          endLine();
+          held = true;
+        } else {
+          line += ch;
+          if (line.length > EVENT_CAP) return fail();
+        }
+        if (broken) return;
       }
-      // An event is never this long: what has no end yet is not kept.
-      if (pending.length > 4 * 1024 * 1024) pending = "";
     },
   };
 }
