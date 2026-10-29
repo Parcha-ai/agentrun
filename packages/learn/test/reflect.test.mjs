@@ -25,6 +25,7 @@ test("the reflect prompt asks for the memo's four sections under the host's fron
   assert.ok(at.every((i) => i >= 0), "every section is named");
   assert.deepEqual([...at].sort((a, b) => a - b), at, "in the order the checker requires");
   assert.match(prompt, /front matter/);
+  assert.ok(prompt.includes("keep the front matter as it is"), "the agent is told to leave the host's front matter alone");
   assert.match(prompt, /never commit to main/i);
   assert.match(prompt, /reflect skill/);
 });
