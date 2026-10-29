@@ -331,6 +331,57 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 		},
 	);
 
+	each(
+		"a launcher process of an earlier launch of the name, started late, exits at once: it never takes the newer launch for its own",
+		async (box) => {
+			const started = unwrap(await launch(box, "late", program(recording("exec sleep 300")), context));
+			const dir = started.directory;
+			const gen = (await sh(box, `sed -n "s/^GEN='\\(.*\\)'$/\\1/p" ${dir}/spec.sh`)).text.trim();
+			expect(gen).not.toBe("");
+			// The launch's supervisor, watchdog and program are gone, and a later launch of the name has rewritten the spec.
+			const [pid] = await pids(box);
+			await sh(
+				box,
+				`kill -9 $(cat ${dir}/launcher.pid) $(cat ${dir}/watch.pid) ${pid}; sed -i "s/^GEN='.*'/GEN='another'/" ${dir}/spec.sh`,
+			);
+			await until(
+				"the program to be gone",
+				async () => ((await isAlive(box, pid ?? 0)) ? undefined : true),
+				HANG_GUARD_MS,
+			);
+			// A supervisor the earlier launch's watchdog had started arrives late, carrying that launch's generation. It must
+			// see the newer one and leave at once, starting nothing; given 10 s, it is killed and named if it stays.
+			const late = await sh(
+				box,
+				`PI_TRANSPORT_LAUNCH_GEN=${gen} sh ${dir}/launcher.sh supervise ${dir} </dev/null >/dev/null 2>&1 & p=$!; i=0; while kill -0 $p 2>/dev/null && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done; if kill -0 $p 2>/dev/null; then kill -9 $p; echo STAYED; else echo LEFT; fi`,
+			);
+			expect(late.text.trim()).toBe("LEFT");
+			expect(await pids(box)).toHaveLength(1);
+		},
+	);
+
+	each(
+		"each process the launcher starts carries its launch's generation, and the program never sees it",
+		async (box) => {
+			if ((await sh(box, "test -r /proc/self/environ")).exitCode !== 0) return; // no /proc to read a process's environment from
+			const started = unwrap(
+				await launch(box, "carry", program(recording("env > prog.env; exec sleep 300")), context),
+			);
+			const dir = started.directory;
+			const gen = (await sh(box, `sed -n "s/^GEN='\\(.*\\)'$/\\1/p" ${dir}/spec.sh`)).text.trim();
+			expect(gen).not.toBe("");
+			await until("the program", async () => ((await pids(box)).length === 1 ? true : undefined));
+			for (const file of ["launcher.pid", "watch.pid"]) {
+				const env = (await sh(box, `tr '\\0' '\\n' < /proc/$(cat ${dir}/${file})/environ`)).text.split("\n");
+				expect(env, file).toContain(`PI_TRANSPORT_LAUNCH_GEN=${gen}`);
+			}
+			await until("the program's environment", async () =>
+				(await sh(box, "cat prog.env 2>/dev/null")).text.includes("PATH=") ? true : undefined,
+			);
+			expect((await sh(box, "cat prog.env")).text).not.toContain("PI_TRANSPORT_LAUNCH_GEN");
+		},
+	);
+
 	each("stopLaunch ends the program and everything it started, then reports stopped", async (box) => {
 		unwrap(
 			await launch(

@@ -67,11 +67,17 @@ rd() { cat "$D/$1" 2>/dev/null; }
 wr() { printf '%s\n' "$2" > "$D/$1.$$" && mv "$D/$1.$$" "$D/$1"; }
 current_gen() { sed -n "s/^GEN='\(.*\)'\$/\1/p" "$D/spec.sh" 2>/dev/null; }
 MYGEN=$GEN
+# A process this launcher started (supervise, watch or run) is its starter's generation, never the one spec.sh holds when it
+# starts: a later launch of the name may have rewritten the spec by then, and a process of the earlier launch must see that
+# and exit, not take the newer launch for its own. The host's own calls (start, stop, status) read the spec as before.
+case "$MODE" in supervise|watch|run) if [ -n "$PI_TRANSPORT_LAUNCH_GEN" ]; then MYGEN=$PI_TRANSPORT_LAUNCH_GEN; fi ;; esac
+unset PI_TRANSPORT_LAUNCH_GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
 # Every process started from $SELF reads this directory again: none starts unless it and the spool are still the launcher's own.
-detach() { own_dirs || exit 13; ( $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
+# Each carries this process's generation (in its environment only: run_program clears it before the program).
+detach() { own_dirs || exit 13; ( PI_TRANSPORT_LAUNCH_GEN=$MYGEN $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 # The same, with this process's frame on the new process's stdin (a pipe from the builtin printf: no argv holds it).
-detach_framed() { own_dirs || exit 13; ( send_frame | $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
+detach_framed() { own_dirs || exit 13; ( send_frame | PI_TRANSPORT_LAUNCH_GEN=$MYGEN $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
 
 # An exclusive section: mkdir is atomic. Every section is a few file operations, so a holder that has not let go after 15 s
 # died inside one, and its lock is broken. A section never exits while it holds the lock.
