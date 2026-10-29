@@ -168,7 +168,11 @@ test("a run cancelled while its harness's request is out, and never opened again
     assert.ok(i < 300, "the first request's row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  // The second request's mark is on the root once it is admitted: the live usage counts it, in flight, as a second.
+  for (let i = 0; usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows)?.requests !== 2; i++) {
+    assert.ok(i < 300, "the second request is admitted and marked");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
   const { rows } = await follow(api, runId, ["cancelled"], { deadlineMs: 60_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 2 }, "the first at its cost, and the cut one, its cost unknown");
