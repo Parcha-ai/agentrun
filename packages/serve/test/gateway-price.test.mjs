@@ -142,3 +142,23 @@ test("the run's models say which ids serve has no price for: one the catalog doe
   assert.deepEqual(await unpriced({ AGENT_MODEL: "gpt-6-luna" }), [], "listed in the catalog");
   assert.deepEqual(await unpriced({ AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_FAST: "gpt-6-luna" }, ["default", "fast"]), ["not-a-catalog-model"], "per model, not per run");
 });
+
+test("a run on a gateway model serve has no price for costs unknown, never $0; one the catalog lists at $0 costs $0", async (t) => {
+  const endpoint = await responsesEndpoint(t, "42", 1_000);
+  const names = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  t.after(() => { for (const [name, value] of Object.entries(saved)) value === undefined ? delete process.env[name] : (process.env[name] = value); });
+  for (const name of names) delete process.env[name];
+  process.env.AGENT_MODEL_BASE_URL = endpoint.url;
+  const { api } = await serve(t, { faux: undefined });
+  const cost = async (id, model) => {
+    assert.equal((await api("POST", "/agents", agent(id, { model }))).status, 201);
+    const started = await api("POST", `/agents/${id}/runs`, { input: { content: "What is six times seven?" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await follow(api, started.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    return (await api("GET", `/runs/${started.body.run_id}`)).body.cost.usd;
+  };
+  assert.equal(await cost("unlisted", "agent-model/not-a-catalog-model"), null, "no price: its cost is unknown");
+  assert.ok(entries("gemma-4-31b-it").some((model) => model.cost.input + model.cost.output === 0), "the catalog lists gemma-4-31b-it at $0");
+  assert.equal(await cost("free", "agent-model/gemma-4-31b-it"), 0, "a listed $0 is a known $0");
+});

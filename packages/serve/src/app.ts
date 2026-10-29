@@ -13,7 +13,7 @@ import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
-import { capBefore, capModels, capOf, spentIn } from "./cap.js";
+import { capBefore, capModels, capOf, spentIn, unknownCost } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
@@ -63,7 +63,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves.
-  const marked = await markRequests(chosen.models, cancelledIn(where.root));
+  // A model serve has no price for answers at an unknown cost, never pi-ai's $0 from a zero price. Innermost, so only a
+  // provider's answers are: a request the cap or a cancel refuses before it leaves costs a known $0.
+  const priced = await unknownCost(chosen.models, chosen.unpriced);
+  const marked = await markRequests(priced, cancelledIn(where.root));
   const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced });
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
@@ -78,7 +81,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
     const harness = revision.body.harness;
-    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, unpriced: chosen.unpriced.has(model!.modelId), ...(confine ? { confine } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never, { listed: !chosen.unpriced.has(model!.modelId) });
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard);

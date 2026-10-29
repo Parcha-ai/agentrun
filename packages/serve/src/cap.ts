@@ -185,3 +185,47 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     },
   });
 }
+
+/** `models`, with each answer of a model in `unpriced` (one serve has no price for, priced $0 by pi-ai) at an unknown
+ *  cost: its cost fields are null, which the run's timeline reads as unknown and pi-durable's sums take as nothing. */
+export async function unknownCost<M extends Models>(models: M, unpriced: ReadonlySet<string>): Promise<M> {
+  if (!unpriced.size) return models;
+  const { createAssistantMessageEventStream } = await import("@earendil-works/pi-ai");
+  const unknown = (message: AssistantMessage | undefined) => {
+    if (message?.usage) message.usage.cost = { input: null, output: null, cacheRead: null, cacheWrite: null, total: null } as never;
+    return message;
+  };
+  const stream = (send: (model: Model<Api>, context: Context, options?: unknown) => AssistantMessageEventStream) =>
+    (model: Model<Api>, context: Context, options?: unknown): AssistantMessageEventStream => {
+      const inner = send(model, context, options);
+      if (!unpriced.has(model.id)) return inner;
+      const outer = createAssistantMessageEventStream();
+      void (async () => {
+        for await (const event of inner) {
+          if ("message" in event) unknown(event.message as AssistantMessage);
+          if ("error" in event) unknown(event.error as AssistantMessage);
+          outer.push(event);
+        }
+        outer.end(unknown(await inner.result())!);
+      })();
+      return outer;
+    };
+  const complete = (send: (model: Model<Api>, context: Context, options?: unknown) => Promise<AssistantMessage>) =>
+    async (model: Model<Api>, context: Context, options?: unknown): Promise<AssistantMessage> => {
+      const answer = await send(model, context, options);
+      return unpriced.has(model.id) ? unknown(answer)! : answer;
+    };
+  const guarded: Record<PropertyKey, unknown> = {
+    stream: stream(models.stream.bind(models) as never),
+    streamSimple: stream(models.streamSimple.bind(models) as never),
+    complete: complete(models.complete.bind(models) as never),
+    completeSimple: complete(models.completeSimple.bind(models) as never),
+  };
+  return new Proxy(models, {
+    get: (target, key) => {
+      if (key in guarded) return guarded[key];
+      const value = Reflect.get(target, key, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
