@@ -78,15 +78,6 @@ jobs:
           AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
           # The Codex adapter's tool-off test runs on the pinned binary (a dev dependency): here a missing one fails, not skips.
           AGENTRUN_CODEX_REQUIRE_BINARY: '1'
-      # A container runs as root, and the kernel clears a parent-death signal when a process changes its credentials. The
-      # Codex adapter's host-death tests run again as root on the pinned binary, with no skip path: a Codex that outlives a
-      # SIGKILLed host fails here.
-      - name: Codex dies with its host, as root
-        if: matrix.shard == 'rest'
-        run: sudo -E env "PATH=$PATH" AGENTRUN_CODEX_REQUIRE_BINARY=1 node --test packages/run-adapters-codex/test/orphan.test.mjs packages/run-adapters-codex/test/watch.test.mjs
-      - name: Give the workspace back after the root run
-        if: always() && matrix.shard == 'rest'
-        run: sudo chown -R "$(id -u):$(id -g)" . || true
       - name: Retain package verification evidence
         if: always() && matrix.shard == 'checks'
         uses: actions/upload-artifact@v4

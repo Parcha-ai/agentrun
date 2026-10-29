@@ -68,7 +68,7 @@ async function killedAt(mode) {
     const tree = [...new Set(cli.flatMap(treeOf))];
     parent.kill('SIGKILL');
     await sleep(2_000);
-    left = tree.filter(alive);
+    left = tree.filter((pid) => alive(pid));
     return { cli, tree, left };
   } finally {
     for (const pid of left) { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } } }
