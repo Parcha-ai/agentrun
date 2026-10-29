@@ -334,7 +334,12 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           // A request that was sent may have been answered and billed: unless the host asked for retries after sending, it is not sent again.
           if (!retryAfterSend && (status === 408 || (status !== undefined && status >= 500 && status <= 599) || (error instanceof APIConnectionError && !before))) {
             const safeStatus = status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
-            throw new JevError("outcome_unknown", `${safeStatus === undefined ? "Jev's connection was lost" : `Jev returned HTTP ${safeStatus}`} after the request was sent; it may have been answered, and is not sent again.`, attempt, safeStatus);
+            const capacity = error instanceof APIError && isRecord(error.body) && isRecord(error.body.detail) && error.body.detail.error_type === "max_tokens_exceeded";
+            const what = safeStatus === undefined ? "Jev's connection was lost" : `Jev returned HTTP ${safeStatus}`;
+            // Only the structured reason is named, as on any HTTP failure; the provider's body text never reaches the message.
+            throw new JevError("outcome_unknown", capacity
+              ? `${what}: the request exceeds the model's token budget (max_tokens_exceeded). Send fewer or shorter items per request. It was sent once and is not sent again.`
+              : `${what} after the request was sent; it may have been answered, and is not sent again.`, attempt, safeStatus, undefined, capacity ? { reason: "max_tokens_exceeded" } : undefined);
           }
           const toldWhen = status === 429 && error instanceof APIError && retryAfterMs(error.headers) !== undefined;
           const retryable = retryAfterSend
