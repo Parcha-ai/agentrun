@@ -14,7 +14,7 @@ import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } fr
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_COST"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
@@ -232,4 +232,53 @@ test("capabilities lists the decision providers: jev available where its key is 
   assert.deepEqual([routed.id, routed.available, routed.reason], ["jev", true, undefined]);
   assert.match(routed.note ?? "", /model gateway/, "on the OpenRouter route the Jev key is the gateway's, and capabilities says so");
   assert.match(routed.note ?? "", /TYPESAFE_API_KEY/);
+});
+
+/** The run's served timeline, every row. */
+async function timeline(api, runId) {
+  const page = await api("GET", `/runs/${runId}/timeline?limit=500`);
+  assert.equal(page.status, 200, JSON.stringify(page.body));
+  return page.body.rows;
+}
+
+test("a judge's decision is a timeline row: its node, provider and each answer with its probability, and its cost on the usage row", async (t) => {
+  await withCanary(t);
+  const { api } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  assert.equal(last.status, "completed");
+  const rows = await timeline(api, runId);
+  const decisions = rows.filter((row) => row.kind === "decision");
+  assert.deepEqual(decisions.map((row) => [row.summary, row.agent_label, row.text, row.usage]), [["coi (jev): is_coi yes 0.92", "coi", null, { usd: null, requests: 1 }]]);
+  const usage = rows.findLast((row) => row.kind === "usage");
+  assert.equal(usage.usage.usd, null, "the decision's unknown cost leaves the run's usage unknown, never a lower figure");
+  assert.equal(usage.usage.requests, 2, "the model node's request and the decision's");
+});
+
+test("a route's decision is a timeline row naming the branch it took, and unsure when it took that branch", async (t) => {
+  await withCanary(t);
+  const { api } = await serve(t, { fauxJev: FAUX_JEV });
+  const branch = (name) => ({ criteria: `the case is ${name}`, body: { ...probe(), label: `probe ${name}` } });
+  const route = { node: "route", label: "triage", state: { doc: "{question}" }, instructions: "Accept the document, or send it to review?", branches: { accept: branch("clean"), review: branch("doubtful") }, unsure: { branch: "review", gte: 0.9 } };
+  const runId = await startFlow(api, [route]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  assert.equal(last.status, "completed");
+  assert.deepEqual((await timeline(api, runId)).filter((row) => row.kind === "decision").map((row) => row.summary), ["route: review (unsure)"], "the fake answers accept at 0.80, under the gate");
+});
+
+test("a decision whose cost the provider reports is on its row, and the run's total counts it once", async (t) => {
+  await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  assert.equal(last.status, "completed");
+  const rows = await timeline(api, runId);
+  const decisions = rows.filter((row) => row.kind === "decision");
+  assert.deepEqual(decisions.map((row) => row.usage), [{ usd: 0.00003, requests: 1 }]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  const usage = rows.findLast((row) => row.kind === "usage");
+  assert.equal(usage.usage.usd, run.cost.usd, "the timeline's usage row and the run's cost agree");
+  assert.equal(run.cost.usd, 0.00003, "the model node is free under the fake, so the run's cost is the decision's, counted once");
+  assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");
 });
