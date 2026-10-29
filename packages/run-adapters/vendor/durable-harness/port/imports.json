@@ -11,6 +11,9 @@
       },
       "packages/harness-process/src/types.ts": {
         "harness-process": "src/types.ts"
+      },
+      "packages/harness-codex/src/scripts.ts": {
+        "harness-codex": "src/scripts.ts"
       }
     }
   },
