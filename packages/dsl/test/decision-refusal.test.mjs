@@ -1,9 +1,10 @@
 // A provider may decline to answer a question ({type: "refusal"}). A refusal is never read as a value: not false, not the
-// first option, not a score of 0. It fails the node that asked, except a route with an `unsure` branch, which takes that
-// branch as it would for an answer of no confidence. Either way the receipt names the refused questions.
+// first option, not a score of 0. The run escalates for review (kind "decision_refused", stage "decision") and keeps the
+// case, except at a route with an `unsure` branch, which takes that branch as it would for an answer of no confidence.
+// Either way the receipt names the refused questions.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runWorkflow, validateAnswers, answersToValue, answerConfidence, answersSidecar, rederiveDecision, SystemOneError } from '../dist/index.js';
+import { runWorkflow, validateAnswers, answersToValue, answerConfidence, answersSidecar, rederiveDecision, SystemOneError, DECISION_REFUSED } from '../dist/index.js';
 
 const refusal = { type: 'refusal' };
 const refusedError = (ids) => (error) => {
@@ -11,6 +12,15 @@ const refusedError = (ids) => (error) => {
   assert.equal(error.responseReason, 'refusal');
   for (const id of ids) assert.match(error.message, new RegExp(`"${id}"`));
   return true;
+};
+/** The run ended escalated for a person because `label`'s provider refused `ids`, holding the workflow state it had. */
+const escalatedFor = (result, label, ids, state = {}) => {
+  assert.equal(result.status, 'escalated', `a refusal escalates the run instead of failing it, got ${JSON.stringify(result.status)}`);
+  assert.equal(DECISION_REFUSED, 'decision_refused');
+  assert.deepEqual([result.escalation.kind, result.escalation.stage, result.escalation.label], [DECISION_REFUSED, 'decision', label]);
+  for (const id of ids) assert.match(result.escalation.summary, new RegExp(`"${id}"`));
+  assert.match(result.escalation.summary, /refused/);
+  for (const [key, value] of Object.entries(state)) assert.deepEqual(result.escalation.state[key], value, `the escalation keeps state.${key}`);
 };
 const recorder = () => { const receipts = []; return { receipts, recordDecision: async (receipt) => { receipts.push(receipt); } }; };
 
@@ -42,13 +52,15 @@ const judgeFlow = {
   root: { node: 'judge', label: 'check', state: { doc: 'text' }, out: 'Verdict', as: 'verdict' },
 };
 
-test('a judge node whose answer is refused fails, and its failed receipt names the refused question', async () => {
+test('a judge node whose answer is refused escalates the run for review, and its receipt names the refused question', async () => {
   const { receipts, recordDecision } = recorder();
-  await assert.rejects(runWorkflow(judgeFlow, {}, { runJudge: async () => ({ answers: { legit: refusal } }), recordDecision }), refusedError(['legit']));
+  const result = await runWorkflow(judgeFlow, { filing: 'case-7' }, { runJudge: async () => ({ answers: { legit: refusal } }), recordDecision });
+  escalatedFor(result, 'check', ['legit'], { filing: 'case-7' });
   assert.equal(receipts.length, 1);
   assert.equal(receipts[0].status, 'failed');
   assert.deepEqual(receipts[0].refused, ['legit']);
   assert.equal(receipts[0].action, null);
+  assert.match(receipts[0].error, /refused/);
 });
 
 const routeFlow = (unsure) => ({
@@ -74,23 +86,23 @@ test('a refused route with an unsure branch takes it, and its answered receipt r
   assert.deepEqual(rederiveDecision(receipts[0]), receipts[0].action);
 });
 
-test('a refused route with no unsure branch fails: there is no branch to take', async () => {
+test('a refused route with no unsure branch escalates: there is no branch to take', async () => {
   const { receipts, recordDecision } = recorder();
-  await assert.rejects(runWorkflow(routeFlow(false), {}, { runJudge: async () => ({ answers: { branch: refusal } }), recordDecision }), refusedError(['branch']));
+  escalatedFor(await runWorkflow(routeFlow(false), {}, { runJudge: async () => ({ answers: { branch: refusal } }), recordDecision }), 'triage', ['branch']);
   assert.equal(receipts[0].status, 'failed');
   assert.deepEqual(receipts[0].refused, ['branch']);
 });
 
-test('a refused ask predicate fails its loop instead of reading as "does not hold"', async () => {
+test('a refused ask predicate escalates instead of reading as "does not hold"', async () => {
   const flow = {
     v: 2, name: 'asked', schemas: { Out: { type: 'object' } }, output: { schemaId: 'Out', path: 'out' },
     root: { node: 'loop', label: 'until', maxIters: 2, until: { predicate: 'ask', instructions: 'Is it done?' },
       body: { node: 'code', label: 'step', as: 'out', code: '() => ({})' } },
   };
-  await assert.rejects(runWorkflow(flow, {}, { runJudge: async () => ({ answers: { holds: refusal } }) }), refusedError(['holds']));
+  escalatedFor(await runWorkflow(flow, {}, { runJudge: async () => ({ answers: { holds: refusal } }) }), 'until', ['holds']);
 });
 
-test('a refused verify question fails the review instead of reading as unmet', async () => {
+test('a refused verify question escalates instead of reading as unmet', async () => {
   const flow = {
     v: 2, name: 'verified', schemas: {
       Draft: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } },
@@ -100,9 +112,9 @@ test('a refused verify question fails the review instead of reading as unmet', a
     root: { node: 'agent', label: 'write', instructions: 'Write it.', out: 'Draft', as: 'draft', verify: { out: 'Review', maxDrives: 2 } },
   };
   let judged = 0;
-  await assert.rejects(runWorkflow(flow, {}, {
+  escalatedFor(await runWorkflow(flow, {}, {
     runNode: async ({ review }) => { const value = { text: 'x' }; await review(value); return value; },
     runJudge: async () => { judged++; return { answers: { complete: refusal } }; },
-  }), refusedError(['complete']));
+  }), 'write (verify)', ['complete']);
   assert.equal(judged, 1, 'a refusal is not retried as a doubted field');
 });
