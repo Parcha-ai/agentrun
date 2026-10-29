@@ -6,7 +6,11 @@
 // are the children that lead their own group and carry its mark (COMMANDS_MARK=<its token>) in their environment:
 // another environment's commands in the same process, or the app's own helpers, are not its to record. The next open,
 // which holds the owner lock, kills whatever a previous incarnation recorded that is still the same process (pid, start
-// and boot all match), waits until it is gone, and clears the records, before the Harness opens. Only the instance writes
+// and boot all match), waits until it is gone, and clears the records, before the Harness opens. A recorded leader's
+// whole process group is ended and waited for, a member no walk recorded included; a descendant that left the group
+// (setsid or setpgid: a session or group of its own) is ended only if a walk recorded it. The group is listed just
+// before its SIGKILL: a process forked in between gets the SIGKILL but is not waited for (it ends at once unless it is
+// in an uninterruptible wait). Only the instance writes
 // records: a command never does. Nothing stops a command from writing one too, and none needs stopping: a run's commands
 // run as the instance's user (or, with `runAs`, as another one that cannot write the instance's 0700 directory), so a
 // record a command forged names only what that command could already kill itself. A record grants nothing.
@@ -185,7 +189,7 @@ export class CommandRecorder {
 /**
  * Ends what a previous incarnation's commands left running: for each record of this boot, the leader's whole group when
  * the leader is still the recorded process, and each recorded descendant that still is. Waits up to `timeoutMs` until
- * none of them is alive. A record whose processes are all gone is removed; one that still names a live process (it did
+ * none of them is alive: every process of a killed group, one the instance never recorded included. A record whose processes are all gone is removed; one that still names a live process (it did
  * not die at the deadline: a process in an uninterruptible wait) is rewritten with just those, so the next open tries
  * again, and they are returned. Run only while holding the run (after its owner lock), before the Harness opens.
  */
@@ -234,9 +238,23 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
       rmSync(file, { force: true }); // another boot's pids mean nothing on this one
       continue;
     }
+    // The group as it is before the kill, while its leader is still the recorded process: a group's id is its leader's
+    // pid, which no other process holds while the leader lives. The group is killed, and what was listed kept, only if
+    // the leader is still that process once the listing is read, so each process kept was this group's, never another's.
+    // SIGKILL to the group reaches all of them, a child no walk recorded yet included, but each dies when it next runs,
+    // and one can outlive its leader for a moment, or for long in an uninterruptible wait: so each is waited for by pid
+    // and start, and kept for the next open if it outlives the deadline.
+    const listed: ProcessMark[] =
+      record.leader !== null && same(before, record.leader)
+        ? before.group(record.leader.pid).flatMap((pid) => {
+            const info = pid === record.leader!.pid ? undefined : before.info(pid);
+            return info ? [{ pid, start: info.start }] : [];
+          })
+        : [];
     const leader = record.leader !== null && same(before, record.leader) && kill(-record.leader.pid, record.leader) ? record.leader : null;
     // A member that is the leader went with its group.
     const members = (record.members ?? []).filter((member) => member.pid !== record.leader?.pid && same(before, member) && kill(member.pid, member));
+    if (leader !== null) for (const mark of listed) if (!members.some((member) => member.pid === mark.pid)) members.push(mark);
     pending.push({ file, boot, leader, members });
   }
   const alive = () => {
