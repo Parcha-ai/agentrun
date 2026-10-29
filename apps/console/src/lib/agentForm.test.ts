@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, editBody, harnessOptions, same, saveError } from "./agentForm";
+import { createBody, editBody, harnessOptions, same, saveError, workflowCreateBody } from "./agentForm";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -114,5 +114,25 @@ describe("same", () => {
     expect(same({ a: 1, b: { c: 1 } }, { a: 1, b: { c: 2 } })).toBe(false);
     expect(same({ tools: ["read", "write"] }, { tools: ["write", "read"] })).toBe(false);
     expect(same({ a: 1, gone: undefined }, { a: 1 })).toBe(true);
+  });
+});
+
+describe("workflowCreateBody", () => {
+  const wf = { v: 2, name: "coi", nodes: [] };
+  it("creates a workflow agent from the pasted JSON: its first revision with the workflow, and no instructions, model or thinking", () => {
+    const r = workflowCreateBody({ name: "CoI check", description: "", text: JSON.stringify(wf) });
+    expect(r).toEqual({ body: { definition: { version: 1, name: "CoI check", workflow: wf, skills: [], tools: [] } } });
+    expect(r.body?.definition).not.toHaveProperty("instructions");
+    expect(r.body?.definition).not.toHaveProperty("harness");
+  });
+  it("keeps a description when one is given", () => {
+    expect(workflowCreateBody({ name: "a", description: "Checks a CoI", text: "{}" }).body?.definition.description).toBe("Checks a CoI");
+  });
+  it("says what is wrong with text that is not a JSON object, and makes no body", () => {
+    for (const text of ["", "{", "[1, 2]", "\"a\"", "null"]) {
+      const r = workflowCreateBody({ name: "a", description: "", text });
+      expect(r.body).toBeUndefined();
+      expect(r.error).toMatch(/JSON object/);
+    }
   });
 });

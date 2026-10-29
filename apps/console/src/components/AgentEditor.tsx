@@ -23,6 +23,8 @@ export type EditorProps = {
   problem?: SaveProblem | null;
   /** A message about an action outside the form (make current, archive) or after a save. */
   notice?: string | null;
+  /** A new agent's kind as the editor opens: agentic (the default) or a workflow pasted as JSON. */
+  initialKind?: "agentic" | "workflow";
 };
 type Step = "context" | "tools" | "settings" | "history";
 
@@ -36,7 +38,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initial = "context", problem: initialProblem = null, notice }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initial = "context", problem: initialProblem = null, notice, initialKind = "agentic" }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
   const [step, setStep] = useState<Step>(initial);
@@ -49,14 +51,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const fieldError = (field: string) => (problem?.kind === "invalid" ? problem.fields[`definition.${field}`] : undefined);
   const set = (patch: AgentFields) => { setF((x) => ({ ...x, ...patch })); setSaved(false); };
   const workflow = agent?.kind === "workflow";
+  // A new workflow agent is its workflow's JSON, pasted: it has no tools or settings of its own to set here.
+  const [newKind, setNewKind] = useState(initialKind);
+  const pasting = creating && newKind === "workflow";
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
-  const steps = STEPS.filter((s) => !(creating && s.id === "history"));
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && !(pasting && (s.id === "tools" || s.id === "settings")));
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
     setSaving(true);
-    const p = await onSave(f, note);
+    // Only a new workflow sends its JSON: text pasted and then left by switching back to agentic is not sent.
+    const p = await onSave(pasting ? f : { ...f, workflowText: undefined }, note);
     setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
   };
 
@@ -103,13 +109,28 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
           {step === "context" && (
             <div className="max-w-3xl space-y-6">
+              {creating && (
+                <Field label="Kind" note="An agentic agent follows instructions. A workflow runs the nodes of an agentrun-dsl workflow, pasted as JSON.">
+                  <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Kind">
+                    {([["agentic", "Agentic"], ["workflow", "Workflow (JSON)"]] as const).map(([k, label]) => (
+                      <label key={k} className={cn("caps cursor-pointer border px-3 py-2 text-[12px]", newKind === k ? "border-foreground" : "text-muted-foreground")}>
+                        <input type="radio" name="kind" className="sr-only" checked={newKind === k} onChange={() => { setNewKind(k); setProblem(null); }} />{label}
+                      </label>
+                    ))}
+                  </div>
+                </Field>
+              )}
               <Field label="Name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")}>
                 <input value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
               <Field label="Description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")}>
                 <input value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
-              {workflow ? (
+              {pasting ? (
+                <Field label="Workflow" required note="Paste the workflow's JSON body. The server checks it when you create the agent, and says what to fix." error={fieldError("workflow")}>
+                  <textarea value={f.workflowText ?? ""} onChange={(e) => set({ workflowText: e.target.value })} rows={18} spellCheck={false} placeholder='{ "v": 2, "name": "...", ... }' className={cn(input, "resize-y leading-[1.6]")} />
+                </Field>
+              ) : workflow ? (
                 <Field label="Workflow" note="This agent is a workflow: its nodes are kept as they are. Edit them with the API or the DSL.">
                   <pre className="max-h-96 overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(d!.workflow, null, 2)}</pre>
                 </Field>
@@ -197,7 +218,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
         {step === "history" && <span className="flex-1" />}
         {saved && <span className="caps text-[11px] text-success-text">Saved</span>}
         {at < steps.length - 1 && <Button size="sm" onClick={() => setStep(steps[at + 1].id)}>Next <ArrowRight aria-hidden /></Button>}
-        <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (!workflow && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>
+        <Button size="sm" variant="solid" onClick={save} disabled={!onSave || saving || !f.name?.trim() || (pasting ? !f.workflowText?.trim() : !workflow && !f.instructions?.trim())}>{saving ? "Saving" : creating ? "Create" : "Save revision"}</Button>
       </footer>
     </div>
   );
