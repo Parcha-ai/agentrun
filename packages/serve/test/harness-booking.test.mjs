@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { timelineOf } from "@parcha/pi-durable-agent/timeline";
 import { adapterRun, BOOKED, BOOKING_WAIT_MS, PRICED_LATE } from "../dist/harness-app.js";
 
 const deferred = () => {
@@ -103,9 +104,15 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   const first = await opened(storage, late.adapter);
   assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
   await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
-  // The cost comes in after the answer was written: it stays with that entry.
+  // Its cost not in yet: the run's cost reads unknown, never a known $0.
+  assert.equal(timelineOf(await rootOf(first.harness)).findLast((r) => r.kind === "usage")?.usage?.usd, null, "unknown while the cost is out");
+  // The cost comes in after the answer was written: it goes in at once, with no next turn to carry it.
+  const released = Date.now();
   late.book();
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  for (; spend(await rootOf(first.harness)) !== 0.003; ) {
+    assert.ok(Date.now() - released < 500, "the late cost is in the run's spend at once");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   // A next turn in the same process flushes again: the late cost still belongs to the answer already written.
   assert.deepEqual(await first.app.door.submit({ requestId: "m2", content: "again", whenBusy: "followUp" }, first.door), { accepted: true });
   await until(() => first.events.filter((e) => e === "run_end").length === 2, BOOKING_WAIT_MS * 3);
