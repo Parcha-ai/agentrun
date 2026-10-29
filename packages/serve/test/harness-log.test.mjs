@@ -109,3 +109,22 @@ test("a key holding a quote or a backslash is cut out of a field's name too, at 
   assert.deepEqual(said.made, { said: "it was [redacted]" });
   for (const form of [awkward, JSON.stringify(awkward).slice(1, -1)]) assert.ok(!lines[0].includes(form), `${form} is not in the line`);
 });
+
+test("a key the line holds only across two fields, each without it, is cut by the line's own cut", () => {
+  const lines = [];
+  const across = 'abc","def';
+  harnessLog("codex", { FOO_API_KEY: across }, (line) => lines.push(line))("model proxy (openai): refused", { a: "abc", def: 1 });
+  assert.ok(!lines[0].includes(across), `the line holds ${across}: ${lines[0]}`);
+});
+
+test("an object whose toJSON returns itself is serialized once, as JSON.stringify does, and its fields are cut", () => {
+  const lines = [];
+  const awkward = `not-a-secret-${"self-json"}`;
+  const self = { said: `it was ${awkward}`, toJSON() { return this; } };
+  const made = { toJSON: () => `made ${awkward}` };
+  harnessLog("codex", { OPENAI_API_KEY: awkward }, (line) => lines.push(line))("model proxy (openai): refused", { self, list: ["first", made, [made]] });
+  const said = JSON.parse(lines[0]);
+  assert.deepEqual(said.self, { said: "it was [redacted]" });
+  assert.deepEqual(said.list, ["first", "made [redacted]", ["made [redacted]"]], "an array's elements are each serialized as they would be, past the first too");
+  assert.ok(!lines[0].includes(awkward));
+});

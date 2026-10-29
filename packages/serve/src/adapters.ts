@@ -41,10 +41,12 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
   // Every string is cut before it is serialized, field names included: JSON escapes a quote or a backslash, and a
   // secret holding one would no longer match in the line. An object that serializes itself (toJSON) is cut as what it
   // gives. The line is cut again after, as a backstop.
-  const scrub = (value: unknown): unknown => {
+  // toJSON is called once per value, as JSON.stringify does: what it returns is not asked again (one that returns
+  // `this` would never end), though the values inside it are.
+  const scrub = (value: unknown, asked = false): unknown => {
     if (typeof value === "string") return cut(value);
-    if (value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") return scrub((value as { toJSON(): unknown }).toJSON());
-    if (Array.isArray(value)) return value.map(scrub);
+    if (!asked && value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") return scrub((value as { toJSON(): unknown }).toJSON(), true);
+    if (Array.isArray(value)) return value.map((inner) => scrub(inner));
     if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [cut(name), scrub(inner)]));
     return value;
   };
