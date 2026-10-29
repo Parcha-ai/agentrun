@@ -19,7 +19,7 @@
 // limit), each `data:` line parsed as JSON on its own, never matched as text. OpenAI counts cached and cache-write tokens
 // inside `input_tokens`; they are booked apart (as pi-ai books them), and reasoning tokens inside `output_tokens`.
 import type { IncomingHttpHeaders } from "node:http";
-import { ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
+import { providerInputOverhead, ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
 
 export const CODEX_RESPONSES_ROUTES: readonly ProxyRoute[] = Object.freeze([
   { method: "GET", path: "/", local: 404 },
@@ -172,6 +172,26 @@ export function usageOf(text: string): ProxyUsage | undefined {
   }
 }
 
+/** The items of `type` in `value`, at any depth (a tool's output holds them). */
+function itemsIn(value: unknown, type: string): number {
+  if (Array.isArray(value)) return value.reduce((n: number, item) => n + itemsIn(item, type), 0);
+  if (!isPlain(value)) return 0;
+  return (value.type === type ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + itemsIn(item, type), 0);
+}
+
+/**
+ * The input tokens the provider bills for `body` that it does not carry (`providerInputOverhead`, with its sources). The
+ * Responses API documents no prompt of its own that it adds on these routes (no hosted tool passes the policy), and the
+ * framing it puts around each input item and tool definition is a few tokens each, fewer than the bytes of the JSON keys
+ * that item already spends in the body. An image is billed by its area, not its bytes: each adds the most it can be
+ * billed as. A file input (a PDF, billed by its pages) has no stated bound, so a body with one cannot be measured: this
+ * throws, and the request's input is unknown.
+ */
+export function responsesServerInputOverhead(body: Record<string, unknown>): number {
+  if (itemsIn(body.input, "input_file") > 0) throw new Error("a file input's billed size has no stated bound");
+  return providerInputOverhead("openai-responses", { tools: Array.isArray(body.tools) && body.tools.length > 0, images: itemsIn(body.input, "input_image") }) as number;
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
@@ -207,9 +227,6 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     },
     usageOf,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
-    // The Responses API documents no prompt of its own that it adds and bills on these routes (no hosted tool passes the
-    // policy). The framing it puts around each input item and tool definition is a few tokens each, fewer than the bytes
-    // of the JSON keys that same item already spends in the body.
-    serverInputOverhead: () => 0,
+    serverInputOverhead: responsesServerInputOverhead,
   };
 }

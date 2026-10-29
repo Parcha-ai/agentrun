@@ -17,7 +17,7 @@
 // passes. A tool of the session's own that is not one of its names (`mcp__hands__<name>`)
 // is dropped, so the model is offered exactly the host's tools. Usage is read from the stream's `message_start` (input
 // and cache tokens) and its last `message_delta` (output).
-import { ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
+import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -226,20 +226,23 @@ export function anthropicUsage(text: string): ProxyUsage | undefined {
 }
 
 /** The Claude Agent CLI's provider policy for one session. */
-/**
- * The tool-use system prompt the Messages API adds, server-side, to a request that carries tools: input tokens it bills
- * that the body does not carry. Its size is per model and tool_choice, documented under "Pricing" in
- * https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview. Taken here at the largest figure listed for any
- * current model (Claude Opus 4.7's), so no model is undercounted: 675 tokens for tool_choice auto or none, 804 for any or
- * tool. A body with no tools gets none. The policy offers only custom tools, which add nothing beyond their definitions.
- */
-export const TOOL_USE_SYSTEM_PROMPT_TOKENS = Object.freeze({ autoOrNone: 675, anyOrTool: 804 });
+/** The image blocks in `value`, at any depth (a tool's result holds them). */
+function imagesIn(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce((n: number, item) => n + imagesIn(item), 0);
+  if (!isPlain(value)) return 0;
+  return (value.type === "image" ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + imagesIn(item), 0);
+}
 
-/** The input tokens the provider bills for `body` that it does not carry: the tool-use system prompt, when it has tools. */
+/** The input tokens the provider bills for `body` that it does not carry (`providerInputOverhead`, with its sources): the
+ *  tool-use system prompt when it has tools, and for each image the most it can be billed as, beyond its bytes. */
 export function anthropicServerInputOverhead(body: Record<string, unknown>): number {
-  if (!Array.isArray(body.tools) || body.tools.length === 0) return 0;
   const choice = isPlain(body.tool_choice) ? body.tool_choice.type : undefined;
-  return choice === "any" || choice === "tool" ? TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : TOOL_USE_SYSTEM_PROMPT_TOKENS.autoOrNone;
+  const shape: InputShape = {
+    tools: Array.isArray(body.tools) && body.tools.length > 0,
+    ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}),
+    images: imagesIn(body.messages),
+  };
+  return providerInputOverhead("anthropic-messages", shape) as number;
 }
 
 export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy {

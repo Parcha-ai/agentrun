@@ -5,11 +5,12 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
-import { modelPortFor } from '@parcha/agentrun-adapters';
+import { runWorkflow } from '@parcha/agentrun-dsl';
+import { createHarnessRunner, modelPortFor } from '@parcha/agentrun-adapters';
 import * as host from '@parcha/agentrun-adapters/host';
 
 const { ProxyRefusal, startModelProxy } = host;
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-adapters/testing';
 
 const KEY = 'session-key-for-tests';
 /** One paid route; `overhead` is what the provider adds for this body, as the policy says. */
@@ -95,6 +96,34 @@ test("a policy whose server-side input cannot be read leaves inputTokensMax unde
     assert.ok('inputTokensMax' in before[0] && before[0].inputTokensMax === undefined, `unmeasured for ${overhead}: ${JSON.stringify(before[0])}`);
   }
   assert.equal(host.inputTokensMaxOf?.(policyWith(), {}, '{"a":"é"}'), 10, 'inputTokensMaxOf measures UTF-8 bytes');
+});
+
+test("providerInputOverhead holds each provider's figures in one place: Anthropic's tool-use prompt and per-image maximum, OpenAI's per-image maximum, and nothing claimed for an API it does not know", () => {
+  assert.equal(typeof host.providerInputOverhead, 'function', 'exported from the host module');
+  const of = host.providerInputOverhead;
+  assert.deepEqual([
+    of('anthropic-messages', { tools: false, images: 0 }),
+    of('anthropic-messages', { tools: true, images: 0 }),
+    of('anthropic-messages', { tools: true, toolChoice: 'none', images: 0 }),
+    of('anthropic-messages', { tools: true, toolChoice: 'any', images: 0 }),
+    of('anthropic-messages', { tools: true, toolChoice: 'tool', images: 2 }),
+    of('anthropic-messages', { tools: false, images: 1 }),
+    of('openai-responses', { tools: true, images: 0 }),
+    of('openai-responses', { tools: false, images: 2 }),
+    of('azure-openai-responses', { tools: false, images: 1 }),
+    of('openai-codex-responses', { tools: false, images: 1 }),
+  ], [0, 675, 675, 804, 804 + 2 * 4784, 4784, 0, 2 * 73_800, 73_800, 73_800]);
+  for (const api of ['openai-completions', 'google-generative-ai', 'bedrock-converse-stream', 'unknown']) assert.equal(of(api, { tools: false, images: 0 }), undefined, `${api}: unknown, never 0`);
+  assert.throws(() => of('anthropic-messages', { tools: false, images: -1 }), /not an image count/);
+});
+
+test("the faux adapter measures its prompt as a real adapter's proxy measures its body: every request it makes carries a positive inputTokensMax", async () => {
+  const asked = [];
+  const adapter = fauxAdapter({ script: () => [{ say: 'a' }, { submit: { answer: 'ok' } }] });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), beforeRequest: (r) => { asked.push(r.inputTokensMax); } });
+  await runWorkflow({ v: 2, name: 'faux-bound', schemas: { Out: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } }, output: { schemaId: 'Out', path: 'final' }, root: { node: 'agent', label: 'task', instructions: 'Say ok, in a line of plain words.', out: 'Out', as: 'final' } }, {}, { runNode });
+  assert.ok(asked.length >= 2, `asked ${asked.length} times`);
+  for (const n of asked) assert.ok(Number.isSafeInteger(n) && n > 'Say ok, in a line of plain words.'.length, `measured, at least the prompt's bytes: ${n}`);
 });
 
 test("the runner gives the host each request's inputTokensMax and keeps it on the request's open entry until it answers", async () => {
