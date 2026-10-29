@@ -10,6 +10,7 @@ import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
+import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
 
 type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean };
@@ -151,7 +152,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} /> : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
-            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor) : v2.listRuns(50, cursor)).then((r) => { if (n === asked.current) { setRuns((x) => [...(x ?? []), ...r.runs]); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor) : v2.listRuns(50, cursor)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }

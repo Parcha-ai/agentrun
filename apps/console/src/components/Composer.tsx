@@ -27,7 +27,7 @@ export function Composer({ mode, onSend, sending: sendingProp, sent }: { mode: M
   return (
     <form className="border bg-card" onSubmit={(e) => { e.preventDefault(); void send(); }}>
       <label className="sr-only" htmlFor="composer">Message</label>
-      <textarea id="composer" rows={2} value={text} onChange={(e) => setText(e.target.value)} placeholder={MODE[mode].placeholder}
+      <textarea id="composer" rows={2} value={text} readOnly={sending} aria-busy={sending} onChange={(e) => setText(e.target.value)} placeholder={MODE[mode].placeholder}
         onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
         className="block w-full resize-none bg-transparent px-4 pt-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
