@@ -692,7 +692,7 @@ describe("a recorder's mark", () => {
     }
   });
 
-  it("a process both a record and a mark name is signalled once: the reap never sends a group's SIGKILL twice, nor a member's after its group's", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
+  it("a process both a record and a mark name is signalled once: the reap sends the group's SIGKILL and the member's, never either twice", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
     const dir = scratchRoot("commands-mark-once");
     const records = join(dir.root, "commands");
     const token = randomUUID();
@@ -710,8 +710,8 @@ describe("a recorder's mark", () => {
       // A kill that records its target and sends nothing: every process is still there for the whole reap, record and mark alike.
       const targets: number[] = [];
       const reaped = await reapCommands(records, { kill: (target) => void targets.push(target), timeoutMs: 100 });
-      assert.deepEqual(targets, [-pid], "one SIGKILL, to the group, whatever names it");
-      assert.equal(reaped.signalled, 1);
+      assert.deepEqual(targets, [-pid, member], "one SIGKILL to the group and one to its member, whatever names them");
+      assert.equal(reaped.signalled, 2);
     } finally {
       killGroup(pid);
       dir.remove();
