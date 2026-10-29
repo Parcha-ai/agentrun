@@ -16,10 +16,12 @@ import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
 import { agent, client, FAUX, flowAgent, follow, scratch } from "./support.mjs";
 import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
+import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname;
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
+const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CONFINED = existsSync("/usr/bin/setpriv");
 const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
@@ -209,16 +211,18 @@ test("started by its launcher, no process of its user holds a secret in its envi
   assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
 });
 
-test("under its launcher, a workflow run's judge gets the TypeSafe key the server holds, and no process holds it in its environment or command line", { timeout: 120_000 }, async (t) => {
+test("under its launcher, a workflow run's judges get the TypeSafe and Parallel keys the server holds, and no process holds either in its environment or command line", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const calls = join(dir, "jev-calls.jsonl");
+  const parallelCalls = join(dir, "parallel-calls.jsonl");
   const token = `not-a-secret-token-${process.pid}-${"t".repeat(24)}`;
-  // The server as the launcher's COMMAND, with the tests' fake Jev: the launcher hands it its secrets over the pipe.
+  // The server as the launcher's COMMAND, with the tests' fake Jev and Parallel: the launcher hands it its secrets over
+  // the pipe.
   const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
 const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
-const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, drainTimeout: "5s" });
+const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, fauxParallel: ${JSON.stringify(FAUX_PARALLEL)}, drainTimeout: "5s" });
 process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
-  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, TYPESAFE_API_KEY: JEV_CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls }, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, TYPESAFE_API_KEY: JEV_CANARY, PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: parallelCalls }, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
   const coi = {
     v: 2, name: "coi-check",
     schemas: {
@@ -227,7 +231,7 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
     },
     input: { schemaId: "In" },
     output: { schemaId: "Coi", path: "coi" },
-    root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
+    root: { node: "chain", steps: [{ node: "judge", label: "coi-parallel", state: { doc: "{question}" }, out: "Coi", as: "coi_parallel", provider: "parallel" }, { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
   };
   assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
   const { body: started } = await api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
@@ -237,14 +241,18 @@ process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
   assert.deepEqual(run.result.output, { is_coi: true });
   const sent = readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.deepEqual(sent.map((call) => call.authorized), [true], "Jev answered on the key the server holds, handed on the decision descriptor");
-  // The launcher's own processes only: the tests' Jev key is every decision test's canary, and another file's server,
+  const parallelSent = readFileSync(parallelCalls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(parallelSent.map((call) => call.authorized), [true], "and Parallel on its own");
+  // The launcher's own processes only: the tests' keys are every decision test's canaries, and another file's server,
   // started with it in its environment, may be running now.
   const tree = treeOf(root);
   const ours = processes().filter((p) => tree.has(p.pid));
   assert.ok(ours.length >= 1, "the server is found");
   for (const p of ours) {
-    assert.ok(!p.environ.includes(JEV_CANARY), `pid ${p.pid}'s environment holds the key: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
-    assert.ok(!p.cmdline.includes(JEV_CANARY), `pid ${p.pid}'s command line holds the key`);
+    for (const key of [JEV_CANARY, PARALLEL_CANARY]) {
+      assert.ok(!p.environ.includes(key), `pid ${p.pid}'s environment holds a key: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
+      assert.ok(!p.cmdline.includes(key), `pid ${p.pid}'s command line holds a key`);
+    }
   }
 });
 
