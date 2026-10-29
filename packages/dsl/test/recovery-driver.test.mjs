@@ -391,6 +391,19 @@ test('under recovery, a decision whose outcome was lost after sending is in the 
   assert.deepEqual([incomplete.state.questionSpendUsd, incomplete.state.unpricedQuestionCount], [undefined, 1], 'an unknown cost makes the spend read incomplete, never $0');
 });
 
+test('a decision whose outcome was lost after sending is never asked again by the next process: it was interrupted, not failed', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const store = memoryStore();
+  let asked = 0;
+  const judge = { runJudge: async () => { asked += 1; if (asked === 1) throw new DecisionProviderError('outcome_unknown', 'Parallel answered HTTP 503 after the request was sent.', { status: 503, attempts: 1, costUsd: 0.001, costBasis: 'estimate' }); return { answers: { legit: { type: 'noul', noul: 0.9 } } }; } };
+  const first = await run(store, judged, judge);
+  assert.deepEqual([first.status, first.escalation.kind], ['escalated', 'decision_interrupted']);
+  const second = await run(store, judged, judge);
+  assert.equal(asked, 1, 'a request that may have been answered and billed is not asked, and paid for, a second time');
+  assert.deepEqual([second.status, second.escalation.kind], ['escalated', 'decision_interrupted']);
+  assert.equal((await operator(store, judged)).state.questionSpendUsd, 0.001, 'booked once');
+});
+
 test('a route is decided once, only a route is decided, and its receipts are carried until the host has written them', async () => {
   const store = memoryStore(); const receipts = { invocation: 'question:triage:0@1', request_bytes: 120, latency_ms: 30 };
   let driver = await open(store, routed);
