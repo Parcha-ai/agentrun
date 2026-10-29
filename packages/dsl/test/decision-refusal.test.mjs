@@ -8,7 +8,7 @@ import { runWorkflow, validateAnswers, answersToValue, answerConfidence, answers
 
 const refusal = { type: 'refusal' };
 const refusedError = (ids) => (error) => {
-  assert.ok(error instanceof SystemOneError, `a refusal fails with a SystemOneError, got ${error}`);
+  assert.ok(error instanceof SystemOneError, `answersToValue refuses a refusal with a SystemOneError, got ${error}`);
   assert.equal(error.responseReason, 'refusal');
   for (const id of ids) assert.match(error.message, new RegExp(`"${id}"`));
   return true;

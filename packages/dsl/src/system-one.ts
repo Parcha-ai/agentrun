@@ -246,7 +246,8 @@ export function refusedQuestions(answers: Record<string, unknown>): string[] {
   return Object.entries(answers).filter(([, a]) => isRecord(a) && a.type === "refusal").map(([id]) => id);
 }
 
-/** What a node throws for answers it cannot decode because the provider refused them. */
+/** What `answersToValue` throws for a refused answer: the backstop. A decision node never gets this far, since `decide()`
+ *  escalates the run for review (DECISION_REFUSED) on a refusal first. */
 export function refusalError(ids: string[]): SystemOneError {
   return new SystemOneError(`System One refused ${ids.length === 1 ? "question" : "questions"} ${ids.map((id) => `"${id}"`).join(", ")}`, null, undefined, "refusal");
 }
