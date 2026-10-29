@@ -2,7 +2,7 @@
 // latest answer carried. Pure: no binary, no network.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NESTED_CALL, Scripts } from '../dist/scripts.js';
+import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, Scripts, settle, UNWATCHED } from '../dist/scripts.js';
 
 const line = (payload) => JSON.stringify({ timestamp: '2026-10-29T23:00:00Z', type: 'response_item', payload });
 const exec = (callId) => line({ type: 'custom_tool_call', name: 'exec', call_id: callId, input: 'await tools.slow({})' });
@@ -80,4 +80,53 @@ test("two scripts live at once (a cell still running, and a new exec the model w
   scripts.note(wait('call_w'));
   scripts.note(waited('call_w', 'Script completed\nWall time 1.8 seconds'));
   assert.deepEqual(scripts.tie('call_b', (id) => logged.has(id)), { kind: 'tied', exec: 'call_b' });
+});
+
+test("an answer the proxy could not watch to its end counts as a script of its own, never in the log: a nested call is held, or ambiguous, and never falls back to the exec before", () => {
+  const { scripts, logged } = read(exec('call_a'), execDone('call_a'), exec('call_b'));
+  // B is open and its line is durable; the answer after it was lost.
+  assert.deepEqual(scripts.tie(UNWATCHED, (id) => logged.has(id)), { kind: 'ambiguous', live: ['call_b', UNWATCHED] });
+  const alone = read(exec('call_a'), execDone('call_a'));
+  assert.deepEqual(alone.tie(UNWATCHED), { kind: 'held', exec: UNWATCHED }, 'held for a line that never comes');
+  // The next answer is watched cleanly (nothing announced): the lost one no longer counts.
+  assert.deepEqual(alone.tie(undefined), { kind: 'none' });
+});
+
+const nested = (callId, tool, store, rollout) => ({ callId, tool, ...(store ? { store } : {}), ...(rollout ? { rollout } : {}) });
+const done = (text) => ({ status: 'completed', text });
+const rolled = (text, ok = true) => ({ tool: 'x', ok, text });
+
+test("a nested call comes to what the store says, then what the rollout says; they must agree, or it is interrupted", () => {
+  assert.deepEqual(settle(nested('e1', 'record', done('recorded'))), { kind: 'completed', text: 'recorded' }, 'store only');
+  assert.deepEqual(settle(nested('e1', 'record', undefined, rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'rollout only (the store lost the end)');
+  assert.deepEqual(settle(nested('e1', 'record', done('recorded'), rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'both, agreeing');
+  assert.deepEqual(settle(nested('e1', 'record', done('recorded'), rolled('something else'))), { kind: 'interrupted' }, 'both, disagreeing');
+  assert.deepEqual(settle(nested('e1', 'record', { status: 'started' })), { kind: 'interrupted' }, 'started, no end');
+  assert.deepEqual(settle(nested('e1', 'record', { status: 'failed', text: 'cut', interrupted: true })), { kind: 'interrupted' });
+  assert.deepEqual(settle(nested('e1', 'record', { status: 'failed', text: 'bad input' })), { kind: 'failed', text: 'bad input' });
+  assert.deepEqual(settle(nested('e1', 'record', undefined, rolled('nope', false))), { kind: 'failed', text: 'nope' });
+});
+
+test("the answer to a cut-off exec lists its nested calls in order with their outcomes, says nothing was run again, and says 'not executed' of no call that completed", () => {
+  const text = execRecoveryOutput([nested('e1', 'record', done('recorded')), nested('e2', 'record', done('recorded twice')), nested('e3', 'lookup', { status: 'started' })]);
+  assert.match(text, /cut short after these calls/);
+  const at = (needle) => text.indexOf(needle);
+  assert.ok(at('1. record completed: "recorded"') >= 0 && at('1. record completed: "recorded"') < at('2. record completed: "recorded twice"') && at('2. record completed') < at('3. lookup was started'), 'in order, each its own outcome (two identical calls too)');
+  assert.match(text, /effect is done/);
+  assert.match(text, /nothing was run again/);
+  assert.ok(!/not executed/i.test(text));
+  assert.match(execRecoveryOutput([]), /ran none/);
+});
+
+test("a call is matched on its tool and its arguments, whatever the order of the arguments' keys", () => {
+  assert.equal(callKey('record', { answer: 'Paris', n: 1 }), callKey('record', { n: 1, answer: 'Paris' }));
+  assert.notEqual(callKey('record', { answer: 'Paris' }), callKey('record', { answer: 'Rome' }));
+  assert.notEqual(callKey('record', { answer: 'Paris' }), callKey('lookup', { answer: 'Paris' }));
+});
+
+test("the rollout's completion of a nested call is read from its item_completed line, and only a completed or failed one", () => {
+  const item = (status) => JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'DynamicToolCall', id: 'exec-0e41febd-a273-40e5-8b2a-44fb79a552ae', tool: 'record', status, success: status === 'completed', content_items: [{ type: 'inputText', text: 'recorded' }] } } });
+  assert.deepEqual([...completedNested([item('completed')])], [['exec-0e41febd-a273-40e5-8b2a-44fb79a552ae', { tool: 'record', ok: true, text: 'recorded' }]]);
+  assert.equal(completedNested([item('inProgress')]).size, 0);
+  assert.equal(completedNested(['not json', JSON.stringify({ type: 'response_item', payload: { type: 'message' } })]).size, 0);
 });

@@ -59,7 +59,7 @@ export interface ProviderPolicy {
    *  of the answer as text, BEFORE that piece is written to the client. So what the observer saw of a response, the client
    *  has not yet acted on: it is the one thing the proxy can say causally about what a client does next. It only reads;
    *  one that throws is reported and the answer goes on. */
-  watch?(): { chunk(text: string): void } | undefined;
+  watch?(): { chunk(text: string): void; failed?(): void } | undefined;
   /** The model the body `apply` returned asks for, once `apply` checked it is one this session may use (its own, or a
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
@@ -430,7 +430,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       began = { ok: upstream.ok };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
-      let watcher: { chunk(text: string): void } | undefined;
+      let watcher: { chunk(text: string): void; failed?(): void } | undefined;
       try {
         watcher = policy.watch?.();
       } catch (error) {
@@ -445,6 +445,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
               watcher.chunk(text);
             } catch (error) {
               say(`model proxy (${policy.id}): the response watcher failed`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+              try { watcher.failed?.(); } catch {}
               watcher = undefined;
             }
           }
