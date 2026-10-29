@@ -17,7 +17,7 @@ import { validateFrozenSnapshot, openedFrozenSnapshot, serializeFrozenSnapshot,
   failure, SHA256 as SHA,
   FROZEN_SNAPSHOT_SCHEMA, FROZEN_SNAPSHOT_SCHEMA_V4, stateDelta, applyStateDelta, isItemOutcome,
   type FrozenSnapshot as Snapshot, type FrozenSnapshotV4, type ItemRecord, type MapEntry, type StateDelta,
-  type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow } from "./frozen-snapshot.js";
+  type PathFrame, type RouteDecision, type QuestionReceipts, type FrameTag, type StepRecord, type EscalationRow, type DecisionRequest, DECISION_REQUEST } from "./frozen-snapshot.js";
 import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, RecoveryParts, RecoveryStore } from "./store.js";
 
 
@@ -309,6 +309,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         const record = item as unknown as ItemRecord;
         const valid = record.driver === driver && record.map === mapPath && record.index === index && record.base === entry.base && Number.isSafeInteger(record.revision)
           && ["running", "committed", "failed"].includes(record.status) && isRecord(record.frame) && Array.isArray(record.frame.done)
+          && (record.frame.decisions === undefined || isRecord(record.frame.decisions))
           && [record.frame.states, record.frame.chains, record.frame.loops, record.frame.routes, record.frame.inputs, record.frame.steps, record.clocks, record.files, record.unknownResponses, record.maps].every(isRecord)
           && Array.isArray(record.effects) && record.effects.every((id) => typeof id === "string")
           // An item that ended on its failure, and only one, holds how it ended; its map collects its items' failures.
@@ -320,6 +321,10 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         lastItems.set(path, JSON.stringify({ ...record, revision: 0 }));
         frame.done.push(...record.frame.done);
         Object.assign(frame.steps, record.frame.steps);
+        if (record.frame.decisions) {
+          frame.decisions ??= {};
+          Object.assign(frame.decisions, record.frame.decisions);
+        }
         Object.assign(snapshot.clocks, record.clocks);
         for (const [name, sha256] of Object.entries(record.files)) {
           // A committed item keeps the record it last wrote, so a file a later step wrote again holds an older hash there.
@@ -460,6 +465,17 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         else if (build) (build.record.frame[table] as Record<string, unknown>)[at] = value;
       }
     }
+    // A map item's decision requests are kept in its record, as its steps are; a frame with none writes no table.
+    for (const [at, requests] of Object.entries(frame.decisions ?? {})) {
+      const build = own(at);
+      if (build === undefined) {
+        pin.decisions ??= {};
+        pin.decisions[at] = requests;
+      } else if (build) {
+        build.record.frame.decisions ??= {};
+        build.record.frame.decisions[at] = requests;
+      }
+    }
     const clocks: Record<string, number> = {};
     for (const [key, value] of Object.entries(snapshot.clocks)) { const build = own(clockPath(key)); if (build === undefined) clocks[key] = value; else if (build) build.record.clocks[key] = value; }
     const files: Record<string, string> = {};
@@ -509,7 +525,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     const frame = snapshot.pin;
     const done = new Set(frame.done);
     const paths = [...frame.done, ...Object.keys(frame.states), ...Object.keys(frame.chains), ...Object.keys(frame.inputs), ...Object.keys(frame.steps),
-      ...Object.keys(frame.loops), ...Object.keys(frame.routes), ...Object.keys(frame.failures ?? {}).map((item) => `${item}/body`)];
+      ...Object.keys(frame.loops), ...Object.keys(frame.routes), ...Object.keys(frame.decisions ?? {}), ...Object.keys(frame.failures ?? {}).map((item) => `${item}/body`)];
     return paths.every((path) => { const at = mapItemOf(path); return !at || done.has(at.map) || Boolean(maps.get(at.map)?.baseState); });
   };
   /** One write of the driver's state, in the layout this open keeps. */
@@ -669,6 +685,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     if (typeof at !== "string" || !nodeAt(doc, at)) throw pathFault(at, "The interpreter named a path this run's document does not hold");
     return at;
   };
+  /** Where a decision's requests are kept: its own node, or the loop whose `until` the interpreter asks at
+   *  `<loop>/iterations/<n>`, the one path a question is asked at that no node holds. Any other path is refused. */
+  const decisionPlace = (at: unknown, doc: Workflow): string => {
+    const loop = typeof at === "string" ? /^(.+)\/iterations\/(?:0|[1-9][0-9]*)$/.exec(at)?.[1] : undefined;
+    if (loop !== undefined && nodeAt(doc, loop)?.node === "loop") return loop;
+    return placed(at, doc);
+  };
   /** The committed state a resume at `at` is answered from: its own, or the frontier of a chain it sits
    *  in when the frontier lies past it. A chain threads one state, so every step before its frontier,
    *  and everything inside those steps, is answered with the frontier's. */
@@ -681,7 +704,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     return undefined;
   };
   /** Drops what no resume can ask for again: the states, chain frontiers, loop counts, route decisions
-   *  and start bindings of the paths `gone` names. Step records stay: a host reads its sessions from them; and so do
+   *  and start bindings of the paths `gone` names. Step records stay: a host reads its sessions from them; decision
+   *  requests stay, as what the run asked and paid for; and so do
    *  failed items, as committed paths do: a map that commits in the write that moves its run writes its items' records
    *  then, a failed one's with its outcome. */
   const prune = (frame: PathFrame, gone: (at: string) => boolean) => {
@@ -971,6 +995,43 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     routeDecision(executionPath: unknown): RouteDecision | undefined {
       const { frame, doc } = active();
       return frame.routes[placed(executionPath, doc)];
+    },
+    /** Every decision request this run committed, by decision id. */
+    decisionRequests(): Record<string, DecisionRequest> {
+      const { frame } = active();
+      return structuredClone(Object.assign({}, ...Object.values(frame.decisions ?? {})));
+    },
+    /** Admits a decision's request before the host's judge is asked, in the driver's next commit, which the caller
+     *  awaits: a new request, or the next attempt of one that failed in its own process (undefined). A request found
+     *  in any other status was asked by an earlier process and is returned as it stands; the caller does not ask again.
+     *  An admitted request is in flight until `decisionSettled`: a pause waits for it, as for an effect. */
+    admitDecision(executionPath: unknown, request: Pick<DecisionRequest, "decision_id" | "kind" | "label" | "model" | "request_sha256">): DecisionRequest | undefined {
+      guard();
+      const { frame, doc } = active();
+      const at = decisionPlace(executionPath, doc);
+      frame.decisions ??= {};
+      frame.decisions[at] ??= {};
+      const requests = frame.decisions[at];
+      const known = requests[request.decision_id];
+      if (known && known.status !== "failed") return structuredClone(known);
+      requests[request.decision_id] = { record: DECISION_REQUEST, ...request, attempt: (known?.attempt ?? 0) + 1, status: "requested" };
+      inFlight += 1;
+      save();
+      return undefined;
+    },
+    /** A request `admitDecision` admitted is no longer in flight. */
+    decisionSettled() { settled(); },
+    /** A decision request's one outcome, with its spend (null when unknown), in the driver's next commit, together with
+     *  whatever `alongside` records (the answer's spend, a route's decision): no commit holds the one without the other.
+     *  It never applies a stop: a request the run asked ends whatever stops the run. */
+    decisionEnded(executionPath: unknown, decisionId: string, status: "answered" | "failed" | "interrupted", cost_usd: number | null, alongside?: () => void) {
+      if (fatal) throw fatal;
+      const { frame, doc } = active();
+      const request = frame.decisions?.[decisionPlace(executionPath, doc)]?.[decisionId];
+      if (!request) throw failure("FROZEN_CHECKPOINT_INVALID", `The decision ${decisionId} ends without its request`);
+      if (request.status !== "requested") throw failure("FROZEN_CHECKPOINT_INVALID", `The decision ${decisionId} ends once`);
+      Object.assign(request, { status, cost_usd });
+      try { alongside?.(); } finally { save(); }
     },
     /** The escalation that ended this run (a gate that fired, or an LLM step that failed), written once
      *  as an escalation commit before anything acts on it. A later open gets the same row and the same

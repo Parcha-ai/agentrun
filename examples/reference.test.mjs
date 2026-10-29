@@ -282,11 +282,11 @@ for (const [label, path] of [['search', '/root/steps/0'], ['investigate', '/root
   });
 }
 
-test('killed after the judge answered and before the answer was recorded, the resumed run asks it again, once', { timeout: 120_000 }, async (t) => {
-  const { view, rows, failing } = await killedAndResumed(t, { KILL_IN: 'judge-asked' });
-  assert.deepEqual(view.output, OUTPUT);
-  assert.equal(named(rows, 'judge').length, 2);
-  assert.deepEqual(failing, []);
+test('killed after the judge answered and before the answer was recorded, the resumed run routes the decision to review and does not ask again', { timeout: 120_000 }, async (t) => {
+  const { view, rows } = await killedAndResumed(t, { KILL_IN: 'judge-asked' });
+  // Nothing durable holds the answer the killed process was paid for: the decision is not asked again, a person decides it.
+  assert.deepEqual([view.status, view.escalation?.kind, view.escalation?.label], ['escalated', 'decision_interrupted', 'verdict']);
+  assert.deepEqual(named(rows, 'judge'), ['verdict'], 'asked once, in the killed process');
 });
 
 test('killed after the judge\'s answer was recorded, the resumed run takes the recorded decision and does not ask again', { timeout: 120_000 }, async (t) => {
