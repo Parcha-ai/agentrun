@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow, type Result } from "@earendil-works/pi-durable/env";
-import { expect, it } from "vitest";
+import { expect, it, type TestContext } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import {
@@ -149,8 +149,8 @@ const statOf = async (box: Box, path: string): Promise<string> =>
 
 /** The launcher's rules, one case each, on whatever box `withBox` makes. */
 export function registerLaunchSuite(label: string, withBox: WithBox): void {
-	const each = (name: string, run: (box: Box) => Promise<void>, timeoutMs = CASE_TIMEOUT_MS) =>
-		it(`${label}: ${name}`, () => withBox(run), timeoutMs);
+	const each = (name: string, run: (box: Box, test: TestContext) => Promise<void>, timeoutMs = CASE_TIMEOUT_MS) =>
+		it(`${label}: ${name}`, (test) => withBox((box) => run(box, test)), timeoutMs);
 
 	each("the program outlives the exec and a handle that went away", async (box) => {
 		const state = unwrap(await launch(box, "keep", program(recording("exec sleep 300")), context));
@@ -364,12 +364,12 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 	for (const framed of [false, true])
 		each(
 			`each process the launcher starts carries its launch's generation, and the program never sees it (${framed ? "a framed launch" : "a plain launch"})`,
-			async (box) => {
+			async (box, test) => {
 				if ((await sh(box, "test -r /proc/self/environ")).exitCode !== 0) return; // no /proc to read a process's environment from
 				const spec = program(recording("env > prog.env; exec sleep 300"));
 				const result = await launch(box, "carry", framed ? { ...spec, secrets: { CARRY: "x" } } : spec, context);
-				// A box whose ptrace scope is under 1 refuses every framed launch: there is nothing to check there.
-				if (framed && !result.ok && result.error.code === "refused") return;
+				// A box whose ptrace scope is under 1 refuses every framed launch: the case is reported skipped, never passed.
+				if (framed && !result.ok && result.error.code === "refused") test.skip(result.error.message.slice(0, 120));
 				const dir = unwrap(result).directory;
 				const gen = (await sh(box, `sed -n "s/^GEN='\\(.*\\)'$/\\1/p" ${dir}/spec.sh`)).text.trim();
 				expect(gen).not.toBe("");
