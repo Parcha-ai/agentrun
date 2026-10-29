@@ -14,10 +14,12 @@ const acquire = localMachine({
   proxy: { hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, tools: [] },
 });
 const machine = await acquire({ ctx: { runId: 'watch' }, model: gatewayHandler(route) });
-const holder = 'process.stdin.resume(); process.stdin.on("end", () => {}); console.log(process.pid); setInterval(() => {}, 1000);';
+// The child says who its parent is and how that parent was started: under the shim it is the shim, under the kernel's
+// parent-death signal (setpriv execs in place) it is this host.
+const holder = 'const { readFileSync } = require("node:fs"); const parent = readFileSync(`/proc/${process.ppid}/cmdline`, "utf8").split("\\0").filter(Boolean); process.stdin.resume(); process.stdin.on("end", () => {}); console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid, parent })); setInterval(() => {}, 1000);';
 const child = await machine.spawn({ command: process.execPath, args: ['-e', holder], env: {} });
 for await (const line of child.lines()) {
-  process.stdout.write(`${JSON.stringify({ child: Number(line), host: process.pid })}\n`);
+  process.stdout.write(`${JSON.stringify({ child: JSON.parse(line).pid, ppid: JSON.parse(line).ppid, parent: JSON.parse(line).parent, host: process.pid })}\n`);
   break;
 }
 setInterval(() => {}, 1000);
