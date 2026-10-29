@@ -198,4 +198,15 @@ for (const layout of LAYOUTS) {
     const journal = await inner.open(recoveryBound(workflow));
     try { assert.equal(journal.state.questionSpendUsd, 0.003, 'the run\'s recorded spend holds the answer it was paid for'); } finally { await journal.close(); }
   });
+
+  test(`a decision at a path no node holds, other than a loop's until, is refused at admission (${layout})`, async () => {
+    const driver = await openRecovery(memoryStore(), workflow, { key: KEY, layout });
+    const request = (id) => ({ decision_id: id, kind: 'judge', label: 'check', model: null, request_sha256: 'r' });
+    try {
+      for (const path of ['/root/steps/0/bogus', '/root/steps/0/iterations/0', '/root/steps/9']) {
+        assert.throws(() => driver.admitDecision(path, request(path)), (error) => error.code === 'FROZEN_PATH_INVALID', `${path} is refused`);
+      }
+      assert.equal(driver.admitDecision('/root/steps/0', request('real')), undefined, 'a node\'s own path is admitted');
+    } finally { await driver.close(); }
+  });
 }
