@@ -383,6 +383,16 @@ test('an unpriced question answer is counted, not dropped: the run reads incompl
   await driver.close();
   assert.deepEqual([(await operator(shapes, routed)).state.questionSpendUsd, (await operator(shapes, routed)).state.unpricedQuestionCount], [undefined, 4]);
 
+  // A refused call leaves the count alone: the route's checks run before any state is touched, so a route
+  // already decided throws without bumping the count. It is counted only by the valid unpriced calls that
+  // follow, never by the refusal itself. This catches the count increase moving ahead of the route checks.
+  const refused = memoryStore(); driver = await open(refused, routed);
+  driver.recordQuestionSpend(0.002, { executionPath: step(1), label: 'triage', result: choice('angry', 0.95), receipts: null });
+  assert.throws(() => driver.recordQuestionSpend(null, { executionPath: step(1), label: 'triage', result: choice('calm', 0.95), receipts: null }), fault('FROZEN_PATH_INVALID', /A route is decided once/));
+  for (const unpriced of [null, Number.NaN, -1]) driver.recordQuestionSpend(unpriced);
+  await driver.close();
+  assert.deepEqual([(await operator(refused, routed)).state.questionSpendUsd, (await operator(refused, routed)).state.unpricedQuestionCount], [0.002, 3]);
+
   // End to end through with-recovery: a judge answer that comes back with no cost (cost_usd null) is recorded
   // unpriced and resumed past. The route's answer is its decision, committed before its branch runs; a later
   // process follows the decision without asking again, and the finished-but-unpriced question is still counted.
