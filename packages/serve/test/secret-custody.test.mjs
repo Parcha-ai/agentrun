@@ -176,12 +176,17 @@ test("started by its launcher, no process of its user holds a secret in its envi
   await sleep(500);
   const seen = noSecretAnywhere(root, canary);
   assert.ok(seen.length >= 2, `the server and the run's process are found: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
+  // The run's process reads its pipe in a preload, before pi-durable-disk's CLI loads: nothing runs ahead of it that
+  // could start a child holding the pipe.
+  const runArgv = seen.find((cmdline) => cmdline.includes(" --app "))?.split(" ") ?? [];
+  const preload = runArgv.indexOf("--import");
+  assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
 });
 
 test("the launcher run through a link, as a package manager installs a bin, finds the server beside its real path", async (t) => {
   const link = join(await scratch(t), "agentrun-serve");
   symlinkSync(LAUNCHER, link);
-  const child = spawn(link, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_MODEL_API_KEY: "not-a-secret-help" } });
+  const child = spawn(link, ["--help"], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENT_MODEL_API_KEY: `not-a-secret-${"help"}` } });
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   child.stderr.on("data", (chunk) => (out += chunk));

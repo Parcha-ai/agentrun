@@ -248,6 +248,8 @@ export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
 /** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own. */
 export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name));
+/** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
+const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
  *  variables and the rest pass, and the door token goes by file. */
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
@@ -659,7 +661,8 @@ export class Runs {
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
-      "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
+      // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
+      "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
     ], { stdio: ["ignore", "ignore", log, "pipe"], env });
     closeSync(log);
