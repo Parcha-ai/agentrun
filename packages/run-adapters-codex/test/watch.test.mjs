@@ -12,6 +12,9 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { PARENT_WATCH_SHIM, parentWatchHere, processAlive, SETPRIV } from '@parcha/agentrun-adapters/host';
 
+// How the child was watched is read from /proc; the kill itself is checked wherever the tests run.
+const NO_PROC = process.platform !== 'linux' && 'the parent chain is read from /proc, which only Linux has';
+
 const HOST = fileURLToPath(new URL('./fixtures/watch-host.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-watch-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -27,10 +30,16 @@ async function killHost(t, args) {
   t.after(() => {
     for (const pid of [host.pid, child]) if (pid && processAlive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
   });
-  const first = await Promise.race([
-    createInterface({ input: host.stdout })[Symbol.asyncIterator]().next(),
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`the host reported no child: ${stderr.slice(-400)}`)), 30_000)),
-  ]);
+  let timer;
+  let first;
+  try {
+    first = await Promise.race([
+      createInterface({ input: host.stdout })[Symbol.asyncIterator]().next(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the host reported no child: ${stderr.slice(-400)}`)), 30_000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
   assert.ok(!first.done, `the host ended first: ${stderr.slice(-400)}`);
   const report = JSON.parse(first.value);
   child = report.child;
@@ -44,6 +53,7 @@ async function killHost(t, args) {
 test('a host SIGKILLed alone leaves no child running, with the parent-watch shim, and the shim is the watch that ran', async (t) => {
   const { gone, report } = await killHost(t, ['shim']);
   assert.ok(gone, 'the child outlived its host');
+  if (NO_PROC) return;
   assert.notEqual(report.ppid, report.host, 'the child\'s parent is the shim, not the host');
   assert.deepEqual(report.parent.slice(0, 2), [process.execPath, PARENT_WATCH_SHIM], 'the child runs under the parent-watch shim');
 });
@@ -53,7 +63,7 @@ test('a host SIGKILLed alone leaves no child running, with the machine\'s own pa
   assert.ok(gone, 'the child outlived its host');
 });
 
-test('the machine\'s own watch is the kernel\'s parent-death signal where setpriv has it, and the child stays the host\'s direct child', { skip: parentWatchHere() !== 'pdeathsig' && 'setpriv here lacks --pdeathsig' }, async (t) => {
+test('the machine\'s own watch is the kernel\'s parent-death signal where setpriv has it, and the child stays the host\'s direct child', { skip: NO_PROC || (parentWatchHere() !== 'pdeathsig' && 'setpriv here lacks --pdeathsig') }, async (t) => {
   const record = join(ROOT, 'default-confine.jsonl');
   const { gone, report } = await killHost(t, ['', 'confined', record]);
   assert.ok(gone, 'the child outlived its host');

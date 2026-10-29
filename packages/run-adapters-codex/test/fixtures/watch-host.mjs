@@ -15,8 +15,8 @@ const acquire = localMachine({
 });
 const machine = await acquire({ ctx: { runId: 'watch' }, model: gatewayHandler(route) });
 // The child says who its parent is and how that parent was started: under the shim it is the shim, under the kernel's
-// parent-death signal (setpriv execs in place) it is this host.
-const holder = 'const { readFileSync } = require("node:fs"); const parent = readFileSync(`/proc/${process.ppid}/cmdline`, "utf8").split("\\0").filter(Boolean); process.stdin.resume(); process.stdin.on("end", () => {}); console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid, parent })); setInterval(() => {}, 1000);';
+// parent-death signal (setpriv execs in place) it is this host. Where there is no /proc (macOS) it says nothing of how.
+const holder = 'const { readFileSync } = require("node:fs"); let parent = []; try { parent = readFileSync(`/proc/${process.ppid}/cmdline`, "utf8").split("\\0").filter(Boolean); } catch {} process.stdin.resume(); process.stdin.on("end", () => {}); console.log(JSON.stringify({ pid: process.pid, ppid: process.ppid, parent })); setInterval(() => {}, 1000);';
 const child = await machine.spawn({ command: process.execPath, args: ['-e', holder], env: {} });
 for await (const line of child.lines()) {
   process.stdout.write(`${JSON.stringify({ child: JSON.parse(line).pid, ppid: JSON.parse(line).ppid, parent: JSON.parse(line).parent, host: process.pid })}\n`);
