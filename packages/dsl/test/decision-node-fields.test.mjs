@@ -127,6 +127,24 @@ test('T5: a pinned model is part of what the decision is: changed, the decision 
 });
 const UNPINNED_ID = 'f680dbb73881784a417934253f4228aaef909b0626ef0ccbbc6975230bc9448f';
 
+test('T7: a call cut by its node\'s own timeoutMs after it was sent is outcome_unknown: booked at the list-price estimate, never asked again, and the run goes to review', async () => {
+  const LIST_PRICE = 0.004;
+  // Once sent, the request is paid whether or not its answer arrives: cut, the provider says so with its list price.
+  const slow = { ...provider('parallel'), sent: 0, decide: async (_request, ctx) => {
+    slow.sent += 1;
+    await new Promise((resolve) => { if (ctx.signal.aborted) resolve(); else ctx.signal.addEventListener('abort', resolve, { once: true }); });
+    throw new DecisionProviderError('outcome_unknown', 'the request was sent and its answer did not arrive in time', { costUsd: LIST_PRICE, costBasis: 'estimate' });
+  } };
+  const receipts = [];
+  const started = Date.now();
+  const outcome = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', timeoutMs: 200 })]), INPUT, { ...hosted([slow], { deadlineMs: 60_000 }), recordDecision: async (receipt) => { receipts.push(receipt); } }));
+  assert.ok(Date.now() - started < 30_000, 'the node\'s own timeoutMs cut the call, not the provider\'s deadline');
+  assert.equal(slow.sent, 1, 'a call cut after it was sent is never asked again');
+  assert.equal(outcome.status, 'escalated', JSON.stringify(outcome).slice(0, 300));
+  assert.equal(outcome.result.escalation.kind, 'decision_interrupted', 'it goes to review');
+  assert.deepEqual(receipts.map((receipt) => [receipt.status, receipt.cost_usd]), [['failed', LIST_PRICE]], 'booked once, at the list-price estimate');
+});
+
 test('T6: the published schema and the author guide carry the four fields', () => {
   const schema = JSON.parse(readFileSync(new URL('../schema/workflow.schema.json', import.meta.url), 'utf8'));
   const nodes = [];
