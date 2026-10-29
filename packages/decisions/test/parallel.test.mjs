@@ -116,6 +116,23 @@ test('a 429 is retried after its Retry-After, and the answer that follows is the
   assert.equal(result.answers.holds.noul, 0.4);
 });
 
+test('every attempt that may have been billed is booked: a 503 or a lost connection before the answer books two, a 429 one', async () => {
+  const questions = { holds: { type: 'noul', instructions: 'Q?' } };
+  const answer = () => json(wire({ holds: { type: 'noul', noul: 0.4 } }));
+  const decideAfter = async (first) => {
+    const { fetch, seen } = fakeFetch([first, answer()]);
+    const result = await parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx());
+    assert.equal(seen.length, 2);
+    return result;
+  };
+  const after503 = await decideAfter(json({ type: 'error', error: {} }, 503));
+  assert.deepEqual([after503.cost_usd, after503.cost_basis], [2 * PARALLEL_LIST_PRICE_USD, 'estimate']);
+  const afterLost = await decideAfter(() => Promise.reject(new TypeError('fetch failed')));
+  assert.deepEqual([afterLost.cost_usd, afterLost.cost_basis], [2 * PARALLEL_LIST_PRICE_USD, 'estimate']);
+  const after429 = await decideAfter(json({ type: 'error', error: {} }, 429, { 'retry-after': '0' }));
+  assert.deepEqual([after429.cost_usd, after429.cost_basis], [PARALLEL_LIST_PRICE_USD, 'estimate']);
+});
+
 test('with no key, the request is refused naming the variable, and nothing is sent', async () => {
   const { fetch, seen } = fakeFetch([json(wire({}))]);
   const saved = process.env.PARALLEL_API_KEY;
