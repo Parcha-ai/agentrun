@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow, type Result } from "@earendil-works/pi-durable/env";
-import { expect, it } from "vitest";
+import { expect, it, type TestContext } from "vitest";
 import type { Box } from "../src/box/box.ts";
 import { finish } from "../src/box/files.ts";
 import {
@@ -149,8 +149,8 @@ const statOf = async (box: Box, path: string): Promise<string> =>
 
 /** The launcher's rules, one case each, on whatever box `withBox` makes. */
 export function registerLaunchSuite(label: string, withBox: WithBox): void {
-	const each = (name: string, run: (box: Box) => Promise<void>, timeoutMs = CASE_TIMEOUT_MS) =>
-		it(`${label}: ${name}`, () => withBox(run), timeoutMs);
+	const each = (name: string, run: (box: Box, test: TestContext) => Promise<void>, timeoutMs = CASE_TIMEOUT_MS) =>
+		it(`${label}: ${name}`, (test) => withBox((box) => run(box, test)), timeoutMs);
 
 	each("the program outlives the exec and a handle that went away", async (box) => {
 		const state = unwrap(await launch(box, "keep", program(recording("exec sleep 300")), context));
@@ -328,6 +328,99 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 			await sleep(1500);
 			// It saw another generation and did not start the program again.
 			expect(await pids(box)).toHaveLength(1);
+		},
+	);
+
+	each(
+		"a launcher process of an earlier launch of the name, started late, exits at once: it never takes the newer launch for its own",
+		async (box) => {
+			const started = unwrap(await launch(box, "late", program(recording("exec sleep 300")), context));
+			const dir = started.directory;
+			const gen = (await sh(box, `sed -n "s/^GEN='\\(.*\\)'$/\\1/p" ${dir}/spec.sh`)).text.trim();
+			expect(gen).not.toBe("");
+			// The launch's supervisor, watchdog and program are gone, and a later launch of the name has rewritten the spec.
+			const [pid] = await pids(box);
+			await sh(
+				box,
+				`kill -9 $(cat ${dir}/launcher.pid) $(cat ${dir}/watch.pid) ${pid}; sed -i "s/^GEN='.*'/GEN='another'/" ${dir}/spec.sh`,
+			);
+			await until(
+				"the program to be gone",
+				async () => ((await isAlive(box, pid ?? 0)) ? undefined : true),
+				HANG_GUARD_MS,
+			);
+			// A supervisor the earlier launch's watchdog had started arrives late, carrying that launch's generation. It must
+			// see the newer one and leave at once, starting nothing; given 10 s, it is killed and named if it stays.
+			const late = await sh(
+				box,
+				`PI_TRANSPORT_LAUNCH_GEN=${gen} sh ${dir}/launcher.sh supervise ${dir} </dev/null >/dev/null 2>&1 & p=$!; i=0; while kill -0 $p 2>/dev/null && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done; if kill -0 $p 2>/dev/null; then kill -9 $p; echo STAYED; else echo LEFT; fi`,
+			);
+			expect(late.text.trim()).toBe("LEFT");
+			expect(await pids(box)).toHaveLength(1);
+		},
+	);
+
+	// A plain launch starts its processes through detach, a framed one (stdin or secrets) through detach_framed.
+	for (const framed of [false, true])
+		each(
+			`each process the launcher starts carries its launch's generation, and the program never sees it (${framed ? "a framed launch" : "a plain launch"})`,
+			async (box, test) => {
+				if ((await sh(box, "test -r /proc/self/environ")).exitCode !== 0) return; // no /proc to read a process's environment from
+				// A root launcher runs a framed launch only with a toolsUser (launch.ts refuses it as invalid otherwise).
+				if (framed && (await sh(box, "id -u")).text.trim() === "0")
+					test.skip("this box's launcher runs as root: a framed launch needs a toolsUser");
+				const spec = program(recording("env > prog.env; exec sleep 300"));
+				const result = await launch(box, "carry", framed ? { ...spec, secrets: { CARRY: "x" } } : spec, context);
+				// A box whose ptrace scope is under 1 refuses every framed launch: the case is reported skipped, never passed.
+				if (framed && !result.ok && result.error.code === "refused") test.skip(result.error.message.slice(0, 120));
+				const dir = unwrap(result).directory;
+				const gen = (await sh(box, `sed -n "s/^GEN='\\(.*\\)'$/\\1/p" ${dir}/spec.sh`)).text.trim();
+				expect(gen).not.toBe("");
+				await until("the program", async () => ((await pids(box)).length === 1 ? true : undefined));
+				for (const file of ["launcher.pid", "watch.pid"]) {
+					const env = (await sh(box, `tr '\\0' '\\n' < /proc/$(cat ${dir}/${file})/environ`)).text.split("\n");
+					expect(env, file).toContain(`PI_TRANSPORT_LAUNCH_GEN=${gen}`);
+				}
+				await until("the program's environment", async () =>
+					(await sh(box, "cat prog.env 2>/dev/null")).text.includes("PATH=") ? true : undefined,
+				);
+				expect((await sh(box, "cat prog.env")).text).not.toContain("PI_TRANSPORT_LAUNCH_GEN");
+			},
+		);
+
+	each(
+		"the host's own calls read the spec's generation, whatever the caller's environment holds, and a stop's hook never sees it",
+		async (box) => {
+			const hookEnv = `${(await sh(box, "pwd")).text.trim()}/hook.env`;
+			const started = unwrap(
+				await launch(
+					box,
+					"host",
+					{
+						...program(recording("exec sleep 300")),
+						beforeStop: { argv: ["sh", "-c", `env > "${hookEnv}"`], timeoutMs: 5_000 },
+					},
+					context,
+				),
+			);
+			const dir = started.directory;
+			await until("the program", async () => ((await pids(box)).length === 1 ? true : undefined));
+			const [pid] = await pids(box);
+			// A stop that names no generation (an older caller's) is for the spec's launch: a value in its caller's environment
+			// must not make it take the launch for another's and leave the program running.
+			const stopped = await sh(
+				box,
+				`PI_TRANSPORT_LAUNCH_GEN=not-this-launch sh ${dir}/launcher.sh stop ${dir} 10 </dev/null 2>&1; echo "EXIT $?"`,
+			);
+			expect(stopped.text).toContain("EXIT 0");
+			await until(
+				"the program to be gone",
+				async () => ((await isAlive(box, pid ?? 0)) ? undefined : true),
+				HANG_GUARD_MS,
+			);
+			const env = (await sh(box, `cat "${hookEnv}" 2>/dev/null`)).text;
+			expect(env).toContain("PATH=");
+			expect(env).not.toContain("PI_TRANSPORT_LAUNCH_GEN");
 		},
 	);
 
