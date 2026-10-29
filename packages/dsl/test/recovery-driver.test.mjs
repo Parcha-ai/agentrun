@@ -407,6 +407,29 @@ test('an unpriced question answer is counted, not dropped: the run reads incompl
   assert.deepEqual([(await operator(prior, routed)).state.questionSpendUsd, (await operator(prior, routed)).state.unpricedQuestionCount], [0.002, 1]);
 });
 
+test('unpricedQuestionCount is validated as a non-negative integer: a negative or fractional count is refused at open, a whole count and no count open', async () => {
+  // Seed a valid checkpoint, then write a tampered count into it and reopen: the validator must refuse a count
+  // the driver could not have produced (negative, or fractional), not merely a non-finite one.
+  const seeded = async (count) => {
+    const store = memoryStore();
+    await (await open(store, routed)).close();
+    await operator(store, routed, (journal) => journal.save({ ...journal.state, unpricedQuestionCount: count }));
+    return store;
+  };
+  for (const bad of [-1, 1.5]) {
+    await assert.rejects(open(await seeded(bad), routed), fault('FROZEN_CHECKPOINT_INVALID', 'Invalid frozen recovery checkpoint'));
+  }
+  // A whole non-negative count opens and reads back as it was written.
+  const whole = await seeded(2);
+  await (await open(whole, routed)).close();
+  assert.equal((await operator(whole, routed)).state.unpricedQuestionCount, 2);
+  // A checkpoint with no count opens: the field is optional.
+  const none = memoryStore();
+  await (await open(none, routed)).close();
+  await (await open(none, routed)).close();
+  assert.equal((await operator(none, routed)).state.unpricedQuestionCount, undefined);
+});
+
 test('an LLM step is admitted before it runs and handed to the runner as its attempt; a failed attempt is followed at once by the second, and a step that spent both is refused', async () => {
   const order = [];
   const store = watched(memoryStore(), (write, state) => { const status = write === 'save' ? state?.pin?.steps?.[step(0)]?.status : undefined; if (status && order.at(-1) !== `saved ${status}`) order.push(`saved ${status}`); });
