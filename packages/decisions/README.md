@@ -23,8 +23,8 @@ What it does with Parallel's answers:
 - **Refusals.** Parallel may decline a question (`{ "type": "refusal" }`). It stays a refusal: the DSL never decodes it to a value. The run escalates for a person (`decision_refused`), or a route takes its `unsure` branch.
 - **Confidence.** A choice or score that comes back without a confidence gets one derived from its probabilities, and the decision receipt's `confidence_source` says so.
 - **Evidence.** Parallel's citations apply to the whole request, not to one answer, so each is evidence with `scope: "call"`.
-- **Cost.** The response carries no cost, so each answered request is booked at Parallel's list price, `PARALLEL_LIST_PRICE_USD` ($0.001 per request), with `cost_basis: "estimate"`. Its `decision_id` is the `provider_request_id`.
-- **Replay.** The API takes no idempotency key, so the provider declares `replay: "never"`: a request cut off is never sent again unasked.
+- **Cost.** The response carries no cost, so every attempt that may have been billed is booked at Parallel's list price, `PARALLEL_LIST_PRICE_USD` ($0.001 per request), with `cost_basis: "estimate"`. That is the answered attempt plus each earlier one that failed after it may have been served (a 408, a 5xx, a lost connection), but not a 429, which is refused unanswered. A call that gives up books an unknown cost (null). Its `decision_id` is the `provider_request_id`.
+- **Replay.** The API takes no idempotency key, so the provider declares `replay: "never"`: a decision is never asked again across a crash or a restart. Within one call it is retried only on a retryable error, and each attempt is booked as above.
 - **Errors.** Each one is a `DecisionProviderError`:
   - 401 and 403 are `auth`;
   - 400 and 422 are `invalid_request`, with Parallel's `ref_id` as `refId` and the body dropped;

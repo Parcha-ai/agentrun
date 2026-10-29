@@ -1,6 +1,8 @@
 // Parallel Decisions (POST https://api.parallel.ai/v1/decisions) as a DecisionProvider: typed questions about a JSON
-// state, answered with probabilities and grounded in live web evidence. The response carries no cost and the API takes no
-// idempotency key, so each request is booked at list price as an estimate and is never re-sent unasked.
+// state, answered with probabilities and grounded in live web evidence. The API takes no idempotency key, so a decision is
+// never asked again across a crash (replay "never"). Within one call it is retried only on a retryable error (408, 429,
+// 5xx, a lost connection). The response carries no cost, so each attempt that may have been billed (every one but a 429,
+// which is refused unanswered) is booked at list price, as an estimate.
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
 import type { DecisionCapabilities, DecisionContext, DecisionEvidence, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer, SystemOneQuestion } from "@parcha/agentrun-dsl";
@@ -55,7 +57,7 @@ function checkLimits(questions: Record<string, SystemOneQuestion>): void {
 }
 
 /** The answers, sources and metering of a 200 response, checked against the questions asked. */
-function readResponse(body: unknown, questions: Record<string, SystemOneQuestion>, attempts: number): DecisionOutcome {
+function readResponse(body: unknown, questions: Record<string, SystemOneQuestion>, attempts: number, billed: number): DecisionOutcome {
   const invalid = (why: string) => new DecisionProviderError("invalid_response", `Parallel returned ${why}.`, { attempts });
   if (!isRecord(body) || !isRecord(body.answers)) throw invalid("no answers");
   const asked = Object.keys(questions);
@@ -79,7 +81,7 @@ function readResponse(body: unknown, questions: Record<string, SystemOneQuestion
   const usage = isRecord(body.usage) && Number.isSafeInteger(body.usage.input_tokens) && (body.usage.input_tokens as number) >= 0 ? { input_tokens: body.usage.input_tokens as number, output_tokens: 0 } : null;
   return {
     answers, evidence, model: typeof body.mode === "string" ? `parallel-${body.mode}` : null, usage,
-    cost_usd: PARALLEL_LIST_PRICE_USD, cost_basis: "estimate", provider_request_id: typeof body.decision_id === "string" ? body.decision_id : null,
+    cost_usd: billed * PARALLEL_LIST_PRICE_USD, cost_basis: "estimate", provider_request_id: typeof body.decision_id === "string" ? body.decision_id : null,
   };
 }
 
@@ -114,6 +116,8 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         ? new DecisionProviderError("aborted", "The Parallel request was cancelled.", { attempts })
         : new DecisionProviderError("timeout", "The Parallel request passed its deadline.", { attempts });
       const fetcher = options.fetch ?? fetch;
+      // Attempts before this one that may have been billed: a lost answer, a 408 or a 5xx. A 429 was refused unanswered.
+      let billedBefore = 0;
       for (let attempt = 1; ; attempt++) {
         let response: Response;
         try {
@@ -121,6 +125,7 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         } catch {
           if (signal.aborted) throw stopped(attempt);
           if (attempt >= maxAttempts) throw new DecisionProviderError("connection", "Parallel could not be reached.", { attempts: attempt });
+          billedBefore++;
           await sleep(Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1)), undefined, { signal }).catch(() => { throw stopped(attempt); });
           continue;
         }
@@ -128,10 +133,11 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
           let parsed: unknown;
           try { parsed = await response.json(); }
           catch { if (signal.aborted) throw stopped(attempt); throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt }); }
-          return readResponse(parsed, request.questions, attempt);
+          return readResponse(parsed, request.questions, attempt, billedBefore + 1);
         }
         const status = response.status;
         if (retryable(status) && attempt < maxAttempts) {
+          if (status !== 429) billedBefore++;
           const wait = (status === 429 || status === 503 ? retryAfterMs(response) : undefined) ?? Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
           await response.body?.cancel().catch(() => {});
           await sleep(wait, undefined, { signal }).catch(() => { throw stopped(attempt); });

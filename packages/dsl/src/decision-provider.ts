@@ -20,8 +20,9 @@ export interface DecisionCapabilities {
   probability: "calibrated" | "model" | "self_reported" | "none";
   /** Whether it looks things up on the web. */
   grounding: boolean;
-  /** "never": a request is paid when sent, so one cut off is never sent again unasked. "deduped": the provider answers a
-   *  decision id it has seen with the same answer and no new charge. */
+  /** "never": a request is paid when sent, so a decision is never asked again across a crash or a restart; within one
+   *  call a provider may retry a retryable error, booking each attempt that may have been billed. "deduped": the
+   *  provider answers a decision id it has seen with the same answer and no new charge. */
   replay: "never" | "deduped";
   /** The most questions one request may hold, or null for no limit. */
   maxQuestions: number | null;
