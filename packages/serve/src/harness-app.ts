@@ -73,7 +73,8 @@ export interface AdapterRun {
 }
 
 /** The door and the open of a run whose session is `spec` on `adapter`, with the file tools `tools` names (built at the
- *  open, over the run's environment). `budgetUsd`: the run's spend cap. */
+ *  open, over the run's environment). `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled
+ *  (request-start.ts `cancelledIn`): once it says so, no model request leaves, as on pi. */
 export function adapterRun(
   make: (confine?: ConfineChild) => Promise<AgentAdapter>,
   harness: string,
@@ -83,14 +84,15 @@ export function adapterRun(
   tools: readonly string[] = [],
   dir?: string,
   cap?: CapGuard,
+  cancelled: () => boolean = () => false,
 ): AdapterRun {
-  // The run's cap refused a request: the turn ends on it, and its refusal is written as pi's is.
+  // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
-  const guard = cap && ((request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
-    const answer = cap.beforeRequest(request);
+  const guard = (request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
+    const answer = cancelled() ? { refuse: "the run was cancelled: the model request was not sent" } : cap?.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;
-  });
+  };
   // A paid request whose cost could not be written: the booking admits no request after it, and the turn stops on it.
   let halted: Error | undefined;
   const results: ToolResults = new Map();
@@ -286,7 +288,7 @@ export function adapterRun(
       const booking = await modelPortFor(writer, {
         key: spec.key,
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
-        ...(guard ? { beforeRequest: guard as never } : {}),
+        beforeRequest: guard as never,
         onEvent: onModel,
         stopped: () => halted,
         stop: (reason, message) => {
