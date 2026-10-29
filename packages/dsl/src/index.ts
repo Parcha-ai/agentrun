@@ -12,6 +12,7 @@ export {
 export { defineJob } from "./job.js";
 export type { Job } from "./job.js";
 export { DECISION_RECEIPT_VERSION, DECISION_REFUSED, rederiveDecision } from "./decision-receipts.js";
+export { DECISION_INTERRUPTED } from "./recovery/with-recovery.js";
 export type { DecisionKind, DecisionReceipt, DecisionRule } from "./decision-receipts.js";
 export type {
   Workflow, WorkflowNode, NodeMetadata, WorkflowDeps, WorkflowEvent, WorkflowRunResult, HostPolicy, HostPolicyContext,

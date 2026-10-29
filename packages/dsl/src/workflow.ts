@@ -5,6 +5,8 @@ import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredi
 import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { DecisionProviderError, type CostBasis, type DecisionEvidence } from "./decision-provider.js";
+// One escalation kind for every interrupted decision: a request sent whose outcome was lost, here, or one recovery finds unanswered.
+import { DECISION_INTERRUPTED } from "./recovery/with-recovery.js";
 import { DECISION_RECEIPT_VERSION, DECISION_REFUSED, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
@@ -1967,9 +1969,6 @@ export class WorkflowDecisionRecordError extends Error {
   }
 }
 
-/** The escalation kind of a decision sent whose outcome was lost: it may have been answered and billed, so it is never
- *  asked again. The same kind as recovery's interrupted decision. */
-const DECISION_INTERRUPTED_KIND = "decision_interrupted";
 
 type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value: T; model: string | null; cost_usd: number | null; replayed: boolean };
 
@@ -2052,7 +2051,7 @@ async function decide<T>(
     ask.onFailure?.(error);
     await record(failed, spent, { error });
     if (lost) {
-      throw new EscalationSignal({ kind: DECISION_INTERRUPTED_KIND, stage: "decision", label: ask.label, executionPath: path, state: ask.workflowState,
+      throw new EscalationSignal({ kind: DECISION_INTERRUPTED, stage: "decision", label: ask.label, executionPath: path, state: ask.workflowState,
         summary: `The decision "${ask.label}" was sent and its outcome was lost (${(error as Error).message}): it may have been answered and billed, so it is not asked again, and a person decides it.` });
     }
     throw error;
