@@ -11,6 +11,10 @@ describe("pendingQuestion", () => {
   it("is the newest wait while the run is waiting on it", () => {
     expect(pendingQuestion("input_required", "waiting", rows)?.id).toBe("q1");
   });
+  it("is the newest of several questions", () => {
+    const two = [row("q1", "waiting", 1), row("a1", "user_message", 2), row("q2", "waiting", 3)];
+    expect(pendingQuestion("input_required", "waiting", two)?.id).toBe("q2");
+  });
   it("is none for a stopped run, even when the timeline still holds an answered question", () => {
     expect(pendingQuestion("input_required", "idle", rows)).toBeNull();
   });

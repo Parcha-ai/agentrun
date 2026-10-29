@@ -28,6 +28,11 @@ describe("applyPage", () => {
     expect(applyPage([row("a", 1), row("b", 2)], page([], { drop: ["a"] })).map((r) => r.id)).toEqual(["b"]);
   });
 
+  it("a page marked unchanged that still carries rows or drops applies them (nothing it sends is lost)", () => {
+    expect(applyPage([row("a", 1)], page([row("b", 2)], { unchanged: true })).map((r) => r.id)).toEqual(["a", "b"]);
+    expect(applyPage([row("a", 1), row("b", 2)], page([], { unchanged: true, drop: ["a"] })).map((r) => r.id)).toEqual(["b"]);
+  });
+
   it("an unchanged page changes nothing", () => {
     const held = [row("a", 1)];
     expect(applyPage(held, page([], { unchanged: true }))).toBe(held);
