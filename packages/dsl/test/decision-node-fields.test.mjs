@@ -89,6 +89,24 @@ test('T2: the host\'s providers are checked against the nodes before any node ru
   }
 });
 
+test('T2b: an ask predicate is checked against the host\'s providers before any node runs, as a decision node is', async () => {
+  const cases = [
+    ['a loop whose until-ask names a provider the host lacks', { node: 'loop', label: 'retry', maxIters: 2, until: { predicate: 'ask', instructions: 'Is it complete?', provider: 'nobody' }, body: { node: 'code', label: 'tick', code: '() => ({})' } }, /nobody/],
+    ['an escalate whose when-ask requires evidence its provider cannot give', { node: 'escalate', label: 'odd', when: { predicate: 'ask', instructions: 'Is it unusual?', provider: 'jev', evidence: 'required' }, kind: 'review', stage: 'triage', summary: 'An unusual filing.' }, /evidence/],
+  ];
+  for (const [what, node, names] of cases) {
+    const jev = provider('jev', { evidence: 'none' }, []);
+    let ran = 0;
+    const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+    assert.equal(validateWorkflow(doc([first, node])).ok, true, `${what}: ${JSON.stringify(validateWorkflow(doc([first, node])).errors ?? [])}`);
+    const outcome = await outcomeOf(runWorkflow(doc([first, node]), INPUT, { ...hosted([jev]), onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+    assert.equal(outcome.status, 'threw', `${what}: the run is refused`);
+    assert.match(outcome.message, names, `${what}: the refusal names it`);
+    assert.match(outcome.message, /\(ask predicate\)/, `${what}: the refusal names the ask predicate`);
+    assert.deepEqual([ran, jev.asked.length], [0, 0], `${what}: refused before any node runs, the provider never asked`);
+  }
+});
+
 test('T3: each node is asked through its own provider and model, an unnamed one through the default, within the shorter deadline', async () => {
   const jev = provider('jev'), parallel = provider('parallel');
   const workflow = doc([judge({ provider: 'parallel', model: 'base-1', timeoutMs: 500 }, 'Check', 'pinned'), judge({ timeoutMs: 9000 }, 'Check', 'plain')]);
@@ -98,6 +116,16 @@ test('T3: each node is asked through its own provider and model, an unnamed one 
   assert.deepEqual(jev.asked.map(({ request }) => request.label), ['plain'], 'the unnamed node went to the default');
   assert.equal(parallel.asked[0].ctx.deadlineMs, 500, 'a node may shorten the deadline');
   assert.equal(jev.asked[0].ctx.deadlineMs, 2000, 'and never lengthen it past the provider\'s');
+});
+
+test('T3b: a node that names no provider is answered by the default, and its receipt and judge.answered name that provider', async () => {
+  const jev = provider('jev'), parallel = provider('parallel');
+  const receipts = [], events = [];
+  const outcome = await outcomeOf(runWorkflow(doc([judge()]), INPUT, { ...hosted([jev, parallel], { fallback: 'jev' }),
+    recordDecision: async (receipt) => { receipts.push(receipt); }, onEvent: (event) => { if (event.type === 'judge.answered') events.push(event); } }));
+  assert.equal(outcome.status, 'complete', JSON.stringify(outcome).slice(0, 300));
+  assert.deepEqual(receipts.map((receipt) => receipt.provider), ['jev'], 'the receipt names the default that answered');
+  assert.deepEqual(events.map((event) => event.detail.provider), ['jev'], 'judge.answered names it too');
 });
 
 test('T4: the provider\'s evidence travels with the answer to the sidecar, the receipt and judge.answered; "off" drops it; "required" with none is refused', async () => {
@@ -119,6 +147,25 @@ test('T4: the provider\'s evidence travels with the answer to the sidecar, the r
   const required = await run('required', []);
   assert.equal(required.outcome.status, 'threw', '"required" with no evidence fails the request');
   assert.match(required.outcome.message, /evidence/);
+});
+
+test('T4b: a decision replayed from its receipt gives the run the same evidence its first run had: in the sidecar and in judge.answered', async () => {
+  const receipts = [];
+  const kept = { recordDecision: async (receipt) => { receipts.push(receipt); }, recovery: { supportsExecutionPaths: true, resume: async () => undefined, commit: async () => {},
+    pollStartedAt: () => Date.now(), wait: async () => {}, decision: async (id) => receipts.find((receipt) => receipt.id === id && receipt.status === 'answered') } };
+  const parallel = provider('parallel');
+  const runs = [];
+  for (let i = 0; i < 2; i += 1) {
+    const events = [];
+    const outcome = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', evidence: 'if_supported' })]), INPUT, { ...hosted([parallel]), ...kept, onEvent: (event) => { if (event.type === 'judge.answered') events.push(event); } }));
+    assert.equal(outcome.status, 'complete', JSON.stringify(outcome).slice(0, 300));
+    runs.push({ sidecar: outcome.result.state.check$answers, events });
+  }
+  assert.equal(parallel.asked.length, 1, 'the second run replays the receipt');
+  assert.deepEqual(runs[1].events.map((event) => event.detail.replayed), [true]);
+  assert.deepEqual(runs[0].sidecar.evidence, EVIDENCE);
+  assert.deepEqual(runs[1].sidecar, runs[0].sidecar, 'the replayed sidecar is the first run\'s, evidence included');
+  assert.deepEqual(runs[1].events.map((event) => [event.detail.evidence, event.detail.provider]), runs[0].events.map((event) => [event.detail.evidence, event.detail.provider]), 'judge.answered carries the same evidence and provider');
 });
 
 test('T5: a pinned model is part of what the decision is: changed, the decision is asked again; unpinned, its id is today\'s', async () => {
@@ -180,6 +227,20 @@ test('T7b: a provider that reports its cut call as aborted, as the conformance s
   assert.equal(outcome.status, 'escalated', JSON.stringify(outcome).slice(0, 300));
   assert.equal(outcome.result.escalation.kind, 'decision_interrupted', 'it goes to review');
   assert.deepEqual(receipts.map((receipt) => [receipt.status, receipt.cost_usd]), [['failed', null]], 'booked once; the provider gave no estimate');
+});
+
+test('T7c: a call cut by its node\'s own timeoutMs keeps the cost its provider reported, and how it was reached', async () => {
+  const slow = { ...provider('parallel'), sent: 0, decide: async (_request, ctx) => {
+    slow.sent += 1;
+    await new Promise((resolve) => { if (ctx.signal.aborted) resolve(); else ctx.signal.addEventListener('abort', resolve, { once: true }); });
+    throw new DecisionProviderError('aborted', 'the request was cancelled', { attempts: 1, costUsd: 0.012, costBasis: 'reported' });
+  } };
+  const booked = [];
+  const outcome = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', timeoutMs: 200 })]), INPUT, { ...hosted([slow], { deadlineMs: 60_000 }), recordDecision: async (receipt, exchange) => { booked.push({ receipt, exchange }); } }));
+  assert.equal(outcome.status, 'escalated', JSON.stringify(outcome).slice(0, 300));
+  assert.equal(outcome.result.escalation.kind, 'decision_interrupted');
+  assert.equal(slow.sent, 1);
+  assert.deepEqual(booked.map(({ receipt, exchange }) => [receipt.status, receipt.cost_usd, exchange.result?.cost_usd, exchange.result?.cost_basis]), [['failed', 0.012, 0.012, 'reported']], 'booked at what the provider reported, not an estimate');
 });
 
 test('T6: the published schema and the author guide carry the four fields', () => {
