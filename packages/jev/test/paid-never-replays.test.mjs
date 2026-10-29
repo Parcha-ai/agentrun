@@ -78,3 +78,15 @@ test('a request that never reached Jev was not billed: after one, a give-up on 4
   });
   assert.equal(t.calls(), 3);
 });
+
+test('a 5xx after sending that names max_tokens_exceeded keeps that reason and its guidance, on the default path', async () => {
+  const t = scripted([() => response({ detail: { error_type: 'max_tokens_exceeded' } }, 503)]);
+  await assert.rejects(createJevRunner({ ...settings, fetch: t.fetch })(params), (error) => {
+    assert.deepEqual([error.code, error.status, error.attempts], ['outcome_unknown', 503, 1]);
+    assert.deepEqual(error.responseDiagnostic, { reason: 'max_tokens_exceeded' });
+    assert.match(error.message, /token budget/);
+    assert.match(error.message, /Send fewer or shorter items per request/);
+    return true;
+  });
+  assert.equal(t.calls(), 1);
+});
