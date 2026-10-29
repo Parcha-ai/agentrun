@@ -279,7 +279,7 @@ test('--record: a reader polling events.jsonl mid-run sees only whole lines in o
   const tmp = await mkdtemp(join(tmpdir(), 'reference-live-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'event workflow.judge.answered', why: 'asked through the place' }] }));
   Object.assign(process.env, { DEMO_SPEC: file });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
