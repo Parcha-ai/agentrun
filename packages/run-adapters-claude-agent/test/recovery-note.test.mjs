@@ -108,3 +108,31 @@ test("the fake's snapshot rule is the real CLI's, case by case, as measured (Age
   assert.equal(sentSystemPrompt(records, 'session', 'tools + instructions', true), 'tools + instructions');
   assert.equal(sentSystemPrompt(records, 'other-session', 'x', true), 'x', 'records are per session');
 });
+
+test('a turn a crash cut off before the transcript got its prompt, and a message sent during the outage: the resuming user turn is exactly that prompt, then that message, and none of the note', async () => {
+  const { openDrive } = await import('@parcha/agentrun-adapters/kernel');
+  const { placeSubmissions, recoveryNote } = await import('@parcha/agentrun-adapters/process');
+  const { recoveryUserTurn } = await import('../dist/harness.js');
+  const store = memorySessionStore();
+  const open = async () => openDrive({ writer: await store.open('run-1'), signal: new AbortController().signal });
+  // The first process places the prompt (its turn is open), then dies before the CLI writes it to the transcript.
+  const first = await open();
+  await first.submit({ id: 's1', kind: 'prompt', text: 'Count the invoices.' });
+  await placeSubmissions(first, first.pending());
+  // During the outage a message arrives; the next process holds both.
+  const next = await open();
+  await next.submit({ id: 's2', kind: 'followUp', text: 'And list the late ones.' });
+  await next.refresh?.();
+  const state = next.state();
+  const note = recoveryNote(state);
+  assert.ok(note, 'the cut-off turn is owed a recovery note');
+  assert.deepEqual(note.pending.map((s) => s.id), ['s2'], 'the message is pending');
+  const neverGot = { hasUser: () => false };
+  const turn = recoveryUserTurn(state, neverGot, note.pending);
+  assert.equal(turn, 'Count the invoices.\n\nAnd list the late ones.', 'the lost prompt, then the message, each whole, in that order');
+  assert.ok(!turn.includes('[Recovery]'), 'no recovery text in the user turn');
+  assert.ok(!turn.includes(recoveryNote(state, { pending: [] }).text), 'nor the note itself');
+  // The transcript got the prompt: only the message. Nothing new and nothing lost: the bare nudge.
+  assert.equal(recoveryUserTurn(state, { hasUser: () => true }, note.pending), 'And list the late ones.');
+  assert.equal(recoveryUserTurn(state, { hasUser: () => true }, []), RECOVERY_NUDGE);
+});

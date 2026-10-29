@@ -863,11 +863,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             if (open) ledger.turn(open.placed[0] ?? `open:${open.since}`);
             // The CLI answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
             ctx.live(restartEvent(note.turn));
-            // The user's turn holds only the user's words: the prompts of that turn the transcript never got, then the
-            // messages sent since. With none, a bare nudge: a resumed session moves only on a user message.
-            const lost = open ? lostPrompts(ctx.state(), open.placed, store) : [];
-            const words = [...lost.map((id) => ctx.state().submissions.find((x) => x.id === id)?.text), ...note.pending.map((x) => x.text)].filter((t): t is string => !!t);
-            await send(words.length ? words.join('\n\n') : RECOVERY_NUDGE, note.pending, { synthetic: 'recovery' });
+            await send(recoveryUserTurn(ctx.state(), store, note.pending), note.pending, { synthetic: 'recovery' });
             await runTurn();
           }
           // The inbox, one submission per turn.
@@ -963,6 +959,18 @@ function outOfTime(limitMs: number, output: string): string {
 
 /** The user's turn that resumes a cut-off turn when the user has said nothing new: no recovery text in it. */
 export const RECOVERY_NUDGE = 'Continue.';
+
+/**
+ * The user's turn that resumes a cut-off turn: only the user's words, the prompts of that turn the transcript never got
+ * (`lostPrompts`), then the messages sent since (`pending`), each whole, in that order. With none, the bare nudge: a
+ * resumed session moves only on a user message. The harness's own account of the turn goes in the system prompt.
+ */
+export function recoveryUserTurn(state: SessionState, store: Pick<JournalSessionStore, 'hasUser'>, pending: readonly Submission[]): string {
+  const open = openTurn(state);
+  const lost = open ? lostPrompts(state, open.placed, store) : [];
+  const words = [...lost.map((id) => state.submissions.find((x) => x.id === id)?.text), ...pending.map((x) => x.text)].filter((t): t is string => !!t);
+  return words.length ? words.join('\n\n') : RECOVERY_NUDGE;
+}
 
 /** The harness's recovery note, as the resuming drive's system prompt carries it: from the harness, about the turn before. */
 export function recoverySystemNote(note: string): string {
