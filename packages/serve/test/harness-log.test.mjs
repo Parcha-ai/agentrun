@@ -128,3 +128,12 @@ test("an object whose toJSON returns itself is serialized once, as JSON.stringif
   assert.deepEqual(said.list, ["first", "made [redacted]", ["made [redacted]"]], "an array's elements are each serialized as they would be, past the first too");
   assert.ok(!lines[0].includes(awkward));
 });
+
+test("an array item past the first is serialized through its own toJSON before the cut: a key holding a quote in what it gives is cut", () => {
+  const lines = [];
+  const awkward = `not-a-secret-${'it"em'}`;
+  const item = { toJSON: () => ({ said: `it gave ${awkward}` }) };
+  harnessLog("codex", { OPENAI_API_KEY: awkward }, (line) => lines.push(line))("model proxy (openai): refused", { items: [item, item] });
+  assert.deepEqual(JSON.parse(lines[0]).items, [{ said: "it gave [redacted]" }, { said: "it gave [redacted]" }], "each item is what its toJSON gives, cut");
+  for (const form of [awkward, JSON.stringify(awkward).slice(1, -1)]) assert.ok(!lines[0].includes(form), `${form} is not in the line`);
+});
