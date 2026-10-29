@@ -23,15 +23,15 @@ async function started(api, id, instructions, harness = "claude-agent", tools = 
   return run.body.run_id;
 }
 
-test("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 60_000 }, async (t) => {
+test("with a faux harness every harness runs; a claude-agent run answers, takes follow-ups after its end and completes again, each request counted once", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", true], ["codex", true]]);
   const runId = await started(api, "chat", "Answer the question.");
-  const first = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const first = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Answer 1.");
   assert.deepEqual(usageOf(first.rows), { usd: 0.002, requests: 2 });
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
-  const second = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const second = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Answer 2.");
   assert.deepEqual(usageOf(second.rows), { usd: 0.004, requests: 4 });
   assert.deepEqual(second.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["hi", "and then?"]);
@@ -40,7 +40,7 @@ test("with a faux harness every harness runs; a claude-agent run answers, takes 
 test("one turn of three paid requests costs their sum, once: never twice", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "three", "Make three requests.", "codex");
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(usageOf(rows), { usd: 0.007, requests: 3 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.007);
 });
@@ -57,7 +57,7 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
   const { holder } = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
   await writeFile(go, "");
   process.kill(holder.pid, "SIGKILL");
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Done after the wait.");
   assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request before the kill and the one after it, once each");
 });
@@ -90,7 +90,7 @@ test("a chat sent while a turn works, then the server and the run's process die:
   const next = await startServe({ data, port: 0, faux: FAUX, fauxHarness: FAUX_HARNESS, drainTimeout: "5s" });
   t.after(() => next.close());
   const api = client(next.baseUrl, next.token);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["hi", "and the chat?"]);
   const last = rows.filter((r) => r.kind === "user_message" || r.kind === "final_answer").at(-1);
   assert.equal(last?.kind, "final_answer", "nothing the person sent is left unanswered");
@@ -110,7 +110,7 @@ test("a message to a run working on a harness that cannot steer answers follow_u
   // The faux turn holds until its process is replaced: the next one finishes the turn, then answers the message.
   await writeFile(go, "");
   await killRun(data, runId);
-  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Answered the chat.");
 });
 
@@ -137,7 +137,7 @@ const killRun = async (data, runId) => {
 test("a request whose price is unknown makes the run's cost unknown, never 0", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "unpriced", "Price unknown.");
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 1 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null);
 });
@@ -153,13 +153,13 @@ test("a request admitted and cut by a crash is booked once, unknown: on resume t
   }
   await writeFile(go, "");
   await killRun(data, runId);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "After the cut.");
   assert.deepEqual(usageOf(rows), { usd: null, requests: 3 }, "the first, the cut one (unknown), and the one after: once each");
   assert.equal(storeCount(data, runId, "adapter.request"), 3);
 });
 
-test("a request booked in the session whose root entry was never written (the process died first) is written on resume, once", { timeout: 90_000 }, async (t) => {
+test("a request booked in the session whose root entry was never written (the process died first) is written on resume, once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");
   const runId = await started(api, "hold", `Hold until ${go}.`);
@@ -170,19 +170,19 @@ test("a request booked in the session whose root entry was never written (the pr
   assert.equal(usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows), undefined, "no request on the root yet");
   await writeFile(go, "");
   await killRun(data, runId);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await answer(api, runId), "Done holding.");
   assert.deepEqual(usageOf(rows), { usd: 0.006, requests: 2 }, "the request booked before the kill counts, once, from the session's records");
   assert.equal(storeCount(data, runId, "adapter.request"), 2);
 });
 
-test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 60_000 }, async (t) => {
+test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "later", "Second turn unpriced.");
-  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 4 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
@@ -192,7 +192,7 @@ const toolResults = (rows) => rows.filter((r) => r.kind === "tool_result").map((
 test("a run on another harness gets pi's own file tools: a write then a read of the run's workspace", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "files", "Write then read.", "codex", ["read", "write"]);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(await readFile(join(data, "runs", runId, "work", "note.txt"), "utf8"), "hello from the tool");
   const results = toolResults(rows);
   assert.equal(results.length, 2, JSON.stringify(results));
@@ -213,7 +213,7 @@ test("pi's confinement holds for another harness's read: a link out of the works
   await symlink(secret, join(data, "runs", runId, "work", "out.txt"));
   await writeFile(go, "");
   await killRun(data, runId);
-  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const read = toolResults(rows).at(-1);
   assert.match(read[0], /outside the workspace/, JSON.stringify(read));
   assert.doesNotMatch(read[0], /not for the agent/);
@@ -232,7 +232,7 @@ test("a capped run whose spend became unknown (a request cut by a crash) refuses
   }
   await writeFile(go, "");
   await killRun(data, runId);
-  await follow(api, runId, ["failed"], { deadlineMs: 60_000 });
+  await follow(api, runId, ["failed"], { deadlineMs: 55_000 });
   const ended = (await api("GET", `/runs/${runId}`)).body;
   assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
   assert.match(ended.error.message, /spent is unknown/);
