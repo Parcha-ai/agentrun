@@ -1,7 +1,7 @@
 // The port, checked offline: this tree is exactly what the port makes, and each planted break goes red by name.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -347,4 +347,31 @@ test('--pin reports only git\'s own missing-path answers as a missing file: a co
   const blob = git('rev-parse', `${pin}:${path}`).trim();
   await rm(join(clone, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
   await assert.rejects(upgradeReport(packageDir, { sha: pin, upstreamClone: clone }), (error) => !/not at /.test(error.message) && /unable to read|bad object|Command failed/.test(error.message));
+});
+
+test('an import with a comment between its tokens is still checked: an unknown module fails by name, and a string or comment that only looks like an import is not one', () => {
+  for (const text of ["import /* x */ { X } from 'unknown-module';\n", "export /* x */ * from 'unknown-module';\n", "const loaded = import(/* x */ 'unknown-module');\n"]) {
+    assert.match(rewrite(text).problems.join('\n'), /a\.ts: .*unknown-module.*is not in the import table/, text);
+  }
+  assert.match(rewrite("import /* x */ { X } from 'mod-a';\n").problems.join('\n'), /mod-a.*is not in the import table|mod-a.*escaped/, 'a known module the regex missed is not left unrewritten');
+  const lookalikes = [
+    'const s = "import { X } from \'unknown-module\'";',
+    "// import { X } from 'unknown-module'",
+    "/* export * from 'unknown-module' */",
+    'const t = `import { X } from \'unknown-module\'`;',
+    "import { X } from 'mod-kept';",
+    '',
+  ].join('\n');
+  assert.deepEqual(rewrite(lookalikes).problems, []);
+});
+
+test('the command line refuses a value flag with no value and an unknown option: exit 2 with a usage line, and nothing written', () => {
+  const stamp = () => `${execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' })}|${statSync(join(packageDir, 'src/process/tail.ts')).mtimeMs}`;
+  const before = stamp();
+  for (const args of [['--pin'], ['--pin', '--check'], ['--upstream'], ['--drop'], ['--out'], ['--bogus'], ['--pin', 'abc', '--bogus'], ['a', 'b']]) {
+    const run = spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), ...args], { cwd: root, encoding: 'utf8' });
+    assert.equal(run.status, 2, `${args.join(' ')}: ${run.stderr}`);
+    assert.match(run.stderr, /usage/i, args.join(' '));
+    assert.equal(stamp(), before, `${args.join(' ')} wrote nothing`);
+  }
 });
