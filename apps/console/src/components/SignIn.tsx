@@ -70,6 +70,12 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
               {busy ? "Signing in" : setup ? "Set password and continue" : "Continue"}
             </button>
             {problem && <p className="font-mono text-[13px] text-destructive-text" role="alert">{problem}</p>}
+            {!setup && (
+              <p className="text-[12px] leading-relaxed text-[#888]">
+                Forgot it? Where the server runs, <code className="font-mono text-[#ccc]">agentrun-serve reset-password --data DIR</code> clears it
+                (in the image: <code className="font-mono text-[#ccc]">reset-password --data /data</code>); the next visit here sets a new one.
+              </p>
+            )}
           </form>
         )}
       </div>
