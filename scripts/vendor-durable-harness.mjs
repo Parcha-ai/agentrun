@@ -32,7 +32,7 @@ export async function provenanceProblems(dir) {
     if (sha !== record.sha256) problems.push(`${path}: the pristine copy's sha256 is ${sha}, not the recorded ${record.sha256}`);
     const ours = await readFile(join(dir, path), 'utf8').catch(() => undefined);
     if (ours === undefined) { problems.push(`${path}: our copy is missing`); continue; }
-    const head = ours.split('\n').slice(0, 3);
+    const { head } = headerOf(ours);
     if (!head[0]?.startsWith('// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0')) problems.push(`${path}: line 1 is not Vercel's copyright header`);
     if (!head[1]?.startsWith(`// From github.com/vercel-labs/durable-harness, ${record.upstream} at ${UPSTREAM.commit.slice(0, 10)}`)) problems.push(`${path}: line 2 does not name ${record.upstream} at ${UPSTREAM.commit.slice(0, 10)}`);
     if (!head[2]?.startsWith('// Changed by Parcha, ')) problems.push(`${path}: line 3 is not the "Changed by Parcha" line`);
@@ -49,6 +49,13 @@ export async function provenanceProblems(dir) {
     } else if (record.kind !== undefined) problems.push(`${path}: unknown kind ${JSON.stringify(record.kind)}`);
   }
   return problems;
+}
+
+/** A copy's three header lines, and the rest of it: an executable script keeps its `#!` line first, the header after it. */
+function headerOf(text) {
+  const lines = text.split('\n');
+  const at = lines[0]?.startsWith('#!') ? 1 : 0;
+  return { head: lines.slice(at, at + 3), body: [...lines.slice(0, at), ...lines.slice(at + 3)].join('\n') };
 }
 
 /** The kind of record for a file written for AgentRun that keeps a few named upstream declarations. */
@@ -81,7 +88,7 @@ export async function changedLines(dir, { diff: command = 'diff' } = {}) {
   const out = {};
   for (const [path, record] of Object.entries(upstream.files ?? {})) {
     if (record.kind === MATCHED) continue;
-    const ours = (await readFile(join(dir, path), 'utf8')).split('\n').slice(3).join('\n');
+    const ours = headerOf(await readFile(join(dir, path), 'utf8')).body;
     let diff = '';
     try {
       execFileSync(command, ['-U0', join(dir, PRISTINE_DIR, record.upstream), '-'], { input: ours, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });

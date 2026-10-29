@@ -2,13 +2,13 @@
 // reads the store and the free disk, a cancel that settles a run whose carry back cannot be written, and a run whose
 // process was killed answered again at once.
 import assert from "node:assert/strict";
-import { chmod, readFile, writeFile } from "node:fs/promises";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve, storeRun } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 const MiB = 2 ** 20;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -77,6 +77,86 @@ test("a start that fails gives its place back: after a store write refused, and 
     assert.equal(run.status, 202, `start ${i}: ${JSON.stringify(run.body)}`);
     await follow(broken.api, run.body.run_id, ["failed"]);
   }
+});
+
+test("a run that has failed gives its place back once its process exits: a start meanwhile waits for it, never refused for a place the failed run is giving back", { timeout: 90_000 }, async (t) => {
+  const gate = join(await scratch(t), "exit");
+  withEnv(t, { EXIT_GATE: gate });
+  const { api } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-slow-exit.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("fails"))).status, 201);
+  const first = await api("POST", "/agents/fails/runs", { input: { content: "hi" } });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  // It reads failed (not yet final: its end waits for its process), and its process, told to stop, cannot exit yet:
+  // its place is still held.
+  for (let i = 0; (await api("GET", `/runs/${first.body.run_id}`)).body.status !== "failed"; i++) {
+    assert.ok(i < 400, "the run reads failed");
+    await sleep(50);
+  }
+  let answeredAt;
+  const next = api("POST", "/agents/fails/runs", { input: { content: "hi" } }).then((answer) => ((answeredAt = Date.now()), answer));
+  await sleep(300);
+  const openedAt = Date.now();
+  await writeFile(gate, "");
+  const started = await next;
+  assert.equal(started.status, 202, `the next start waited for the place the failed run gave back: ${JSON.stringify(started.body)}`);
+  assert.ok(answeredAt >= openedAt, "admitted only once the failed run's process could exit, never two at once");
+  await follow(api, started.body.run_id, ["failed"]);
+});
+
+test("a completed run's follow-up gives its place back when it ends again: the next new start still gets one", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  await follow(api, run.run_id, ["completed"]);
+  assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "And again?" })).status, 202);
+  await follow(api, run.run_id, ["completed"]);
+  const next = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  assert.equal(next.status, 202, `the follow-up kept a place: ${JSON.stringify(next.body)}`);
+  await follow(api, next.body.run_id, ["completed"]);
+});
+
+test("two follow-ups to a completed run that both wait for a place reach it: one reopens the run, the other waits for that", { timeout: 90_000 }, async (t) => {
+  const gate = join(await scratch(t), "gate");
+  await writeFile(gate, "");
+  withEnv(t, { EXIT_GATE: gate });
+  const { api } = await serve(t, { maxRuns: 1, faux: new URL("./fixtures/faux-answer-slow-exit.mjs", import.meta.url).pathname });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const { body: first } = await api("POST", "/agents/calc/runs", { input: { content: "First." } });
+  await follow(api, first.run_id, ["completed"]);
+  // A second run answers, and its process cannot exit: it holds the one place while the follow-ups wait for it.
+  await rm(gate);
+  const { body: holder } = await api("POST", "/agents/calc/runs", { input: { content: "Hold." } });
+  for (let i = 0; (await api("GET", `/runs/${holder.run_id}`)).body.status !== "completed"; i++) {
+    assert.ok(i < 400, "the holding run answers");
+    await sleep(50);
+  }
+  const answers = Promise.all(["And again?", "And once more?"].map((content) => api("POST", `/runs/${first.run_id}/messages`, { content })));
+  await sleep(300);
+  await writeFile(gate, "");
+  const statuses = await answers;
+  assert.deepEqual(statuses.map((a) => a.status), [202, 202], JSON.stringify(statuses.map((a) => a.body)));
+  const { rows } = await follow(api, first.run_id, ["completed"]);
+  const sent = rows.filter((r) => r.kind === "user_message").map((r) => r.text);
+  assert.deepEqual([...sent].sort(), ["And again?", "And once more?", "First."].sort(), "both messages reached the run");
+  // Completed again, it opens again for the next follow-up: the reopen the two shared is over.
+  const third = await api("POST", `/runs/${first.run_id}/messages`, { content: "And a third time?" });
+  assert.equal(third.status, 202, JSON.stringify(third.body));
+  const after = await follow(api, first.run_id, ["completed"]);
+  assert.ok(after.rows.some((r) => r.kind === "user_message" && r.text === "And a third time?"), "the third message reached the run");
+});
+
+test("a server full of runs that still work answers 429 at once: only a place being given back is waited for", { timeout: 90_000 }, async (t) => {
+  const { api, data } = await serve(t, { maxRuns: 1 });
+  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
+  const working = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "go-1") } });
+  assert.equal(working.status, 202, JSON.stringify(working.body));
+  await follow(api, working.body.run_id, ["working"]);
+  const asked = Date.now();
+  const refused = await api("POST", "/agents/busy/runs", { input: { content: busy(data, "never-1") } });
+  assert.equal(refused.status, 429, JSON.stringify(refused.body));
+  assert.ok(Date.now() - asked < 1_000, `answered at once, not after a wait: ${Date.now() - asked} ms`);
+  await writeFile(join(data, "go-1"), "");
+  await follow(api, working.body.run_id, ["completed"]);
 });
 
 test("a run whose process fails at its start is never started again while its end is written: one process, and its place is free once it reads failed", async (t) => {

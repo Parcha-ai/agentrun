@@ -7,6 +7,7 @@
 // Without the pinned CLI this skips; with AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1 (CI) a missing or different one fails.
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { Server, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -16,6 +17,43 @@ import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, cl
 import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
 import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
 import { CLAUDE_BETAS, CLAUDE_BLOCKS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
+
+/** The pinned CLI's user-agent (`claude-cli/<version> (...)`), on every call it makes to the session's proxy. */
+const CLI_AGENT = /^claude-cli\//;
+
+/** Each HTTP server in this process (the session's proxy runs here), with the requests it received: a seam, so the test
+ *  sees the proxy's port and who called it without a hook in the proxy. */
+const received = new Map();
+const listen = Server.prototype.listen;
+Server.prototype.listen = function (...args) {
+  if (!received.has(this)) {
+    const seen = [];
+    received.set(this, seen);
+    this.prependListener('request', (req) => seen.push({ method: req.method, url: req.url, userAgent: req.headers['user-agent'], bearer: /^Bearer /.test(String(req.headers.authorization ?? '')) }));
+  }
+  return listen.apply(this, args);
+};
+
+/** The refusals the CLI drew: those under its own user-agent, or under none. Another local process can find the
+ *  proxy's port (a port scanner, an editor's port forwarder) and call it without the key; its refusal is the proxy
+ *  doing its job, so it is shown as a diagnostic, never dropped, and fails nothing. */
+function cliRefusals(t, logged) {
+  const refused = logged.filter((l) => /refused/.test(l.message));
+  for (const l of refused) if (l.userAgent && !CLI_AGENT.test(l.userAgent)) t.diagnostic(`the proxy refused another client: ${JSON.stringify(l)}`);
+  return refused.filter((l) => !l.userAgent || CLI_AGENT.test(l.userAgent));
+}
+
+/** A keyless GET / to a server's own address, as another local process that found its port would send: its status. */
+function probe({ address, port }, userAgent) {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: address, port, method: 'GET', path: '/', headers: { 'user-agent': userAgent, connection: 'close' } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 /** Every content block type in a request's messages and system prompt, and inside its tool results. */
 function blockTypes(body) {
@@ -172,11 +210,21 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
 });
 
 /** One node through the adapter on the pinned CLI, `model` its main model, `extra` the node's own fields: what reached
- *  the scripted provider through the proxy, and what the adapter logged. */
-async function oneNode(t, model, extra = {}) {
+ *  the scripted provider through the proxy, and what the adapter logged. `during(address)`, when given, runs while the
+ *  first main-model reply is held, with the session proxy's address and port; `cliRefused` is what the CLI's refusals must be. */
+async function oneNode(t, model, extra = {}, { during, cliRefused = [] } = {}) {
   const dir = mkdtempSync(join(ROOT, 'wire-'));
   let asked = 0;
-  const provider = await fakeAnthropic({ reply: (r) => (r.model === model && asked++ === 0 ? { thinking: 'plan', redacted: 'cmVkYWN0ZWQ=', tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
+  const servers = new Set(received.keys());
+  let providerPort;
+  // The session's proxy: the server this node started that a bearer call reached, other than the provider.
+  const proxyServer = () => [...received].find(([s, seen]) => !servers.has(s) && s.address()?.port !== providerPort && seen.some((r) => r.bearer));
+  const provider = await fakeAnthropic({ reply: async (r) => {
+    if (r.model !== model || asked++ !== 0) return { text: 'done' };
+    if (during) await during(proxyServer()[0].address());
+    return { thinking: 'plan', redacted: 'cmVkYWN0ZWQ=', tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } };
+  } });
+  providerPort = Number(new URL(provider.url).port);
   t.after(() => provider.close());
   const logged = [];
   const adapter = claudeAgentAdapter({
@@ -192,9 +240,14 @@ async function oneNode(t, model, extra = {}) {
   const forwarded = provider.requests.filter((r) => r.authorized);
   const main = forwarded.filter((r) => r.path === '/v1/messages' && r.model === model);
   assert.ok(main.length >= 1, `${model}: no main-model request`);
-  assert.deepEqual(logged.filter((l) => /refused|thinking\.disabled/.test(l.message)), [], `${model}: the proxy refused nothing and saw no request without thinking`);
+  const cli = cliRefusals(t, logged).map(({ status, method, path, userAgent }) => ({ status, method, path, userAgent }));
+  assert.deepEqual(cli, cliRefused, `${model}: the proxy refused the CLI nothing`);
+  assert.deepEqual(logged.filter((l) => /thinking\.disabled/.test(l.message)), [], `${model}: the proxy saw no request without thinking`);
+  // What tells the CLI's refusals from another client's: every call it made with the session's key carried its agent.
+  const calls = proxyServer()[1].filter((r) => r.bearer);
+  assert.ok(calls.length >= 1 && calls.every((r) => CLI_AGENT.test(r.userAgent ?? '')), `${model}: the CLI calls as claude-cli/: ${JSON.stringify([...new Set(calls.map((r) => r.userAgent))])}`);
   const betas = forwarded.flatMap((r) => (r.headers['anthropic-beta'] ?? '').split(',').map((b) => b.trim()).filter(Boolean));
-  return { main, betas, blocks: forwarded.flatMap((r) => blockTypes(r.body)), efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
+  return { main, betas, logged, blocks: forwarded.flatMap((r) => blockTypes(r.body)), efforts: [...new Set(main.map((r) => r.body.output_config?.effort))] };
 }
 
 // The models a host runs now. The CLI's betas and its thinking depend on the model: a model it sends a beta for that the
@@ -219,6 +272,20 @@ test("on each current model, a node that names no level thinks at medium on the 
   assert.deepEqual([...seen].sort(), [...CLAUDE_BETAS].sort());
   assert.deepEqual([...sent].sort(), [...CLAUDE_BLOCKS].sort(), 'the content blocks the CLI sent');
   t.diagnostic(`blocks: ${[...sent].sort().join(', ')}`);
+});
+
+// A local process that finds the session proxy's port (a port scanner, an editor's port forwarder) and calls it with no
+// key is refused, as it must be. While the first reply is held, such a call (a Go client's GET /) is made, and so is the
+// same call under the CLI's user-agent: the first is shown and fails nothing, the second is the CLI's and still counts.
+test("another local client's keyless call to the session proxy is refused and named by its user-agent, and fails no check of the CLI's; one under the CLI's user-agent still does", { skip, timeout: 120_000 }, async (t) => {
+  const statuses = [];
+  const { logged } = await oneNode(t, 'claude-sonnet-5-5', {}, {
+    during: async (address) => { for (const agent of ['Go-http-client/1.1', 'claude-cli/0.0.0 (probe)']) statuses.push(await probe(address, agent)); },
+    cliRefused: [{ status: 401, method: 'GET', path: '/', userAgent: 'claude-cli/0.0.0 (probe)' }],
+  });
+  assert.deepEqual(statuses, [401, 401], 'both are refused: neither carries the key');
+  // The other client's refusal is reported, by its user-agent, not dropped.
+  assert.ok(logged.some((l) => /refused/.test(l.message) && l.status === 401 && l.path === '/' && l.userAgent === 'Go-http-client/1.1'), "the other client's refusal is in the log, named");
 });
 
 /** A request's messages without the prompt-cache markers the CLI moves to the newest message each turn, and with a
@@ -283,4 +350,17 @@ test('the real CLI, killed in turn 2, resumes in a NEW session directory from th
   assert.ok(after.some((m) => m.role === 'user' && JSON.stringify(m.content).includes('tool_result') && /interrupted|may or may not/.test(JSON.stringify(m.content))), "the call is answered as interrupted");
   const sameSystem = JSON.stringify(uncached(sent[2].system ?? null)) === JSON.stringify(uncached(sent[1].system ?? null));
   t.diagnostic(`turn 3 sent ${third.length} messages (turn 2: ${second.length}); system prompt the same as turn 2's: ${sameSystem}; paid hooks before ${paid.before}, after ${paid.after}`);
+});
+
+test("a host's gateway headers (its spend tags) reach the provider on every request the real CLI makes through the proxy (the proxy test covers every route, a free one too)", { skip, timeout: 120_000 }, async (t) => {
+  const tags = 'job:j-123,purpose:research,run:r-9';
+  const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL && !Object.keys(r.results ?? {}).length ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
+  t.after(() => provider.close());
+  const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret', headers: { 'x-litellm-tags': tags } }, sessionsDir: join(mkdtempSync(join(ROOT, 'tags-')), 'sessions') });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'tags', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
+  const reached = provider.requests.filter((r) => r.authorized);
+  assert.ok(reached.some((r) => r.model === MODEL), 'a main-model request reached the provider');
+  for (const r of reached) assert.equal(r.headers['x-litellm-tags'], tags, `${r.path} (${r.model}) carries the host's tags`);
+  t.diagnostic(`requests with the tags: ${reached.length} (${[...new Set(reached.map((r) => `${r.path} ${r.model}`))].join('; ')})`);
 });

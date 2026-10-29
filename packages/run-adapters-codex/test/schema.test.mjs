@@ -1,0 +1,314 @@
+// What Codex 0.164.0 does to a tool's schema (measured on the pinned binary, in test/fixtures/schema-column.json): it
+// drops the keywords the adapter DESCRIBES in the tool's description, and drops or retypes the shapes the adapter REFUSES
+// when the session is checked. Nothing else changes, so there is no silent difference.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after } from 'node:test';
+import { toolSchemaProblems } from '@parcha/agentrun-adapters';
+import { memorySessionStore, SCHEMA_CHECK_CASES } from '@parcha/agentrun-adapters/testing';
+import { codexAdapter } from '@parcha/agentrun-codex';
+import { findCodex } from '../dist/binary.js';
+import { verifyCodexBinary } from '../dist/verify.js';
+import { codexSchemaProblems, describeDropped, describedDescription, DESCRIBED_HEADING, stripDescribed } from '../dist/schema.js';
+
+process.env.AGENTRUN_CODEX_STANDIN = '1';
+const P = (inner) => ({ type: 'object', properties: { p: inner } });
+
+test('each structural shape Codex drops or retypes is refused, by tool, JSON pointer and keyword', () => {
+  const refused = {
+    'tuple items': [P({ type: 'array', items: [{ type: 'string' }, { type: 'number' }] }), '/properties/p/items', 'items (an array)'],
+    prefixItems: [P({ type: 'array', prefixItems: [{ type: 'string' }] }), '/properties/p/prefixItems', 'prefixItems'],
+    patternProperties: [P({ type: 'object', patternProperties: { '^a': { type: 'string' } } }), '/properties/p/patternProperties', 'patternProperties'],
+    if: [P({ type: 'object', if: { properties: { a: { type: 'string' } } }, then: { required: ['b'] } }), '/properties/p/if', 'if/then/else'],
+    then: [P({ type: 'object', then: { required: ['b'] } }), '/properties/p/then', 'if/then/else'],
+    else: [P({ type: 'object', else: { required: ['b'] } }), '/properties/p/else', 'if/then/else'],
+    not: [P({ not: { type: 'string' } }), '/properties/p/not', 'not'],
+    'an object in enum': [P({ enum: ['a', { b: 1 }] }), '/properties/p/enum', 'enum with a non-scalar value'],
+    'an array in enum': [P({ enum: [[1]] }), '/properties/p/enum', 'enum with a non-scalar value'],
+    'an object const': [P({ const: { a: 1 } }), '/properties/p/const', 'enum with a non-scalar value'],
+    'an enum of integers with no type': [P({ enum: [1, 2, 3] }), '/properties/p/enum', 'enum with non-string values and no type (Codex types it string)'],
+    'a numeric const with no type': [P({ const: 5 }), '/properties/p/const', 'enum with non-string values and no type (Codex types it string)'],
+    contains: [P({ type: 'array', items: { type: 'string' }, contains: { const: 'a' } }), '/properties/p/contains', 'contains'],
+    dependentRequired: [{ type: 'object', properties: { a: { type: 'string' } }, dependentRequired: { a: ['b'] } }, '/dependentRequired', 'dependentRequired'],
+    propertyNames: [P({ type: 'object', propertyNames: { pattern: '^a' } }), '/properties/p/propertyNames', 'propertyNames'],
+    'items true': [P({ type: 'array', items: true }), '/properties/p/items', 'items (a boolean)'],
+    'allOf with constraints in a member': [P({ allOf: [{ type: 'string' }, { minLength: 2 }] }), '/properties/p/allOf', 'allOf with constraints in its members'],
+  };
+  for (const [name, [schema, pointer, keyword]] of Object.entries(refused)) {
+    assert.deepEqual(codexSchemaProblems('lookup', schema), [`lookup: ${pointer}: ${keyword} is not supported by Codex 0.164.0 (it drops or retypes it)`], name);
+  }
+});
+
+test('every schema position is walked: $defs, union branches, items, additionalProperties, and the submit tool', () => {
+  const where = {
+    '$defs': { type: 'object', properties: { a: { $ref: '#/$defs/X' } }, $defs: { X: { not: {} } } },
+    definitions: { definitions: { X: { if: {} } } },
+    'an anyOf branch': P({ anyOf: [{ type: 'null' }, { not: {} }] }),
+    'a oneOf branch': P({ oneOf: [{ type: 'string' }, { type: 'array', prefixItems: [] }] }),
+    'an items schema': P({ type: 'array', items: { type: 'object', patternProperties: {} } }),
+    additionalProperties: P({ type: 'object', additionalProperties: { not: {} } }),
+    'a nested property': { type: 'object', properties: { a: { type: 'object', properties: { b: { enum: [{}] } } } } },
+  };
+  for (const [name, schema] of Object.entries(where)) assert.equal(codexSchemaProblems('t', schema).length, 1, name);
+  // The submit tool's schema is a tool's like any other: a DSL output schema arrives through it.
+  const envelope = { type: 'object', properties: { value: { type: 'object', properties: { x: { not: {} } } } }, required: ['value'] };
+  assert.match(codexSchemaProblems('submit', envelope)[0], /^submit: \/properties\/value\/properties\/x\/not: not is not supported by Codex 0\.164\.0/);
+});
+
+test('shapes Codex carries are accepted, and a property NAMED like a keyword is not one', () => {
+  const accepted = [
+    P({ anyOf: [{ type: 'string' }, { type: 'null' }] }),
+    P({ oneOf: [{ type: 'string' }, { type: 'number' }] }),
+    P({ enum: ['a', 'b'] }),
+    P({ type: 'integer', enum: [1, 2] }),
+    P({ const: 'web' }),
+    P({ type: ['string', 'null'] }),
+    P({ type: 'array', items: { type: 'string' }, minItems: 1 }),
+    P({ type: 'array', items: { type: 'string' } }),
+    { type: 'object', properties: { not: { type: 'string' }, if: { type: 'string' }, items: { type: 'string' }, patternProperties: { type: 'string' }, prefixItems: { type: 'string' }, enum: { type: 'string' }, allOf: { type: 'string' } } },
+    { type: 'object', properties: { a: { $ref: '#/$defs/A' } }, $defs: { A: { type: 'object', properties: { a: { $ref: '#/$defs/A' } } } } },
+    P({ allOf: [{ $ref: '#/$defs/A' }, { type: 'object' }] }),
+    { type: 'object', additionalProperties: true },
+  ];
+  for (const schema of accepted) assert.deepEqual(codexSchemaProblems('t', schema), [], JSON.stringify(schema).slice(0, 80));
+});
+
+test("a stripped keyword is described in the tool's description, one line per pointer, sorted, under one fixed heading", () => {
+  const schema = {
+    type: 'object', title: 'Score card',
+    properties: {
+      value: { type: 'object', properties: { score: { type: 'integer', minimum: 0, maximum: 4 }, id: { type: 'string', pattern: '^[a-z]+$', minLength: 1, maxLength: 12 } } },
+      tags: { type: 'array', items: { type: 'string', format: 'uri' }, minItems: 1, maxItems: 5, uniqueItems: true },
+      ratio: { type: 'number', exclusiveMinimum: 0, exclusiveMaximum: 1, multipleOf: 0.5, default: 0.5 },
+      note: { type: 'string', nullable: true, deprecated: true },
+      bag: { type: 'object', minProperties: 1, maxProperties: 2, properties: {} },
+    },
+  };
+  assert.deepEqual(describeDropped(schema), [
+    '(the whole value): object, titled "Score card"',
+    'bag: object, at least 1 properties, at most 2 properties',
+    'note: string, may be null, deprecated',
+    'ratio: number, greater than 0, less than 1, a multiple of 0.5, default 0.5',
+    'tags: array, at most 5 items, items are unique',
+    'tags[]: string, format uri',
+    'value.id: string, matches ^[a-z]+$, at least 1 characters, at most 12 characters',
+    'value.score: integer, at least 0, at most 4',
+  ]);
+  const text = describedDescription('Look a thing up.', schema);
+  assert.ok(text.startsWith(`Look a thing up.\n\n${DESCRIBED_HEADING}\n`), text);
+  assert.ok(text.includes('\n- value.score: integer, at least 0, at most 4'));
+  assert.equal(describedDescription('Plain.', P({ type: 'string' })), 'Plain.', 'nothing to describe: the description is the tool\'s own');
+  assert.deepEqual(describedDescription('x', schema), describedDescription('x', JSON.parse(JSON.stringify(schema))), 'deterministic');
+});
+
+test('the adapter refuses a session whose tool Codex would mangle, before anything is paid, and still runs one it carries', async () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const tool = (name, inputSchema) => ({ name, description: 'd', inputSchema, replay: 'safe', call: async () => ({ text: 'ok' }) });
+  const spec = (tools) => ({ key: 'step:schema', label: 'x', system: [], tools, context: 'fresh' });
+  assert.deepEqual(codex.check(spec([tool('good', P({ anyOf: [{ type: 'string' }, { type: 'null' }], minLength: 2 }))])), []);
+  const problems = codex.check(spec([tool('bad', P({ not: {} })), tool('worse', P({ enum: [{}] }))]));
+  assert.equal(problems.length, 2);
+  assert.match(problems[0], /^bad: \/properties\/p\/not: not is not supported by Codex 0\.164\.0/);
+  assert.match(problems[1], /^worse: \/properties\/p\/enum: enum with a non-scalar value/);
+});
+
+test('the recorded column: a schema the adapter does not refuse comes out of Codex as the original less exactly the described keywords', () => {
+  const rows = JSON.parse(readFileSync(new URL('./fixtures/schema-column.json', import.meta.url), 'utf8')).rows;
+  assert.ok(rows.length >= 29);
+  const outcomes = { forwarded: 0, described: 0, refused: 0 };
+  for (const row of rows) {
+    const shared = toolSchemaProblems('probe', row.schema);
+    const problems = [...shared, ...codexSchemaProblems('probe', row.schema)];
+    if (problems.length) {
+      outcomes.refused += 1;
+      // A shape only Codex mangles is refused because Codex mangles it; one the shared check refuses is refused on every harness, whatever Codex does.
+      if (shared.length) continue;
+      assert.ok(row.forwarded === null || JSON.stringify(row.forwarded) !== JSON.stringify(stripDescribed(row.schema)), `${row.hash}: refused, yet Codex carried it`);
+      continue;
+    }
+    assert.notEqual(row.forwarded, null, `${row.hash}: Codex dropped a tool the adapter does not refuse`);
+    assert.deepEqual(row.forwarded, stripDescribed(row.schema), `${row.hash} (${row.source}): Codex changed something the adapter neither refuses nor describes`);
+    outcomes[describeDropped(row.schema).length ? 'described' : 'forwarded'] += 1;
+  }
+  assert.deepEqual(Object.values(outcomes).reduce((a, b) => a + b, 0), rows.length);
+});
+
+const problem = (() => { const b = verifyCodexBinary(findCodex()); return b instanceof Error ? b.message : undefined; })();
+const skip = problem && process.env.AGENTRUN_CODEX_REQUIRE_BINARY !== '1' ? problem : false;
+const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-schema-'));
+after(() => rmSync(ROOT, { recursive: true, force: true }));
+
+test("on the pinned binary, the constraints Codex strips reach the model in the tool's description, and the schema it forwards is the original less exactly those", { skip, timeout: 60_000 }, async () => {
+  const schema = { type: 'object', properties: { score: { type: 'integer', minimum: 0, maximum: 4, description: 'A score.' }, id: { type: 'string', pattern: '^[a-z]+$', minLength: 1 } }, required: ['score'] };
+  const tool = { name: 'rate', description: 'Rate a thing.', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) };
+  const seen = [];
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const items = seen.length === 1 ? [{ type: 'function_call', name: 'rate', arguments: '{"score":3}', call_id: 'call_rate' }] : [{ type: 'message', role: 'assistant', id: 'm', content: [{ type: 'output_text', text: 'done' }] }];
+    const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };
+    const events = [{ type: 'response.created', response: { id: 'r' } }, ...items.map((item) => ({ type: 'response.output_item.done', item })), { type: 'response.completed', response: { id: 'r', usage } }];
+    return new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, 'sessions'), fetch });
+  const spec = { key: 'step:described', label: 'x', system: [], tools: [tool], context: 'fresh' };
+  const store = memorySessionStore();
+  const session = await codex.open(spec, { writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: AbortSignal.timeout(50_000), onEvent: () => {} });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  await session.close();
+  const offered = seen[0].tools.find((t) => t.name === 'rate');
+  assert.ok(offered.description.startsWith('Rate a thing.'), offered.description);
+  for (const line of ['- id: string, matches ^[a-z]+$, at least 1 characters', '- score: integer, at least 0, at most 4']) assert.ok(offered.description.includes(line), `${line} in ${JSON.stringify(offered.description)}`);
+  assert.deepEqual(offered.parameters, stripDescribed(schema), 'Codex forwarded the original less exactly the described keywords');
+});
+
+test("Codex's check() runs the shared cases: every place the shared check refuses is refused, first, and nothing it allows is refused for a shared reason", () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (schema) => ({ key: 'step:cases', label: 'x', system: [], tools: [{ name: 't', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  // What Codex refuses on top of the shared check, in the cases the shared table allows that Codex does not carry.
+  const codexOnly = {
+    'a generated schema (titles, defaults, formats, bounds, a nullable union, prefixItems)': ['/properties/pair/prefixItems', '/properties/pair/items'],
+    // A const or enum holding an object is a value to the shared check and a non-scalar one to Codex, which refuses it.
+    'a "$ref" inside a const (a value)': ['/properties/c/const'],
+    'a "$ref" inside an enum (values)': ['/properties/e/enum'],
+  };
+  for (const { name, schema, refusedAt } of SCHEMA_CHECK_CASES) {
+    const problems = codex.check(spec(schema));
+    const where = (list) => list.map((p) => /^[^:]*: (\S+):/.exec(p)?.[1]);
+    const shared = toolSchemaProblems('t', schema);
+    assert.deepEqual([...new Set(where(shared))].sort(), [...refusedAt].sort(), `${name}: the shared check`);
+    assert.deepEqual(problems.slice(0, shared.length), shared, `${name}: the shared problems come first, as they are`);
+    const extra = where(problems.slice(shared.length));
+    assert.deepEqual(extra.sort(), (codexOnly[name] ?? []).sort(), `${name}: what Codex adds`);
+  }
+});
+
+test('on the pinned binary, a tool with a bad root, a schema that is not valid 2020-12, or a remote $ref is refused at check() and nothing reaches Codex or the provider', { skip, timeout: 60_000 }, async () => {
+  const bad = {
+    'a root with no type': [{ properties: { a: { type: 'string' } } }, /^bad: \/: the root must be \{"type": "object"\}/],
+    'a type of strng': [{ type: 'object', properties: { a: { type: 'strng' } } }, /^bad: \/properties\/a\/type: /],
+    'a remote $ref': [{ type: 'object', properties: { r: { $ref: 'https://example.com/schema.json' } } }, /^bad: \/properties\/r\/\$ref: a remote \$ref/],
+  };
+  for (const [name, [schema, message]] of Object.entries(bad)) {
+    const requests = [];
+    const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, `bad-${name.length}`), fetch: async (url) => { requests.push(url); throw new Error('no request should leave'); } });
+    const spec = { key: `step:bad-${name.length}`, label: 'x', system: [], tools: [{ name: 'bad', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' };
+    const problems = codex.check(spec);
+    assert.ok(problems.length >= 1 && message.test(problems[0]), `${name}: ${JSON.stringify(problems)}`);
+    await assert.rejects(codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} }), new RegExp(message.source.replace(/^\^/, '')), name);
+    assert.deepEqual(requests, [], `${name}: nothing reached the provider`);
+  }
+});
+
+test("the shared problems come before Codex's own, and a place both refuse is refused once", () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (schema) => ({ key: 'step:order', label: 'x', system: [], tools: [{ name: 't', description: 'd', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  // A remote $ref (shared) and a `not` (Codex's) in one tool: the shared one first.
+  const both = codex.check(spec({ type: 'object', properties: { a: { not: {} }, r: { $ref: 'https://example.com/x.json' } } }));
+  assert.equal(both.length, 2, JSON.stringify(both));
+  assert.match(both[0], /\/properties\/r\/\$ref: a remote \$ref/);
+  assert.match(both[1], /\/properties\/a\/not: not is not supported by Codex/);
+  // Tuple items: the metaschema refuses the place, and Codex's own row for it is not repeated.
+  const tuple = codex.check(spec({ type: 'object', properties: { t: { type: 'array', items: [{ type: 'string' }] } } }));
+  assert.equal(tuple.length, 1, JSON.stringify(tuple));
+  assert.match(tuple[0], /not valid JSON Schema 2020-12/);
+});
+
+test('Codex drops `$schema` whatever it names, so a dialect marker the harnesses take is not a difference: it is forwarded without it and accepted', { skip, timeout: 60_000 }, async () => {
+  const schema = { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { a: { type: 'string', minLength: 2 } } };
+  assert.deepEqual(stripDescribed(schema), { type: 'object', properties: { a: { type: 'string' } } });
+  assert.deepEqual(describeDropped(schema), ['a: string, at least 2 characters'], '$schema is dropped without a word');
+  const tool = { name: 'draft', description: 'A draft-07 schema.', inputSchema: schema, replay: 'safe', call: async () => ({ text: 'ok' }) };
+  const seen = [];
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };
+    const events = [{ type: 'response.created', response: { id: 'r' } }, { type: 'response.output_item.done', item: { type: 'message', role: 'assistant', id: 'm', content: [{ type: 'output_text', text: 'done' }] } }, { type: 'response.completed', response: { id: 'r', usage } }];
+    return new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const codex = codexAdapter({ model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(ROOT, 'draft'), fetch });
+  const spec = { key: 'step:draft', label: 'x', system: [], tools: [tool], context: 'fresh' };
+  assert.deepEqual(codex.check(spec), [], 'a draft-07 $schema passes the check');
+  const session = await codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: AbortSignal.timeout(50_000), onEvent: () => {} });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  await session.close();
+  assert.equal(seen[0].tools.find((t) => t.name === 'draft').parameters.$schema, undefined, 'Codex forwarded it without $schema');
+});
+
+test('a schema of any depth is walked without a stack overflow: described and refused like any other, and check() never throws', () => {
+  const deep = (depth, leaf) => { let node = leaf; for (let i = 0; i < depth; i += 1) node = { type: 'object', properties: { n: node } }; return node; };
+  // 100,000 deep with a constraint at the bottom: described, in the same line a shallow one would give.
+  const schema = deep(100_000, { type: 'integer', minimum: 1 });
+  const lines = describeDropped(schema);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /: integer, at least 1$/);
+  assert.ok(describedDescription('Deep.', schema).endsWith('at least 1'), 'describedDescription on a deep schema does not throw');
+  assert.deepEqual(codexSchemaProblems('t', deep(100_000, { not: {} })).length, 1, 'a refusal at the bottom is found');
+  // Through check(): the shared check's problem at "/", not a throw.
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (inputSchema) => ({ key: 'step:deep', label: 'x', system: [], tools: [{ name: 'deep', description: 'd', inputSchema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  const problems = codex.check(spec(deep(5_000, { type: 'string' })));
+  assert.ok(problems.length >= 1 && problems.every((p) => p.startsWith('deep: /')), JSON.stringify(problems).slice(0, 200));
+  // An exception inside the check is a problem at "/", naming the tool.
+  const hostile = { type: 'object', get properties() { throw new Error('boom'); } };
+  assert.deepEqual(codex.check(spec(hostile)).filter((p) => p.startsWith('deep: /')).length >= 1, true);
+  assert.match(codex.check(spec(hostile)).join('\n'), /deep: \/: .*(boom|could not be checked)/);
+});
+
+test('a cyclic schema (an object that contains itself, which only code can build) is refused by the shared check first, and Codex\'s own walk never sees it', async () => {
+  // Run in a child with a small heap and a time limit: a walk that reaches the cycle never ends and runs out of memory.
+  const { spawnSync } = await import('node:child_process');
+  const script = `
+    process.env.AGENTRUN_CODEX_STANDIN = '1';
+    const { codexAdapter } = await import('@parcha/agentrun-codex');
+    const cyclic = { type: 'object', properties: {}, not: {} }; cyclic.properties.self = cyclic;
+    const codex = codexAdapter({ model: 'm', provider: { origin: 'https://p.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+    const problems = codex.check({ key: 's', label: 'x', system: [], tools: [{ name: 'cyc', description: 'd', inputSchema: cyclic, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+    process.stdout.write(JSON.stringify(problems));`;
+  const run = spawnSync(process.execPath, ['--max-old-space-size=200', '--input-type=module', '-e', script], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 20_000 });
+  assert.equal(run.status, 0, `the check ended: ${String(run.stderr).slice(0, 200)} (signal ${run.signal})`);
+  const problems = JSON.parse(run.stdout);
+  // Exactly one problem, the shared check's: the `not` that Codex's rules would add a second for is never reached.
+  assert.equal(problems.length, 1, run.stdout);
+  assert.match(problems[0], /^cyc: \/: /);
+  assert.match(problems[0], /JSON/);
+  assert.ok(!problems.some((p) => /not supported by Codex/.test(p)), 'Codex\'s walk did not run');
+});
+
+test("a schema the shared check refuses at the root is refused once, and Codex's rules do not run on it", () => {
+  const codex = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: '/nonexistent', standIn: { command: process.execPath, args: ['-e', ''] } });
+  const spec = (inputSchema) => ({ key: 'step:root', label: 'x', system: [], tools: [{ name: 'root', description: 'd', inputSchema, replay: 'safe', call: async () => ({ text: 'ok' }) }], context: 'fresh' });
+  // A root that is not an object, with a shape only Codex refuses inside it.
+  const problems = codex.check(spec({ type: 'array', items: { type: 'string' }, not: {} }));
+  assert.equal(problems.length, 1, JSON.stringify(problems));
+  assert.match(problems[0], /^root: \/: the root must be/);
+  assert.ok(!problems.some((p) => /not supported by Codex/.test(p)));
+  // The same shape under an object root is Codex's to refuse.
+  assert.match(codex.check(spec({ type: 'object', properties: { p: { not: {} } } })).join('\n'), /not supported by Codex/);
+});
+
+test('the walk itself ends on a cyclic object, without the shared check in front, for every caller', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const script = `
+    const { codexSchemaProblems, describeDropped, describedDescription, stripDescribed } = await import('./dist/schema.js');
+    const cyclic = { type: 'object', properties: { n: { type: 'integer', minimum: 1 } }, not: {} }; cyclic.properties.self = cyclic; cyclic.properties.n.back = cyclic;
+    const out = {
+      problems: codexSchemaProblems('t', cyclic),
+      described: describeDropped(cyclic),
+      description: describedDescription('d', cyclic).length > 0,
+      stripped: typeof stripDescribed(cyclic),
+    };
+    process.stdout.write(JSON.stringify(out));`;
+  const run = spawnSync(process.execPath, ['--max-old-space-size=200', '--input-type=module', '-e', script], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 20_000 });
+  assert.equal(run.status, 0, `the walk ended: ${String(run.stderr).slice(0, 200)} (signal ${run.signal})`);
+  const out = JSON.parse(run.stdout);
+  assert.deepEqual(out.problems, ['t: /not: not is not supported by Codex 0.164.0 (it drops or retypes it)']);
+  assert.deepEqual(out.described, ['n: integer, at least 1']);
+  assert.equal(out.description, true);
+  assert.equal(out.stripped, 'object');
+});

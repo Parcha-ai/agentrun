@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -241,6 +241,19 @@ test("cost: a compaction's summary is a paid request: its cost is summed; one ab
   assert.deepEqual(timelineOf([started, a, compacting], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
 });
 
+test("a request the host refused before it left (a cancelled run) is not a request: its error entry is neither counted nor shown", () => {
+  const refused = { kind: REQUEST_REFUSED, data: {} };
+  const answer = (stopReason, errorMessage) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason, errorMessage, usage: { input: 0, output: 0, cost: { total: 0 } } }] });
+  assert.deepEqual(timelineOf([user("hi", 0), refused, answer("error", "the run was cancelled")]).map((r) => r.kind), ["user_message"], "no request, no error row, no usage row");
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  const rows = timelineOf([user("hi", 0), started, a, refused, answer("error", "the run was cancelled")]);
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.01, requests: 1 });
+  assert.ok(!rows.some((r) => r.kind === "error"));
+  // A real failure after it still counts and shows.
+  assert.equal(timelineOf([started, answer("error", "overloaded")]).filter((r) => r.kind === "error").length, 1);
+});
+
 test("cost: a request cut before its end makes the sum unknown, never $0, with or without the usage its stream had reported", () => {
   const done = assistant([{ type: "text", text: "a" }], 0);
   // The Responses API reports usage only at its end, so a cut stream leaves pi's zero usage, priced $0.
@@ -378,6 +391,16 @@ test("a snapshot rebuilds from its entries and drops what it no longer holds", (
   const out = reducer.apply([{ type: "snapshot", entries: entries.slice(0, 1) }]);
   assert.deepEqual(out.rows.map((r) => r.summary), ["You: one"]);
   assert.deepEqual(out.drop.sort(), before.filter((id) => id !== out.rows[0].id).sort());
+});
+
+test("isLive tells a live row (a phase the events made) from a committed one (an entry's)", () => {
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "run_start" }, { type: "message_end", entry: user("one", 0) }]);
+  const rows = reducer.rows();
+  const phase = rows.find((r) => r.kind === "phase");
+  const message = rows.find((r) => r.kind === "user_message");
+  assert.equal(reducer.isLive(phase.id), true);
+  assert.equal(reducer.isLive(message.id), false);
 });
 
 test("a host labels its own tools; agent_label names the conversation", () => {
