@@ -746,3 +746,126 @@ test("the credential's header replaces a host's header of the same name in any c
   const keys = Object.entries(forwarded[0].headers).filter(([k]) => k.toLowerCase() === 'x-gateway-key');
   assert.deepEqual(keys, [['x-gateway-key', 'provider-secret']]);
 });
+
+// A response's ids are booked as its headers arrive (runner.response), before the client gets anything. These pin what
+// a request is booked as when that write is held or refused: the money always once, the ids whenever this process could
+// still write them. The residual is stated in the names: a process that dies inside the held write, or that writes only
+// records other than the booking's own after a refused one, loses the ids, and the request is still booked once, cut,
+// at an unknown cost. The provider is an injectable fetch and the store a memory one, as for the proxy's other tests.
+const carriedIds = (n) => ({ 'x-litellm-call-id': `call-carry-${n}`, 'request-id': `req_carry${n}` });
+/** A booking whose writes of runner.response can be held (`hold`) or refused (`refuse` returns true), the proxy over it
+ *  with its log kept, and `reopen()`: the next process on the same store, which books what a crash cut off. */
+async function carrySetup(t, key, { fetch, hold, refuse }) {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const writer = await store.open(key);
+  const append = async (records) => {
+    if (records.some((r) => r.kind === RUNNER_RECORDS.response)) {
+      if (hold) await hold();
+      if (refuse?.(records)) throw new Error('commit timed out');
+    }
+    return writer.append(records);
+  };
+  const booking = await modelPortFor(writer, { key, append });
+  const logged = [];
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch, log: (message, detail) => logged.push({ message, ...detail }) }, KEY);
+  const read = () => store.read(key);
+  const of = async (kind) => (await read()).filter((r) => r.kind === kind).map((r) => r.data);
+  const reopen = async () => (await modelPortFor(await store.open(key), { key })).bookCut();
+  return { p, logged, read, of, reopen, RUNNER_RECORDS };
+}
+const answered = (n) => new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', ...carriedIds(n) } });
+const neverEnds = (n) => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); } }), { status: 200, headers: { 'content-type': 'text/event-stream', ...carriedIds(n) } });
+
+test("residual: a process that dies while its response's ids are being written loses them; the client had nothing yet, and the request is booked once, cut, at an unknown cost", async (t) => {
+  const holding = signal();
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const { p, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-held', { fetch: async () => neverEnds(1), hold: async () => { holding.fire(); await held; }, refuse: () => true });
+  t.after(async () => { release(); await p.close(); });
+  // A raw client, to see whether anything of the response reached it while the write is held.
+  let got = false;
+  const { port } = new URL(p.url);
+  const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/test?beta=true', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => { got = true; res.resume(); });
+  req.on('error', () => {});
+  req.end(JSON.stringify({ model: 'x', input: 'held' }));
+  await holding.wait('the write of the response ids, held');
+  // Nothing is forwarded before that write resolves (the proxy awaits it before writing the head): a client that has the
+  // answer before its ids are booked would hold a response the booking can't name.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(got, false, 'the client has nothing while the ids are being written');
+  // The process dies there: the next one books the request, once, cut, with no ids (they were never written).
+  await reopen();
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ usd: null, cut: true, turn: 1 }], 'booked once, cut, unknown, no ids');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [], 'no response record');
+});
+
+test("a refused write of a response's ids: the stream completes, the proxy says so once, and the request is booked once with its ids in its answer's record, which carries them so they are not written again", async (t) => {
+  let first = true;
+  const { p, logged, of, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-refused', { fetch: async (_url, init) => answered(JSON.parse(init.body).input), refuse: () => { const refused = first; first = false; return refused; } });
+  t.after(() => p.close());
+  const r = await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 1 } });
+  assert.equal(r.status, 200);
+  assert.match(r.text, /"done":true/, 'the whole answer reached the client');
+  assert.deepEqual(logged.filter((l) => /responded threw/.test(l.message)).map((l) => l.message), ["model proxy (test): responded threw; the request's ids are kept with its booking only"]);
+  // A second request: its own records are written, and the first's refused response record is not among them, since
+  // the first's runner.turn already carried its ids.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 2 } })).status, 200);
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 2, 'both answers booked');
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: 0.001, estimated: true, providerIds: carriedIds(1) }, { turn: 2, usd: 0.001, estimated: true, providerIds: carriedIds(2) }], 'each booked once, with its ids');
+  assert.deepEqual((await of(RUNNER_RECORDS.response)).map((d) => d.turn), [2], "turn 1's ids are in its runner.turn only, never written twice");
+});
+
+test("a refused write of a response's ids, then the stream cut with the process alive: booked once at an unknown cost, with its ids", async (t) => {
+  const { p, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-cut', {
+    fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); c.error(new Error('cut')); } }), { status: 200, headers: { 'content-type': 'text/event-stream', ...carriedIds(1) } }),
+    refuse: () => true,
+  });
+  t.after(() => p.close());
+  await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut' } }).catch(() => {});
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'the cut request booked');
+  await reopen();
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: null, estimated: true, providerIds: carriedIds(1) }], 'once, unknown, with its ids; the next process books nothing more');
+});
+
+test("a refused write of a response's ids is carried into the booking's next write: a process that dies before that request ends still leaves its ids for the cut (residual: one that writes nothing more of its own booking first loses them)", async (t) => {
+  let first = true;
+  const { p, logged, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-next', {
+    fetch: async (_url, init) => (JSON.parse(init.body).input === 'hangs' ? neverEnds(1) : answered(2)),
+    refuse: () => { const refused = first; first = false; return refused; },
+  });
+  t.after(() => p.close());
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'hangs' } }).catch(() => {});
+  await until(() => logged.some((l) => /responded threw/.test(l.message)), "the refused write of turn 1's ids");
+  // The booking writes again for a request of its own: the next request's runner.request carries turn 1's ids first.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'answered' } })).status, 200);
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'turn 2 booked');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }, { turn: 2, providerIds: carriedIds(2) }], "turn 1's ids, carried and marked late");
+  // The process dies with turn 1 still open: the next one books it once, cut, unknown, under the ids it carried.
+  await reopen();
+  assert.deepEqual((await of(RUNNER_RECORDS.turn)).filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
+});
+
+test("a carried response record whose own next write is refused stays carried: that request is refused, the next write carries it, and a later crash's cut keeps the ids", async (t) => {
+  // The writes that hold a response record, in order: turn 1's ids (refused), the next request's record carrying them
+  // (refused too), then everything after (written).
+  let writes = 0;
+  const { p, logged, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-restored', {
+    fetch: async (_url, init) => (JSON.parse(init.body).input === 'hangs' ? neverEnds(1) : answered(3)),
+    refuse: () => ++writes <= 2,
+  });
+  t.after(() => p.close());
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'hangs' } }).catch(() => {});
+  await until(() => logged.some((l) => /responded threw/.test(l.message)), "the refused write of turn 1's ids");
+  // The next request's record can't be written: it is refused, never sent, and costs no turn.
+  const refused = await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'refused' } });
+  assert.notEqual(refused.status, 200, 'a request whose record could not be written is refused');
+  assert.equal(writes, 2, 'its write carried turn 1 ids and was refused');
+  // The one after carries them, and is written.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'third' } })).status, 200);
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'the third request booked');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }, { turn: 2, providerIds: carriedIds(3) }], "turn 1's ids, carried past the refused write");
+  await reopen();
+  assert.deepEqual((await of(RUNNER_RECORDS.turn)).filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
+});
