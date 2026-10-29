@@ -346,6 +346,37 @@ test("a route's answer is committed as its decision before its branch runs, and 
   assert.equal((await operator(invalid, routed)).state.questionSpendUsd, 0.005);
 });
 
+test("a refused route's decision takes its unsure branch with no choice of its own, a later open follows it, and a mislabelled one is refused", async () => {
+  const refused = { cost_usd: 0.001, request_sha256: 'request-2', answers: { branch: { type: 'refusal' } } };
+  const store = memoryStore();
+  await assert.rejects(run(store, routed, { runJudge: async () => refused }, { cut: 'calm-step' }), /cut at calm-step/);
+  const decided = (await operator(store, routed)).state.pin.routes[step(1)];
+  assert.deepEqual([decided.branch, decided.choice, decided.unsure, decided.refused], ['calm', null, true, true]);
+  const resumed = await run(store, routed, { runJudge: async () => { throw new Error('the route was asked again'); } });
+  assert.deepEqual([resumed.status, resumed.state.went], ['complete', 'calm']);
+  // A refused route's record with "" for its branch or its choice is the mislabel: the checkpoint is refused at open.
+  for (const mislabel of [{ choice: '' }, { branch: '' }]) {
+    const planted = memoryStore();
+    await assert.rejects(run(planted, routed, { runJudge: async () => refused }, { cut: 'calm-step' }), /cut at calm-step/);
+    await operator(planted, routed, async (journal) => {
+      const state = structuredClone(journal.state);
+      Object.assign(state.pin.routes[step(1)], mislabel);
+      await journal.save(state);
+    });
+    await assert.rejects(open(planted, routed), fault('FROZEN_CHECKPOINT_INVALID', /Invalid frozen recovery checkpoint/));
+  }
+});
+
+test('a refused route with no unsure branch escalates, and records no decision: it took no branch', async () => {
+  const sure = doc([code('seed', "() => ({ text: 'hello' })"), { node: 'route', label: 'triage', state: { text: '{text}' }, instructions: 'Which desk takes this?', as: 'desk',
+    branches: { calm: { criteria: 'a routine request', body: code('calm-step', "() => ({ went: 'calm' })") }, angry: { criteria: 'an escalating complaint', body: code('angry-step', "() => ({ went: 'angry' })") } } }]);
+  const store = memoryStore();
+  const result = await run(store, sure, { runJudge: async () => ({ cost_usd: 0.001, answers: { branch: { type: 'refusal' } } }) });
+  assert.deepEqual([result.status, result.escalation.kind], ['escalated', 'decision_refused']);
+  const journal = await operator(store, sure);
+  assert.deepEqual([journal.state.pin.routes, journal.state.questionSpendUsd], [{}, 0.001]);
+});
+
 test('a route is decided once, only a route is decided, and its receipts are carried until the host has written them', async () => {
   const store = memoryStore(); const receipts = { invocation: 'question:triage:0@1', request_bytes: 120, latency_ms: 30 };
   let driver = await open(store, routed);
