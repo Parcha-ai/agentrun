@@ -24,28 +24,30 @@ export default function reply(context, faux) {
   // Files the page as evidence with browser_read, then delivers the record.
   const read = first.includes("Read the example page");
   if (context.messages.some((m) => m.role === "system" && m.toolsAdded?.some((tool) => tool.name === "submit"))) {
-    // A node that says whether anything it can reach holds the decision key: this process's environment (as its tools
-    // get it), the environment the kernel shows, the descriptor the server hands the key on, and a program it starts.
+    // A node that says whether anything it can reach holds a decision key (Jev's or Parallel's): this process's
+    // environment (as its tools get it), the environment the kernel shows, the descriptor the server hands the keys on,
+    // and a program it starts.
     // "..., once <file> exists." holds it until the test has made that file.
     const canary = JSON.stringify(context);
     if (canary.includes("Report the canary")) {
       if (answered) return faux.message("Submitted.");
       const gate = /Report the canary once (\S+?) exists\./.exec(canary)?.[1];
       return (async () => {
-        const [{ CANARY }, { readFile }, { existsSync }, { spawnSync }] = await Promise.all([import("./faux-jev.mjs"), import("node:fs/promises"), import("node:fs"), import("node:child_process")]);
+        const [{ CANARY: JEV }, { CANARY: PARALLEL }, { readFile }, { existsSync }, { spawnSync }] = await Promise.all([import("./faux-jev.mjs"), import("./faux-parallel.mjs"), import("node:fs/promises"), import("node:fs"), import("node:child_process")]);
+        const holds = (text) => typeof text === "string" && (text.includes(JEV) || text.includes(PARALLEL));
         if (gate) await untilExists(gate);
         const environ = await readFile("/proc/self/environ", "utf8").catch(() => "");
         const fd = process.env.AGENTRUN_SERVE_DECISION_KEY_FD;
         const sub = spawnSync("sh", ["-c", `${fd ? `[ -e /proc/$$/fd/${fd} ] && echo FD_OPEN; ` : ""}env`], { encoding: "utf8" });
         // And a Node program, as a tool's effect would start one: what its environment holds and whether it got the
         // descriptor (Node opens 3 to about 20 for itself, so the handed descriptor is the one to look for).
-        const node = spawnSync(process.execPath, ["-e", `process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && v.includes(${JSON.stringify(CANARY)})), fd_open: ${fd ? `require("fs").existsSync("/proc/self/fd/${fd}")` : "false"} }))`], { encoding: "utf8" });
+        const node = spawnSync(process.execPath, ["-e", `process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && (v.includes(${JSON.stringify(JEV)}) || v.includes(${JSON.stringify(PARALLEL)}))), fd_open: ${fd ? `require("fs").existsSync("/proc/self/fd/${fd}")` : "false"} }))`], { encoding: "utf8" });
         const nodeSaw = JSON.parse(node.stdout || "{}");
         return faux.message(faux.toolCall("submit", {
-          leaked: Object.values(process.env).some((v) => v?.includes(CANARY)) || environ.includes(CANARY),
-          key_set: process.env.TYPESAFE_API_KEY !== undefined,
+          leaked: Object.values(process.env).some(holds) || holds(environ),
+          key_set: process.env.TYPESAFE_API_KEY !== undefined || process.env.PARALLEL_API_KEY !== undefined,
           fd_open: fd ? existsSync(`/proc/self/fd/${fd}`) : false,
-          sub_leaked: sub.stdout.includes(CANARY),
+          sub_leaked: holds(sub.stdout),
           sub_fd_open: sub.stdout.includes("FD_OPEN"),
           node_leaked: nodeSaw.leaked !== false,
           node_fd_open: nodeSaw.fd_open !== false,

@@ -1,6 +1,7 @@
-// Decision workflows on Jev: a workflow's judge, pick, sift, route and ask nodes run on TypeSafe's System One when this
-// server's environment names its key. The key reaches the judge's runner only, never a run's tools, its model, a program
-// it starts or a file. Here Jev is the tests' fake fetch (fixtures/faux-jev.mjs): no network, no real key.
+// Decision workflows on Jev and Parallel: a workflow's judge, pick, sift, route and ask nodes run on TypeSafe's System
+// One, or on Parallel Decisions for a node that names it, when this server's environment names the provider's key. A key
+// reaches its provider only, never a run's tools, its model, a program it starts or a file. Here each provider is the
+// tests' fake fetch (fixtures/faux-jev.mjs, fixtures/faux-parallel.mjs): no network, no real key.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
@@ -12,12 +13,16 @@ import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD } from "../dist/decisions.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
+import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_COST"];
+const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_COST", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
+/** The same question, put to Parallel. */
+const onParallel = { ...judge, label: "coi-parallel", as: "coi_parallel", provider: "parallel" };
 /** A model node that reports where the decision key is, once `gate` exists when one is given. */
 const probe = (gate) => ({ node: "extract", label: "probe", instructions: gate ? `Report the canary once ${gate} exists.` : "Report the canary.", out: "Probe", as: "probe" });
 const flow = (steps) => ({
@@ -46,6 +51,18 @@ async function withCanary(t) {
   const calls = join(await scratch(t), "jev-calls.jsonl");
   withEnv(t, { TYPESAFE_API_KEY: CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls }, KEYS);
   return async () => (await readFile(calls, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+}
+
+/** The decision keys `which` names as canaries, and a file for each fake's calls, for test `t`: what each fake was sent. */
+async function withKeys(t, which) {
+  const dir = await scratch(t);
+  const files = { jev: join(dir, "jev-calls.jsonl"), parallel: join(dir, "parallel-calls.jsonl") };
+  withEnv(t, {
+    ...(which.jev ? { TYPESAFE_API_KEY: CANARY } : {}), ...(which.parallel ? { PARALLEL_API_KEY: PARALLEL_CANARY } : {}),
+    AGENTRUN_TEST_FAUX_JEV_CALLS: files.jev, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: files.parallel,
+  }, KEYS);
+  const read = async (file) => (await readFile(file, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  return async () => ({ jev: await read(files.jev), parallel: await read(files.parallel) });
 }
 
 async function startFlow(api, steps) {
@@ -218,12 +235,11 @@ test("capabilities lists the decision providers: jev available where its key is 
   const caps = (await off.api("GET", "/capabilities")).body;
   assert.ok(caps.workflows.decisions, "capabilities has workflows.decisions");
   const none = caps.workflows.decisions.providers;
-  assert.equal(none.length, 1);
-  assert.deepEqual([none[0].id, none[0].available], ["jev", false]);
+  assert.deepEqual(none.map((p) => [p.id, p.available]), [["jev", false], ["parallel", false]]);
   assert.match(none[0].reason, /TYPESAFE_API_KEY/);
   process.env.TYPESAFE_API_KEY = CANARY;
   const on = await serve(t);
-  assert.deepEqual((await on.api("GET", "/capabilities")).body.workflows.decisions?.providers, [{ id: "jev", available: true }]);
+  assert.deepEqual((await on.api("GET", "/capabilities")).body.workflows.decisions?.providers[0], { id: "jev", available: true });
   assert.ok((await on.api("GET", "/capabilities")).body.workflows.adapters.includes("runJudge"));
   delete process.env.TYPESAFE_API_KEY;
   process.env.OPENROUTER_API_KEY = "fake-test-key";
@@ -281,4 +297,82 @@ test("a decision whose cost the provider reports is on its row, and the run's to
   assert.equal(usage.usage.usd, run.cost.usd, "the timeline's usage row and the run's cost agree");
   assert.equal(run.cost.usd, 0.00003, "the model node is free under the fake, so the run's cost is the decision's, counted once");
   assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");
+});
+
+test("the Parallel key never reaches a run's tools, model or programs: not in its environment, its descriptors, a child process or a file", async (t) => {
+  const seen = await withKeys(t, { parallel: true });
+  const gate = join(await scratch(t), "go");
+  const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+  const runId = await startFlow(api, [onParallel, probe(gate)]);
+  // While the run's process waits at the probe, after it read the key: as the kernel shows that process.
+  const pid = await processOf(data, runId);
+  const environ = await readFile(`/proc/${pid}/environ`, "utf8");
+  assert.equal(environ.includes(PARALLEL_CANARY), false, "the run's process environment holds no copy of the key");
+  assert.match(environ, new RegExp(`(^|\\0)AGENTRUN_SERVE_DECISION_KEY_FD=${DECISION_KEY_FD}(\\0|$)`), "it was handed the key on the documented descriptor");
+  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and closed it once read");
+  await writeFile(gate, "");
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(run.error));
+  assert.deepEqual(run.result.output, CLEAN, "the model node's process, and an sh and a node -e it starts, see neither the key nor its descriptor");
+  assert.deepEqual((await seen()).parallel.map((c) => c.authorized), [true], "and Parallel did get the key");
+  assert.deepEqual(await filesHolding(data, PARALLEL_CANARY), [], "no file of the data directory holds the key");
+  assert.equal(process.env.PARALLEL_API_KEY, PARALLEL_CANARY, "the server's own environment is as it was");
+});
+
+test("a node naming the provider parallel is answered by Parallel, sent the key as x-api-key; a node naming none by Jev; each receipt keeps its own answer and cost", async (t) => {
+  const seen = await withKeys(t, { jev: true, parallel: true });
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV, fauxParallel: FAUX_PARALLEL });
+  const runId = await startFlow(api, [judge, onParallel, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(run.error));
+  const calls = await seen();
+  assert.deepEqual(calls.parallel.map((c) => [c.path, c.authorized, c.questions]), [["/v1/decisions", true, ["is_coi"]]], "one Parallel request, with the canary key");
+  assert.deepEqual(calls.jev.map((c) => [c.path, c.authorized, c.questions]), [["/v1/systemone", true, ["is_coi"]]], "and one Jev request, for the node that names no provider");
+  const rows = Object.fromEntries(durableDecisions(join(data, "runs", runId, "store", "run.sqlite")).map((row) => [row.node, row]));
+  assert.deepEqual(Object.keys(rows).sort(), ["coi", "coi-parallel"]);
+  assert.deepEqual([rows["coi-parallel"].answers.is_coi.noul, rows["coi-parallel"].model], [0.31, "parallel-fast"], "Parallel's answer");
+  assert.equal(rows["coi-parallel"].cost_usd, 0.001, "booked at Parallel's list price");
+  assert.equal(rows.coi.answers.is_coi.noul, 0.92, "Jev's answer");
+  assert.deepEqual([rows["coi-parallel"].provider, rows.coi.provider], ["parallel", "jev"], "each receipt names the provider that answered: never the default in another's place");
+  assert.equal(run.cost.usd, null, "Jev's unknown cost keeps the run's unknown");
+});
+
+test("with no Parallel key, a node naming parallel saves with a warning, and its run is 409 not_set_up_here naming PARALLEL_API_KEY", async (t) => {
+  await withKeys(t, { jev: true });
+  const { api } = await serve(t, { fauxJev: FAUX_JEV, fauxParallel: FAUX_PARALLEL });
+  const made = await api("POST", "/agents", flowAgent("coi", flow([judge, onParallel, probe()])));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const warnings = made.body.warnings.filter((w) => w.field === "definition.workflow");
+  assert.deepEqual(warnings.map((w) => w.reason), ["not_set_up_here"], JSON.stringify(made.body.warnings));
+  assert.match(warnings[0].message, /PARALLEL_API_KEY/);
+  const refused = await api("POST", "/agents/coi/runs", { input: { question: "x" } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.code, "agent_not_runnable");
+  assert.match(refused.body.error.message, /PARALLEL_API_KEY/);
+  assert.deepEqual(refused.body.error.details.adapters, ["runJudge"]);
+  assert.deepEqual(refused.body.error.details.decisions, { parallel: { reason: "not_set_up_here", needs: ["PARALLEL_API_KEY"] } }, "Jev's key is set: only Parallel is missing");
+});
+
+test("a node naming a decision provider this server does not have is refused at save", async (t) => {
+  await withKeys(t, { jev: true, parallel: true });
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", flowAgent("coi", flow([{ ...judge, provider: "acme" }, probe()])));
+  assert.equal(made.status, 422, JSON.stringify(made.body));
+  assert.ok(made.body.error.fields?.some((issue) => issue.field === "definition.workflow" && issue.reason === "not_an_option" && /acme/.test(issue.message)), JSON.stringify(made.body.error));
+});
+
+test("capabilities lists parallel: available where PARALLEL_API_KEY is set, why not where it is not; runJudge runs on Parallel alone", async (t) => {
+  await withKeys(t, {});
+  const off = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
+  const parallelOff = off.decisions.providers.find((p) => p.id === "parallel");
+  assert.equal(parallelOff?.available, false);
+  assert.match(parallelOff.reason, /PARALLEL_API_KEY/);
+  assert.equal(off.adapters.includes("runJudge"), false, "no provider runs here: typed questions do not");
+  process.env.PARALLEL_API_KEY = PARALLEL_CANARY;
+  const on = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
+  assert.deepEqual(on.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", true]]);
+  assert.deepEqual(on.decisions.providers[1], { id: "parallel", available: true });
+  assert.ok(on.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
 });
