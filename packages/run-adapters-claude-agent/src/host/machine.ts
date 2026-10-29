@@ -5,13 +5,15 @@
 //  - a child's environment is an allowlist: PATH, LANG and TZ from this process, plus what the harness names (its
 //    homes, and the per-session proxy key). Nothing else is inherited, so no provider key, token, sign-in or another
 //    session's state reaches it;
-//  - each child runs in its own process group, which kill() and close() end whole;
+//  - each child runs in its own process group, which kill() and close() end whole, and dies with this process: started
+//    with a watch on its parent (./host's parentWatched, inside the host's confinement), so a host that is SIGKILLed,
+//    and runs no close, leaves no CLI behind;
 //  - the model proxy (@parcha/agentrun-adapters/host, with the Anthropic policy) starts with the machine and stops with it.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
-import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
+import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
 import type { AcquireMachine, CacheDir, KillSignal, MachineSpawn, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { anthropicPolicy, type AnthropicPolicyOptions } from "./policy.js";
@@ -29,7 +31,9 @@ export interface ChildCommand {
 
 /** The host's confinement of a child: the same command and arguments, started under the host's own (a
  *  `setpriv --no-new-privs` prefix, say). It may only add in front: what it returns must end with the command and its
- *  arguments unchanged, and it never sees or changes the child's environment. */
+ *  arguments unchanged, and it never sees or changes the child's environment. The prefix must exec the child in place
+ *  (as setpriv does): a wrapper that forks and stays as the child's parent defeats the parent watch, since the death
+ *  signal then follows the wrapper, not this process. */
 export type ConfineChild = (child: Readonly<ChildCommand>) => ChildCommand;
 
 export interface LocalMachineOptions {
@@ -37,6 +41,8 @@ export interface LocalMachineOptions {
   dir: string;
   /** Start every child of the session (the CLI) under the host's confinement. */
   confine?: ConfineChild;
+  /** How a child is tied to this process (default what the machine supports; tests force the shim). */
+  parentWatch?: ParentWatch;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits. */
   proxy: {
     hooks: ModelProxyHooks;
@@ -81,11 +87,17 @@ export function confined(child: ChildCommand, confine: ConfineChild | undefined)
   return { command: out.command, args: out.args };
 }
 
-/** Start a child of the session: `env` beyond the allowlist, in its own process group, killed whole. Its git stops at
- *  `ceiling` (the session's directory): it never looks for a repository above the session, in a parent the model
- *  could write. */
-export function startChild(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling?: string, confine?: ConfineChild): MachineChild {
-  const run = confined({ command: options.command, args: options.args ?? [] }, confine);
+/** The command a child is started with: the child, watched by this process (it dies with it), under the host's
+ *  confinement. The watch is inside the confinement, so it is set after any switch of user the prefix makes. */
+export function launchCommand(child: ChildCommand, confine: ConfineChild | undefined, watch?: ParentWatch): ChildCommand {
+  return confined(parentWatched(child, watch), confine);
+}
+
+/** Start a child of the session: `env` beyond the allowlist, in its own process group, killed whole, and ended when
+ *  this process ends. Its git stops at `ceiling` (the session's directory): it never looks for a repository above the
+ *  session, in a parent the model could write. */
+export function startChild(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling?: string, confine?: ConfineChild, watch?: ParentWatch): MachineChild {
+  const run = launchCommand({ command: options.command, args: options.args ?? [] }, confine, watch);
   const child = spawnChild(run.command, run.args, {
     cwd: options.cwd ?? cwd,
     env: { ...childEnv(from, options.env), ...(ceiling ? { GIT_CEILING_DIRECTORIES: ceiling } : {}) },
@@ -178,7 +190,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     let closed = false;
     const start = (spawnOptions: MachineSpawn): MachineChild => {
       if (closed) throw new Error("agentrun-claude-agent: the session machine is closed");
-      const proc = startChild(spawnOptions, from, root, base, options.confine);
+      const proc = startChild(spawnOptions, from, root, base, options.confine, options.parentWatch);
       children.add(proc);
       void proc.exited.then(() => children.delete(proc));
       return proc;

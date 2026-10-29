@@ -116,21 +116,21 @@ test('non-JSON and HTTP errors never expose response bodies or keys', async () =
 
 test('transient HTTP failures have one bounded retry owner', async () => {
   let calls = 0;
-  const run = createJevRunner({ ...settings, maxAttempts: 3, fetch: async () => { calls++; return response('secret-provider-body', 503); } });
+  const run = createJevRunner({ retryAfterSend: true, ...settings, maxAttempts: 3, fetch: async () => { calls++; return response('secret-provider-body', 503); } });
   await assert.rejects(run(params), error => { assert.equal(error.code, 'http'); assert.equal(error.status, 503); assert.equal(error.attempts, 3); return true; });
   assert.equal(calls, 3);
 });
 
 test('429 and 529 retry then succeed', async () => {
   let calls = 0;
-  const run = createJevRunner({ ...settings, fetch: async () => { calls++; return calls < 3 ? response({}, calls === 1 ? 429 : 529) : response(payload()); } });
+  const run = createJevRunner({ retryAfterSend: true, ...settings, fetch: async () => { calls++; return calls < 3 ? response({}, calls === 1 ? 429 : 529) : response(payload()); } });
   assert.deepEqual((await run(params)).answers, answers);
   assert.equal(calls, 3);
 });
 
 test('connection error is sanitized after the exact retry budget', async () => {
   let calls = 0;
-  const run = createJevRunner({ ...settings, maxAttempts: 2, fetch: async () => { calls++; throw new Error('secret transport URL'); } });
+  const run = createJevRunner({ retryAfterSend: true, ...settings, maxAttempts: 2, fetch: async () => { calls++; throw new Error('secret transport URL'); } });
   await assert.rejects(run(params), error => { assert.equal(error.code, 'connection'); assert.doesNotMatch(JSON.stringify(error) + String(error), /secret/); return true; });
   assert.equal(calls, 2);
 });
@@ -145,7 +145,7 @@ test('pre-aborted call makes no requests and does not expose abort reason', asyn
 test('abort during retry backoff returns promptly with no additional request', async () => {
   let calls = 0;
   const controller = new AbortController();
-  const run = createJevRunner({ ...settings, retryBaseMs: 10_000, retryMaxMs: 10_000, fetch: async () => {
+  const run = createJevRunner({ retryAfterSend: true, ...settings, retryBaseMs: 10_000, retryMaxMs: 10_000, fetch: async () => {
     calls++;
     setTimeout(() => controller.abort(), 30);
     return response({}, 503);
@@ -158,7 +158,7 @@ test('abort during retry backoff returns promptly with no additional request', a
 
 test('total deadline includes backoff and prevents another attempt', async () => {
   let calls = 0;
-  const run = createJevRunner({ ...settings, timeoutMs: 40, retryBaseMs: 500, retryMaxMs: 500, fetch: async () => { calls++; return response({}, 503); } });
+  const run = createJevRunner({ retryAfterSend: true, ...settings, timeoutMs: 40, retryBaseMs: 500, retryMaxMs: 500, fetch: async () => { calls++; return response({}, 503); } });
   await assert.rejects(run(params), code('timeout'));
   assert.equal(calls, 1);
 });
@@ -333,7 +333,7 @@ test('an attempt the SDK ends with its own timeout is the deadline, never a conn
 // failure: a connection failure, retried like any other.
 test('with no deadline, a host client\'s own SDK timeout stays a connection failure and is retried', async () => {
   let calls = 0;
-  const run = createJevRunner({ timeoutMs: null, maxAttempts: 2, retryBaseMs: 0, retryMaxMs: 0, client: { systemOne: async () => { calls++; throw new APITimeoutError(5_000); } } });
+  const run = createJevRunner({ retryAfterSend: true, timeoutMs: null, maxAttempts: 2, retryBaseMs: 0, retryMaxMs: 0, client: { systemOne: async () => { calls++; throw new APITimeoutError(5_000); } } });
   await assert.rejects(run(params), error => error instanceof JevError && error.code === 'connection' && error.attempts === 2);
   assert.equal(calls, 2);
 });

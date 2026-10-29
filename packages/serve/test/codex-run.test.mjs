@@ -25,6 +25,8 @@ async function gateway(t) {
   // A failing test still lets the turn finish, so the run's process and the server can stop.
   t.after(() => release());
   const server = createServer(async (req, res) => {
+    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
     let body = "";
     for await (const chunk of req) body += chunk;
     seen.push({ path: req.url, authorization: req.headers.authorization, body: JSON.parse(body || "{}") });
