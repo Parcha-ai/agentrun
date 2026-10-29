@@ -10,8 +10,9 @@
 //    machine used from the main thread, so a worker thread's exit does not trigger it, while a machine used from a
 //    worker thread ties its child to that worker. The signal survives the exec, as the child is not set-user-ID. A signal set
 //    after the parent is gone never fires, so a host that dies between the spawn and setpriv would leave the child
-//    unwatched: after setting it, a /bin/sh in front of the child checks that its parent is still the host
-//    (PARENT_CHECK) and runs nothing otherwise (exit 125, saying why on stderr), then execs the child in place.
+//    unwatched: after setting it, setpriv execs `node parent-check.js` (PARENT_CHECK), which checks that its parent
+//    is still the host and runs nothing otherwise (exit 125, saying why on stderr), then replaces itself with the child
+//    in place, its environment passed on unchanged (a shell there would add PWD or SHLVL to it).
 //  - elsewhere (macOS, or no setpriv): `node parent-watch.js <host pid> -- <child>`, a shim that runs the child and
 //    kills it when the shim is reparented, checked four times a second.
 // The watch goes INSIDE the host's confinement (the machine applies its confine prefix to the watched command): the
@@ -33,12 +34,11 @@ export type ParentWatch = "pdeathsig" | "shim";
 /** The util-linux setpriv that sets the parent-death signal. */
 export const SETPRIV = "/usr/bin/setpriv";
 
-/** The check after the signal is set: the parent is still the host (its pid, `$1`), or nothing runs. Its failure says
- *  why on stderr and exits 125, so a confinement prefix that forks instead of exec'ing in place (its child's parent is
- *  then the prefix, never the host) fails every start in words, not as a CLI that exited. */
-export const PARENT_CHECK =
-  '[ "$PPID" = "$1" ] || { echo "agentrun: parent check failed: started by $PPID, expected $1 (the host died during startup, or the confine prefix does not exec in place)" >&2; exit 125; }; shift; exec "$@"';
-/** The exit code of a failed parent check. */
+/** The check setpriv execs after it sets the signal, run with this process's node: the parent is still the host, or
+ *  nothing runs (parent-check.ts). */
+export const PARENT_CHECK = fileURLToPath(new URL("./parent-check.js", import.meta.url));
+
+/** The exit code of a failed parent check (parent-check.ts): the parent was not the host, or this Node cannot exec. */
 export const PARENT_CHECK_FAILED = 125;
 
 /** The shim, run with this process's node where setpriv cannot be. */
@@ -54,13 +54,14 @@ export function parentWatchHere(): ParentWatch {
       pdeathsig = execFileSync(SETPRIV, ["--help"], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" }, timeout: 5_000 }).includes("--pdeathsig");
     } catch {}
   }
-  return (here = pdeathsig ? "pdeathsig" : "shim");
+  // The check setpriv execs replaces itself with the child through process.execve (Node 22.15 and later).
+  return (here = pdeathsig && typeof process.execve === "function" ? "pdeathsig" : "shim");
 }
 
 /** `child`, started so that it dies with this process (`how`, default what this machine supports). */
 export function parentWatched(child: Readonly<LaunchCommand>, how: ParentWatch = parentWatchHere()): LaunchCommand {
   if (how === "pdeathsig") {
-    return { command: SETPRIV, args: ["--pdeathsig", "KILL", "--", "/bin/sh", "-c", PARENT_CHECK, "sh", String(process.pid), child.command, ...child.args] };
+    return { command: SETPRIV, args: ["--pdeathsig", "KILL", "--", process.execPath, PARENT_CHECK, String(process.pid), "--", child.command, ...child.args] };
   }
   return { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), "--", child.command, ...child.args] };
 }

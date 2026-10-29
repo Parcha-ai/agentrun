@@ -425,7 +425,7 @@ test("the host's confinement wraps a child's command and arguments, never its en
 test("a child is launched with the host's confinement outermost, then the parent watch, then the child: the watch is set after any switch of user", () => {
   const child = { command: '/pinned/claude', args: ['--x', 'y'] };
   const confine = (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] });
-  const check = ['/bin/sh', '-c', PARENT_CHECK, 'sh', String(process.pid)];
+  const check = [process.execPath, PARENT_CHECK, String(process.pid), '--'];
   assert.deepEqual(launchCommand(child, confine, 'pdeathsig'), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', SETPRIV, '--pdeathsig', 'KILL', '--', ...check, '/pinned/claude', '--x', 'y'] });
   assert.deepEqual(launchCommand(child, confine, 'shim'), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', process.execPath, PARENT_WATCH_SHIM, String(process.pid), '--', '/pinned/claude', '--x', 'y'] });
   assert.deepEqual(launchCommand(child, undefined, 'pdeathsig'), { command: SETPRIV, args: ['--pdeathsig', 'KILL', '--', ...check, '/pinned/claude', '--x', 'y'] }, 'with no confinement, still watched');

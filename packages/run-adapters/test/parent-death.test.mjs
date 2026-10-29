@@ -3,7 +3,7 @@
 // SIGKILLed, so it runs no close; its child ignores the end of its stdin, as the pinned Claude Agent CLI does. The
 // process tree is read from /proc, so the behaviour tests run on Linux.
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -72,7 +72,7 @@ async function gone(pids, ms) {
 
 test('the watch goes in front of the child: setpriv sets the parent-death signal, or the shim watches this process', () => {
   const child = { command: '/pinned/cli', args: ['--x', 'y'] };
-  assert.deepEqual(parentWatched(child, 'pdeathsig'), { command: SETPRIV, args: ['--pdeathsig', 'KILL', '--', '/bin/sh', '-c', PARENT_CHECK, 'sh', String(process.pid), '/pinned/cli', '--x', 'y'] });
+  assert.deepEqual(parentWatched(child, 'pdeathsig'), { command: SETPRIV, args: ['--pdeathsig', 'KILL', '--', process.execPath, PARENT_CHECK, String(process.pid), '--', '/pinned/cli', '--x', 'y'] });
   assert.deepEqual(parentWatched(child, 'shim'), { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), '--', '/pinned/cli', '--x', 'y'] });
   assert.ok(existsSync(PARENT_WATCH_SHIM), 'the shim ships beside it');
   // What this machine's setpriv can do, read here apart from parentWatchHere: an older one lacks --pdeathsig.
@@ -117,6 +117,21 @@ test('a confinement prefix that forks instead of exec\'ing in place fails the pa
   const ended = await h.next();
   assert.equal(ended.exit, PARENT_CHECK_FAILED, `the exit code: ${JSON.stringify(ended)}`);
   assert.equal(ended.stderr.trim(), `agentrun: parent check failed: started by ${wrapper}, expected ${h.proc.pid} (the host died during startup, or the confine prefix does not exec in place)`);
+});
+
+test('the parent check replaces itself with the child and passes its environment on byte for byte, saying nothing', { skip: !linux && 'needs /proc', timeout: 30_000 }, () => {
+  // This process is the check's parent, so the check passes; the child prints the environment it was given.
+  const env = { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', SESSION_KEY: 'a b=c', EMPTY: '' };
+  const out = spawnSync(process.execPath, [PARENT_CHECK, String(process.pid), '--', 'env'], { env, encoding: 'utf8' });
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(out.stderr, '', 'nothing on stderr: no warning from the check');
+  assert.deepEqual(out.stdout.trimEnd().split('\n').sort(), Object.entries(env).map(([k, v]) => `${k}=${v}`).sort(), 'the same names and values, none added');
+});
+
+test('a Node without process.execve fails the parent check loudly, and never runs the child some other way', { skip: !linux && 'needs /proc', timeout: 30_000 }, () => {
+  const out = spawnSync(process.execPath, ['--import', 'data:text/javascript,process.execve = undefined;', PARENT_CHECK, String(process.pid), '--', 'touch', '/nonexistent-dir/ran'], { env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+  assert.equal(out.status, PARENT_CHECK_FAILED);
+  assert.equal(out.stderr.trim(), `agentrun: parent check: this Node (${process.version}) has no process.execve; agentrun needs Node 22.15 or newer`);
 });
 
 test('the parent-death signal follows the thread that spawned the child, the event loop\'s: a worker thread ending does not end it, the host dying does', { skip: !pdeathsig && 'no setpriv with --pdeathsig here', timeout: 30_000 }, async (t) => {
