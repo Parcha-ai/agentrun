@@ -88,9 +88,10 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
         // An answer the interpreter would refuse is spent at its price and is never a decision: the question is
         // asked again by the next process.
         try { validateAnswers(params.questions, result.answers); }
-        catch (error) { driver.decisionEnded(params.executionPath, decisionId, "failed", cost); driver.recordQuestionSpend(cost); throw error; }
-        driver.decisionEnded(params.executionPath, decisionId, "answered", cost);
-        driver.recordQuestionSpend(cost, params.kind === "route" ? { executionPath: params.executionPath, label: params.label, result: result as Record<string, unknown>, receipts: null } : undefined);
+        catch (error) { driver.decisionEnded(params.executionPath, decisionId, "failed", cost, () => driver.recordQuestionSpend(cost)); throw error; }
+        // The outcome, the spend and a route's decision are one commit.
+        driver.decisionEnded(params.executionPath, decisionId, "answered", cost, () => driver.recordQuestionSpend(cost, params.kind === "route"
+          ? { executionPath: params.executionPath, label: params.label, result: result as Record<string, unknown>, receipts: null } : undefined));
         // The decision is durable before the interpreter acts on the answer, and a stop taken meanwhile ends the run here.
         await driver.flush();
         driver.checkStop();

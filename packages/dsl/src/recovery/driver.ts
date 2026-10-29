@@ -685,6 +685,13 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     if (typeof at !== "string" || !nodeAt(doc, at)) throw pathFault(at, "The interpreter named a path this run's document does not hold");
     return at;
   };
+  /** Where a decision's requests are kept: its own node, or, for a question the interpreter asks at a path no node holds
+   *  (a loop's `until` at `<loop>/iterations/<n>`), the nearest node that encloses it. */
+  const decisionPlace = (at: unknown, doc: Workflow): string => {
+    if (typeof at !== "string") throw pathFault(at, "The interpreter named a path this run's document does not hold");
+    for (let path = at; path.length > 0; path = path.slice(0, path.lastIndexOf("/"))) if (nodeAt(doc, path)) return path;
+    throw pathFault(at, "The interpreter named a path this run's document does not hold");
+  };
   /** The committed state a resume at `at` is answered from: its own, or the frontier of a chain it sits
    *  in when the frontier lies past it. A chain threads one state, so every step before its frontier,
    *  and everything inside those steps, is answered with the frontier's. */
@@ -994,7 +1001,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     admitDecision(executionPath: unknown, request: Pick<DecisionRequest, "decision_id" | "kind" | "label" | "model" | "request_sha256">): DecisionRequest | undefined {
       guard();
       const { frame, doc } = active();
-      const at = placed(executionPath, doc);
+      const at = decisionPlace(executionPath, doc);
       frame.decisions ??= {};
       frame.decisions[at] ??= {};
       const requests = frame.decisions[at];
@@ -1007,16 +1014,17 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     },
     /** A request `admitDecision` admitted is no longer in flight. */
     decisionSettled() { settled(); },
-    /** A decision request's one outcome, with its spend (null when unknown), in the driver's next commit. It never
-     *  applies a stop: a request the run asked ends whatever stops the run. */
-    decisionEnded(executionPath: unknown, decisionId: string, status: "answered" | "failed" | "interrupted", cost_usd: number | null) {
+    /** A decision request's one outcome, with its spend (null when unknown), in the driver's next commit, together with
+     *  whatever `alongside` records (the answer's spend, a route's decision): no commit holds the one without the other.
+     *  It never applies a stop: a request the run asked ends whatever stops the run. */
+    decisionEnded(executionPath: unknown, decisionId: string, status: "answered" | "failed" | "interrupted", cost_usd: number | null, alongside?: () => void) {
       if (fatal) throw fatal;
       const { frame, doc } = active();
-      const request = frame.decisions?.[placed(executionPath, doc)]?.[decisionId];
+      const request = frame.decisions?.[decisionPlace(executionPath, doc)]?.[decisionId];
       if (!request) throw failure("FROZEN_CHECKPOINT_INVALID", `The decision ${decisionId} ends without its request`);
       if (request.status !== "requested") throw failure("FROZEN_CHECKPOINT_INVALID", `The decision ${decisionId} ends once`);
       Object.assign(request, { status, cost_usd });
-      save();
+      try { alongside?.(); } finally { save(); }
     },
     /** The escalation that ended this run (a gate that fired, or an LLM step that failed), written once
      *  as an escalation commit before anything acts on it. A later open gets the same row and the same
