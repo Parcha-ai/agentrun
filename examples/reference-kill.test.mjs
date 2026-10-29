@@ -17,7 +17,7 @@ const PLANTED = [
   { side: 'child', n: 0, point: 'effect.kept search' },
   { side: 'child', n: 0, point: 'model.answered turn 0' },
   { side: 'child', n: 0, point: 'receipt.filing browser_read' },
-  { side: 'child', n: 0, point: 'judge.asked verdict' },
+  { side: 'child', n: 0, point: 'event workflow.judge.answered' },
   { side: 'child', n: 0, point: 'deliver.writing' },
   { side: 'supervisor', n: 0, point: 'browser.applied provider.release' },
   { side: 'supervisor', n: 0, point: 'browser.applying provider.status' },

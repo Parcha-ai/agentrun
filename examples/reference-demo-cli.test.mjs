@@ -16,17 +16,17 @@ import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, 
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('the spec\'s kills are a list: a named crossing and a storm, in order, each ending one process, and the run finishes with nothing paid twice', { timeout: 300_000 }, async (t) => {
-  const { result, recording } = await run(t, { kills: [{ point: 'judge.asked verdict', why: 'the judge is the call a kill would cost most' }, { storm: { kills: 2, gapMs: 0 } }] }, ['--kill', '--json']);
+  const { result, recording } = await run(t, { kills: [{ point: 'event workflow.judge.answered', why: 'killed with the judge\'s answer recorded: it is not asked again' }, { storm: { kills: 2, gapMs: 0 } }] }, ['--kill', '--json']);
   assert.deepEqual(result.processes.map((process) => process.signal), ['SIGKILL', 'SIGKILL', 'SIGKILL', null]);
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
   assert.deepEqual(result.kills.map((kill) => [kill.gen, kill.kind]), [[1, 'process'], [2, 'process'], [3, 'process']]);
-  assert.equal(result.kills[0].point, 'judge.asked verdict', 'the first kill landed on the crossing it named');
+  assert.equal(result.kills[0].point, 'event workflow.judge.answered', 'the first kill landed on the crossing it named');
   assert.deepEqual(validateRecording(recording), []);
   const lines = readEvents(recording);
   const killLines = lines.filter((line) => line.source === 'host' && line.kind === 'kill');
   assert.equal(killLines.length, 3);
   assert.deepEqual(killLines.map((line) => line.data.kind), ['process', 'process', 'process']);
-  assert.equal(killLines[0].data.crossing.point, 'judge.asked verdict');
+  assert.equal(killLines[0].data.crossing.point, 'event workflow.judge.answered');
   const counted = fold(lines);
   assert.deepEqual([counted.processes, counted.kills, counted.unknown], [4, 3, 0]);
   assert.equal(JSON.parse(readFileSync(join(recording, 'manifest.json'), 'utf8')).kills, 3);
@@ -277,7 +277,7 @@ test('every order a place is handed carries the demo\'s entry module and name in
   const tmp = await mkdtemp(join(tmpdir(), 'reference-order-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'demo.json');
-  writeFileSync(file, JSON.stringify({ name: 'order-demo', kills: [{ point: 'judge.asked verdict', why: 'to make a recover' }] }));
+  writeFileSync(file, JSON.stringify({ name: 'order-demo', kills: [{ point: 'event workflow.judge.answered', why: 'to make a recover' }] }));
   Object.assign(process.env, { DEMO_SPEC: file });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
@@ -296,7 +296,7 @@ test('every order a place is handed carries the demo\'s entry module and name in
 test('one fresh run id per invocation, shared by its processes: a second run of one demo on a shared disk finds none of the first\'s signals, and the manifest is written before the place is released', { timeout: 300_000 }, async (t) => {
   const shared = await mkdtemp(join(tmpdir(), 'reference-shared-disk-'));
   t.after(() => rm(shared, { recursive: true, force: true }));
-  const { options } = await killSpec(t);
+  const { options } = await killSpec(t, { kills: [{ point: 'event workflow.judge.answered', why: 'a kill and its resume' }] });
   const { localPlace } = await import('@parcha/agentrun-harness');
   const seen = [];
   const released = [];
