@@ -291,22 +291,25 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
   try {
-    // Backward through whole lines until one is the process's own: harness lines after it may run past any one read,
-    // and a read that starts inside a line has only its tail, which is no line at all.
+    // Backward until a whole line is the process's own: harness lines after it may run past any one read, and a read
+    // that starts inside a line has only its tail, which is no line at all. Each step looks only at the lines it
+    // completes; what was read is joined once, and failureLine, the one rule, picks the line from it.
     const { size } = await file.stat();
+    const chunks: Buffer[] = [];
     let start = size;
-    let tail = Buffer.alloc(0);
-    for (;;) {
+    // The oldest line read so far, torn at the read's start unless that is the file's start.
+    let head = Buffer.alloc(0);
+    while (start > 0 && size - start < LOG_REACH) {
       const from = Math.max(0, start - LOG_STEP);
       const { buffer } = await file.read(Buffer.alloc(start - from), 0, start - from, from);
-      tail = Buffer.concat([buffer, tail]);
       start = from;
-      const lines = tail.toString("utf8").split("\n");
-      const whole = start === 0 ? lines : lines.slice(1);
-      const own = ownLine(whole);
-      if (own !== undefined) return clip(inWords(own), 300);
-      if (start === 0 || size - start >= LOG_REACH) return clip(inWords(whole.findLast((line) => line.trim() !== "") ?? ""), 300);
+      chunks.unshift(buffer);
+      const newline = buffer.indexOf(0x0a);
+      const completed = start === 0 ? Buffer.concat([buffer, head]) : newline < 0 ? Buffer.alloc(0) : Buffer.concat([buffer.subarray(newline + 1), head]);
+      head = start === 0 ? Buffer.alloc(0) : newline < 0 ? Buffer.concat([buffer, head]) : buffer.subarray(0, newline);
+      if (ownLine(completed.toString("utf8").split("\n")) !== undefined) break;
     }
+    return clip(inWords(failureLine(Buffer.concat(chunks).subarray(head.length).toString("utf8"))), 300);
   } finally {
     await file.close();
   }

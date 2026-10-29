@@ -137,3 +137,27 @@ test("an array item past the first is serialized through its own toJSON before t
   assert.deepEqual(JSON.parse(lines[0]).items, [{ said: "it gave [redacted]" }, { said: "it gave [redacted]" }], "each item is what its toJSON gives, cut");
   for (const form of [awkward, JSON.stringify(awkward).slice(1, -1)]) assert.ok(!lines[0].includes(form), `${form} is not in the line`);
 });
+
+test("a failed run's message comes whole from a process line longer than one read, and an empty log gives none", async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const long = JSON.stringify({ at: "2026-10-29T05:00:00.000Z", event: "failed", message: `the store said ${"x".repeat(10_000)}` });
+  const harness = JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: "model proxy (openai): refused" });
+  await writeFile(join(dir, "process.log"), `{"event":"running"}\n${long}\n${harness}\n${harness}\n`);
+  assert.equal(await lastLogLine({ dir }), `failed: the store said ${"x".repeat(10_000)}`.slice(0, 299) + "…");
+  await writeFile(join(dir, "process.log"), "");
+  assert.equal(await lastLogLine({ dir }), "");
+});
+
+test("past the 1 MiB a failed run's message is looked for in, the last whole harness line is the message, never the torn line where the reach ends", async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // Lines of varying length, so the reach's start falls inside one (checked below): that line's tail is not a line.
+  const harness = (n) => JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: `model proxy (openai): refused ${n}`, pad: "y".repeat(n % 13) });
+  const lines = Array.from({ length: 14_000 }, (_, n) => harness(n));
+  const text = `{"event":"running","message":"started"}\n${lines.join("\n")}\n`;
+  const reach = Buffer.byteLength(text) - (1 << 20);
+  assert.ok(reach > 0 && text[reach - 1] !== "\n", "the reach starts inside a line");
+  await writeFile(join(dir, "process.log"), text);
+  assert.equal(await lastLogLine({ dir }), "harness: model proxy (openai): refused 13999");
+});
