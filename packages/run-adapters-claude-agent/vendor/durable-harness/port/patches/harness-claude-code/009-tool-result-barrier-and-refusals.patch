@@ -1,0 +1,153 @@
+Patch: 009-tool-result-barrier-and-refusals
+Reason: a call's tool_result entry can be awaited (resultBarrier), and a call the CLI refuses itself (a tool the session does not have) is a tool_refused live event told only once its answer is in the log
+Upstream: ours
+Pins: a tool the session doesn't have is refused by the CLI, kept in the store, and shown to the host as a failed call by its name; the node still delivers
+Pins: a refusal the CLI made reaches the host only once the session's store holds it
+---
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+index 28d3f2b..75eaa3e 100644
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -482,7 +482,18 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+         const input = new MessageQueue<UserMessage>();
+         /** User messages sent and not yet consumed by a turn (by `uuid`). */
+         const outstanding = new Set<string>();
+-        const transcript = new TranscriptBuilder({ message: (e) => store.message(e), live: (e) => ctx.live(e) });
++        const transcript = new TranscriptBuilder({
++          message: (e) => store.message(e),
++          // A refusal is told once its answer is in the log, as a host tool's end is told once its outcome is.
++          live: (e) => {
++            const refused = e as { type?: string; callId?: string };
++            if (refused.type !== 'tool_refused' || typeof refused.callId !== 'string') return ctx.live(e);
++            void store.resultBarrier(refused.callId, barrierMs).then(
++              () => ctx.live(e),
++              (error: unknown) => log('claude-agent: a refused call is not shown: its answer never reached the log', { callId: refused.callId, error: String((error as Error)?.message ?? error).slice(0, 200) })
++            );
++          },
++        });
+         const bridge = toolBridge(ctx, tools, {
+           // A `never` tool runs only once the assistant entry that asked for it is in the log.
+           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
+diff --git a/packages/harness-claude-code/src/store.ts b/packages/harness-claude-code/src/store.ts
+index 14adbbd..078f471 100644
+--- a/packages/harness-claude-code/src/store.ts
++++ b/packages/harness-claude-code/src/store.ts
+@@ -47,6 +47,14 @@ export function toolUseIds(entry: TranscriptLine | undefined): string[] {
+   return content.filter((c) => c?.type === 'tool_use' && typeof c.id === 'string').map((c) => c.id as string);
+ }
+ 
++/** The `tool_use_id`s a user entry answers (its `tool_result` blocks). */
++export function toolResultIds(entry: TranscriptLine | undefined): string[] {
++  if (entry?.type !== 'user') return [];
++  const content = (entry.message as { content?: unknown } | undefined)?.content;
++  if (!Array.isArray(content)) return [];
++  return content.filter((c) => c?.type === 'tool_result' && typeof c.tool_use_id === 'string').map((c) => c.tool_use_id as string);
++}
++
+ export interface JournalSessionStoreOptions {
+   /** The journal's records as of the drive's start, blobs resolved (`journal.read()`). */
+   records: JournalRecord[];
+@@ -78,6 +86,8 @@ export class JournalSessionStore {
+   private readonly calls = new Set<string>();
+   private readonly users = new Set<string>();
+   private readonly waiters = new Map<string, (() => void)[]>();
++  private readonly results = new Set<string>();
++  private readonly resultWaiters = new Map<string, (() => void)[]>();
+   private held: ({ stream: string; entry: TranscriptLine } | { message: TranscriptEntry })[] = [];
+   private timer: ReturnType<typeof setTimeout> | undefined;
+   private readonly coalesceMs: number;
+@@ -203,5 +213,33 @@ export class JournalSessionStore {
+       for (const w of this.waiters.get(id) ?? []) w();
+       this.waiters.delete(id);
+     }
++    for (const id of toolResultIds(entry)) {
++      this.results.add(id);
++      for (const w of this.resultWaiters.get(id) ?? []) w();
++      this.resultWaiters.delete(id);
++    }
++  }
++
++  /**
++   * Resolve once the user entry that answers `toolUseId` (its `tool_result`) is committed: a call the CLI answered
++   * itself (a refusal) is told to the host only once the log holds the answer. Rejects after `timeoutMs`.
++   */
++  async resultBarrier(toolUseId: string, timeoutMs: number): Promise<void> {
++    if (!this.results.has(toolUseId)) {
++      await new Promise<void>((resolve, reject) => {
++        const timer = setTimeout(() => {
++          const list = this.resultWaiters.get(toolUseId)?.filter((w) => w !== done) ?? [];
++          if (list.length) this.resultWaiters.set(toolUseId, list);
++          else this.resultWaiters.delete(toolUseId);
++          reject(new Error(`the transcript entry answering tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
++        }, timeoutMs);
++        const done = () => {
++          clearTimeout(timer);
++          resolve();
++        };
++        this.resultWaiters.set(toolUseId, [...(this.resultWaiters.get(toolUseId) ?? []), done]);
++      });
++    }
++    await this.flush();
+   }
+ }
+diff --git a/packages/harness-claude-code/src/transcript.ts b/packages/harness-claude-code/src/transcript.ts
+index 65851c9..aa9b275 100644
+--- a/packages/harness-claude-code/src/transcript.ts
++++ b/packages/harness-claude-code/src/transcript.ts
+@@ -42,7 +42,11 @@ export interface TurnEnd {
+   sessionId?: string;
+ }
+ 
+-type Block = { type?: string; text?: string; id?: string; name?: string };
++type Block = { type?: string; text?: string; id?: string; name?: string; input?: unknown };
++type ResultBlock = { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
++
++/** The CLI's own refusal of a call, before any hook or tool server sees it (a tool the session doesn't have, say). */
++const CLI_REFUSAL = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/;
+ // The SDK's message union, structurally (the SDK is a peer dependency).
+ type SdkMessage = { type: string; subtype?: string; parent_tool_use_id?: string | null; [k: string]: unknown };
+ 
+@@ -50,6 +54,10 @@ export class TranscriptBuilder {
+   private said = '';
+   private readonly written = new Set<string>();
+   private readonly waiters = new Map<string, (() => void)[]>();
++  /** Each call the model made, by its id: its name as the model gave it and its input. */
++  private readonly asked = new Map<string, { name: string; input: unknown }>();
++  /** Calls that reached the session's tool server (`beforeCall`): their error, whatever its text, is theirs, not a refusal. */
++  private readonly bridged = new Set<string>();
+ 
+   constructor(private readonly sink: TranscriptSink) {}
+ 
+@@ -65,7 +73,23 @@ export class TranscriptBuilder {
+       const content = (m.message as { content?: unknown } | undefined)?.content;
+       for (const block of Array.isArray(content) ? (content as Block[]) : []) {
+         if (block.type === 'text' && block.text) this.said = this.said ? `${this.said}\n\n${block.text}` : block.text;
+-        else if (block.type === 'tool_use' && block.id) this.call(block.id, bareToolName(block.name ?? 'tool'));
++        else if (block.type === 'tool_use' && block.id) {
++          this.asked.set(block.id, { name: bareToolName(block.name ?? 'tool'), input: block.input });
++          this.call(block.id, bareToolName(block.name ?? 'tool'));
++        }
++      }
++      return undefined;
++    }
++    if (m.type === 'user') {
++      // A call the CLI refused itself is answered at once with its error: the call never ran, and the host is told.
++      const content = (m.message as { content?: unknown } | undefined)?.content;
++      for (const block of Array.isArray(content) ? (content as ResultBlock[]) : []) {
++        if (block.type !== 'tool_result' || block.is_error !== true || !block.tool_use_id || this.bridged.has(block.tool_use_id)) continue;
++        const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? (block.content as { text?: string }[]).map((c) => c?.text ?? '').join('') : '';
++        const refused = CLI_REFUSAL.exec(text);
++        if (!refused) continue;
++        const asked = this.asked.get(block.tool_use_id);
++        this.sink.live({ type: 'tool_refused', callId: block.tool_use_id, name: asked?.name ?? 'tool', args: asked?.input ?? {}, reason: refused[1]!.replace(/^Error:\s*/, '').trim().slice(0, 300) });
+       }
+       return undefined;
+     }
+@@ -106,6 +130,7 @@ export class TranscriptBuilder {
+    * block before it calls the tool); after `waitMs`, by this.
+    */
+   async beforeCall(id: string, name: string, waitMs = 1000): Promise<void> {
++    this.bridged.add(id);
+     if (this.written.has(id)) return;
+     await new Promise<void>((resolve) => {
+       const timer = setTimeout(done, waitMs);

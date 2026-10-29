@@ -1,0 +1,51 @@
+Patch: 008-tool-description-max
+Reason: the CLI cuts an MCP tool's description at 2048 characters; the harness tells it the longest description among the session's tools, so the model reads each one whole
+Upstream: ours
+Pins: the host's tool schemas reach the model with every key and value, a long description reaches it whole, and an open object's arguments reach the tool as sent
+---
+diff --git a/packages/harness-claude-code/src/env.ts b/packages/harness-claude-code/src/env.ts
+index bbf4854..add679a 100644
+--- a/packages/harness-claude-code/src/env.ts
++++ b/packages/harness-claude-code/src/env.ts
+@@ -40,6 +40,11 @@ export interface DurableEnvOptions {
+   smallModel?: string;
+   /** The longest a Bash command may run (`BASH_MAX_TIMEOUT_MS`, and its default): `sandbox({ commandTimeoutMs })`. */
+   bashTimeoutMs?: number;
++  /**
++   * The longest of the session's tool descriptions. The CLI cuts an MCP tool's description at 2048 characters unless
++   * `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` says more; above that, it's set to this, so the model reads each one whole.
++   */
++  toolDescriptionMax?: number;
+   /**
+    * The app's own variables (`sandbox({ env })`, checked there and again at
+    * spawn): added under everything above, so none can replace the model
+@@ -66,6 +71,9 @@ export interface DurableEnvOptions {
+  *   (its model key) and the CLI's view of the VM (docs/workspaces.md §6).
+  *   It also drops the commit and PR instructions from the prompt.
+  */
++/** Where the pinned CLI cuts an MCP tool's description by default. */
++export const MCP_DESCRIPTION_CUT = 2048;
++
+ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
+   const { home, model } = options;
+   const small = options.smallModel ?? model;
+@@ -98,6 +106,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
+     CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1',
+     CLAUDE_AGENT_SDK_CLIENT_APP: 'agentrun-claude-agent',
+   });
++  if (options.toolDescriptionMax !== undefined && options.toolDescriptionMax > MCP_DESCRIPTION_CUT) env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(options.toolDescriptionMax);
+   if (options.bashTimeoutMs !== undefined) {
+     const max = Math.max(1_000, Math.floor(options.bashTimeoutMs));
+     env.BASH_MAX_TIMEOUT_MS = String(max);
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+index 8e3b226..28d3f2b 100644
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -633,6 +633,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+           ...(smallModel ? { smallModel } : {}),
+           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
+           ...(sandbox.env ? { extra: sandbox.env } : {}),
++          toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
+         });
+         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
+         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])];

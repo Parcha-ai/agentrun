@@ -1,0 +1,76 @@
+Patch: 011-session-skills
+Reason: a host's skills, from a local plugin, are listed to the model and loadable with the Skill tool, and no other; the PreToolUse hook takes a skill by its bare name and rewrites it to the plugin-qualified one
+Upstream: ours
+Pins: the Skill gate: a session skill by its qualified name is allowed as asked, by its bare name rewritten to the qualified one (never a bare name the CLI keeps), and any other name denied
+Pins: a host's skill: the Skill tool is offered, the model is shown that skill alone, and loading it puts its SKILL.md before the model
+---
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+index f15956b..b11a933 100644
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -35,6 +35,7 @@ import { sandboxSpawn } from './spawn.ts';
+ import { toolServer } from './host/tool-server.ts';
+ import { JournalSessionStore } from './store.ts';
+ import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.ts';
++import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.ts';
+ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.ts';
+ 
+ /**
+@@ -181,6 +182,12 @@ export interface ClaudeCodeHarnessOptions {
+   builtins?: ClaudeBuiltins;
+   /** More built-ins to turn off (tool names, added to `CLAUDE_BUILTINS_OFF`). */
+   disallowedTools?: string[];
++  /**
++   * Skills the model may load with the Skill tool: a local plugin directory (`plugin`: its `.claude-plugin/plugin.json`
++   * and `skills/<name>/SKILL.md`) and the plugin-qualified names enabled (`<plugin>:<name>`). Only those are listed to
++   * the model and loadable; the CLI's bundled skills, and any in its home, are not. Default none: the Skill tool is off.
++   */
++  skills?: { readonly plugin: string; readonly names: readonly string[] };
+   /**
+    * A built-in's replay policy: what the recovery note says about a call a
+    * crash interrupted ("safe to repeat", or "may have taken effect"), and
+@@ -375,6 +382,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+   const tools = options.tools ?? [];
+   const allowed = builtinTools(options.builtins);
+   const builtinsOn = allowed === undefined || allowed.length > 0;
++  const skills = options.skills?.names.length ? options.skills : undefined;
+   const model = nativeModelId(options.model ?? DEFAULT_MODEL);
+   const smallModel = options.smallModel ? nativeModelId(options.smallModel) : undefined;
+   const barrierMs = options.barrierMs ?? 10_000;
+@@ -558,6 +566,16 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+                 async (hook) => {
+                   try {
+                     if (hook.hook_event_name !== 'PreToolUse' || bridged(hook.tool_name)) return {};
++                    // A skill only loads text into the conversation: one of the session's own, by its plugin-qualified
++                    // name or by its bare one, which is rewritten to the qualified one so the record names what loaded.
++                    // A bare name the CLI keeps for itself (a command or bundled skill) is never mapped to the session's.
++                    if (skills && hook.tool_name === 'Skill') {
++                      const input = (hook.tool_input ?? {}) as { skill?: unknown };
++                      const asked = input.skill;
++                      const name = typeof asked === 'string' ? skills.names.find((n) => n === asked || (!CLAUDE_AGENT_CLI_SKILL_NAMES.has(asked) && n.slice(n.indexOf(':') + 1) === asked)) : undefined;
++                      if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
++                      return name === asked ? allow() : allow({ ...input, skill: name });
++                    }
+                     if (!builtinsOn) return deny("Not run: this session's only tools are its own.");
+                     if (ctx.signal.aborted) return deny('the session stopped');
+                     let updated: Record<string, unknown> | undefined;
+@@ -643,7 +661,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+           toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
+         });
+         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
+-        const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])];
++        const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
+         const sessionId = uuidFrom(ctx.runId);
+         const queryOptions: QueryOptions = {
+           model,
+@@ -652,7 +670,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+           // Built-ins on: the allowed ones (less those whose state the log does not carry), each let through by
+           // the PreToolUse hook once its intent is in the log. Off: the bridged tools are the only ones. Either
+           // way nothing is asked of a user, and nothing else is permitted.
+-          ...(allowed !== undefined ? { tools: allowed } : {}),
++          ...(allowed !== undefined ? { tools: skills ? [...allowed, 'Skill'] : allowed } : {}),
++          // The session's skills, from its own plugin: listed to the model and loadable, and no other.
++          ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
+           disallowedTools: disallowed,
+           hooks,
+           ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),

@@ -1,8 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/transcript.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun
-// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
-// From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/transcript.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
+// Changed by Parcha, imports rewritten for AgentRun; patches: 009-tool-result-barrier-and-refusals
 import type { TranscriptEntry } from './host/process.js';
 
 /**
