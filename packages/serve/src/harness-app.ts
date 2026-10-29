@@ -79,7 +79,8 @@ export interface AdapterRun {
 }
 
 /** The door and the open of a run whose session is `spec` on `adapter`, with the file tools `tools` names (built at the
- *  open, over the run's environment). `budgetUsd`: the run's spend cap. */
+ *  open, over the run's environment). `budgetUsd`: the run's spend cap. `cancelled`: whether the run was cancelled
+ *  (request-start.ts `cancelledIn`): once it says so, no model request leaves, as on pi. */
 export function adapterRun(
   make: (confine?: ConfineChild) => Promise<AgentAdapter>,
   harness: string,
@@ -89,14 +90,23 @@ export function adapterRun(
   tools: readonly string[] = [],
   dir?: string,
   cap?: CapGuard,
+  cancelled: () => boolean = () => false,
 ): AdapterRun {
-  // The run's cap refused a request: the turn ends on it, and its refusal is written as pi's is.
+  // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
-  const guard = cap && ((request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
-    const answer = cap.beforeRequest(request);
+  const CANCELLED = "the run was cancelled: the model request was not sent";
+  const guard = (request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
+    const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;
-  });
+  };
+  /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
+   *  cancel that lands between them still keeps the request from leaving. */
+  const cancelStop = (): Error | undefined => {
+    if (!cancelled()) return undefined;
+    refused ??= CANCELLED;
+    return new Error(CANCELLED);
+  };
   // A paid request whose cost could not be written: the booking admits no request after it, and the turn stops on it.
   let halted: Error | undefined;
   const results: ToolResults = new Map();
@@ -224,9 +234,10 @@ export function adapterRun(
     const out = new Map<number, ModelUsage>();
     let admitted = 0;
     for (const record of records) {
-      const data = (record.data ?? {}) as { turn?: number; usd?: number | null; cut?: boolean };
+      const data = (record.data ?? {}) as { turn?: number; usd?: number | null; cut?: boolean; unsent?: boolean };
       if (record.kind === RUNNER_RECORDS.request) admitted = typeof data.turn === "number" ? data.turn : admitted + 1;
-      else if (record.kind === RUNNER_RECORDS.turn) {
+      // A request withdrawn as its record was written (a stop came then) never left: it is no request of the run's.
+      else if (record.kind === RUNNER_RECORDS.turn && data.unsent !== true) {
         const request = typeof data.turn === "number" ? data.turn : admitted;
         out.set(request, { input: 0, output: 0, usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true });
       }
@@ -343,9 +354,9 @@ export function adapterRun(
       const booking = await modelPortFor(writer, {
         key: spec.key,
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
-        ...(guard ? { beforeRequest: guard as never } : {}),
+        beforeRequest: guard as never,
         onEvent: onModel,
-        stopped: () => halted,
+        stopped: () => halted ?? cancelStop(),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {

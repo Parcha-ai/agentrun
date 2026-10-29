@@ -531,6 +531,42 @@ test("close() while one request is in flight and another waits on the runner: ea
   assert.deepEqual(ends.sort((a, b) => a[0] - b[0]), [[1, null], [2, 0]], 'turn 1 cut by the close (unknown), turn 2 released at nothing: each once, under its own turn');
 });
 
+test("a stop that comes while a paid request's record is being written: the request never leaves, and it is booked withdrawn at a known $0, never cut", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const writer = await store.open('chat:stop');
+  // The check before the write has passed; the stop comes while the request's record is held in its write.
+  const writing = signal();
+  const stopping = signal();
+  const append = async (records) => {
+    if (records.some((r) => r.kind === RUNNER_RECORDS.request)) { writing.fire(); await stopping.wait('the stop'); }
+    return writer.append(records);
+  };
+  let stopped;
+  const booking = await modelPortFor(writer, { key: 'chat:stop', append, stopped: () => stopped });
+  let upstream = 0;
+  const fetchStub = async () => { upstream++; return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const sent = send(p.url, { path: '/v1/test?beta=true' });
+  await writing.wait("the request's record in its write");
+  stopped = new Error('the run was cancelled');
+  stopping.fire();
+  const res = await sent;
+  assert.equal(upstream, 0, 'nothing reached the provider');
+  assert.match(res.text, /the run was cancelled/, 'refused, by the stop');
+  const turns = (await store.read('chat:stop')).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data);
+  assert.deepEqual(turns, [{ turn: 1, usd: 0, unsent: true }], 'withdrawn, at $0');
+  // A later process: nothing to book as cut, and the session's spend is known.
+  const asked = [];
+  const next = await modelPortFor(writer, { key: 'chat:stop', beforeRequest: ({ spentUsd, turn }) => void asked.push({ turn, spentUsd }) });
+  await next.bookCut();
+  assert.equal((await store.read('chat:stop')).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).length, 0, 'never booked as cut');
+  await next.models.beforeRequest({ model: 'session-model' });
+  assert.deepEqual(asked, [{ turn: 2, spentUsd: 0 }], 'the next request is turn 2, at a known $0 spent');
+});
+
 test("each booked request carries the ids its response headers gave (a gateway's call id, the provider's request id), recorded when the headers arrive: a request a crash cut after them keeps them, one cut before them has none, and nothing else of the response is kept", async (t) => {
   const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
   const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
