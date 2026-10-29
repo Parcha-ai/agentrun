@@ -14,6 +14,9 @@ export interface JevClient {
 export type JevProvider = "typesafe" | "openrouter";
 const keyVariable: Record<JevProvider, string> = { typesafe: "TYPESAFE_API_KEY", openrouter: "OPENROUTER_API_KEY" };
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api";
+/** TypeSafe's published price for Jev, per https://docs.typesafe.ai/models (read 2026-10-29): $0.042 per million input
+ *  tokens for jev-1.13 and jev-1.14, and output tokens are free. jevProvider books a TypeSafe call at it as an estimate. */
+export const JEV_PUBLISHED_PRICING = Object.freeze({ inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 });
 const OPENROUTER_DEFAULT_MODEL = "~typesafe/jev-latest";
 
 /** The provider an environment's keys select: OpenRouter only when `OPENROUTER_API_KEY` is set and `TYPESAFE_API_KEY` is not. The runner itself never reads this. */
@@ -387,11 +390,15 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
  *  decision model through `judgeFromProvider`. A paid request is never sent twice: it runs with `maxAttempts: 1`, and a
  *  408, a 5xx or a connection error (the SDK cannot tell one before sending from one after) is `outcome_unknown`, at an
  *  unknown cost, and so is the cost of an `invalid_response` (a 200 that breaks the response rules was still answered); so is a deadline that ends the request in flight (the host's, or the runner's own `timeoutMs`). Only the
- *  host's own cancel is `aborted`. Its other errors become DecisionProviderErrors with the same message. The cost basis is "reported" for a cost with no configured price, and "estimate" when
- *  `pricing` is set, since the runner then reports either one as the cost. */
+ *  host's own cancel is `aborted`. Its other errors become DecisionProviderErrors with the same message. A cost the
+ *  response reports is booked "reported"; else the counted tokens are priced at `pricing`, by default TypeSafe's published
+ *  price on the TypeSafe route (none on OpenRouter's), and booked "estimate"; else the cost is unknown (null, never 0). */
 export function jevProvider(options: JevOptions = {}): DecisionProvider {
-  const judge = createJevRunner({ ...options, maxAttempts: 1 });
   const provider = options.provider ?? "typesafe";
+  if (options.pricing) requireConfig([options.pricing.inputUsdPerMillionTokens, options.pricing.outputUsdPerMillionTokens].every(n => Number.isFinite(n) && n >= 0), "Configured token prices must be finite nonnegative numbers.");
+  const pricing = options.pricing ?? (provider === "typesafe" ? JEV_PUBLISHED_PRICING : undefined);
+  // Priced here rather than by the runner, so a cost the response reports keeps its own basis.
+  const judge = createJevRunner({ ...options, pricing: undefined, maxAttempts: 1 });
   const capabilities: DecisionProvider["capabilities"] = {
     // No box question and no image input: a DecisionRequest carries no image, so the seam cannot send one.
     types: ["noul", "choice", "score"], inputs: ["text", "json"], evidence: "none", probability: "model", grounding: false,
@@ -405,9 +412,12 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
       const signal = deadline ? AbortSignal.any([ctx.signal, deadline]) : ctx.signal;
       try {
         const result = await judge({ ...request, signal, decisionId: ctx.decisionId });
+        const reported = typeof result.cost_usd === "number" ? result.cost_usd : null;
+        const estimate = reported === null && pricing && result.usage
+          ? (result.usage.input_tokens * pricing.inputUsdPerMillionTokens + result.usage.output_tokens * pricing.outputUsdPerMillionTokens) / 1_000_000 : null;
         return {
-          answers: result.answers, evidence: [], model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null,
-          cost_basis: typeof result.cost_usd !== "number" ? "unknown" : options.pricing ? "estimate" : "reported", provider_request_id: null,
+          answers: result.answers, evidence: [], model: result.model ?? null, usage: result.usage ?? null, cost_usd: reported ?? estimate,
+          cost_basis: reported !== null ? "reported" : estimate !== null ? "estimate" : "unknown", provider_request_id: null,
         };
       } catch (error) {
         if (!(error instanceof JevError)) throw new DecisionProviderError("http", "Jev request failed.");
