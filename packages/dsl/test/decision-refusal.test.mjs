@@ -33,6 +33,15 @@ test('a refusal is a valid answer to a noul, choice or score question', () => {
   validateAnswers(questions, { holds: refusal, pick: refusal, level: refusal });
 });
 
+test('a refusal carries nothing but its type: one with a value beside it is an answer_shape error', () => {
+  const questions = { holds: { type: 'noul', instructions: 'Does it hold?' } };
+  assert.throws(() => validateAnswers(questions, { holds: { type: 'refusal', noul: 0.9 } }), (error) => {
+    assert.ok(error instanceof SystemOneError, String(error));
+    assert.equal(error.responseReason, 'answer_shape');
+    return true;
+  });
+});
+
 test('a refused noul never decodes to false, and a refused choice never decodes to an option', () => {
   const questions = { holds: { type: 'noul', instructions: 'Does it hold?' }, pick: { type: 'choice', instructions: 'Which?', criteria: { a: null, b: null } } };
   assert.throws(() => answersToValue({ holds: refusal, pick: { type: 'choice', choice: 'a', probabilities: { a: 0.9, b: 0.1 }, confidence: 0.8 } }, questions), refusedError(['holds']));

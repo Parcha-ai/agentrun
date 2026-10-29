@@ -27,6 +27,14 @@ test('score confidence: neighbouring levels keep some, opposite ends none, one l
   close(deriveConfidence(scoreOf([1, 0, 0, 0, 0])), 1);
 });
 
+test('score confidence on a tie takes the lowest of the most likely levels as the mode', () => {
+  // Levels 0 and 1 tie at 0.4. From level 0: 0.4 * 1 + 0.2 * 2 = 0.8 over an even spread's 2/3, floored at 0.
+  // From level 1 it would be 0.4 + 0.2 = 0.6, giving 0.1.
+  close(deriveConfidence(scoreOf([0.4, 0.4, 0.2])), 0);
+  // Levels 1 and 2 tie: from level 1, 0.1 * 1 + 0.45 * 1 = 0.55 gives 1 - 0.55 / (2/3) = 0.175; from level 2 it is 0.1 * 2 + 0.45 = 0.65.
+  close(deriveConfidence(scoreOf([0.1, 0.45, 0.45])), 1 - 0.55 / (2 / 3));
+});
+
 test('missing or invalid probabilities derive nothing', () => {
   assert.equal(deriveConfidence({ type: 'choice', choice: 'a' }), null);
   assert.equal(deriveConfidence(choiceOf({ a: 'high', b: 0.1 }, 'a')), null);
