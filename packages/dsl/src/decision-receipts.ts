@@ -8,6 +8,10 @@ export const DECISION_RECEIPT_VERSION = 1;
 /** The escalation kind of a decision its provider refused: the run ends `escalated` at stage "decision", for a person. */
 export const DECISION_REFUSED = "decision_refused";
 
+/** The escalation kind of a run whose decision was asked by an earlier process and never answered there: it is routed to
+ *  review instead of being asked, and paid for, again. Its stage is `decision`. */
+export const DECISION_INTERRUPTED = "decision_interrupted";
+
 /** The typed questions the interpreter asks: the five question nodes and predicates, and a generative
  *  node's `verify` clause. */
 export type DecisionKind = "judge" | "pick" | "sift" | "route" | "ask" | "verify";

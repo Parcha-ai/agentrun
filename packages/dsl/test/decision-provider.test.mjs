@@ -4,8 +4,8 @@
 // question beyond what the provider declares it can answer is refused before the provider is asked.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { judgeFromProvider, DecisionProviderError, runWorkflow, DECISION_INTERRUPTED } from '../dist/index.js';
-import { DECISION_INTERRUPTED as RECOVERY_DECISION_INTERRUPTED } from '../dist/recovery/index.js';
+import { judgeFromProvider, DecisionProviderError, runWorkflow, DECISION_INTERRUPTED, DECISION_REFUSED } from '../dist/index.js';
+import { DECISION_INTERRUPTED as RECOVERY_DECISION_INTERRUPTED, DECISION_REFUSED as RECOVERY_DECISION_REFUSED } from '../dist/recovery/index.js';
 
 const capabilities = { types: ['noul', 'choice', 'score'], inputs: ['text', 'json'], evidence: 'citations', probability: 'model', grounding: true, replay: 'never', maxQuestions: 2, maxStateBytes: 1000 };
 const questions = { holds: { type: 'noul', instructions: 'Does it hold?' }, pick: { type: 'choice', instructions: 'Which?', criteria: { a: null, b: null } } };
@@ -87,6 +87,7 @@ test('a decision whose outcome is unknown after it was sent escalates as interru
   assert.deepEqual([result.escalation.kind, result.escalation.stage, result.escalation.label], ['decision_interrupted', 'decision', 'check']);
   assert.equal(result.escalation.kind, DECISION_INTERRUPTED, 'the one exported kind, from the main entry');
   assert.equal(DECISION_INTERRUPTED, RECOVERY_DECISION_INTERRUPTED, 'and the same constant recovery escalates with');
+  assert.deepEqual([DECISION_REFUSED, RECOVERY_DECISION_REFUSED], ['decision_refused', 'decision_refused'], 'both constants import from both entries');
   assert.match(result.escalation.summary, /"check"/);
   assert.equal(result.escalation.state.filing, 'case-9');
   assert.equal(asked, 1, 'it is not asked again');
