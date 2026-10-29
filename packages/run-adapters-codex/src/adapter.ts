@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { CallsInFlight, openAdapterSession, toolSchemaProblems } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AgentAdapter, HostTool, SessionSpec } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AgentAdapter, HostTool, SessionIO, SessionSpec } from "@parcha/agentrun-kernel";
 import type { HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { CODEX_VERSION } from "./binary.js";
 import { readCodeModeModels } from "./code-mode.js";
@@ -60,7 +60,7 @@ export interface CodexAdapterOptions {
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-function kernelTool(tool: HostTool, calls: CallsInFlight): KernelTool {
+function kernelTool(tool: HostTool, io: SessionIO, calls: CallsInFlight): KernelTool {
   return {
     name: tool.name,
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
@@ -68,14 +68,16 @@ function kernelTool(tool: HostTool, calls: CallsInFlight): KernelTool {
     description: describedDescription(tool.description, tool.inputSchema),
     inputSchema: tool.inputSchema,
     replay: tool.replay,
-    async execute(input, io) {
+    async execute(input, effect) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
-      const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      // In flight, and past the pause's check: a pause started now waits for this call's outcome rather than cutting it.
+      const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
+      // waits for this call rather than refusing it.
       calls.begin(callId);
       // A guard: a call begun during a pause is not run.
       if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
-      const result = await tool.call(input, { callId, signal: io.signal });
+      io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
+      const result = await tool.call(input, { callId, signal: effect.signal });
       if (result.isError) throw new Error(result.text);
       return result.text;
     },
@@ -86,7 +88,8 @@ function kernelTool(tool: HostTool, calls: CallsInFlight): KernelTool {
 function adapterEvent(event: unknown): AdapterEvent | undefined {
   const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
-  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
+  // A host tool's tool_start is the adapter's own (kernelTool), sent once the call is counted in flight: the bridge's, sent
+  // before that, is not passed on, so a pause the host starts on it never refuses the call.
   if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true };
   return undefined;
 }
@@ -153,7 +156,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const calls = new CallsInFlight();
       const effort = spec.effort ?? spec.thinking;
       const harnessOptions: CodexHarnessOptions = {
-        tools: spec.tools.map((tool) => kernelTool(tool, calls)),
+        tools: spec.tools.map((tool) => kernelTool(tool, io, calls)),
         builtins: false,
         model: modelFor(spec),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),

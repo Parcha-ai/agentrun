@@ -85,3 +85,27 @@ test('a session draining sends no new turn: send is refused until the pause is o
   await pausing;
   assert.equal(pay.runs, 1);
 });
+
+test('a pause the host starts on a tool_start waits for that call: it runs once, to its recorded outcome, never "was not run"', async (t) => {
+  const pay = charge(300);
+  const codex = bare(['call charge {"amount":5}']);
+  const spec = { key: 'step:pause', label: 'pay', system: [], tools: [pay.tool], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  let session;
+  let pausing;
+  // The host pauses the moment it hears the call started, as the runner's stop can.
+  const onEvent = (e) => { if (e.type === 'tool_start' && !pausing) pausing = session.interrupt({ drainMs: 5_000 }); };
+  session = await codex.open(spec, { writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent });
+  t.after(async () => { await session.interrupt().catch(() => {}); await session.close(); });
+  await session.send('pay');
+  for (let i = 0; !pausing; i++) {
+    assert.ok(i < 300, 'the host heard the call start');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await pausing;
+  assert.equal(pay.runs, 1, 'the call the host was told started ran once');
+  const ends = (await store.read('step:pause')).filter((r) => r.kind === 'kernel.end' && r.data.stepId?.startsWith('tool:')).map((r) => r.data);
+  assert.equal(ends.length, 1, JSON.stringify(ends));
+  assert.notEqual(ends[0].status, 'failed', `the call's outcome is recorded, not refused: ${JSON.stringify(ends[0])}`);
+});
