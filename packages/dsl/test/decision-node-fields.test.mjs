@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import * as dsl from '../dist/index.js';
+import { memoryStore, openRecovery, withRecovery } from '../dist/recovery/index.js';
 import { DecisionProviderError, runWorkflow, validateWorkflow } from '../dist/index.js';
 
 const SCHEMAS = {
@@ -113,7 +114,9 @@ test('T4: the provider\'s evidence travels with the answer to the sidecar, the r
 
 test('T5: a pinned model is part of what the decision is: changed, the decision is asked again; unpinned, its id is today\'s', async () => {
   const receipts = [];
-  const kept = { recordDecision: async (receipt) => { receipts.push(receipt); }, recovery: { decision: async (id) => receipts.find((receipt) => receipt.id === id && receipt.status === 'answered') } };
+  // A host that keeps decision receipts and nothing else: every run starts again, and answers from the receipts it kept.
+  const kept = { recordDecision: async (receipt) => { receipts.push(receipt); }, recovery: { supportsExecutionPaths: true, resume: async () => undefined, commit: async () => {},
+    pollStartedAt: () => Date.now(), wait: async () => {}, decision: async (id) => receipts.find((receipt) => receipt.id === id && receipt.status === 'answered') } };
   const parallel = provider('parallel');
   for (const model of ['base-1', 'base-1', 'base-2']) {
     const outcome = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', model })]), INPUT, { ...hosted([parallel]), ...kept }));
@@ -126,6 +129,17 @@ test('T5: a pinned model is part of what the decision is: changed, the decision 
   assert.deepEqual(plain, [UNPINNED_ID]);
 });
 const UNPINNED_ID = 'f680dbb73881784a417934253f4228aaef909b0626ef0ccbbc6975230bc9448f';
+
+test('T5b: under recovery, a decision\'s request record carries the model the node pins', async () => {
+  const workflow = doc([judge({ provider: 'parallel', model: 'base-1' })]);
+  const store = memoryStore();
+  const driver = await openRecovery(store, workflow, { key: 'run-1' });
+  try { assert.equal((await runWorkflow(workflow, INPUT, withRecovery(driver, hosted([provider('parallel')])))).status, 'complete'); }
+  finally { await driver.close(); }
+  const reopened = await openRecovery(store, workflow, { key: 'run-1' });
+  try { assert.deepEqual(Object.values(reopened.decisionRequests()).map((request) => [request.status, request.model]), [['answered', 'base-1']]); }
+  finally { await reopened.close(); }
+});
 
 test('T7: a call cut by its node\'s own timeoutMs after it was sent is outcome_unknown: booked at the list-price estimate, never asked again, and the run goes to review', async () => {
   const LIST_PRICE = 0.004;
@@ -150,7 +164,8 @@ test('T6: the published schema and the author guide carry the four fields', () =
   const nodes = [];
   const walk = (value) => {
     if (!value || typeof value !== 'object') return;
-    if (value.properties?.node?.const && ['judge', 'pick', 'sift', 'route'].includes(value.properties.node.const)) nodes.push(value);
+    // A route by value reads its branch from state and asks nothing: it takes no decision fields.
+    if (value.properties?.node?.const && ['judge', 'pick', 'sift', 'route'].includes(value.properties.node.const) && !value.required?.includes('valuePath')) nodes.push(value);
     for (const child of Object.values(value)) walk(child);
   };
   walk(schema);
