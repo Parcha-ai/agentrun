@@ -385,6 +385,8 @@ test("a blob write goes through the drive's queue too: it waits behind an append
   holdNext = true;
   const submitting = drive.submit({ id: 'p', kind: 'prompt', text: 'hi' });
   const blob = writeBlob(drive.world, 'run-1', 'x'.repeat(10), { pieceChars: 4 });
+  for (const end = Date.now() + 5_000; calls.length === 0; await new Promise((resolve) => setTimeout(resolve, 2))) if (Date.now() > end) throw new Error("timed out waiting for the submit's append");
+  // A window for the blob's append, which must not come yet; it can only miss one, never fail the test by itself.
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(calls, [KERNEL_RECORDS.submission], 'the blob waits for the submit');
   release();
