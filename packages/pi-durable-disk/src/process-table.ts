@@ -139,6 +139,13 @@ function psLine(line: string): [number, ProcessInfo] | null {
   return f[3]!.startsWith("Z") ? null : [pid!, { ppid: ppid!, pgrp: pgrp!, start }];
 }
 
+/** The environment words of a `ps -E` line, given the same process's arguments line: none unless the arguments open it
+ *  exactly (a process that exec'd between the two reads proves nothing). */
+function environmentOf(args: string, all: string): string[] {
+  if (!all.startsWith(args)) return [];
+  return all.slice(args.length).split(/\s+/).filter(Boolean);
+}
+
 /** The table on macOS: `ps` and `sysctl`, through `run` (for tests). */
 export function psTable(run: CommandRunner = runCommand): ProcessTable {
   let boot: string | undefined;
@@ -154,20 +161,33 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         info: (pid) => rows.get(pid),
         children: (pid) => [...rows].filter(([, info]) => info.ppid === pid).map(([child]) => child),
         group: (pgrp) => [...rows].filter(([, info]) => info.pgrp === pgrp).map(([pid]) => pid),
-        // `-E` prints the environment the process was started with after its arguments, separated by spaces; a mark is
-        // a name and a UUID, which hold none.
+        // `-E` prints the arguments, then the environment the process was started with, separated by spaces; a mark is
+        // a name and a UUID, which hold none. Only the environment counts: the arguments are read on their own (without
+        // `-E`) and must open the `-E` line exactly, or the process exec'd between the two reads and nothing is proven.
+        // A mark in a process's arguments (a command that names the token) is never one.
         marked(pid, name, value) {
           try {
-            return run(PS, ["-ww", "-E", "-p", String(pid), "-o", "command="]).split(/\s+/).includes(`${name}=${value}`);
+            const args = run(PS, ["-ww", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
+            const all = run(PS, ["-ww", "-E", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
+            return environmentOf(args, all).includes(`${name}=${value}`);
           } catch {
             return false;
           }
         },
-        // One listing of every process with its environment: a mark is one word in it (see `marked`).
+        // Two listings of every process, with and without its environment: a mark is one word of the environment part
+        // (see `marked`).
         withMark(name, value) {
+          const args = new Map<number, string>();
+          for (const line of run(PS, ["-ww", "-A", "-o", "pid=,command="]).split("\n")) {
+            const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
+            if (m) args.set(Number(m[1]), m[2]!);
+          }
           return run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]).split("\n").flatMap((line) => {
-            const [pid, ...words] = line.trim().split(/\s+/);
-            return rows.has(Number(pid)) && words.includes(`${name}=${value}`) ? [Number(pid)] : [];
+            const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
+            if (!m) return [];
+            const pid = Number(m[1]);
+            const own = args.get(pid);
+            return rows.has(pid) && own !== undefined && environmentOf(own, m[2]!).includes(`${name}=${value}`) ? [pid] : [];
           });
         },
         commandLine(pid) {

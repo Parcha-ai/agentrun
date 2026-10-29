@@ -429,21 +429,55 @@ describe("command records, from a scripted /proc", () => {
 describe("command records, from a scripted ps (macOS)", () => {
   /** A ps and sysctl that answer from `rows()` (`pid ppid pgid second`: the second it started at) and `environments`; a
    *  row's state is `S` unless `options.states` names another (`Z`: a zombie). */
-  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string> } = {}): CommandRunner {
+  /** `environments`: a process's `ps -E -o command=` line (arguments, then environment). Its arguments alone (`ps -o
+   *  command=`) are `argv[pid]` when given, else the words before the first NAME=value word. */
+  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string> } = {}): CommandRunner {
     const lstart = (second: number) => `Thu Oct 15 06:00:${String(second).padStart(2, "0")} 2026`;
+    const argvOf = (pid: number, text: string) => {
+      if (options.argv?.[pid] !== undefined) return options.argv[pid]!;
+      const words = text.trim().split(/\s+/);
+      const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+      return (env < 0 ? words : words.slice(0, env)).join(" ");
+    };
     return (file, args) => {
       if (file === "/usr/sbin/sysctl") return "boot-1\n";
       if (args.includes("-E") && args.includes("-A") && options.failMarks) throw new Error("ps: cannot list environments");
+      if (args.includes("-A") && args.includes("pid=,command=")) {
+        return rows().flatMap(([pid]) => {
+          const text = environments[pid!];
+          if (text === undefined) return [];
+          return [`${pid} ${args.includes("-E") ? text.trim() : argvOf(pid!, text)}`];
+        }).join("\n");
+      }
       if (args.includes("-A")) {
         if (options.failListing) throw new Error("ps: cannot list processes");
         return rows().map(([pid, ppid, pgrp, second]) => `${pid} ${ppid} ${pgrp} ${options.states?.[pid!] ?? "S"} ${lstart(second!)}`).join("\n");
       }
-      const text = environments[Number(args[args.indexOf("-p") + 1])];
+      const pid = Number(args[args.indexOf("-p") + 1]);
+      const text = environments[pid];
       if (text === undefined) throw new Error("no such process");
-      return text;
+      return args.includes("-E") ? text : `${argvOf(pid, text)}\n`;
     };
   }
   const startAt = (second: number) => Date.UTC(2026, 9, 15, 6, 0, second) / 1000;
+
+  it("a mark is read from a process's environment only: a token in its arguments is none, and a process that exec'd between the two reads proves nothing", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    const rows = [[4400, 1, 4400, 5], [4401, 1, 4401, 6], [4402, 1, 4402, 7]];
+    const environments: Record<number, string> = {
+      // Its arguments name the token; its environment does not.
+      4400: `/bin/echo ${word} HOME=/Users/a\n`,
+      // It exec'd between the two reads: its arguments were `sh -c held`, the -E line is the new program's.
+      4401: `sleep 600 ${word} HOME=/Users/a\n`,
+      // Its environment holds the mark.
+      4402: `sleep 600 HOME=/Users/a ${word}\n`,
+    };
+    const table = psTable(scriptedPs(() => rows, environments, { argv: { 4400: `/bin/echo ${word}`, 4401: "sh -c held" } }));
+    const look = table.snapshot();
+    assert.deepEqual([4400, 4401, 4402].map((pid) => look.marked(pid, COMMANDS_MARK, token)), [false, false, true]);
+    assert.deepEqual(look.withMark(COMMANDS_MARK, token), [4402]);
+  });
 
   it("a listing of marks that fails stops the reap and keeps the mark: no command is taken for gone on a failed read", async () => {
     const dir = scratchRoot("commands-ps-mark-fails");
@@ -724,10 +758,13 @@ describe("a recorder's mark", () => {
     const token = randomUUID();
     const mark = join(records, `mark-${token}.json`);
     // The command carries its mark only once it has exec'd: before, a spawned child still has this process's environment.
-    // It starts unmarked, held on a fifo in front of the exec that gives it the mark, so the test sees that window.
+    // It starts unmarked, held on a fifo in front of the exec that gives it the mark, so the test sees that window. The
+    // token comes under another name and is exported only after the hold, so neither the held process's environment nor
+    // its arguments hold `PI_DURABLE_DISK_COMMANDS=<token>` (macOS reads a mark from ps -E, arguments and environment).
     const fifo = join(dir.root, "go");
     spawnSync("mkfifo", [fifo]);
-    const child = spawn("/bin/sh", ["-c", `read _ < '${fifo}'; exec env ${COMMANDS_MARK}=${token} /bin/sh -c 'sleep 600 & exec sleep 600'`], { detached: true, stdio: "ignore" });
+    const held = `read _ < '${fifo}'; export ${COMMANDS_MARK}="$HELD_TOKEN"; unset HELD_TOKEN; exec /bin/sh -c 'sleep 600 & exec sleep 600'`;
+    const child = spawn("/bin/sh", ["-c", held], { detached: true, stdio: "ignore", env: { ...process.env, HELD_TOKEN: token } });
     const pid = child.pid ?? 0;
     const marked = () => processTable().snapshot().marked(pid, COMMANDS_MARK, token);
     try {
