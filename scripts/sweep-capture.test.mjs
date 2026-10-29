@@ -22,8 +22,8 @@ mkdirSync(dirname(long), { recursive: true });
 writeFileSync(short, body);
 writeFileSync(long, body);
 
-const record = (script, directory) => new Promise((resolve, reject) => {
-  const child = spawn(process.execPath, ['--import', register, script], {
+const record = (script, directory, preloads = []) => new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, [...preloads.flatMap((file) => ['--import', file]), '--import', register, script], {
     stdio: 'ignore', env: { ...process.env, LEAN_SWEEP_DIR: directory, NODE_OPTIONS: '' },
   });
   child.on('error', reject);
@@ -62,4 +62,38 @@ test('the collector skips a temporary file left by a process that died before it
   const done = spawnSync(process.execPath, ['--import', spy, join(root, 'spec/lean/sweep/collect.mjs'), out], { encoding: 'utf8' });
   assert.equal(done.status, 0, done.stderr);
   assert.ok(JSON.parse(readFileSync(out, 'utf8')).length > 0);
+});
+
+// The race above needs a fast disk to show; this does not. A spy preload records every path the capture writes and every
+// rename, so the test can say how a capture reaches its final name, whatever the timing.
+const fsSpy = join(scratch, 'fs-spy.mjs');
+writeFileSync(fsSpy, [
+  "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+  "const fs = createRequire(import.meta.url)('node:fs');",
+  "const { writeFileSync, renameSync, openSync, writeSync } = fs;",
+  "const out = openSync(process.env.SPY_LOG, 'a');",
+  "const log = (entry) => writeSync(out, `${JSON.stringify({ pid: process.pid, ...entry })}\\n`);",
+  "fs.writeFileSync = (path, ...rest) => { log({ op: 'write', path: String(path) }); return writeFileSync(path, ...rest); };",
+  "fs.renameSync = (from, to) => { log({ op: 'rename', from: String(from), to: String(to) }); return renameSync(from, to); };",
+  'syncBuiltinESMExports();',
+].join('\n'));
+
+test('a capture reaches its final name only by a rename from a temporary name that carries the writer\'s pid', async () => {
+  const directory = join(scratch, 'spied');
+  mkdirSync(directory);
+  const logFile = join(scratch, 'spy.jsonl');
+  writeFileSync(logFile, '');
+  const spawned = spawn(process.execPath, ['--import', fsSpy, '--import', register, short], {
+    stdio: 'ignore', env: { ...process.env, LEAN_SWEEP_DIR: directory, SPY_LOG: logFile, NODE_OPTIONS: '' },
+  });
+  await new Promise((resolve, reject) => { spawned.on('error', reject); spawned.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`exited ${code}`)))); });
+  const calls = readFileSync(logFile, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const renames = calls.filter((call) => call.op === 'rename' && call.to.startsWith(directory));
+  assert.equal(renames.length, 1, 'one capture, one rename');
+  const [{ from, to, pid }] = renames;
+  assert.match(to, /[/][0-9a-f]{24}[.]json$/, 'the rename lands on the capture\'s final name');
+  assert.equal(pid, spawned.pid, 'the spy ran in the capturing process');
+  assert.match(from, new RegExp(`[/][0-9a-f]{24}[.]${pid}[.]\\d+[.]tmp$`), 'the temporary name carries the writer\'s pid');
+  assert.deepEqual(calls.filter((call) => call.op === 'write' && call.path.endsWith('.json')), [], 'the final name is never written to directly');
+  assert.ok(calls.some((call) => call.op === 'write' && call.path === from), 'the body is written to the temporary name');
 });
