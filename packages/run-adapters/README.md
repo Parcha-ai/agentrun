@@ -17,7 +17,10 @@ harness adapter the way they run on Pi, durable in AgentRun's own store.
   Agent adapter does), and then the node fails `aborted`. Run again with the same step, it resumes from its records: a
   call that finished during the pause is never run, or paid for, again.
 - `AgentAdapter` is the interface a harness implements: `check` refuses a session before anything is spent (a fork it
-  cannot make), and `open` restores a session from its records.
+  cannot make), and `open` restores a session from its records. A session `open` found cut off inside a turn
+  (`state: "open_turn"`) is either resumed (`recover`) or settled (`settleOpenTurn`): ended `interrupted` in its
+  records, its input not yet placed withdrawn, nothing sent, so no later open resumes it. A host settles a turn that is
+  over, such as a follow-up whose prompt was already sent once.
 - `SessionStore` is the run's store for sessions. A session is written only through a writer, and `open(key)` takes the
   session: every writer opened earlier for that key is fenced from then on, and its appends are refused
   (`SessionFenced`) with nothing written. The runner opens one writer per attempt and hands it to the adapter, so a

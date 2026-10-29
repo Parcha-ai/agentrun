@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { serialWriter } from "./host/serial.js";
 import { openDrive, pendingSubmissions, Restart, type Drive } from "./kernel/index.js";
-import { recoveryNote, transcriptOf } from "./process/index.js";
+import { NativeJournal, recoveryNote, transcriptOf } from "./process/index.js";
 import type { AdapterSession, SessionIO, TurnStatus } from "./types.js";
 
 /** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause waits for these to have
@@ -119,6 +119,17 @@ export async function openAdapterSession(options: AdapterSessionOptions): Promis
       if (state !== "open_turn") throw new Error(`${name}: there is no turn to recover`);
       await ready();
       void run();
+    },
+    async settleOpenTurn() {
+      if (state !== "open_turn") throw new Error(`${name}: there is no turn to settle`);
+      await ready();
+      // Input sent for the cut turn and never placed: withdrawn, so no later turn places it.
+      for (const submission of pendingSubmissions(drive.state())) await drive.submit({ id: randomUUID(), kind: "withdraw", target: submission.id });
+      const journal = new NativeJournal(drive);
+      journal.message({ type: "turn", status: "interrupted", error: "settled: the turn a crash cut off was ended, not resumed" });
+      await journal.flush();
+      state = "idle";
+      io.onEvent({ type: "turn_end", status: "interrupted" });
     },
     async turnEnd() {
       if (!running) throw new Error(`${name}: no turn is in flight`);

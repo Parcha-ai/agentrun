@@ -152,6 +152,9 @@ export interface AdapterSession {
   send(text: string): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
+  /** End the turn a crash cut off without resuming it: recorded ended `interrupted`, its input not yet placed withdrawn,
+   *  and nothing sent, so no later open resumes it. Only when `state` is `open_turn`; the session is `idle` after. */
+  settleOpenTurn(): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the
