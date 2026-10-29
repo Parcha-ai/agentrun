@@ -139,11 +139,23 @@ function psLine(line: string): [number, ProcessInfo] | null {
   return f[3]!.startsWith("Z") ? null : [pid!, { ppid: ppid!, pgrp: pgrp!, start }];
 }
 
-/** The environment words of a `ps -E` line, given the same process's arguments line: none unless the arguments open it
- *  exactly (a process that exec'd between the two reads proves nothing). */
-function environmentOf(args: string, all: string): string[] {
-  if (!all.startsWith(args)) return [];
-  return all.slice(args.length).split(/\s+/).filter(Boolean);
+/** The environment words of a `ps -E` line, given the process's arguments read before it and again after it: none unless
+ *  the two reads agree and open the `-E` line exactly. A process that exec'd between the reads proves nothing, even into
+ *  arguments that extend the old ones (`sh -c held` becoming `sh -c held NAME=value`), whose added words would otherwise
+ *  read as its environment. */
+function environmentOf(before: string, all: string, after: string | undefined): string[] {
+  if (after !== before || !all.startsWith(before)) return [];
+  return all.slice(before.length).split(/\s+/).filter(Boolean);
+}
+
+/** Every process's arguments, from one `ps -A` listing without its environment. */
+function argumentsListing(run: CommandRunner): Map<number, string> {
+  const args = new Map<number, string>();
+  for (const line of run(PS, ["-ww", "-A", "-o", "pid=,command="]).split("\n")) {
+    const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
+    if (m) args.set(Number(m[1]), m[2]!);
+  }
+  return args;
 }
 
 /** The table on macOS: `ps` and `sysctl`, through `run` (for tests). */
@@ -163,31 +175,31 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         group: (pgrp) => [...rows].filter(([, info]) => info.pgrp === pgrp).map(([pid]) => pid),
         // `-E` prints the arguments, then the environment the process was started with, separated by spaces; a mark is
         // a name and a UUID, which hold none. Only the environment counts: the arguments are read on their own (without
-        // `-E`) and must open the `-E` line exactly, or the process exec'd between the two reads and nothing is proven.
-        // A mark in a process's arguments (a command that names the token) is never one.
+        // `-E`) before and after it, and must be the same both times and open the `-E` line exactly, or the process
+        // exec'd between the reads and nothing is proven. A mark in a process's arguments (a command that names the
+        // token) is never one.
         marked(pid, name, value) {
           try {
-            const args = run(PS, ["-ww", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
+            const argsOf = () => run(PS, ["-ww", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
+            const before = argsOf();
             const all = run(PS, ["-ww", "-E", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
-            return environmentOf(args, all).includes(`${name}=${value}`);
+            return environmentOf(before, all, argsOf()).includes(`${name}=${value}`);
           } catch {
             return false;
           }
         },
-        // Two listings of every process, with and without its environment: a mark is one word of the environment part
-        // (see `marked`).
+        // Every process's arguments, then every process with its environment, then the arguments again: a mark is one
+        // word of the environment part (see `marked`).
         withMark(name, value) {
-          const args = new Map<number, string>();
-          for (const line of run(PS, ["-ww", "-A", "-o", "pid=,command="]).split("\n")) {
-            const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
-            if (m) args.set(Number(m[1]), m[2]!);
-          }
-          return run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]).split("\n").flatMap((line) => {
+          const before = argumentsListing(run);
+          const all = run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]);
+          const after = argumentsListing(run);
+          return all.split("\n").flatMap((line) => {
             const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
             if (!m) return [];
             const pid = Number(m[1]);
-            const own = args.get(pid);
-            return rows.has(pid) && own !== undefined && environmentOf(own, m[2]!).includes(`${name}=${value}`) ? [pid] : [];
+            const own = before.get(pid);
+            return rows.has(pid) && own !== undefined && environmentOf(own, m[2]!, after.get(pid)).includes(`${name}=${value}`) ? [pid] : [];
           });
         },
         commandLine(pid) {

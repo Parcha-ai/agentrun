@@ -431,10 +431,19 @@ describe("command records, from a scripted ps (macOS)", () => {
    *  row's state is `S` unless `options.states` names another (`Z`: a zombie). */
   /** `environments`: a process's `ps -E -o command=` line (arguments, then environment). Its arguments alone (`ps -o
    *  command=`) are `argv[pid]` when given, else the words before the first NAME=value word. */
-  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string> } = {}): CommandRunner {
+  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string | string[]> } = {}): CommandRunner {
     const lstart = (second: number) => `Thu Oct 15 06:00:${String(second).padStart(2, "0")} 2026`;
+    // A list of arguments answers the process's reads without -E in turn, its last answer from then on: a process that
+    // exec'd between two reads.
+    const reads = new Map<number, number>();
     const argvOf = (pid: number, text: string) => {
-      if (options.argv?.[pid] !== undefined) return options.argv[pid]!;
+      const given = options.argv?.[pid];
+      if (Array.isArray(given)) {
+        const n = reads.get(pid) ?? 0;
+        reads.set(pid, n + 1);
+        return given[Math.min(n, given.length - 1)]!;
+      }
+      if (given !== undefined) return given;
       const words = text.trim().split(/\s+/);
       const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
       return (env < 0 ? words : words.slice(0, env)).join(" ");
@@ -477,6 +486,18 @@ describe("command records, from a scripted ps (macOS)", () => {
     const look = table.snapshot();
     assert.deepEqual([4400, 4401, 4402].map((pid) => look.marked(pid, COMMANDS_MARK, token)), [false, false, true]);
     assert.deepEqual(look.withMark(COMMANDS_MARK, token), [4402]);
+  });
+
+  it("a process that exec'd between the reads into arguments that extend its old ones is not marked by the words it added", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    const rows = [[4500, 1, 4500, 5]];
+    // Its arguments were `sh -c held`; it exec'd into `sh -c held <mark>`, which the old arguments open, and the -E line is
+    // the new program's. Only the arguments read after the -E line show the exec.
+    const environments: Record<number, string> = { 4500: `sh -c held ${word} LANG=C\n` };
+    const argv = { 4500: ["sh -c held", `sh -c held ${word}`] };
+    assert.equal(psTable(scriptedPs(() => rows, environments, { argv })).snapshot().marked(4500, COMMANDS_MARK, token), false);
+    assert.deepEqual(psTable(scriptedPs(() => rows, environments, { argv })).snapshot().withMark(COMMANDS_MARK, token), []);
   });
 
   it("a listing of marks that fails stops the reap and keeps the mark: no command is taken for gone on a failed read", async () => {
