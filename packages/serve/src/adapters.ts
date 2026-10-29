@@ -38,12 +38,14 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
     .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string);
   const cut = (text: string) => secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
-  // Every string is cut before it is serialized: JSON escapes a quote or a backslash, and a secret holding one would
-  // no longer match in the line. The line itself is cut too, for a secret in a field's name.
+  // Every string is cut before it is serialized, field names included: JSON escapes a quote or a backslash, and a
+  // secret holding one would no longer match in the line. An object that serializes itself (toJSON) is cut as what it
+  // gives. The line is cut again after, as a backstop.
   const scrub = (value: unknown): unknown => {
     if (typeof value === "string") return cut(value);
+    if (value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") return scrub((value as { toJSON(): unknown }).toJSON());
     if (Array.isArray(value)) return value.map(scrub);
-    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [name, scrub(inner)]));
+    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [cut(name), scrub(inner)]));
     return value;
   };
   return (message: string, fields: Record<string, unknown> = {}): void => {

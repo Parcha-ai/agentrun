@@ -97,3 +97,15 @@ test("an empty or short value under a key-shaped name cuts nothing: an unset var
   assert.equal(said.message, "model proxy (openai): abc1234 refused");
   assert.ok(!lines[0].includes("[redacted]"));
 });
+
+test("a key holding a quote or a backslash is cut out of a field's name too, at the top level and nested, and out of what an object's toJSON gives", () => {
+  const lines = [];
+  const awkward = `not-a-secret-${'n"a\\me'}`;
+  const log = harnessLog("codex", { OPENAI_API_KEY: awkward }, (line) => lines.push(line));
+  log("model proxy (openai): refused", { [awkward]: 1, nested: { [`x-${awkward}`]: [{ [awkward]: true }] }, made: { toJSON: () => ({ said: `it was ${awkward}` }) } });
+  const said = JSON.parse(lines[0]);
+  assert.equal(said["[redacted]"], 1);
+  assert.deepEqual(said.nested, { "x-[redacted]": [{ "[redacted]": true }] });
+  assert.deepEqual(said.made, { said: "it was [redacted]" });
+  for (const form of [awkward, JSON.stringify(awkward).slice(1, -1)]) assert.ok(!lines[0].includes(form), `${form} is not in the line`);
+});
