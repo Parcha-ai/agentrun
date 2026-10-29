@@ -18,6 +18,8 @@ const CLAUDE_MODEL = "claude-haiku-4-5";
 async function gateway(t) {
   const seen = [];
   const server = createServer(async (req, res) => {
+    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
     let body = "";
     for await (const chunk of req) body += chunk;
     seen.push(req.url);
