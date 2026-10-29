@@ -106,7 +106,7 @@ export function App() {
       {(where.section === "operator" || where.section === "playground") && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "operator"
-        ? agents && <Operator agents={agents} error={error} onStart={async (agentId, text, key) => { const r = await send(agentId, { input: { content: text } }, key); if (r.runId) { go(`#/runs/${encodeURIComponent(r.runId)}`); return null; } return (r.body as { error?: { message?: string } }).error?.message ?? `The server answered ${r.status}.`; }} />
+        ? agents && <Operator agents={agents} error={error} onSend={send} onStarted={(id) => go(`#/runs/${encodeURIComponent(id)}`)} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)} />
         : where.section === "agents"

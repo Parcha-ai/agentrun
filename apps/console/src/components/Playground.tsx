@@ -2,7 +2,7 @@ import { ArrowRight, Copy, Play } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
-import { curlFor, keeper, type StartBody, startBody, started } from "@/lib/runStart";
+import { curlFor, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { cn } from "@/lib/utils";
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
@@ -48,11 +48,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const send = async () => {
     if (!built.ok || !onSend) return;
     setSending(true);
-    const r = await onSend(agentId, built.body, key);
+    const r = await submitStart(keys, agentId, built.body, onSend);
     setSending(false); setResult(r); setPane("response");
-    // A run started (2xx): the next send is a new request. A refusal or a lost answer keeps the key, so a retry is the
-    // same request and the server answers with the run it may have started.
-    if (started(r.status)) keys.done();
   };
   const placeholder = kind === "agentic" ? "The run's first message, e.g. Summarize the standup: we ship Friday." : '{ "subject": "...", "body": "..." }';
   return (

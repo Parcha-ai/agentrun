@@ -1,10 +1,16 @@
 import { ArrowUp } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Agent } from "@/lib/agentForm";
-import { keeper, startBody } from "@/lib/runStart";
+import { keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 
 /** The hosted console's Operator: one composer. Pick an agent, give it its first message, and the run starts and opens. */
-export function Operator({ agents, onStart, error }: { agents: Agent[]; onStart?: (agentId: string, text: string, key: string) => Promise<string | null>; error?: string | null }) {
+export function Operator({ agents, onSend, onStarted, error }: {
+  agents: Agent[];
+  /** Sends the start; resolves with the server's answer (its status, and the run when it started). */
+  onSend?: (agentId: string, body: StartBody, key: string) => Promise<{ status: number; runId?: string; body?: unknown }>;
+  onStarted?: (runId: string) => void;
+  error?: string | null;
+}) {
   const agentic = agents.filter((a) => a.kind === "agentic" && !a.archived_at);
   const [agentId, setAgentId] = useState(agentic[0]?.agent_id ?? "");
   const [text, setText] = useState("");
@@ -15,11 +21,12 @@ export function Operator({ agents, onStart, error }: { agents: Agent[]; onStart?
   useEffect(() => { if (!agentic.some((a) => a.agent_id === agentId)) setAgentId(agentic[0]?.agent_id ?? ""); }, [agents]); // eslint-disable-line react-hooks/exhaustive-deps
   const start = async () => {
     const built = startBody("agentic", { text });
-    if (!built.ok || !onStart || !agentId || sending) return;
+    if (!built.ok || !onSend || !agentId || sending) return;
     setSending(true);
-    const refused = await onStart(agentId, text, keys.keyFor(agentId, built.body));
-    setSending(false); setProblem(refused);
-    if (!refused) keys.done();
+    const r = await submitStart(keys, agentId, built.body, onSend);
+    setSending(false);
+    if (r.runId) { setProblem(null); onStarted?.(r.runId); return; }
+    setProblem((r.body as { error?: { message?: string } } | undefined)?.error?.message ?? `The server answered ${r.status || "nothing"}.`);
   };
   return (
     <div className="mx-auto flex max-w-3xl flex-col items-center px-5 pt-20 text-center">

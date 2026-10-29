@@ -25,6 +25,6 @@ export const PlaygroundStarted: Story = { render: () => playground("meeting-note
 export const PlaygroundReplayed: Story = { render: () => playground("meeting-notes", answer("start.run-replay", 12)) };
 export const PlaygroundKeyReused: Story = { render: () => playground("meeting-notes", answer("start.run-key-reused", 9)) };
 export const PlaygroundWorkflowRefused: Story = { render: () => playground("support-triage", answer("start.workflow-run-bad-input", 14)) };
-export const OperatorComposer: Story = { render: () => <Shell active="operator"><Operator agents={agentsList()} onStart={async () => null} /></Shell> };
+export const OperatorComposer: Story = { render: () => <Shell active="operator"><Operator agents={agentsList()} onSend={async () => answer("start.run", 41)} /></Shell> };
 export const OperatorNoAgents: Story = { render: () => <Shell active="operator"><Operator agents={[]} /></Shell> };
 export const PlaygroundPhone: Story = { render: () => playground("meeting-notes"), globals: { viewport: { value: "mobile1" } } };
