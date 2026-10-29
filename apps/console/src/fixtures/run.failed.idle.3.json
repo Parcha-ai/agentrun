@@ -1,0 +1,38 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-e68c-78e2-8dfe-5c45ed442cb2"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-e68c-78e2-8dfe-5c45ed442cb2",
+    "agent_id": "meeting-notes",
+    "agent_version": 1,
+    "revision": "de808d53a519354cd685e0280867779a8b282f7161ea8f9ac08da85a02a46655",
+    "kind": "agentic",
+    "sha": null,
+    "status": "failed",
+    "state": "idle",
+    "title": "Summarize the garbled meeting recording from the call with bad audio.",
+    "created_at": "2026-10-28T19:33:34.395Z",
+    "updated_at": "2026-10-28T21:19:54.667Z",
+    "ended_at": "2026-10-28T19:33:36.777Z",
+    "result": null,
+    "error": {
+      "code": "run_failed",
+      "message": "The model's response was cut off and could not be read (sample failure).",
+      "retryable": false
+    },
+    "cost": {
+      "usd": 0.000351,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 0
+  }
+}

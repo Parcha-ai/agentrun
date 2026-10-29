@@ -2,4 +2,4 @@
 packages: @parcha/agentrun-serve
 kind: fix
 ---
-A cancel holds on every harness. A run on codex or claude-agent whose cancel serve has marked sends no further model request, as a pi run already did. Each request the harness's session asks for is refused before it leaves: the turn ends on the refusal, with nothing sent or paid. That holds whatever started the turn, a message or a recovery the run's process starts itself.
+A cancel holds on every harness. A run on codex or claude-agent whose cancel serve has marked sends no further model request, as a pi run already did. Each request the harness's session asks for is refused before it leaves: the turn ends on the refusal, with nothing sent or paid. That holds whatever started the turn, a message or a recovery the run's process starts itself. A cancel that lands after a request's check and before its record is written is caught too: the booking reads the cancel again at both points. A request withdrawn that way is not counted when the run opens again: no answer is written for it, and it costs nothing.

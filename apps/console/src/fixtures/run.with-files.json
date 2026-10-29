@@ -1,0 +1,37 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-b447-731e-85f0-e0f68eae3fb7"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-b447-731e-85f0-e0f68eae3fb7",
+    "agent_id": "release-notes",
+    "agent_version": 2,
+    "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+    "kind": "agentic",
+    "sha": null,
+    "status": "completed",
+    "state": "idle",
+    "title": "Write the release notes for 2.4.1 from: #430 fix the sign-in page on phones, #4…",
+    "created_at": "2026-10-28T19:33:24.718Z",
+    "updated_at": "2026-10-28T21:19:54.870Z",
+    "ended_at": "2026-10-28T19:33:31.403Z",
+    "result": {
+      "output": null,
+      "final_answer": "# Release 2.4.0\n\n## Highlights\n- **Faster search.** Results show while you type, and a query with a typo still finds what you meant.\n- **Dark mode** follows the system setting, with a switch in Settings.\n\n## Changes by area\n\n| Area | Change | Pull request |\n| --- | --- | --- |\n| Search | Incremental results | #412 |\n| Search | Typo tolerance (one edit) | #418 |\n| Settings | Theme switch | #420 |\n| Export | CSV keeps leading zeros | #423 |\n\n## Fixes\n1. Exported CSV files keep leading zeros in postal codes.\n2. The sign-in page no longer jumps when the keyboard opens on a phone.\n3. A very long project name wraps instead of hiding the menu button.\n\n## Upgrade notes\nNo migration is needed. The `search.legacy` setting is ignored from this release and can be removed."
+    },
+    "error": null,
+    "cost": {
+      "usd": 0.011977,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 0
+  }
+}

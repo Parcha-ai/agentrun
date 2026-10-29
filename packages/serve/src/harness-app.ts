@@ -23,7 +23,7 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { fileTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
-import { REQUEST_COST_LATE, REQUEST_COST_PENDING } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
@@ -94,10 +94,18 @@ export function adapterRun(
 ): AdapterRun {
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
+  const CANCELLED = "the run was cancelled: the model request was not sent";
   const guard = (request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
-    const answer = cancelled() ? { refuse: "the run was cancelled: the model request was not sent" } : cap?.beforeRequest(request);
+    const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;
+  };
+  /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
+   *  cancel that lands between them still keeps the request from leaving. */
+  const cancelStop = (): Error | undefined => {
+    if (!cancelled()) return undefined;
+    refused ??= CANCELLED;
+    return new Error(CANCELLED);
   };
   // A paid request whose cost could not be written: the booking admits no request after it, and the turn stops on it.
   let halted: Error | undefined;
@@ -191,6 +199,10 @@ export function adapterRun(
     if (event.type === "request_start") {
       open.add(event.turn);
       void flush();
+      // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
+      // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
+      // A store that refuses it has refused a write already, and the process ends on that.
+      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
@@ -222,9 +234,10 @@ export function adapterRun(
     const out = new Map<number, ModelUsage>();
     let admitted = 0;
     for (const record of records) {
-      const data = (record.data ?? {}) as { turn?: number; usd?: number | null; cut?: boolean };
+      const data = (record.data ?? {}) as { turn?: number; usd?: number | null; cut?: boolean; unsent?: boolean };
       if (record.kind === RUNNER_RECORDS.request) admitted = typeof data.turn === "number" ? data.turn : admitted + 1;
-      else if (record.kind === RUNNER_RECORDS.turn) {
+      // A request withdrawn as its record was written (a stop came then) never left: it is no request of the run's.
+      else if (record.kind === RUNNER_RECORDS.turn && data.unsent !== true) {
         const request = typeof data.turn === "number" ? data.turn : admitted;
         out.set(request, { input: 0, output: 0, usd: typeof data.usd === "number" ? data.usd : null, estimated: data.usd === null || data.cut === true });
       }
@@ -343,7 +356,7 @@ export function adapterRun(
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
         onEvent: onModel,
-        stopped: () => halted,
+        stopped: () => halted ?? cancelStop(),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {
