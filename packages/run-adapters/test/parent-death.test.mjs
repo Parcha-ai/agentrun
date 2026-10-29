@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { PARENT_CHECK, PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from '@parcha/agentrun-adapters/host';
+import { PARENT_CHECK, PARENT_CHECK_FAILED, PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from '@parcha/agentrun-adapters/host';
 
 const HOST = fileURLToPath(new URL('./fixtures/parent-host.mjs', import.meta.url));
 const linux = process.platform === 'linux' && existsSync('/proc/self/stat');
@@ -108,6 +108,15 @@ test('a host that dies before the watch is set leaves no child either: the watch
   writeFileSync(fifo, 'go\n');
   assert.deepEqual(await gone([pid], 2_000), [], `the command still runs 2 s after its host died before the watch: pid ${pid}`);
   assert.equal(existsSync(ran), false, 'the child never ran');
+});
+
+test('a confinement prefix that forks instead of exec\'ing in place fails the parent check in words: exit 125 and a line that says why, never a silent exit', { skip: !pdeathsig && 'no setpriv with --pdeathsig here', timeout: 30_000 }, async (t) => {
+  const h = await host(t, 'pdeathsig', { hold: 'fork' });
+  const wrapper = h.first.child;
+  t.after(() => { if (alive(wrapper)) try { process.kill(wrapper, 'SIGKILL'); } catch {} });
+  const ended = await h.next();
+  assert.equal(ended.exit, PARENT_CHECK_FAILED, `the exit code: ${JSON.stringify(ended)}`);
+  assert.equal(ended.stderr.trim(), `agentrun: parent check failed: started by ${wrapper}, expected ${h.proc.pid} (the host died during startup, or the confine prefix does not exec in place)`);
 });
 
 test('the parent-death signal follows the thread that spawned the child, the event loop\'s: a worker thread ending does not end it, the host dying does', { skip: !pdeathsig && 'no setpriv with --pdeathsig here', timeout: 30_000 }, async (t) => {
