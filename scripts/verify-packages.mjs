@@ -67,8 +67,15 @@ const allowedExtraFiles = {
   learn: ['package/SPEC.md'],
   // The harness seam ships the provenance of the code it copies from vercel-labs/durable-harness (upstream-attribution.mjs).
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
+  'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
+  'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
 };
 const allowedEndpoints = {
+  'run-adapters-claude-agent': [
+    // The test kit's scripted Anthropic API (`./testing`) listens on the loopback interface, on a port it chose.
+    ['dist/testing/fake-anthropic.js', 'http://127.0.0.1:${port}'],
+    ['dist/testing/fake-anthropic.d.ts', 'http://127.0.0.1:<port>'],
+  ],
   'run-adapters': [
     // The session's model proxy listens on the loopback interface, on the free port it chose; its type documents that.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
@@ -96,6 +103,10 @@ const allowedEndpoints = {
     // The README's example of the address the command prints.
     ['README.md', 'http://127.0.0.1:41297/'],
   ],
+  'run-adapters-codex': [
+    // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
+    ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
+  ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
     ['README.md', 'http://127.0.0.1:7340'],
@@ -117,7 +128,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'learn', 'pi-agent-learn', 'run-adapters', 'harness'];
+  const packageDirectories = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'learn', 'pi-agent-learn', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -175,6 +186,8 @@ try {
     console.log(`Packed and inspected ${manifest.name}@${manifest.version} (${names.length} files)`);
   }
   assert.ok(attributed.includes('@parcha/agentrun-adapters'), 'the harness seam is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-claude-agent'), 'the Claude Agent adapter is checked for its attribution');
+  assert.ok(attributed.includes('@parcha/agentrun-codex'), 'the Codex adapter is checked for its attribution');
   receipt.checks.push(`Boundary rules passed on every package; attribution rules for vercel-labs/durable-harness code passed: ${attributed.join(', ')}.`);
   receipt.checks.push('Archive paths, file allowlist, heuristic secret scan, and dependency boundary inspection passed.');
   const consumer = join(temporary, 'consumer');
@@ -604,6 +617,24 @@ void [demo, localHost, placeAt, options, boxes, useTool];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'reference-consumer.ts'], bare);
   receipt.checks.push('@parcha/agentrun-harness, installed with its @parcha dependencies and without @parcha/pi-transport, compiles under --strict with no skipLibCheck.');
+  // The Claude Agent adapter installed without its SDK (an optional peer the host brings) says so in one line that ends with
+  // the line installing the pinned SDK. That line, run exactly as printed in a consumer of its own, is all it takes for the
+  // adapter's checks to pass: the SDK, its platform package (the CLI) and the MCP library it brings as a peer.
+  const claudeConsumer = join(temporary, 'consumer-claude-agent');
+  await mkdir(claudeConsumer);
+  await writeFile(join(claudeConsumer, 'package.json'), JSON.stringify({ name: 'agentrun-claude-agent-consumer', version: '1.0.0', private: true, type: 'module' }));
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...['dsl', 'run-adapters', 'run-adapters-claude-agent'].map(directory => tarballs[packageDirectories.indexOf(directory)])], claudeConsumer);
+  const claudeChecks = async () => JSON.parse((await run(process.execPath, ['--input-type=module', '-e', `import { verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); } catch (e) { console.log(JSON.stringify({ name: e.name, message: e.message, install: e.install })); }`], claudeConsumer)).stdout.trim());
+  const missing = await claudeChecks();
+  assert.equal(missing.name, 'ClaudeAgentNotInstalled', `the adapter without its SDK: ${JSON.stringify(missing)}`);
+  assert.match(missing.install ?? '', /^npm install --save-exact @anthropic-ai\/claude-agent-sdk@\d+\.\d+\.\d+$/, 'one install line, the exact pinned SDK');
+  assert.ok(!missing.message.includes('\n') && missing.message.endsWith(`; install it with: ${missing.install}`), `the message is one line ending with it: ${missing.message}`);
+  const [installCommand, ...installArgs] = missing.install.split(' ');
+  await run(installCommand, installArgs, claudeConsumer);
+  const installed = await claudeChecks();
+  assert.ok(installed.cliPath, `after "${missing.install}", the adapter's checks still fail: ${JSON.stringify(installed)}`);
+  receipt.checks.push(`@parcha/agentrun-claude-agent without its SDK prints one install line ("${missing.install}"); run as printed in a clean consumer, it makes the adapter's pins pass.`);
   receipt.checks.push('Installed ESM imports, core execution, fake Jev/Pi adapters, and strict TypeScript consumer compilation passed.');
   await rm(join(receiptDir, 'packages'), { recursive: true, force: true });
   await mkdir(join(receiptDir, 'packages'), { recursive: true });

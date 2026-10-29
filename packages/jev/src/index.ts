@@ -79,14 +79,20 @@ export interface JevOptions {
   timeoutMs?: number | null;
   /** Optional host guard on serialized UTF-8 JSON state; null or omission disables it. */
   maxStateBytes?: number | null;
+  /** Attempts for a request that never reached Jev, or a 429 that says when to retry (default 3). */
   maxAttempts?: number;
+  /** Also retry a 408, a 5xx and a connection lost after the request was sent, as earlier versions did. Such a retry can
+   *  re-send a request Jev answered and billed. Off by default: those fail `outcome_unknown` after one attempt. */
+  retryAfterSend?: boolean;
   retryBaseMs?: number;
   retryMaxMs?: number;
   /** Explicit estimate, used when the provider reports no cost; unknown prices are never silently treated as free. */
   pricing?: { inputUsdPerMillionTokens: number; outputUsdPerMillionTokens: number };
 }
 
-export type JevErrorCode = "configuration" | "invalid_request" | "invalid_response" | "http" | "connection" | "aborted" | "timeout";
+/** `outcome_unknown`: the request was sent and its outcome is not known (a 408, a 5xx, a connection lost after sending). It
+ *  may have been answered and billed, so it is not sent again, and its cost is unknown. */
+export type JevErrorCode = "configuration" | "invalid_request" | "invalid_response" | "http" | "connection" | "aborted" | "timeout" | "outcome_unknown";
 const adapterResponseReasons = ["response_shape", "token_usage", "model_identifier", "cost_range", "answer_validation", "max_tokens_exceeded"] as const;
 export type JevResponseReason = SystemOneResponseReason | typeof adapterResponseReasons[number];
 export function isJevResponseReason(value: unknown): value is JevResponseReason {
@@ -109,6 +115,19 @@ export class JevError extends Error {
     this.name = "JevError";
     if (isJevResponseReason(responseDiagnostic?.reason)) this.responseDiagnostic = { reason: responseDiagnostic.reason };
   }
+}
+
+/** Failures a request meets before it is sent: no DNS answer, no connection, no TLS handshake. Any other is after. */
+const BEFORE_SENDING = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT",
+  "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "ERR_TLS_CERT_ALTNAME_INVALID"]);
+/** Whether a transport failure provably happened before the request was sent, read from its causes. */
+function neverSent(error: unknown): boolean {
+  for (let cause: unknown = error, depth = 0; isRecord(cause) || cause instanceof Error; cause = (cause as { cause?: unknown }).cause, depth++) {
+    const code = (cause as { code?: unknown }).code;
+    if (typeof code === "string" && BEFORE_SENDING.has(code)) return true;
+    if (depth >= 4) break;
+  }
+  return false;
 }
 
 const requireConfig = (condition: boolean, message: string): void => {
@@ -250,6 +269,7 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
   const timeoutMs = options.timeoutMs === null ? null : (options.timeoutMs ?? 30_000);
   const maxStateBytes = options.maxStateBytes ?? null;
   const maxAttempts = options.maxAttempts ?? 3;
+  const retryAfterSend = options.retryAfterSend === true;
   const retryBaseMs = options.retryBaseMs ?? 500;
   const retryMaxMs = options.retryMaxMs ?? 5_000;
   // A JavaScript caller's `client: null` is no client, the same as an absent one.
@@ -310,8 +330,23 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           // the deadline ended the call. A timed-out request may have been billed, and its code is what says so.
           if (signal.aborted || (timeoutMs !== null && error instanceof APITimeoutError)) throw abortError();
           const status = error instanceof APIError ? error.status : undefined;
-          const retryable = status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError;
-          if (retryable && status !== 429 && billable === undefined) billable = status === undefined ? {} : { status };
+          const before = error instanceof APIConnectionError && neverSent(error);
+          // A request that was sent may have been answered and billed: unless the host asked for retries after sending, it is not sent again.
+          if (!retryAfterSend && (status === 408 || (status !== undefined && status >= 500 && status <= 599) || (error instanceof APIConnectionError && !before))) {
+            const safeStatus = status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
+            const capacity = error instanceof APIError && isRecord(error.body) && isRecord(error.body.detail) && error.body.detail.error_type === "max_tokens_exceeded";
+            const what = safeStatus === undefined ? "Jev's connection was lost" : `Jev returned HTTP ${safeStatus}`;
+            // Only the structured reason is named, as on any HTTP failure; the provider's body text never reaches the message.
+            throw new JevError("outcome_unknown", capacity
+              ? `${what}: the request exceeds the model's token budget (max_tokens_exceeded). Send fewer or shorter items per request. It was sent once and is not sent again.`
+              : `${what} after the request was sent; it may have been answered, and is not sent again.`, attempt, safeStatus, undefined, capacity ? { reason: "max_tokens_exceeded" } : undefined);
+          }
+          const toldWhen = status === 429 && error instanceof APIError && retryAfterMs(error.headers) !== undefined;
+          const retryable = retryAfterSend
+            ? status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError
+            : before || toldWhen;
+          // A request that never reached Jev was not billed, and a 429 was refused unanswered: neither is the billable attempt.
+          if (retryable && status !== 429 && !before && billable === undefined) billable = status === undefined ? {} : { status };
           if (retryable && attempt < maxAttempts) {
             const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
             const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;

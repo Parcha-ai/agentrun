@@ -285,7 +285,11 @@
 
     /** `etag` is the agent's as the form read it: the edit commits only onto that revision (412 when another came first). */
     function agentCard(agentId, definition, caps, etag) {
-      var offered = caps.tools || [];
+      // capabilities.tools: every tool this server's table holds, each available or with the variables it is missing.
+      var listed = caps.tools || [];
+      var offered = listed.map(function (tool) { return typeof tool === "string" ? tool : tool.name; });
+      var missing = {};
+      listed.forEach(function (tool) { if (tool && tool.available === false) missing[tool.name] = (tool.missing || []).join(" and "); });
       var levels = (caps.features && caps.features.thinking) || [];
       var kind = definition.workflow ? "workflow" : "agentic";
       // The store keeps an agent's name and description from its creation: an edit neither shows nor sends them.
@@ -312,7 +316,8 @@
         box.value = tool;
         box.checked = had.indexOf(tool) >= 0;
         var bound = offered.indexOf(tool) >= 0;
-        return { box: box, label: el("label", { class: bound ? null : "unbound", title: bound ? null : "This server does not bind it" }, box, tool) };
+        var title = !bound ? "This server does not bind it" : Object.prototype.hasOwnProperty.call(missing, tool) ? "This server's environment does not set " + missing[tool] : null;
+        return { box: box, label: el("label", { class: title ? "unbound" : null, title: title }, box, tool) };
       });
       var promptField = field("Prompt", prompt, "The agent's instructions: what it reads first on every run.");
       var modelField = field("Model", model, "Optional: provider/model-id. Empty runs the server's own model.");

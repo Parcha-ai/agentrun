@@ -19,7 +19,7 @@ test('the place seam: the supervisor starts, kills and recovers through the plac
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'demo.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'process' }, { point: 'judge.asked verdict', why: 'box', kind: 'box' }] }));
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'event workflow.judge.answered', why: 'process' }, { point: 'event workflow.judge.answered', why: 'box', kind: 'box' }] }));
   Object.assign(process.env, { DEMO_SPEC: file });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
@@ -129,7 +129,7 @@ test('a place that cannot be made, or released, leaves nothing open: the scratch
   assert.equal(existsSync(root), false, 'a place that failed to release still had its scratch removed');
 });
 test('a box kill is carried out once: the recovery that follows does not stop the old runner (nor ask the providers to destroy its boxes) again', { timeout: 300_000 }, async (t) => {
-  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the machine is lost', kind: 'box' }] });
+  const { tmp, options } = await specWith(t, { name: 'reference', kills: [{ point: 'event workflow.judge.answered', why: 'the machine is lost', kind: 'box' }] });
   let destroyed = 0;
   const result = await demo({ ...options, argv: ['--kill', '--json', '--record', join(tmp, 'recording')], place: ({ paths, self, requestFile }) => localPlace({ self, paths, requestFile, destroyBoxes: () => { destroyed += 1; } }) });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
@@ -139,7 +139,7 @@ test('the place\'s signals carry the kill request: a place with its own signals(
   const tmp = await mkdtemp(join(tmpdir(), 'reference-place-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'demo.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }] }));
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'event workflow.judge.answered', why: 'asked through the place' }] }));
   Object.assign(process.env, { DEMO_SPEC: file });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);
@@ -149,7 +149,7 @@ test('the place\'s signals carry the kill request: a place with its own signals(
     return { ...inner, signals: (attempt) => ({ [Symbol.asyncIterator]() { const it = inner.signals(attempt)[Symbol.asyncIterator](); return { async next() { const next = await it.next(); if (!next.done) asked.push([attempt, next.value.kind, next.value.crossing.point]); return next; }, return: () => it.return() }; } }) };
   } });
   assert.equal(result.processes.at(-1).outcome.status, 'complete');
-  assert.deepEqual(asked, [[1, 'kill-request', 'judge.asked verdict']]);
+  assert.deepEqual(asked, [[1, 'kill-request', 'event workflow.judge.answered']]);
 });
 // ---- the place answers where the kill request is, and the supervisor honors it only with the attempt's nonce ---------------------------------------
 
@@ -178,7 +178,7 @@ test('askToBeKilled writes the request durably (whole, with the attempt\'s nonce
   assert.deepEqual(await first(other.signals(2)), { kind: 'kill-request', crossing: { point: 'vision.filing', n: 2, pid: b.pid }, nonce: 'nonce-for-attempt-2' });
 });
 test('every order\'s KILL_REQUEST is the place\'s requestFile(gen); a request with the attempt\'s nonce kills, and a missing or wrong one is ignored with a host line', { timeout: 300_000 }, async (t) => {
-  const { tmp, options } = await killSpec(t);
+  const { tmp, options } = await killSpec(t, { kills: [{ point: 'event workflow.judge.answered', why: 'a kill and its resume' }] });
   mkdirSync(join(tmp, 'signals'));
   const orders = [];
   const own = (attempt) => join(tmp, 'signals', `kill-${attempt}.json`);
@@ -202,7 +202,7 @@ test('every order\'s KILL_REQUEST is the place\'s requestFile(gen); a request wi
   assert.ok(orders.every((env) => /^[0-9a-f]{32}$/.test(env.KILL_NONCE)) && orders[0].KILL_NONCE !== orders[1].KILL_NONCE, 'a fresh 16-byte nonce for each attempt');
   assert.ok(existsSync(own(1)) && JSON.parse(readFileSync(own(1), 'utf8')).nonce === orders[0].KILL_NONCE, 'the child wrote its request there, with its attempt\'s nonce');
   const lines = readEvents(recording).filter((line) => line.source === 'host');
-  assert.deepEqual(lines.filter((line) => line.kind === 'kill').map((line) => line.data.crossing?.point), ['judge.asked verdict'], 'one kill line, at the real crossing: a forged request never makes one');
+  assert.deepEqual(lines.filter((line) => line.kind === 'kill').map((line) => line.data.crossing?.point), ['event workflow.judge.answered'], 'one kill line, at the real crossing: a forged request never makes one');
   assert.deepEqual(lines.filter((line) => line.kind === 'kill.request.ignored').map((line) => [line.data.point, line.data.reason]), [['forged.no-nonce', 'no nonce'], ['forged.wrong-nonce', 'wrong nonce']]);
   assert.ok(!JSON.stringify(lines).includes(orders[0].KILL_NONCE), 'the nonce is on no line');
 });
@@ -263,9 +263,9 @@ test('an operator kill (a control file the supervisor watches, never the child\'
 });
 test('the plan\'s own kill is not lost: an operator kill that ends an attempt first leaves its planned kill for the next one', { timeout: 300_000 }, async (t) => {
   const { file, control, placeOn, optionsNow, within } = await operatorRun(t);
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'planned' }] }));
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'event workflow.judge.answered', why: 'planned' }] }));
   const both = await within(demo({ ...await optionsNow(), argv: ['--kill', '--json', '--operator-kill', control], place: placeOn('model.request turn 0') }));
-  assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'judge.asked verdict']]);
+  assert.deepEqual(both.kills.map((kill) => [kill.gen, kill.point ?? 'operator']), [[1, 'operator'], [2, 'event workflow.judge.answered']]);
   assert.deepEqual(both.unlanded, []);
   assert.equal(both.processes.at(-1).outcome.status, 'complete');
 });

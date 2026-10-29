@@ -7,12 +7,42 @@ export const HARNESSES = ["pi", "claude-agent", "codex"] as const;
 export type HarnessId = (typeof HARNESSES)[number];
 export const DEFAULT_HARNESS: HarnessId = "pi";
 
-/** One harness as capabilities lists it: whether this server runs it, and when not, why. */
-export type HarnessOffer = { id: HarnessId; available: boolean; reason?: string };
+/** One harness as capabilities lists it: whether this server runs it, and when not, why; and whether it takes a message
+ *  mid-turn (`steer`), or queues it for the turn's end. */
+export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; reason?: string };
+
+/** Whether a harness takes a message mid-turn: pi does; another harness's run queues it for the turn's end. */
+export const steersMidTurn = (id: string): boolean => id === DEFAULT_HARNESS;
+
+/** A module whose `script(spec)` scripts run-adapters' faux harness: with it, every harness but pi runs on that faux
+ *  harness, as `--faux` runs pi on the faux model. */
+export const FAUX_HARNESS_ENV = "AGENTRUN_SERVE_FAUX_HARNESS";
 
 /** What this server offers of each harness. */
-export function harnessesOf(_env: NodeJS.ProcessEnv): HarnessOffer[] {
-  return HARNESSES.map((id) => (id === DEFAULT_HARNESS ? { id, available: true } : { id, available: false, reason: `This server does not run ${id} yet.` }));
+export function harnessesOf(env: NodeJS.ProcessEnv): HarnessOffer[] {
+  return HARNESSES.map((id) => (id === DEFAULT_HARNESS || env[FAUX_HARNESS_ENV] ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason: `This server does not run ${id} yet.` }));
+}
+
+const offered = new WeakMap<object, Promise<HarnessOffer[]>>();
+
+/** What this server offers of each harness, checked once per environment: each adapter's package, pins and endpoint,
+ *  on a model of the harness's own provider (adapters.ts). Whether a revision's model fits its harness is that
+ *  revision's (runnable.ts). */
+export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessOffer[]> {
+  let offers = offered.get(env);
+  if (!offers) {
+    offers = (async () => {
+      if (env[FAUX_HARNESS_ENV]) return harnessesOf(env);
+      const { harnessReason } = await import("./adapters.js");
+      return Promise.all(HARNESSES.map(async (id): Promise<HarnessOffer> => {
+        if (id === DEFAULT_HARNESS) return { id, available: true, steer: true };
+        const reason = await harnessReason(id, env, undefined);
+        return reason === undefined ? { id, available: true, steer: steersMidTurn(id) } : { id, available: false, steer: steersMidTurn(id), reason };
+      }));
+    })();
+    offered.set(env, offers);
+  }
+  return offers;
 }
 
 /** The harness a stored body names, as answers show it. */
