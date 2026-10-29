@@ -2,6 +2,7 @@
 // tree and records each command group; reapCommands ends, at the next open, only what is still the recorded process.
 // The tests on real processes run through this machine's process table and, on Linux, through the one macOS uses (ps),
 // played by procps; the macOS CI job runs them against a Mac's own ps.
+import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -559,6 +560,32 @@ describe("command records, from a scripted ps (macOS)", () => {
       assert.deepEqual(signals, [], "no signal at all");
       assert.equal(reaped.signalled, 0);
     } finally {
+      dir.remove();
+    }
+  });
+});
+
+describe("a recorder's mark", () => {
+  it("that still names a live process after the reap's deadline is kept as it was, so the next open looks for its token again and ends it", async () => {
+    const dir = scratchRoot("commands-mark-kept");
+    const records = join(dir.root, "commands");
+    const token = randomUUID();
+    const mark = join(records, `mark-${token}.json`);
+    const child = command(token);
+    const pid = child.pid ?? 0;
+    try {
+      mkdirSync(records);
+      writeFileSync(mark, JSON.stringify({ boot: processTable().bootId(), token }));
+      await until(() => alive(pid));
+      // A kill that does nothing: the marked command outlives the first reap's deadline.
+      await assert.rejects(reapOrRefuse(records, { kill: () => {}, timeoutMs: 100 }), (error: unknown) => error instanceof HeldError && error.holder === "commands");
+      assert.ok(alive(pid), "the command survived the first reap");
+      assert.deepEqual(JSON.parse(readFileSync(mark, "utf8")), { boot: processTable().bootId(), token }, "the mark still holds its token");
+      assert.deepEqual((await reapOrRefuse(records)).survivors, []);
+      assert.ok(await waitGone(pid), "the next reap ends it");
+      assert.equal(existsSync(records), false, "and clears the mark");
+    } finally {
+      killGroup(pid);
       dir.remove();
     }
   });

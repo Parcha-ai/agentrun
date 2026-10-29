@@ -8,6 +8,12 @@ import { COMMANDS_MARK, CommandRecorder } from "../../src/commands.ts";
 const [dir, pidFile] = process.argv.slice(2);
 const recorder = new CommandRecorder(dir!);
 recorder.started();
-const command = spawn("sleep", ["600"], { detached: true, stdio: "ignore", env: { ...process.env, [COMMANDS_MARK]: recorder.token } });
+// The command leads its group, and starts a member in that group with an empty environment: it carries no mark, so
+// only the leader's group kill can end it. Its pid goes to <pid file>.member.
+const command = spawn("sh", ["-c", `env -i "$(command -v sleep)" 600 & echo $! > '${pidFile}.member'; exec sleep 600`], {
+  detached: true,
+  stdio: "ignore",
+  env: { ...process.env, [COMMANDS_MARK]: recorder.token },
+});
 writeFileSync(pidFile!, String(command.pid));
 process.kill(process.pid, "SIGKILL");

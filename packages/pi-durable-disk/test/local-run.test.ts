@@ -188,25 +188,33 @@ describe("localRun", () => {
     }
   });
 
-  it("ends a command whose instance was killed before any walk recorded it: the recorder's mark, written before the command started, names it", { timeout: 60_000 }, async () => {
+  it("ends a command whose instance was killed before any walk recorded it, with its whole group: the recorder's mark, written before the command started, names it", { timeout: 60_000, skip: process.platform !== "linux" && "reads /proc" }, async () => {
     const dir = scratchRoot("unrecorded");
     const commands = join(dir.root, "commands");
     const pidFile = join(dir.root, "command.pid");
     let command = 0;
+    let member = 0;
     try {
       const instance = spawn(process.execPath, [UNRECORDED, commands, pidFile], { stdio: "ignore" });
       const signal = await new Promise((resolve) => instance.once("close", (_code, signal) => resolve(signal)));
       assert.equal(signal, "SIGKILL", "the instance killed itself in the turn that started the command");
       command = Number(readFileSync(pidFile, "utf8"));
       assert.ok(command > 0 && alive(command), "the command outlives its instance");
+      for (let i = 0; i < 500 && !(existsSync(`${pidFile}.member`) && readFileSync(`${pidFile}.member`, "utf8").trim() !== ""); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      member = Number(readFileSync(`${pidFile}.member`, "utf8"));
+      assert.ok(member > 0 && alive(member), "the command's member runs");
+      assert.equal(processTable().snapshot().info(member)?.pgrp, command, "the member is in the command's group");
+      assert.ok(!readFileSync(`/proc/${member}/environ`, "utf8").includes("PI_DURABLE_DISK_COMMANDS="), "the member carries no mark");
       assert.deepEqual((existsSync(commands) ? readdirSync(commands) : []).filter((name) => /^\d+-\d+\.json$/.test(name)), [], "no walk ran, so nothing recorded the command");
       // The open's commands step (run.ts), on what the killed instance left.
       const reaped = await reapOrRefuse(commands);
       assert.ok(reaped.signalled >= 1, `the reap signalled the command: ${JSON.stringify(reaped)}`);
       assert.deepEqual(reaped.survivors, []);
       assert.equal(alive(command), false, "the command is gone");
+      assert.equal(alive(member), false, "its member with no mark is gone too: the marked leader's whole group is ended");
       assert.equal(existsSync(commands), false, "the mark is cleared");
     } finally {
+      killQuietly(member);
       killQuietly(command);
       dir.remove();
     }
