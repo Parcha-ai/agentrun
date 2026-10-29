@@ -56,3 +56,29 @@ test("a key-shaped variable the environment holds as a non-enumerable property i
   assert.equal(JSON.parse(lines[0]).error, "the store said [redacted]");
   assert.ok(!lines.join("").includes(hidden));
 });
+
+test("a key holding a quote or a backslash is cut out too: values are scrubbed before JSON escapes them", () => {
+  const lines = [];
+  const awkward = `not-a-secret-${'q"uo\\te'}`;
+  const log = harnessLog("codex", { OPENAI_API_KEY: awkward }, (line) => lines.push(line));
+  log("model proxy (openai): refused", { status: 401, userAgent: `curl ${awkward}`, nested: { why: [`it said ${awkward}`] } });
+  const said = JSON.parse(lines[0]);
+  assert.equal(said.userAgent, "curl [redacted]");
+  assert.deepEqual(said.nested, { why: ["it said [redacted]"] });
+  for (const form of [awkward, JSON.stringify(awkward).slice(1, -1)]) assert.ok(!lines[0].includes(form), `${form} is not in the line`);
+});
+
+test("a failed run's message is found past more than one read of harness lines, and never from the torn line a read starts in", async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "harness-log-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const own = JSON.stringify({ at: "2026-10-29T05:00:00.000Z", event: "fenced", message: "the lease lapsed" });
+  const harness = (n) => JSON.stringify({ at: "2026-10-29T05:00:01.000Z", event: "harness", harness: "codex", message: `model proxy (openai): refused ${n}`, padding: "x".repeat(40) });
+  // About 30 KB of harness lines after the process's own: many reads back, each starting inside a line.
+  const after = Array.from({ length: 250 }, (_, n) => harness(n)).join("\n");
+  assert.ok(after.length > 8 * 4096);
+  await writeFile(join(dir, "process.log"), `${own}\n${after}\n`);
+  assert.equal(await lastLogLine({ dir }), "fenced: the lease lapsed");
+  // Harness lines only: the last whole one, never a fragment.
+  await writeFile(join(dir, "process.log"), `${after}\n`);
+  assert.equal(await lastLogLine({ dir }), "harness: model proxy (openai): refused 249");
+});

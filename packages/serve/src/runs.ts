@@ -267,25 +267,46 @@ function inWords(line: string): string {
  *  refusal just before a crash says nothing of why the process went). */
 export function failureLine(log: string): string {
   const lines = log.trim().split("\n");
-  const own = lines.findLast((line) => {
+  return ownLine(lines) ?? lines.at(-1) ?? "";
+}
+
+/** The last of `lines` that is not a harness's own line, if any. */
+function ownLine(lines: readonly string[]): string | undefined {
+  return lines.findLast((line) => {
+    if (line.trim() === "") return false;
     try {
       return (JSON.parse(line) as { event?: unknown } | null)?.event !== HARNESS_LOG_EVENT;
     } catch {
       return true;
     }
   });
-  return own ?? lines.at(-1) ?? "";
 }
+
+/** How far back from its end a failure's message is looked for in the run's log, in steps of LOG_STEP. */
+const LOG_STEP = 4096;
+const LOG_REACH = 1 << 20;
 
 /** The last line of the run process's log, in words, for a failure's message. */
 export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
   try {
+    // Backward through whole lines until one is the process's own: harness lines after it may run past any one read,
+    // and a read that starts inside a line has only its tail, which is no line at all.
     const { size } = await file.stat();
-    const length = Math.min(size, 4096);
-    const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
-    return clip(inWords(failureLine(buffer.toString("utf8"))), 300);
+    let start = size;
+    let tail = Buffer.alloc(0);
+    for (;;) {
+      const from = Math.max(0, start - LOG_STEP);
+      const { buffer } = await file.read(Buffer.alloc(start - from), 0, start - from, from);
+      tail = Buffer.concat([buffer, tail]);
+      start = from;
+      const lines = tail.toString("utf8").split("\n");
+      const whole = start === 0 ? lines : lines.slice(1);
+      const own = ownLine(whole);
+      if (own !== undefined) return clip(inWords(own), 300);
+      if (start === 0 || size - start >= LOG_REACH) return clip(inWords(whole.findLast((line) => line.trim() !== "") ?? ""), 300);
+    }
   } finally {
     await file.close();
   }

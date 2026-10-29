@@ -37,11 +37,19 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
     .map((name) => [name, env[name]] as const)
     .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string);
+  const cut = (text: string) => secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
+  // Every string is cut before it is serialized: JSON escapes a quote or a backslash, and a secret holding one would
+  // no longer match in the line. The line itself is cut too, for a secret in a field's name.
+  const scrub = (value: unknown): unknown => {
+    if (typeof value === "string") return cut(value);
+    if (Array.isArray(value)) return value.map(scrub);
+    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [name, scrub(inner)]));
+    return value;
+  };
   return (message: string, fields: Record<string, unknown> = {}): void => {
     const { path, ...rest } = fields;
-    let line = JSON.stringify({ at: new Date().toISOString(), event: HARNESS_LOG_EVENT, harness, message, ...rest, ...(typeof path === "string" ? { path: path.split("?")[0] } : {}) });
-    for (const secret of secrets) line = line.split(secret).join("[redacted]");
-    write(`${line}\n`);
+    const line = JSON.stringify(scrub({ at: new Date().toISOString(), event: HARNESS_LOG_EVENT, harness, message, ...rest, ...(typeof path === "string" ? { path: path.split("?")[0] } : {}) }));
+    write(`${cut(line)}\n`);
   };
 }
 
