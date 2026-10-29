@@ -86,12 +86,14 @@ function handedRoute(handed: string | undefined): { route: string; key: string }
   return at > 0 ? { route: handed!.slice(0, at), key: handed!.slice(at + 1) } : undefined;
 }
 
-/** In a run's process: the judge its workflow's typed questions run on, on the key the server handed it, or undefined
- *  when it handed none. Called once per process, since the handed key can be read once. */
+/** In a run's process: the judge its workflow's typed questions run on, or undefined when the server gave it no route
+ *  to Jev. Called once per process, since the handed key can be read once. Jev is a decision provider, which sends a
+ *  request once: one that fails after it was sent may have been answered and billed, so the decision escalates as
+ *  interrupted instead of being asked again. */
 export async function jevJudgeOf(env: NodeJS.ProcessEnv) {
   const handed = handedRoute(handedKey(env));
   if (!handed) return undefined;
   const faux = env[FAUX_ENV] && env[FAUX_JEV_ENV] ? ((await import(pathToFileURL(env[FAUX_JEV_ENV]).href)) as { default: typeof fetch }).default : undefined;
-  const { createJevRunner } = await import("@parcha/agentrun-jev");
-  return createJevRunner({ ...(handed.route === "openrouter" ? { provider: "openrouter" as const } : {}), apiKey: handed.key, ...(faux ? { fetch: faux } : {}) });
+  const [{ jevProvider }, { judgeFromProvider }] = await Promise.all([import("@parcha/agentrun-jev"), import("@parcha/agentrun-dsl")]);
+  return judgeFromProvider(jevProvider({ ...(handed.route === "openrouter" ? { provider: "openrouter" as const } : {}), apiKey: handed.key, ...(faux ? { fetch: faux } : {}) }));
 }
