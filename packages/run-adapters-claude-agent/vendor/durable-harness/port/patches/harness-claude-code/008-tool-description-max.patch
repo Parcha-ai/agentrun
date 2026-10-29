@@ -1,5 +1,5 @@
 Patch: 008-tool-description-max
-Reason: the CLI cuts an MCP tool's description at 2048 characters; the harness tells it the longest description among the session's tools, so the model reads each one whole
+Reason: the CLI cuts an MCP tool's description at 2048 characters; the harness tells it the longest of the session's descriptions when that is over 2048 (otherwise the CLI's default stands), so the model reads each one whole
 Upstream: ours
 Pins: the host's tool schemas reach the model with every key and value, a long description reaches it whole, and an open object's arguments reach the tool as sent
 ---

@@ -1,5 +1,5 @@
 Patch: 010-served-tools-with-images
-Reason: the session's tools are served by an MCP server of AgentRun's own, each JSON Schema as given and the arguments as sent, not through the SDK's zod tool(); a tool's images go to the model with its text
+Reason: the session's tools are served by an MCP server of AgentRun's own, each JSON Schema as given and the arguments as sent, not through the SDK's zod tool(); a tool's images go to the model with its text; the SDK surface narrows to query() alone (tool(), createSdkMcpServer and the zod import are gone), and what the adapter verifies of the SDK and zod reads off that surface
 Upstream: ours
 Pins: an image over the adapter's size is the call's error, by the tool's name and the image, and the session goes on
 Pins: a DSL agent node runs on the Claude Agent adapter: the host tool, then submit, each model request through the proxy

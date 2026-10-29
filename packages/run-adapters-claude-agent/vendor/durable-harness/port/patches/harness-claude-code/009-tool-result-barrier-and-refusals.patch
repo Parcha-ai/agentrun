@@ -1,5 +1,5 @@
 Patch: 009-tool-result-barrier-and-refusals
-Reason: a call's tool_result entry can be awaited (resultBarrier), and a call the CLI refuses itself (a tool the session does not have) is a tool_refused live event told only once its answer is in the log
+Reason: a call's tool_result entry can be awaited (resultBarrier), and a call the CLI refuses itself (a tool the session does not have) is a tool_refused live event told only once its answer is in the log; a call that reached the session's tool server is never a refusal, whatever its error says, and only a CLI-made error on a call that never reached the server counts; a refusal whose answer never reached the log is not shown to the host, only logged
 Upstream: ours
 Pins: a tool the session doesn't have is refused by the CLI, kept in the store, and shown to the host as a failed call by its name; the node still delivers
 Pins: a refusal the CLI made reaches the host only once the session's store holds it

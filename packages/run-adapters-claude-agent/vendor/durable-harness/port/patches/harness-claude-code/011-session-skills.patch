@@ -1,5 +1,5 @@
 Patch: 011-session-skills
-Reason: a host's skills, from a local plugin, are listed to the model and loadable with the Skill tool, and no other; the PreToolUse hook takes a skill by its bare name and rewrites it to the plugin-qualified one
+Reason: a host's skills, from a local plugin, are listed to the model and loadable with the Skill tool, and no other; the PreToolUse hook takes a skill by its bare name and rewrites it to the plugin-qualified one, except a bare name the CLI keeps for itself (CLAUDE_AGENT_CLI_SKILL_NAMES), which is never rewritten, and any other name is denied; known gap: a Skill call is allowed before the beforeCall path, so it has no intent record and is not marked bridged, and a Skill failure that carries <tool_use_error> is reported as tool_refused (see 009)
 Upstream: ours
 Pins: the Skill gate: a session skill by its qualified name is allowed as asked, by its bare name rewritten to the qualified one (never a bare name the CLI keeps), and any other name denied
 Pins: a host's skill: the Skill tool is offered, the model is shown that skill alone, and loading it puts its SKILL.md before the model
