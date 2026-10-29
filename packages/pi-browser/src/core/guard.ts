@@ -10,7 +10,13 @@ export type RepeatGuard = {
   held(tool: string, effect: string): boolean;
   /** A snapshot or browser_read: every held call may run again. */
   looked(): void;
+  /** The page moved to another URL: a read that failed on the old page is a new call on this one, so the strikes of
+   *  the tools that only read the page are cleared. An action's strikes stand. */
+  moved(): void;
 };
+
+/** The tools that only read the page: their result depends on the page they read. */
+const PAGE_READS: ReadonlySet<string> = new Set(["snapshot", "screenshot", "browser_read"]);
 
 /** `redact` runs over the whole error before the cuts below, so no fragment of a registered value reaches the refusal. */
 export function createRepeatGuard(redact: (text: string) => string = (text) => text): RepeatGuard {
@@ -26,6 +32,7 @@ export function createRepeatGuard(redact: (text: string) => string = (text) => t
     hold(tool, effect) { holds.add(`${tool}:${effect}`); },
     held(tool, effect) { return holds.has(`${tool}:${effect}`); },
     looked() { holds.clear(); },
+    moved() { for (const key of [...strikes.keys()]) if (PAGE_READS.has(key.slice(0, key.indexOf(":")))) strikes.delete(key); },
     note(tool, args, failure) {
       if (failure?.code === "aborted") return;
       const key = keyOf(tool, args);

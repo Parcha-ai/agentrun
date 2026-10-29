@@ -111,6 +111,7 @@ test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs 
  *  killed grandchild stays a zombie, and kill(pid, 0) succeeds on it). */
 const alive = (pid) => {
   try { process.kill(pid, 0); } catch { return false; }
+  if (process.platform !== 'linux') return true;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';

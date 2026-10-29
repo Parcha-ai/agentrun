@@ -27,6 +27,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { UPSTREAM, UPSTREAM_FILE, PRISTINE_DIR } from './upstream-attribution.mjs';
 import { gitBlob } from './vendor-durable-harness.mjs';
 
@@ -91,7 +92,25 @@ function applyPatch(root, patch) {
   }
 }
 
-const IMPORT = /\b(import|export)\s+(type\s+)?(?:(\*\s+as\s+\w+)|\{([^}]*)\}|(\w+))?(?:\s*,\s*\{([^}]*)\})?\s*(?:from\s+)?(['"])([^'"]+)\7/g;
+/** Where `text` really imports from, as TypeScript's parser sees it (a comment between tokens, or a string that only looks
+ *  like an import, cannot fool it): `{ start, spec, kind }` for imports, re-exports, `import()`, `require()` and `import('x').T`. */
+function importSites(text, file) {
+  const sites = [];
+  const sourceFile = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const literal = (node) => node !== undefined && ts.isStringLiteralLike(node);
+  const visit = (node) => {
+    const start = node.getStart(sourceFile);
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && literal(node.moduleSpecifier)) sites.push({ start, spec: node.moduleSpecifier.text, kind: ts.isImportDeclaration(node) ? 'import' : 'export' });
+    else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(node.expression) && node.expression.text === 'require')) && literal(node.arguments[0])) sites.push({ start, spec: node.arguments[0].text, kind: 'dynamic import or require' });
+    else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && literal(node.argument.literal)) sites.push({ start, spec: node.argument.literal.text, kind: 'import type' });
+    else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && literal(node.moduleReference.expression)) sites.push({ start, spec: node.moduleReference.expression.text, kind: 'import =' });
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return sites;
+}
+
+const IMPORT = /\b(import|export)\s+(type\s+)?(?:(\*(?:\s+as\s+\w+)?)|\{([^}]*)\}|(\w+))?(?:\s*,\s*\{([^}]*)\})?\s*(?:from\s+)?(['"])([^'"]+)\7/g;
 
 /** Rewrite one file's imports through the table; returns the text and whether a module was rewritten. Problems are
  *  collected, never thrown, so one run names every module and symbol the table lacks. */
@@ -109,13 +128,18 @@ const forTarget = (value, target) => (value !== null && typeof value === 'object
 export function rewriteImports(text, { table, file, entries, problems, outDir, target }) {
   const selfTo = entries.find((e) => e.from === file).to;
   let rewritten = false;
+  const problemsBefore = problems.length;
+  const sites = importSites(text, file);
   // A dynamic import or require is not rewritten: it is allowed only for a module the table keeps as it is.
-  for (const call of text.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)) {
-    const entry = table.modules[call[1]];
-    if (!entry) problems.push(`${file}: a dynamic import or require of ${call[1]}: module ${call[1]} is not in the import table`);
-    else if (!entry.keep) problems.push(`${file}: a dynamic import or require of ${call[1]} is not supported by the port (the table rewrites it)`);
+  for (const call of sites.filter((site) => site.kind === 'dynamic import or require')) {
+    const entry = table.modules[call.spec];
+    if (!entry) problems.push(`${file}: a dynamic import or require of ${call.spec}: module ${call.spec} is not in the import table`);
+    else if (!entry.keep) problems.push(`${file}: a dynamic import or require of ${call.spec} is not supported by the port (the table rewrites it)`);
   }
-  const out = text.replace(IMPORT, (whole, keyword, typeOnly, namespace, named, def, named2, quote, spec) => {
+  // Only a real import or export is rewritten; the same words in a string or a comment are left alone.
+  const starts = new Set(sites.filter((site) => site.kind === 'import' || site.kind === 'export').map((site) => site.start));
+  const out = text.replace(IMPORT, (whole, keyword, typeOnly, namespace, named, def, named2, quote, spec, offset) => {
+    if (!starts.has(offset)) return whole;
     const at = `${file}: ${keyword} from ${spec}`;
     if (spec.startsWith('.')) {
       if (!spec.endsWith(table.relative.from)) { problems.push(`${at}: a relative import that does not end in ${table.relative.from}`); return whole; }
@@ -141,15 +165,25 @@ export function rewriteImports(text, { table, file, entries, problems, outDir, t
       else if (mapped === 'gap') { problems.push(`${at}: symbol ${symbol} is a gap in the import table for ${spec}`); bad = true; }
     }
     if (bad) return whole;
-    let renamed = whole;
-    for (const symbol of symbols) {
-      const mapped = forTarget(entry.symbols[symbol], target);
-      if (mapped !== symbol && symbol !== 'default' && symbol !== '*') renamed = renamed.replace(new RegExp(`(^|[{,\\s])(type\\s+)?${symbol}(?=\\s*[,}\\s])`), (m, pre, ty = '') => `${pre}${ty}${mapped} as ${symbol}`);
-    }
+    // A rename touches the imported name only: `{ A as B }` becomes `{ NewA as B }`, a bare `{ A }` becomes `{ NewA as A }`.
+    const renamed = whole.replace(/\{([^}]*)\}/g, (_block, list) => `{${list.split(',').map((member) => member.replace(/^(\s*(?:type\s+)?)(\w+)(\s+as\s+\w+)?(\s*)$/, (same, before, name, alias = '', after) => {
+      const mapped = name === 'default' ? name : forTarget(entry.symbols[name], target);
+      return mapped === name ? same : `${before}${mapped}${alias || ` as ${name}`}${after}`;
+    })).join(',')}}`);
     rewritten = true;
     const spot = posix.relative(outDir, landing).replace(/\.ts$/, '.js');
     return renamed.replace(`${quote}${spec}${quote}`, `${quote}${spot.startsWith('.') ? spot : `./${spot}`}${quote}`);
   });
+  // The check that does not trust the rewrite: every specifier the written file really has is a kept module or a file the port
+  // writes. An import the pattern above could not read (a comment between its tokens) is caught here, by name.
+  if (problems.length === problemsBefore) {
+    const written = new Set([...entries.map((e) => e.to), ...Object.values(table.relative.landings ?? {}).map((l) => forTarget(l, target)), ...Object.values(table.modules).map((m) => forTarget(m.to, target))]
+      .filter((path) => path !== undefined).map((path) => path.replace(/\.ts$/, '.js')));
+    for (const site of importSites(out, file)) {
+      const ok = site.spec.startsWith('.') ? written.has(posix.join(outDir, site.spec)) : table.modules[site.spec]?.keep === true;
+      if (!ok) problems.push(`${file}: ${site.kind} from ${site.spec} escaped the table: module ${site.spec} is not in the import table, or its import was not rewritten`);
+    }
+  }
   return { text: out, rewritten };
 }
 
@@ -292,23 +326,44 @@ function firstDifference(a, b) {
   return at < 0 && x.length === y.length ? '' : ` (line ${(at < 0 ? Math.min(x.length, y.length) : at) + 1}: committed ${JSON.stringify((x[at] ?? '').slice(0, 70))}, port ${JSON.stringify((y[at] ?? '').slice(0, 70))})`;
 }
 
+/** How many lines `before` loses and `after` gains: the rest is the longest run of lines both keep, in order, so a reordered pair
+ *  and an added copy of a line both count. */
+export function lineChanges(before, after) {
+  let row = new Array(after.length + 1).fill(0);
+  for (const line of before) {
+    const next = [0];
+    for (let j = 0; j < after.length; j += 1) next.push(line === after[j] ? row[j] + 1 : Math.max(row[j + 1], next[j]));
+    row = next;
+  }
+  return { removed: before.length - row[after.length], added: after.length - row[after.length] };
+}
+
 /** `--pin`: what changes if upstream's text moves to `sha`: per file the pristine diff (lines), the import table's verdict on
  *  the new text, and the patches that no longer apply. Never writes. */
 export async function upgradeReport(dir, { sha, upstreamClone }) {
   const { upstream, manifests } = await loadPort(dir);
-  const git = (...args) => execFileSync('git', ['-C', upstreamClone, ...args], { encoding: 'buffer', maxBuffer: 1 << 28 });
+  const git = (...args) => execFileSync('git', ['-C', upstreamClone, ...args], { encoding: 'buffer', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'] });
   const full = execFileSync('git', ['-C', upstreamClone, 'rev-parse', '--verify', `${sha}^{commit}`], { encoding: 'utf8' }).trim();
-  const report = { from: upstream.commit, to: full, pristine: {}, imports: [], patches: [] };
+  const report = { from: upstream.commit, to: full, pristine: {}, missing: [], imports: [], patches: [] };
   const old = pristineReader(dir, upstream, []);
   for (const manifest of manifests) {
     const read = async (path) => Buffer.from(git('show', `${full}:${path}`));
     const table = await readJson(manifest.tableFile, 'the import table');
+    // A listed file upstream deleted or moved is a problem named by path; the rest of the files are still checked.
+    const present = new Set();
     for (const { from: path } of manifestEntries(manifest)) {
-      const before = (await old(path)).toString('utf8').split('\n'), after = (await read(path)).toString('utf8').split('\n');
-      const set = new Set(before), next = new Set(after);
-      report.pristine[path] = { removed: before.filter((l) => !next.has(l)).length, added: after.filter((l) => !set.has(l)).length };
+      let after;
+      try { after = (await read(path)).toString('utf8').split('\n'); } catch (error) {
+        // Only git's own "no such path" answers mean upstream dropped the file; a corrupt clone or an unreadable object fails as itself.
+        if (!/does not exist|exists on disk, but not in/.test(String(error.stderr ?? error.message))) throw error;
+        report.missing.push(`${path}: not at ${sha}`);
+        continue;
+      }
+      present.add(path);
+      report.pristine[path] = lineChanges((await old(path)).toString('utf8').split('\n'), after);
     }
-    const done = await portManifest({ manifest, read, table, patches: manifest.patches, keepGoing: true });
+    const left = { ...manifest, files: manifest.files.filter((f) => present.has(posix.join(manifest.upstream, typeof f === 'string' ? f : f.from))) };
+    const done = await portManifest({ manifest: left, read, table, patches: manifest.patches, keepGoing: true });
     for (const problem of done.problems) (/^patch /.test(problem) ? report.patches : report.imports).push(problem);
   }
   return report;
@@ -316,14 +371,26 @@ export async function upgradeReport(dir, { sha, upstreamClone }) {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const flag = (name) => { const at = args.indexOf(name); if (at < 0) return undefined; const [, value] = args.splice(at, 2); return value; };
-  const has = (name) => { const at = args.indexOf(name); if (at < 0) return false; args.splice(at, 1); return true; };
-  const check = has('--check');
-  const drop = flag('--drop');
-  const outDir = flag('--out');
-  const cascade = has('--cascade');
-  const pin = flag('--pin');
-  const upstreamClone = flag('--upstream');
+  const usage = 'usage: port-durable-harness.mjs [--check | --drop <patch> [--cascade] [--out <dir>] | --pin <sha> --upstream <clone>] [<package dir>]';
+  const refuse = (why) => { console.error(`${why}\n${usage}`); process.exit(2); };
+  // A value flag takes a value that is not a flag; anything else starting with a dash is refused, and nothing is written.
+  const given = {};
+  const positional = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (['--drop', '--out', '--pin', '--upstream'].includes(args[i])) {
+      if (args[i + 1] === undefined || args[i + 1].startsWith('-')) refuse(`${args[i]} needs a value`);
+      given[args[i]] = args[i += 1];
+    } else if (['--check', '--cascade'].includes(args[i])) given[args[i]] = true;
+    else if (args[i].startsWith('-')) refuse(`unknown option ${args[i]}`);
+    else positional.push(args[i]);
+  }
+  if (positional.length > 1) refuse(`more than one package directory: ${positional.join(' ')}`);
+  const check = given['--check'] === true;
+  const drop = given['--drop'];
+  const outDir = given['--out'];
+  const cascade = given['--cascade'] === true;
+  const pin = given['--pin'];
+  const upstreamClone = given['--upstream'];
   const packages = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'packages');
   /** Every package directory that carries a port. */
   const ported = async () => {
@@ -333,7 +400,7 @@ if (import.meta.main) {
     }
     return dirs;
   };
-  const dirs = args[0] ? [args[0]] : drop || pin ? [join(packages, 'run-adapters')] : await ported();
+  const dirs = positional[0] ? [positional[0]] : drop || pin ? [join(packages, 'run-adapters')] : await ported();
   const dir = dirs[0];
   const fail = (lines) => { for (const line of lines) console.error(line); process.exit(1); };
   if (pin) {
@@ -341,11 +408,13 @@ if (import.meta.main) {
     const report = await upgradeReport(dir, { sha: pin, upstreamClone });
     console.log(`Pristine diff, ${report.from.slice(0, 10)} to ${report.to.slice(0, 10)}:`);
     for (const [path, n] of Object.entries(report.pristine)) console.log(`  ${path}: ${n.removed} lines removed, ${n.added} added`);
+    console.log(`Files not at the new pin: ${report.missing.length ? '' : 'none'}`);
+    for (const line of report.missing) console.log(`  ${line}`);
     console.log(`Import table against the new text: ${report.imports.length ? '' : 'sound'}`);
     for (const line of report.imports) console.log(`  ${line}`);
     console.log(`Patches: ${report.patches.length ? '' : 'every one applies'}`);
     for (const line of report.patches) console.log(`  ${line}`);
-    process.exit(report.imports.length || report.patches.length ? 1 : 0);
+    process.exit(report.missing.length || report.imports.length || report.patches.length ? 1 : 0);
   }
   if (check) {
     const problems = [];

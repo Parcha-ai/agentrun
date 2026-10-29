@@ -34,7 +34,7 @@ const SELF = fileURLToPath(import.meta.url);
 // ---- crossings and the plan ---------------------------------------------------------------------------------------------
 
 /** Where a kill is planned: the `n`th crossing one side takes in the process, counted from 1. */
-export type Plan = { side: 'child' | 'supervisor'; n: number; /** A supervisor kill by name: the first crossing of this point, whatever its number. */ point?: string };
+export type Plan = { side: 'child' | 'supervisor'; n: number; /** A kill by name: the first crossing of this point on its side, whatever its number. */ point?: string };
 export type Crossing = { side: 'child' | 'supervisor'; n: number; point: string; t: string };
 
 /** mulberry32: a seed is the whole of the supervisor's randomness. */
@@ -362,7 +362,8 @@ export function ledgerOut(ledger: Ledger): Ledger {
   return handedOut(ledger);
 }
 
-export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean; record?: string }): Promise<Ledger> {
+/** `planted`: the first kills, by name and in order, before the seeded draws; each counts among `kills`. */
+export async function killAnywhere(options: { seed: number; kills: number; keep?: boolean; record?: string; planted?: Plan[] }): Promise<Ledger> {
   if (!Number.isSafeInteger(options.kills) || options.kills < 0) throw new Error(`--kills must be a whole number, not ${options.kills}`);
   if (!Number.isSafeInteger(options.seed)) throw new Error(`--seed must be a whole number, not ${options.seed}`);
   // A recording directory holds one run: leftovers of an interrupted or finished one would be merged into this run's recording.
@@ -394,7 +395,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         // A plan the process did not reach is drawn again: ten kills means ten that landed.
         const left = options.kills - kills.filter((kill) => kill.landed).length;
         // Once a process has completed the run, a later cut is a resume of a finished run: its first crossing is always taken.
-        const planned: Plan | undefined = left <= 0 ? undefined : finished ? { side: 'child', n: 1 + Math.floor(next() * 3) }
+        const planned: Plan | undefined = left <= 0 ? undefined : !finished && index < (options.planted?.length ?? 0) ? options.planted![index] : finished ? { side: 'child', n: 1 + Math.floor(next() * 3) }
           : planNext(next, left, { child: refNames.child.length - progress(refNames.child, taken.child), supervisor: refNames.supervisor.length - progress(refNames.supervisor, taken.supervisor) });
         const log = join(scratch, `cut-${index}.crossings.jsonl`);
         state.n = 0; state.seen = []; delete state.killed; delete state.pid; delete state.plan;
@@ -402,7 +403,7 @@ export async function killAnywhere(options: { seed: number; kills: number; keep?
         processes += 1;
         const seenRuns = backend.dispatched.filter((row) => row.op === 'run').length;
         const began = Date.now();
-        last = await spawnChild({ HOME: scratch, TMPDIR: scratch, DIR: dir, BACKEND: served.url, CROSS_LOG: log, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(planned?.side === 'child' ? { KILL_CHILD_AT: String(planned.n) } : {}) }, (pid) => { state.pid = pid; supervisor?.host('process.started', { gen: index + 1, pid }); });
+        last = await spawnChild({ HOME: scratch, TMPDIR: scratch, DIR: dir, BACKEND: served.url, CROSS_LOG: log, ...(options.record ? { RECORD_DIR: options.record } : {}), ...(planned?.side === 'child' ? (planned.point === undefined ? { KILL_CHILD_AT: String(planned.n) } : { KILL_AT_POINT: planned.point }) : {}) }, (pid) => { state.pid = pid; supervisor?.host('process.started', { gen: index + 1, pid }); });
         const pid = state.pid;
         const answeredRuns = rowsOfLedger(dir).filter((row) => row.kind === 'browser' && row.name === 'page.run' && row.pid === pid).length;
         backend.dispatched.filter((row) => row.op === 'run').slice(seenRuns).forEach((row, at) => pageRuns.push({ process: index + 1, pid, applied: at < state.seen.filter((crossing) => crossing.point === 'browser.applied driver.run').length, answered: at < answeredRuns, input: row.input }));

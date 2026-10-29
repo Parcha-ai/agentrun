@@ -8,6 +8,9 @@
       },
       "packages/harness-claude-code/src/index.ts": {
         "harness-claude-code": "src/harness.ts"
+      },
+      "packages/harness-process/src/types.ts": {
+        "harness-process": "src/types.ts"
       }
     }
   },
@@ -62,7 +65,10 @@
         "readJsonLines": "gap",
         "vercelAnchors": "gap",
         "workRemains": "gap",
-        "Unavailable": "Unavailable"
+        "Unavailable": "Unavailable",
+        "ToolOutput": {
+          "harness-process": "ToolOutput"
+        }
       }
     },
     "zod": {

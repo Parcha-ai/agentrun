@@ -1,6 +1,8 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/store.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 // Changed by Parcha, imports rewritten for AgentRun
+// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
+// From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/store.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 import type { JournalRecord, NativeJournal, TranscriptEntry } from './host/process.js';
 
 /**
@@ -50,6 +52,14 @@ export function toolUseIds(entry: TranscriptLine | undefined): string[] {
   return content.filter((c) => c?.type === 'tool_use' && typeof c.id === 'string').map((c) => c.id as string);
 }
 
+/** The `tool_use_id`s a user entry answers (its `tool_result` blocks). */
+export function toolResultIds(entry: TranscriptLine | undefined): string[] {
+  if (entry?.type !== 'user') return [];
+  const content = (entry.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  return content.filter((c) => c?.type === 'tool_result' && typeof c.tool_use_id === 'string').map((c) => c.tool_use_id as string);
+}
+
 export interface JournalSessionStoreOptions {
   /** The journal's records as of the drive's start, blobs resolved (`journal.read()`). */
   records: JournalRecord[];
@@ -81,6 +91,8 @@ export class JournalSessionStore {
   private readonly calls = new Set<string>();
   private readonly users = new Set<string>();
   private readonly waiters = new Map<string, (() => void)[]>();
+  private readonly results = new Set<string>();
+  private readonly resultWaiters = new Map<string, (() => void)[]>();
   private held: ({ stream: string; entry: TranscriptLine } | { message: TranscriptEntry })[] = [];
   private timer: ReturnType<typeof setTimeout> | undefined;
   private readonly coalesceMs: number;
@@ -206,5 +218,33 @@ export class JournalSessionStore {
       for (const w of this.waiters.get(id) ?? []) w();
       this.waiters.delete(id);
     }
+    for (const id of toolResultIds(entry)) {
+      this.results.add(id);
+      for (const w of this.resultWaiters.get(id) ?? []) w();
+      this.resultWaiters.delete(id);
+    }
+  }
+
+  /**
+   * Resolve once the user entry that answers `toolUseId` (its `tool_result`) is committed: a call the CLI answered
+   * itself (a refusal) is told to the host only once the log holds the answer. Rejects after `timeoutMs`.
+   */
+  async resultBarrier(toolUseId: string, timeoutMs: number): Promise<void> {
+    if (!this.results.has(toolUseId)) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const list = this.resultWaiters.get(toolUseId)?.filter((w) => w !== done) ?? [];
+          if (list.length) this.resultWaiters.set(toolUseId, list);
+          else this.resultWaiters.delete(toolUseId);
+          reject(new Error(`the transcript entry answering tool call ${toolUseId} did not reach the log within ${timeoutMs} ms`));
+        }, timeoutMs);
+        const done = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        this.resultWaiters.set(toolUseId, [...(this.resultWaiters.get(toolUseId) ?? []), done]);
+      });
+    }
+    await this.flush();
   }
 }

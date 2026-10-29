@@ -101,6 +101,39 @@ test("the CLI is started with the host's tools only, no settings, no sign-in and
   assert.equal(env.CLAUDE_AGENT_SDK_CLIENT_APP, 'agentrun-claude-agent');
 });
 
+// The Skill gate apart from the CLI. On the pinned CLI a name that is no skill of the session's never reaches the hook (the
+// CLI refuses it first), so the hook's own deny is the last line should a later CLI check in another order; and the
+// rewrite of a bare name is pinned here without the CLI too.
+test("the Skill gate: a session skill by its qualified name is allowed as asked, by its bare name rewritten to the qualified one (never a bare name the CLI keeps), and any other name denied", async (t) => {
+  const seen = [];
+  const out = {};
+  const skill = (name) => ({ name, files: { 'SKILL.md': `---\nname: ${name}\ndescription: d\n---\nbody\n` } });
+  const probe = { name: 'probe', description: 'Probe the gate.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => {
+    const [gate] = seen[0].hooks.PreToolUse[0].hooks;
+    const ask = (skillName) => gate({ hook_event_name: 'PreToolUse', session_id: 's', cwd: '/', tool_name: 'Skill', tool_input: { skill: skillName, args: 'x' }, tool_use_id: `toolu_${skillName}` }, `toolu_${skillName}`, { signal: new AbortController().signal });
+    for (const name of ['agentrun:research-method', 'research-method', 'research-methods', 'simplify', 'agentrun:simplify', 'agentrun:review', 'review']) out[name] = (await ask(name))?.hookSpecificOutput;
+    return { text: 'probed' };
+  } };
+  // A user's skill named "review" (a name the CLI keeps) is the session's, by its qualified name only.
+  const { adapter } = await claude(t, { skills: [skill('research-method'), skill('review')], script: ['call probe {}', 'call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push(options) } });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [probe] });
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: ['probe'] }), { answer: 'ok' });
+  assert.deepEqual(out['agentrun:research-method'], { hookEventName: 'PreToolUse', permissionDecision: 'allow' }, 'the qualified name, as asked');
+  assert.deepEqual(out['research-method'], { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { skill: 'agentrun:research-method', args: 'x' } }, 'the bare name, rewritten');
+  assert.deepEqual(out['agentrun:review'], { hookEventName: 'PreToolUse', permissionDecision: 'allow' }, "a reserved name's skill, by its qualified name");
+  for (const name of ['research-methods', 'simplify', 'agentrun:simplify', 'review']) {
+    assert.equal(out[name]?.permissionDecision, 'deny', name);
+    assert.match(out[name]?.permissionDecisionReason ?? '', /not one of this session's skills/, name);
+  }
+});
+
+test("a host header the proxy would refuse is refused when the adapter is made, by the adapter, naming the header", () => {
+  const make = (headers) => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k', headers }, sdk: fakeSdk(), standIn: { command: process.execPath } });
+  assert.throws(() => make({ Authorization: 'x' }), /^Error: agentrun-claude-agent: provider\.headers: .*authorization/i);
+  assert.throws(() => make({ 'x-tags': 'a\r\nb' }), /agentrun-claude-agent: provider\.headers: /);
+  assert.doesNotThrow(() => make({ 'x-litellm-tags': 'job:1' }));
+});
+
 test("the PreToolUse gate leaves the session's own tools to the tool, and a failure inside it is a deny, while the turn runs", async (t) => {
   const seen = [];
   const decisions = {};
@@ -148,7 +181,9 @@ test("every model request reaches the host with its tokens and its price: reques
     assert.ok(u.input > 0 && u.output > 0, `tokens: ${JSON.stringify(u)}`);
     assert.equal(typeof u.cacheRead, 'number');
     assert.equal(typeof u.cacheWrite, 'number');
-    assert.ok(u.usd > 0 && !u.estimated, `price: ${JSON.stringify(u)}`);
+    // The scripted provider's answer carries no cost of its own, so the host's price table prices it: a price above 0,
+    // marked estimated, with no tableUsd (that sits only beside a cost the response reported).
+    assert.ok(u.usd > 0 && u.estimated === true && u.tableUsd === undefined, `price: ${JSON.stringify(u)}`);
   }
 });
 

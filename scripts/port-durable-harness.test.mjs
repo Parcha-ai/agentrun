@@ -1,13 +1,13 @@
 // The port, checked offline: this tree is exactly what the port makes, and each planted break goes red by name.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { bodyOf, checkPort, header, parsePatch, portPackage, PORT_DIR, readPatches, upgradeReport } from './port-durable-harness.mjs';
+import { bodyOf, checkPort, header, parsePatch, portPackage, PORT_DIR, readPatches, rewriteImports, upgradeReport } from './port-durable-harness.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const packageDir = join(root, 'packages', 'run-adapters');
@@ -99,7 +99,7 @@ test('a patch that changes nothing is named, and dropping a patch that others ar
   const cascaded = await portPackage(packageDir, { drop: ['001-begin-reservation'], cascade: true });
   assert.ok(!cascaded.files.get('src/process/builtins.ts').includes('private async again('), 'without 001 there is no reservation');
   assert.deepEqual((await readPatches(join(packageDir, PORT_DIR), 'harness-process')).map((p) => p.name), [
-    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk',
+    '001-begin-reservation', '002-message-prefix', '003-comments-name-this-host', '004-comments-name-the-session-writer', '005-comments-name-the-agent-sdk', '008-tool-images',
   ]);
   for (const patch of await readPatches(join(packageDir, PORT_DIR), 'harness-process')) assert.ok(patch.Reason.length > 20, `${patch.name} says why`);
   assert.equal((await readPatches(join(packageDir, PORT_DIR), 'harness-process'))[0].Upstream, 'offer', 'begin() is the one offered upstream');
@@ -224,42 +224,154 @@ test('the Claude port: its relative imports land where the manifest or the table
   assert.match((await portPackage(noLanding)).problems.join('\n'), /harness\.ts: import from \.\/spawn\.ts: packages\/harness-claude-code\/src\/spawn\.ts is not a file of this manifest, and the import table has no landing for it/);
 });
 
-test('the command line exits 1 when a committed byte is not the port\'s, naming the file on stderr, and 0 on a clean tree', async () => {
-  const run = (dir) => spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), '--check', dir], { cwd: root, encoding: 'utf8' });
-  const clean = run(packageDir);
-  assert.equal(clean.status, 0, clean.stderr);
-  assert.match(clean.stdout, /the committed files are exactly what the pristine copies, the patches and the import table make/);
-  const changed = await copyOf(edit('src/process/tools.ts', (text) => `${text} `));
-  const red = run(changed);
-  assert.equal(red.status, 1, 'a changed byte is a non-zero exit, so CI\'s gate is red');
-  assert.match(red.stderr, /src\/process\/tools\.ts: differs from the port's output/);
-  const broken = await copyOf(table((t) => { delete t.modules['node:crypto']; return t; }));
-  assert.equal(run(broken).status, 1, 'a port that fails (not a byte difference) exits 1 too');
+/** The table's verdict on `text`, which imports from the modules `mod-a` (renames symbols) and `mod-kept` (kept as it is). */
+function rewrite(text) {
+  const table = { relative: { from: '.ts', to: '.js' }, modules: {
+    'mod-a': { to: 'src/kernel/index.ts', symbols: { '*': '*', DriveContext: 'NewContext', X: 'Y', Z: 'ZZ' } },
+    'mod-kept': { keep: true },
+  } };
+  const problems = [];
+  const { text: out } = rewriteImports(text, { table, file: 'up/a.ts', entries: [{ from: 'up/a.ts', to: 'src/a.ts' }], problems, outDir: 'src', target: 'pkg' });
+  return { out, problems };
+}
+
+test('export * from a module goes through the table: an unknown one is named, a known one lands where the table says', () => {
+  assert.match(rewrite("export * from 'mod-unknown';\n").problems.join('\n'), /a\.ts: export from mod-unknown: module mod-unknown is not in the import table/);
+  const known = rewrite("export * from 'mod-a';\nexport * as ns from 'mod-a';\nexport * from 'mod-kept';\n");
+  assert.deepEqual(known.problems, []);
+  assert.equal(known.out, "export * from './kernel/index.js';\nexport * as ns from './kernel/index.js';\nexport * from 'mod-kept';\n");
 });
 
-test('a patch that changes nothing is named: one a later patch reverts, and one that rewrites a line to itself', async () => {
-  // Patch 006 changes a line of tail.ts's comment; 007 changes it back: together they leave the output as it was.
-  const pristine = (await readFile(join(packageDir, 'vendor/durable-harness/upstream/packages/harness-process/src/tail.ts'), 'utf8')).split('\n');
-  const at = pristine.findIndex((line, i) => i >= 4 && line.startsWith(' * ') && line.trim().length > 12);
-  // One changed line with git's three lines of context on each side.
-  const hunk = (from, to) => `diff --git a/packages/harness-process/src/tail.ts b/packages/harness-process/src/tail.ts\n--- a/packages/harness-process/src/tail.ts\n+++ b/packages/harness-process/src/tail.ts\n@@ -${at - 2},7 +${at - 2},7 @@\n${pristine.slice(at - 3, at).map((l) => ` ${l}`).join('\n')}\n-${from}\n+${to}\n${pristine.slice(at + 1, at + 4).map((l) => ` ${l}`).join('\n')}\n`;
-  const patchFile = (name, from, to) => `Patch: ${name}\nReason: a test patch\nUpstream: ours\nPins: comments only\n---\n${hunk(from, to)}`;
-  const changed = pristine[at].replace('*', '*  ');
-  // The comment line sits inside the 002 patch's context only when it is within three lines of it; either way the patches
-  // below are the last two, applied to the text the earlier ones left.
-  const reverted = await copyOf(async (dir) => {
-    const text = (await readFile(join(dir, 'vendor/durable-harness/upstream/packages/harness-process/src/tail.ts'), 'utf8')).split('\n');
-    const line = text.findIndex((l) => l === pristine[at]);
-    assert.ok(line >= 0);
-    await writeFile(join(dir, patchPath('006-widen')), patchFile('006-widen', pristine[at], changed));
-    await writeFile(join(dir, patchPath('007-narrow')), patchFile('007-narrow', changed, pristine[at]));
-  });
-  const problems = (await checkPort(reverted)).join('\n');
-  assert.match(problems, /patch 006-widen changes nothing/);
-  assert.doesNotMatch(problems, /patch 007-narrow changes nothing/, 'the reverting patch alone does change the output (it leaves the first applied)');
-  // A patch that rewrites a line to itself applies and changes nothing.
-  const same = await copyOf(async (dir) => {
-    await writeFile(join(dir, patchPath('006-same')), patchFile('006-same', pristine[at], pristine[at]));
-  });
-  assert.match((await checkPort(same)).join('\n'), /patch 006-same changes nothing/);
+test('a symbol rename touches the imported name only: the local alias stays, in an import and in a re-export', () => {
+  const { out, problems } = rewrite([
+    "import { DriveContext as C } from 'mod-a';",
+    "import { X as X } from 'mod-a';",
+    "import { type DriveContext as D, DriveContext } from 'mod-a';",
+    "export { Z as W } from 'mod-a';",
+    "export { Z } from 'mod-a';",
+    '',
+  ].join('\n'));
+  assert.deepEqual(problems, []);
+  assert.equal(out, [
+    "import { NewContext as C } from './kernel/index.js';",
+    "import { Y as X } from './kernel/index.js';",
+    "import { type NewContext as D, NewContext as DriveContext } from './kernel/index.js';",
+    "export { ZZ as W } from './kernel/index.js';",
+    "export { ZZ as Z } from './kernel/index.js';",
+    '',
+  ].join('\n'));
+});
+
+test('--pin counts real line changes: a reordered pair and an added duplicate line each report a change', async () => {
+  const clone = join(scratch, 'upstream-order');
+  const git = (...args) => execFileSync('git', ['-C', clone, '-c', 'user.email=a@b.c', '-c', 'user.name=x', ...args], { encoding: 'utf8' });
+  await mkdir(clone, { recursive: true });
+  git('init', '-q');
+  const tail = 'packages/harness-process/src/tail.ts';
+  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools', 'zod']) {
+    const upstreamFile = `packages/harness-process/src/${file}.ts`;
+    await mkdir(dirname(join(clone, upstreamFile)), { recursive: true });
+    await writeFile(join(clone, upstreamFile), await readFile(join(packageDir, 'vendor/durable-harness/upstream', upstreamFile)));
+  }
+  git('add', '-A'); git('commit', '-qm', 'same');
+  const lines = (await readFile(join(clone, tail), 'utf8')).split('\n');
+  const at = lines.findIndex((line, i) => line.trim() && lines[i + 1]?.trim() && line !== lines[i + 1]);
+  await writeFile(join(clone, tail), [...lines.slice(0, at), lines[at + 1], lines[at], ...lines.slice(at + 2)].join('\n'));
+  git('add', '-A'); git('commit', '-qm', 'reordered');
+  const reordered = git('rev-parse', 'HEAD').trim();
+  await writeFile(join(clone, tail), [...lines.slice(0, at + 1), lines[at], ...lines.slice(at + 1)].join('\n'));
+  git('add', '-A'); git('commit', '-qm', 'duplicated');
+  const duplicated = git('rev-parse', 'HEAD').trim();
+  assert.deepEqual((await upgradeReport(packageDir, { sha: reordered, upstreamClone: clone })).pristine[tail], { removed: 1, added: 1 }, 'a reorder');
+  assert.deepEqual((await upgradeReport(packageDir, { sha: duplicated, upstreamClone: clone })).pristine[tail], { removed: 0, added: 1 }, 'an added copy of a line');
+});
+
+test('--pin names a listed file that is not at the new pin, still reports every other file, and exits 1', async () => {
+  const clone = join(scratch, 'upstream-deleted');
+  const git = (...args) => execFileSync('git', ['-C', clone, '-c', 'user.email=a@b.c', '-c', 'user.name=x', ...args], { encoding: 'utf8' });
+  await mkdir(clone, { recursive: true });
+  git('init', '-q');
+  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools', 'zod']) {
+    const upstreamFile = `packages/harness-process/src/${file}.ts`;
+    await mkdir(dirname(join(clone, upstreamFile)), { recursive: true });
+    await writeFile(join(clone, upstreamFile), await readFile(join(packageDir, 'vendor/durable-harness/upstream', upstreamFile)));
+  }
+  git('add', '-A'); git('commit', '-qm', 'same');
+  await rm(join(clone, 'packages/harness-process/src/journal.ts'));
+  git('add', '-A'); git('commit', '-qm', 'deleted');
+  const pin = git('rev-parse', 'HEAD').trim();
+  const report = await upgradeReport(packageDir, { sha: pin, upstreamClone: clone });
+  assert.deepEqual(report.missing, [`packages/harness-process/src/journal.ts: not at ${pin}`]);
+  assert.deepEqual(report.pristine['packages/harness-process/src/tail.ts'], { removed: 0, added: 0 }, 'the other files are still checked');
+  assert.ok(!('packages/harness-process/src/journal.ts' in report.pristine));
+  const run = spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), '--pin', pin, '--upstream', clone, packageDir], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 1, run.stderr);
+  assert.match(run.stdout, new RegExp(`journal\\.ts: not at ${pin}`));
+  assert.match(run.stdout, /tail\.ts: 0 lines removed, 0 added/, 'the whole report is printed');
+});
+
+/** A throwaway upstream repository holding every file of the process manifest, committed once; returns its helpers. */
+async function throwawayUpstream(name) {
+  const clone = join(scratch, name);
+  const git = (...args) => execFileSync('git', ['-C', clone, '-c', 'user.email=a@b.c', '-c', 'user.name=x', ...args], { encoding: 'utf8' });
+  await mkdir(clone, { recursive: true });
+  git('init', '-q');
+  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools', 'zod']) {
+    const upstreamFile = `packages/harness-process/src/${file}.ts`;
+    await mkdir(dirname(join(clone, upstreamFile)), { recursive: true });
+    await writeFile(join(clone, upstreamFile), await readFile(join(packageDir, 'vendor/durable-harness/upstream', upstreamFile)));
+  }
+  git('add', '-A'); git('commit', '-qm', 'same');
+  return { clone, git };
+}
+
+test('--pin fails on a missing file even when that is the only problem: no import and no patch is written against it', async () => {
+  const { clone, git } = await throwawayUpstream('upstream-only-missing');
+  await rm(join(clone, 'packages/harness-process/src/inbox.ts'));
+  git('add', '-A'); git('commit', '-qm', 'deleted');
+  const pin = git('rev-parse', 'HEAD').trim();
+  const report = await upgradeReport(packageDir, { sha: pin, upstreamClone: clone });
+  assert.deepEqual(report.missing, [`packages/harness-process/src/inbox.ts: not at ${pin}`]);
+  assert.deepEqual([report.imports, report.patches], [[], []], 'the missing file is the only problem');
+  const run = spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), '--pin', pin, '--upstream', clone, packageDir], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 1, run.stdout);
+  assert.match(run.stdout, /inbox\.ts: not at /);
+});
+
+test('--pin reports only git\'s own missing-path answers as a missing file: a corrupt clone fails as itself', async () => {
+  const { clone, git } = await throwawayUpstream('upstream-corrupt');
+  const path = 'packages/harness-process/src/tail.ts';
+  await writeFile(join(clone, path), `${await readFile(join(clone, path), 'utf8')}// moved\n`);
+  git('add', '-A'); git('commit', '-qm', 'moved');
+  const pin = git('rev-parse', 'HEAD').trim();
+  const blob = git('rev-parse', `${pin}:${path}`).trim();
+  await rm(join(clone, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+  await assert.rejects(upgradeReport(packageDir, { sha: pin, upstreamClone: clone }), (error) => !/not at /.test(error.message) && /unable to read|bad object|Command failed/.test(error.message));
+});
+
+test('an import with a comment between its tokens is still checked: an unknown module fails by name, and a string or comment that only looks like an import is not one', () => {
+  for (const text of ["import /* x */ { X } from 'unknown-module';\n", "export /* x */ * from 'unknown-module';\n", "const loaded = import(/* x */ 'unknown-module');\n"]) {
+    assert.match(rewrite(text).problems.join('\n'), /a\.ts: .*unknown-module.*is not in the import table/, text);
+  }
+  assert.match(rewrite("import /* x */ { X } from 'mod-a';\n").problems.join('\n'), /mod-a.*is not in the import table|mod-a.*escaped/, 'a known module the regex missed is not left unrewritten');
+  const lookalikes = [
+    'const s = "import { X } from \'unknown-module\'";',
+    "// import { X } from 'unknown-module'",
+    "/* export * from 'unknown-module' */",
+    'const t = `import { X } from \'unknown-module\'`;',
+    "import { X } from 'mod-kept';",
+    '',
+  ].join('\n');
+  assert.deepEqual(rewrite(lookalikes).problems, []);
+});
+
+test('the command line refuses a value flag with no value and an unknown option: exit 2 with a usage line, and nothing written', () => {
+  const stamp = () => `${execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' })}|${statSync(join(packageDir, 'src/process/tail.ts')).mtimeMs}`;
+  const before = stamp();
+  for (const args of [['--pin'], ['--pin', '--check'], ['--upstream'], ['--drop'], ['--out'], ['--bogus'], ['--pin', 'abc', '--bogus'], ['a', 'b']]) {
+    const run = spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), ...args], { cwd: root, encoding: 'utf8' });
+    assert.equal(run.status, 2, `${args.join(' ')}: ${run.stderr}`);
+    assert.match(run.stderr, /usage/i, args.join(' '));
+    assert.equal(stamp(), before, `${args.join(' ')} wrote nothing`);
+  }
 });

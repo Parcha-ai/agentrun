@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { env } from "node:process";
 import { codexTarget, findCodex } from "./binary.js";
 import { CODEX_BINARY_SHA256, CODEX_VERSION, CodexNotInstalled, CodexPinMismatch } from "./versions.js";
@@ -24,11 +25,13 @@ export function codexPins(target = codexTarget()): CodexPins {
 /**
  * The binary at `found.path` checked against `pins`, in order: the platform package's version, the binary's sha256,
  * then the version it reports. Returns the path, or the typed error (not thrown) naming the pin, what was expected and
- * what was found. No path, or a binary that cannot be read or run, is `CodexNotInstalled`.
+ * what was found. No path, or a binary that cannot be read or run, is `CodexNotInstalled`. The path is made absolute
+ * first, from this process's working directory, and that is the one checked and returned: a session starts the binary
+ * from its own directory, where a relative `CODEX_BIN` names nothing.
  */
 export function verifyCodexBinary(found: { path: string; packageVersion?: string } | undefined, pins: CodexPins = codexPins()): { path: string } | CodexPinMismatch | CodexNotInstalled {
   if (!found) return new CodexNotInstalled("no Codex binary found for this platform, and CODEX_BIN is not set");
-  const { path } = found;
+  const path = resolve(found.path);
   if (!existsSync(path)) return new CodexNotInstalled(`no file at ${path}`);
   if (pins.packageVersion && found.packageVersion !== undefined && found.packageVersion !== pins.packageVersion) {
     return new CodexPinMismatch("package_version", pins.packageVersion, found.packageVersion, path);
