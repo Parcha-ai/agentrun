@@ -23,7 +23,7 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { fileTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
-import { REQUEST_COST_LATE, REQUEST_COST_PENDING } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
@@ -189,6 +189,10 @@ export function adapterRun(
     if (event.type === "request_start") {
       open.add(event.turn);
       void flush();
+      // Marked on the root as it leaves, as a pi run's request is (request-start.ts): one never answered, a run that ends
+      // without opening again (cancelled, or failed) reads as cut, its cost unknown, never as the sum without it.
+      // A store that refuses it has refused a write already, and the process ends on that.
+      later(() => commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_STARTED, data: { key: spec.key, request: event.turn } })))).catch(() => undefined);
     } else {
       open.delete(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
