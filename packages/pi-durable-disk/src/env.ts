@@ -182,12 +182,13 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     if (closing.signal.aborted) return err(new EnvClosedError());
     this.#active++;
     this.#scope.running.add(this);
-    this.#scope.recorder?.started();
+    // Whether the recorder can name this command at the next open: only then does it start without the death signal.
+    const named = this.#scope.recorder?.started() === true;
     try {
       // A recorded environment marks its commands, so its recorder knows them from any other child of this process.
       const recorder = this.#scope.recorder;
       const run = recorder === undefined ? options : { ...options, env: { ...options?.env, [COMMANDS_MARK]: recorder.token } };
-      const confined = await this.#confine(command, run, context);
+      const confined = await this.#confine(command, run, context, !named);
       if (!confined.ok) return confined;
       // Again after the confinement lookups, which await; the signal then covers pi's own pre-spawn work: pi refuses
       // before spawning once it is aborted, and kills a command that spawns after.
@@ -220,7 +221,8 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
    * recorded process can it verify the group is the command's and kill every member, a child no walk recorded included.
    * A death signal would end the leader alone with the instance and leave its children running, out of the reap's reach
    * unless a walk had recorded them. Such a command, a single process included, runs on after a killed instance until
-   * the next open.
+   * the next open. One the recorder cannot name (its mark could not be written) keeps the death signal: nothing would
+   * end it otherwise.
    */
   #prefix(deathSignal: boolean): string[] {
     const { setpriv, noNewPrivs, runAs } = this.#scope;
@@ -239,9 +241,10 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     command: ExecCommand,
     options: ShellExecOptions | undefined,
     context: Context,
+    deathSignal: boolean,
   ): Promise<Result<ExecCommand, ExecutionError>> {
     const { shellPath, shellEnv } = this.#scope;
-    const confine = this.#prefix(this.#scope.recorder === undefined);
+    const confine = this.#prefix(deathSignal);
     if (!confine.length) return ok(command);
     const cwd = options?.cwd === undefined ? this.cwd : getOrDefault(await this.absolutePath(options.cwd, context), this.cwd);
     const env = options?.inheritEnv === false ? { ...options.env } : { ...process.env, ...shellEnv, ...options?.env };

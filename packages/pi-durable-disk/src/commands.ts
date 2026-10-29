@@ -13,7 +13,9 @@
 // at once unless it is in an uninterruptible wait). A walk runs only after a command has started, so before its first
 // command starts the recorder also writes its mark (`mark-<token>.json`), synchronously: the next open ends every live
 // process that carries a mark it finds, as a whole group when it leads one, so a command killed with its instance before
-// any walk recorded it is ended too. A process that cleared its environment carries no mark. Only the instance writes
+// any walk recorded it is ended too. A process that cleared its environment carries no mark, and the mark goes once
+// nothing of the instance is running or recorded: a descendant no walk recorded that outlives its command and its
+// group's leader is out of reach from then on, as before marks. Only the instance writes
 // records: a command never does. Nothing stops a command from writing one too, and none needs stopping: a run's commands
 // run as the instance's user (or, with `runAs`, as another one that cannot write the instance's 0700 directory), so a
 // record a command forged names only what that command could already kill itself. A record grants nothing.
@@ -101,9 +103,10 @@ export class CommandRecorder {
     this.#onError = options.onError;
   }
 
-  /** A command is about to start. */
-  started(): void {
-    if (this.#boot === undefined) return; // nothing could verify a record on the next open
+  /** A command is about to start. Returns whether this recorder's mark is on disk, so the next open can name the
+   *  command even if no walk records it; false when it is not (no boot id, or a mark that cannot be written). */
+  started(): boolean {
+    if (this.#boot === undefined) return false; // nothing could verify a record on the next open
     // Before the command exists: an instance killed before the first walk still leaves what names its commands.
     if (!this.#marked) {
       try {
@@ -121,6 +124,7 @@ export class CommandRecorder {
       this.#timer.unref();
     }
     setTimeout(() => this.scan(), 20).unref();
+    return this.#marked;
   }
 
   /** A command ended (its result is in). The last one stops the walks after a final one. */
