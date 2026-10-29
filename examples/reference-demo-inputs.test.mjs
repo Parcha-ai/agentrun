@@ -16,7 +16,7 @@ import { BOX_CROSSINGS, localPlace, priceJudge, chooseBrowser, crossings, demo, 
 import { ORIGINAL, FIXTURE, BASELINE, run, composeHost, destroyBoxes, meterKnown, RUN_LABEL, localBoxes, ctx, finish, lines, planFor, recordingPlace, specWith, SITES, signInHome, filesIn, killSpec, boxed } from './reference-demo-helpers.mjs';
 
 test('a kill of kind box is written as a box kill, and the process\'s box is taken away with it', { timeout: 300_000 }, async (t) => {
-  const { result, recording } = await run(t, { boxes: { kind: 'local', runIn: true }, kills: [{ point: 'judge.asked verdict', why: 'the machine goes with the process', kind: 'box' }] }, ['--kill', '--json']);
+  const { result, recording } = await run(t, { boxes: { kind: 'local', runIn: true }, kills: [{ point: 'event workflow.judge.answered', why: 'the machine goes with the process', kind: 'box' }] }, ['--kill', '--json']);
   assert.equal(result.processes.at(-1).outcome.status, 'complete', JSON.stringify(result.processes.at(-1)));
   assert.deepEqual(result.kills.map((kill) => kill.kind), ['box']);
   const kill = readEvents(recording).find((line) => line.source === 'host' && line.kind === 'kill');
