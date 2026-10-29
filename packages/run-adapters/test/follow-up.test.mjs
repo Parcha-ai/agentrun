@@ -180,3 +180,21 @@ test('the reserve must be a number of dollars above 0', async () => {
   const { followUpOnce } = await kernel();
   for (const reserveUsd of [0, -1, Number.NaN, Infinity, '0.1']) assert.throws(() => followUpOnce(options(memorySessionStore(), { reserveUsd })), /reserveUsd/);
 });
+
+test('the worst case of a request is required: a host with none passes 0, never leaves it out', async () => {
+  const { followUpOnce } = await kernel();
+  const { worstUsd: _omitted, ...without } = options(memorySessionStore());
+  assert.throws(() => followUpOnce(without), /worstUsd/);
+  for (const worstUsd of [-0.01, Number.NaN, Infinity, '0.01', null]) assert.throws(() => followUpOnce(options(memorySessionStore(), { worstUsd })), /worstUsd/);
+  assert.equal(typeof followUpOnce(options(memorySessionStore(), { worstUsd: 0 })).run, 'function');
+});
+
+test('the kernel knows no learning: its exports and the follow-up\'s source name no reflection, learning or memo', async () => {
+  const words = /reflect|learn|memo/i;
+  const exported = Object.keys(await kernel());
+  assert.ok(exported.includes('followUpOnce'), 'the follow-up is exported');
+  assert.deepEqual(exported.filter((name) => words.test(name)), []);
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../src/kernel/follow-up.ts', import.meta.url), 'utf8');
+  assert.deepEqual(source.split('\n').filter((line) => words.test(line)), []);
+});
