@@ -308,18 +308,23 @@ export function lineChanges(before, after) {
  *  the new text, and the patches that no longer apply. Never writes. */
 export async function upgradeReport(dir, { sha, upstreamClone }) {
   const { upstream, manifests } = await loadPort(dir);
-  const git = (...args) => execFileSync('git', ['-C', upstreamClone, ...args], { encoding: 'buffer', maxBuffer: 1 << 28 });
+  const git = (...args) => execFileSync('git', ['-C', upstreamClone, ...args], { encoding: 'buffer', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'] });
   const full = execFileSync('git', ['-C', upstreamClone, 'rev-parse', '--verify', `${sha}^{commit}`], { encoding: 'utf8' }).trim();
-  const report = { from: upstream.commit, to: full, pristine: {}, imports: [], patches: [] };
+  const report = { from: upstream.commit, to: full, pristine: {}, missing: [], imports: [], patches: [] };
   const old = pristineReader(dir, upstream, []);
   for (const manifest of manifests) {
     const read = async (path) => Buffer.from(git('show', `${full}:${path}`));
     const table = await readJson(manifest.tableFile, 'the import table');
+    // A listed file upstream deleted or moved is a problem named by path; the rest of the files are still checked.
+    const present = new Set();
     for (const { from: path } of manifestEntries(manifest)) {
-      const before = (await old(path)).toString('utf8').split('\n'), after = (await read(path)).toString('utf8').split('\n');
-      report.pristine[path] = lineChanges(before, after);
+      let after;
+      try { after = (await read(path)).toString('utf8').split('\n'); } catch { report.missing.push(`${path}: not at ${sha}`); continue; }
+      present.add(path);
+      report.pristine[path] = lineChanges((await old(path)).toString('utf8').split('\n'), after);
     }
-    const done = await portManifest({ manifest, read, table, patches: manifest.patches, keepGoing: true });
+    const left = { ...manifest, files: manifest.files.filter((f) => present.has(posix.join(manifest.upstream, typeof f === 'string' ? f : f.from))) };
+    const done = await portManifest({ manifest: left, read, table, patches: manifest.patches, keepGoing: true });
     for (const problem of done.problems) (/^patch /.test(problem) ? report.patches : report.imports).push(problem);
   }
   return report;
@@ -352,11 +357,13 @@ if (import.meta.main) {
     const report = await upgradeReport(dir, { sha: pin, upstreamClone });
     console.log(`Pristine diff, ${report.from.slice(0, 10)} to ${report.to.slice(0, 10)}:`);
     for (const [path, n] of Object.entries(report.pristine)) console.log(`  ${path}: ${n.removed} lines removed, ${n.added} added`);
+    console.log(`Files not at the new pin: ${report.missing.length ? '' : 'none'}`);
+    for (const line of report.missing) console.log(`  ${line}`);
     console.log(`Import table against the new text: ${report.imports.length ? '' : 'sound'}`);
     for (const line of report.imports) console.log(`  ${line}`);
     console.log(`Patches: ${report.patches.length ? '' : 'every one applies'}`);
     for (const line of report.patches) console.log(`  ${line}`);
-    process.exit(report.imports.length || report.patches.length ? 1 : 0);
+    process.exit(report.missing.length || report.imports.length || report.patches.length ? 1 : 0);
   }
   if (check) {
     const problems = [];

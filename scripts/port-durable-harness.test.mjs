@@ -285,3 +285,27 @@ test('--pin counts real line changes: a reordered pair and an added duplicate li
   assert.deepEqual((await upgradeReport(packageDir, { sha: reordered, upstreamClone: clone })).pristine[tail], { removed: 1, added: 1 }, 'a reorder');
   assert.deepEqual((await upgradeReport(packageDir, { sha: duplicated, upstreamClone: clone })).pristine[tail], { removed: 0, added: 1 }, 'an added copy of a line');
 });
+
+test('--pin names a listed file that is not at the new pin, still reports every other file, and exits 1', async () => {
+  const clone = join(scratch, 'upstream-deleted');
+  const git = (...args) => execFileSync('git', ['-C', clone, '-c', 'user.email=a@b.c', '-c', 'user.name=x', ...args], { encoding: 'utf8' });
+  await mkdir(clone, { recursive: true });
+  git('init', '-q');
+  for (const file of ['builtins', 'inbox', 'journal', 'records', 'recovery', 'tail', 'tools', 'zod']) {
+    const upstreamFile = `packages/harness-process/src/${file}.ts`;
+    await mkdir(dirname(join(clone, upstreamFile)), { recursive: true });
+    await writeFile(join(clone, upstreamFile), await readFile(join(packageDir, 'vendor/durable-harness/upstream', upstreamFile)));
+  }
+  git('add', '-A'); git('commit', '-qm', 'same');
+  await rm(join(clone, 'packages/harness-process/src/journal.ts'));
+  git('add', '-A'); git('commit', '-qm', 'deleted');
+  const pin = git('rev-parse', 'HEAD').trim();
+  const report = await upgradeReport(packageDir, { sha: pin, upstreamClone: clone });
+  assert.deepEqual(report.missing, [`packages/harness-process/src/journal.ts: not at ${pin}`]);
+  assert.deepEqual(report.pristine['packages/harness-process/src/tail.ts'], { removed: 0, added: 0 }, 'the other files are still checked');
+  assert.ok(!('packages/harness-process/src/journal.ts' in report.pristine));
+  const run = spawnSync(process.execPath, [join(root, 'scripts', 'port-durable-harness.mjs'), '--pin', pin, '--upstream', clone, packageDir], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 1, run.stderr);
+  assert.match(run.stdout, new RegExp(`journal\\.ts: not at ${pin}`));
+  assert.match(run.stdout, /tail\.ts: 0 lines removed, 0 added/, 'the whole report is printed');
+});
