@@ -5,6 +5,9 @@ import { answerConfidence, answersToValue, type CompiledQuestions, type Confiden
 
 export const DECISION_RECEIPT_VERSION = 1;
 
+/** The escalation kind of a decision its provider refused: the run ends `escalated` at stage "decision", for a person. */
+export const DECISION_REFUSED = "decision_refused";
+
 /** The typed questions the interpreter asks: the five question nodes and predicates, and a generative
  *  node's `verify` clause. */
 export type DecisionKind = "judge" | "pick" | "sift" | "route" | "ask" | "verify";
@@ -65,8 +68,8 @@ export type DecisionReceipt = {
   request_sha256: string | null;
   /** Wall time of the judge call, in milliseconds. */
   latency_ms: number;
-  /** The questions whose answer came back as a refusal, when any did. A refusal decodes to no value: it fails the
-   *  request, except a route with an `unsure` branch, which takes that branch. */
+  /** The questions whose answer came back as a refusal, when any did. A refusal decodes to no value: the request is
+   *  `failed` and the run escalates (DECISION_REFUSED), except a route with an `unsure` branch, which takes that branch. */
   refused?: string[];
   /** For each choice and score answer, whether its confidence is the provider's own or was derived from its
    *  probabilities; present when the judge said. */

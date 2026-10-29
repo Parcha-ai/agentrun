@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
 import { WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
-import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusalError, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
+import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import type { CostBasis, DecisionEvidence } from "./decision-provider.js";
-import { DECISION_RECEIPT_VERSION, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
+import { DECISION_RECEIPT_VERSION, DECISION_REFUSED, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
 import { workflowShapeIssues } from "./workflow-shape.js";
@@ -1434,7 +1434,7 @@ async function evaluatePredicate(pred: Predicate, state: Record<string, unknown>
   const asked = ask.state ? interpolateValue(ask.state, state, at.label) : promptStateOf(state);
   const questions: Record<string, SystemOneQuestion> = { holds: { type: "noul", instructions: ask.instructions, ...(ask.criteria ? { criteria: ask.criteria } : {}) } };
   const gte = ask.gte ?? 0.6;
-  const decided = await decide(deps, { nodeKind: `${at.kind} (ask predicate)`, kind: "ask", judgeKind: "ask", label: at.label, state: asked, questions }, (answers) => {
+  const decided = await decide(deps, { workflowState: state, nodeKind: `${at.kind} (ask predicate)`, kind: "ask", judgeKind: "ask", label: at.label, state: asked, questions }, (answers) => {
     const answer = answers.holds;
     const p = answer?.type === "noul" ? answer.noul : NaN;
     if (!Number.isFinite(p)) throw new Error(`${at.kind} node "${at.label}": the ask predicate got no yes/no answer`);
@@ -1977,7 +1977,10 @@ type Decided<T> = { id: string; answers: Record<string, SystemOneAnswer>; value:
 async function decide<T>(
   deps: WorkflowDeps,
   ask: { nodeKind: string; kind: DecisionKind; judgeKind: JudgeRequest["kind"]; label: string; state: unknown; questions: Record<string, SystemOneQuestion>; signal?: AbortSignal; request?: DecisionReceipt["request"];
-    /** The node takes a refused answer as a decision of its own (a route with an unsure branch); every other node fails on one. */
+    /** The workflow's state at the node: what a refused decision's escalation keeps for the person who takes it. */
+    workflowState: Record<string, unknown>;
+    /** The node takes a refused answer as a decision of its own (a route with an unsure branch); on every other node a
+     *  refusal escalates the run for review. */
     acceptsRefusal?: boolean;
     /** Called as soon as the request has failed, before its receipt is written. */
     onFailure?: (error: unknown) => void },
@@ -1990,10 +1993,14 @@ async function decide<T>(
   const position = ask.request ?? { index: 0, count: 1 };
   const state_sha256 = sha256Hex(digestText(ask.state));
   const id = sha256Hex(canonicalJson(["decision-v1", path, ask.kind, position.index, ask.questions, state_sha256]));
-  // A refused answer decodes to no value: the node fails on it before `settle` sees it, unless it takes refusals itself.
+  // A refused answer decodes to no value. Unless the node takes refusals itself, the run escalates before `settle` sees
+  // it: the provider gave nothing to act on, and a person decides the case.
   const settleAnswers = (answers: Record<string, SystemOneAnswer>) => {
     const refused = refusedQuestions(answers);
-    if (refused.length && !ask.acceptsRefusal) throw refusalError(refused);
+    if (refused.length && !ask.acceptsRefusal) {
+      throw new EscalationSignal({ kind: DECISION_REFUSED, stage: "decision", label: ask.label, executionPath: path, state: ask.workflowState,
+        summary: `The decision "${ask.label}" was refused by its provider (${refused.map((id) => `"${id}"`).join(", ")}): there is no answer to act on, so a person decides it.` });
+    }
     return settle(answers);
   };
   const recorded = deps.recovery?.decision ? await deps.recovery.decision(id) : undefined;
@@ -2016,7 +2023,7 @@ async function decide<T>(
       latency_ms: Date.now() - startedAt,
       ...(refused.length ? { refused } : {}),
       ...(source && typeof source === "object" && !Array.isArray(source) ? { confidence_source: { ...source } } : {}),
-      ...(outcome.error !== undefined ? { error: String((outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
+      ...(outcome.error !== undefined ? { error: String(outcome.error instanceof EscalationSignal ? outcome.error.escalation.summary : (outcome.error as Error)?.message || outcome.error).slice(0, 2000) } : {}),
     };
   };
   /** Records `made`; with `failure`, the request's own failure, a recorder that also fails surfaces both. */
@@ -2076,7 +2083,7 @@ const meteringOf = (decided: { model: string | null; cost_usd: number | null; re
 async function runJudgeNode(node: JudgeNode, state: Record<string, unknown>, workflow: Workflow, deps: WorkflowDeps): Promise<Record<string, unknown>> {
   assertNodeInputs(node, state);
   const set = questionSetOf(workflow, node);
-  const decided = await decide(deps, { nodeKind: "judge", kind: "judge", judgeKind: "judge", label: node.label, state: interpolateValue(node.state, state, node.label), questions: set.questions }, (answers) => {
+  const decided = await decide(deps, { workflowState: state, nodeKind: "judge", kind: "judge", judgeKind: "judge", label: node.label, state: interpolateValue(node.state, state, node.label), questions: set.questions }, (answers) => {
     const value = set.decode(answers);
     return { rule: { kind: "judge" }, action: value, value };
   });
@@ -2101,7 +2108,7 @@ async function runPickNode(node: PickNode, state: Record<string, unknown>, deps:
   const options: Record<string, string> = Object.fromEntries(items.map((item, i) => [`item_${i}`, describeItem(node.describe, state, item, i) || `item ${i}`]));
   const criteria: Record<string, string | null> = node.allowNone ? { ...options, [NONE]: "none of the items fits" } : options;
   const asked = { ...(node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : { context: promptStateOf(state) }), candidates: options };
-  const decided = await decide(deps, { nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
+  const decided = await decide(deps, { workflowState: state, nodeKind: "pick", kind: "pick", judgeKind: "pick", label: node.label, state: asked, questions: { pick: { type: "choice", instructions: node.instructions, criteria } } }, (answers) => {
     const a = answers.pick;
     if (!a || a.type !== "choice") throw new Error(`pick node "${node.label}": no choice came back`);
     const none = a.choice === NONE;
@@ -2142,7 +2149,7 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
     const ask = (chunk: number[], c: number, signal: AbortSignal | undefined, onFailure?: (error: unknown) => void) => {
       const questions: Record<string, SystemOneQuestion> = {};
       chunk.forEach((i, j) => { for (const id of ids) questions[`${j}.${id}`] = { ...set.questions[id], instructions: `For \`items[${j}]\` (id item_${i}): ${set.questions[id].instructions}` } as SystemOneQuestion; });
-      return decide(deps, { nodeKind: "sift", kind: "sift", judgeKind: "sift", label: node.label, state: { ...base, items: chunk.map((i) => named[i]) }, questions, signal, request: { index: c, count: chunks.length, items: chunk }, ...(onFailure ? { onFailure } : {}) }, (answers) => {
+      return decide(deps, { workflowState: state, nodeKind: "sift", kind: "sift", judgeKind: "sift", label: node.label, state: { ...base, items: chunk.map((i) => named[i]) }, questions, signal, request: { index: c, count: chunks.length, items: chunk }, ...(onFailure ? { onFailure } : {}) }, (answers) => {
         const decoded: Record<string, unknown>[] = []; const sides: AnswersSidecar[] = []; const keptHere: number[] = [];
         chunk.forEach((i, j) => {
           const mine: Record<string, SystemOneAnswer> = Object.create(null);
@@ -2209,7 +2216,7 @@ async function runRouteNode(node: RouteNode, state: Record<string, unknown>, wor
   const names = Object.keys(node.branches);
   const criteria: Record<string, string | null> = Object.fromEntries(names.map((n) => [n, node.branches[n]?.criteria?.trim() || null]));
   const rule: DecisionRule = { kind: "route", branches: [...names], unsure: node.unsure ? { gte: node.unsure.gte, branch: node.unsure.branch } : null };
-  const decided = await decide(deps, { nodeKind: "route", kind: "route", judgeKind: "route", label: node.label, state: interpolateValue(node.state, state, node.label), questions: { branch: { type: "choice", instructions: node.instructions, criteria } }, acceptsRefusal: Boolean(node.unsure) }, (answers) => {
+  const decided = await decide(deps, { workflowState: state, nodeKind: "route", kind: "route", judgeKind: "route", label: node.label, state: interpolateValue(node.state, state, node.label), questions: { branch: { type: "choice", instructions: node.instructions, criteria } }, acceptsRefusal: Boolean(node.unsure) }, (answers) => {
     const a = answers.branch;
     // A refusal takes the unsure branch, as an answer with no confidence would; it chose no branch of its own.
     if (a?.type === "refusal" && node.unsure) {
@@ -2773,7 +2780,7 @@ function compileVerifier(workflow: Workflow, node: WorkflowNode & { verify: Veri
     if (outSchema) normalizeStringNullsForSchema(sub, outSchema);
     const asked = interpolateValue({ ...(clause.state ?? {}), submission: "{submission}" }, { ...state, submission: sub, ...(node.as ? { [node.as]: sub } : {}) }, node.label);
     const drive = drives.length + 1;
-    const decided = await decide(deps, { nodeKind: "judge", kind: "verify", judgeKind: "judge", label: `${node.label} (verify)`, state: asked, questions, request: { index: drive - 1, count: maxDrives } }, (answers) => {
+    const decided = await decide(deps, { workflowState: state, nodeKind: "judge", kind: "verify", judgeKind: "judge", label: `${node.label} (verify)`, state: asked, questions, request: { index: drive - 1, count: maxDrives } }, (answers) => {
       const doubted: string[] = []; const unmet: string[] = [];
       const present = Object.keys(questions).filter((id) => Object.prototype.hasOwnProperty.call(sub, id));
       const thresholds: Record<string, number | null> = {};
