@@ -1,0 +1,103 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/release-notes/runs"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "runs": [
+      {
+        "run_id": "01a18400-c634-739d-b555-94046b6f0dbc",
+        "agent_id": "release-notes",
+        "agent_version": 2,
+        "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+        "kind": "agentic",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Write the release notes for 2.5.0 (expect a provider outage) from: #440 audit l…",
+        "created_at": "2026-10-28T19:33:26.784Z",
+        "ended_at": "2026-10-28T19:33:44.244Z",
+        "error": {
+          "code": "run_failed",
+          "message": "The model provider returned 503 Service Unavailable (sample failure).",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0.003664,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-b447-731e-85f0-e0f68eae3fb7",
+        "agent_id": "release-notes",
+        "agent_version": 2,
+        "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Write the release notes for 2.4.1 from: #430 fix the sign-in page on phones, #4…",
+        "created_at": "2026-10-28T19:33:24.718Z",
+        "ended_at": "2026-10-28T19:33:31.403Z",
+        "error": null,
+        "cost": {
+          "usd": 0.011977,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-89e3-70f5-9853-aa269988814b",
+        "agent_id": "release-notes",
+        "agent_version": 2,
+        "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Write the release notes for 2.4.0 from: #412 incremental search, #418 typo tole…",
+        "created_at": "2026-10-28T19:33:20.080Z",
+        "ended_at": "2026-10-28T19:33:30.050Z",
+        "error": null,
+        "cost": {
+          "usd": 0.012017,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-89e0-70ed-8905-7c251c837826",
+        "agent_id": "release-notes",
+        "agent_version": 1,
+        "revision": "1a7abad3ca7965d94e0561845d525536f1ebe644219e6aaeaa5df75d5d20269d",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Write the release notes for 2.3.1 from: #401 fix export encoding, #402 faster s…",
+        "created_at": "2026-10-28T19:33:19.644Z",
+        "ended_at": "2026-10-28T19:33:29.598Z",
+        "error": null,
+        "cost": {
+          "usd": 0.011789,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      }
+    ],
+    "next_cursor": null
+  }
+}
