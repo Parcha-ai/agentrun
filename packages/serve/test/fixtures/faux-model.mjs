@@ -53,6 +53,10 @@ export default function reply(context, faux) {
         // descriptor.
         const node = spawnSync(process.execPath, ["-e", `const { readFileSync, readlinkSync } = require("fs"); process.stdout.write(JSON.stringify({ leaked: Object.values(process.env).some((v) => v && (v.includes(${JSON.stringify(JEV)}) || v.includes(${JSON.stringify(PARALLEL)}))), fd_open: ${fd ? `(${handedSocket})(${fd})` : "false"} }))`], { encoding: "utf8" });
         const nodeSaw = JSON.parse(node.stdout || "{}");
+        // The env this process gives its tools (ToolHost.env, made by withSecrets from the secrets fd 3 handed over):
+        // the module the run preloaded, so the same instance and the same secrets.
+        const secrets = await import(new URL("../../dist/secrets.js", import.meta.url).href);
+        const hostEnv = secrets.withSecrets(process.env);
         return faux.message(faux.toolCall("submit", {
           leaked: Object.values(process.env).some(holds) || holds(environ),
           key_set: process.env.TYPESAFE_API_KEY !== undefined || process.env.PARALLEL_API_KEY !== undefined,
@@ -61,6 +65,7 @@ export default function reply(context, faux) {
           sub_fd_open: sub.stdout.includes("FD_OPEN"),
           node_leaked: nodeSaw.leaked !== false,
           node_fd_open: nodeSaw.fd_open !== false,
+          host_env_leaked: ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"].some((name) => holds(hostEnv[name]) || holds(secrets.secret(name))),
         }), { stopReason: "toolUse" });
       })();
     }
