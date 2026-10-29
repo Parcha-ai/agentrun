@@ -26,6 +26,8 @@ import { durableSessions } from "./sessions.js";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
+/** The cost of a request whose answer was written at unknown cost, written once it came in: the run's spend counts it. */
+export const PRICED_LATE = "adapter.request_cost";
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
 /** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
@@ -112,6 +114,9 @@ export function adapterRun(
   let calls: ToolCall[] = [];
   const costed: Pending[] = [];
   const written = new Set<number>();
+  // Requests written at unknown cost (their cost not in when their turn ended), and those whose cost is written.
+  const unpriced = new Set<number>();
+  const priced = new Set<number>();
   // Requests admitted and not yet booked, by turn: the proxy answers the harness before it books a response, so a turn
   // can end with its last request's cost still on its way.
   const open = new Set<number>();
@@ -135,8 +140,17 @@ export function adapterRun(
    *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost. */
   const flush = (final = false): Promise<void> =>
     later(async () => {
-      // A cost that came in after its request was written (at unknown cost, below) stays with that entry.
-      while (costed.length && written.has(costed[0]!.request)) costed.shift();
+      // A cost for a request already written: one written at unknown cost (below) gets its cost now, as an entry of its
+      // own, so the run's spend and its cap count it; any other is a duplicate.
+      while (costed.length && written.has(costed[0]!.request)) {
+        const late = costed.shift()!;
+        if (!unpriced.has(late.request) || priced.has(late.request)) continue;
+        await commit(async (tx) => {
+          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, late, "", []) as never] });
+          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request } });
+        });
+        priced.add(late.request);
+      }
       if (!text && !calls.length && !costed.length) return;
       if (!costed.length && !final) return;
       const request = costed.shift();
@@ -150,9 +164,11 @@ export function adapterRun(
       const marked = request?.request ?? unbooked;
       await commit(async (tx) => {
         await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, request, content.text, content.calls) as never] });
-        if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked } });
+        if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
       });
       if (marked !== undefined) written.add(marked);
+      if (request) priced.add(request.request);
+      else if (marked !== undefined) unpriced.add(marked);
       // More costs than content: each later one still gets its own entry, cost only.
       while (costed.length) {
         const next = costed.shift()!;
@@ -162,6 +178,7 @@ export function adapterRun(
           await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: next.request } });
         });
         written.add(next.request);
+        priced.add(next.request);
       }
     });
 
@@ -173,6 +190,9 @@ export function adapterRun(
       open.delete(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
       booked();
+      // A cost that came in after its answer was written goes in now, not at some later flush. If that write fails, the
+      // next open writes it from the session's booking, once.
+      if (written.has(event.turn)) flush().catch(() => undefined);
     }
   };
 
@@ -296,9 +316,12 @@ export function adapterRun(
       for (let cursor: Cursor | undefined; root; ) {
         const page = await root.entries({ order: "ascending" }, 500, cursor, context);
         for (const entry of page.items) {
-          const data = entry.data as { key?: unknown; request?: unknown; id?: unknown; content?: unknown } | undefined;
+          const data = entry.data as { key?: unknown; request?: unknown; unpriced?: unknown; id?: unknown; content?: unknown } | undefined;
           if (data?.key !== spec.key) continue;
-          if (entry.kind === BOOKED && typeof data.request === "number") written.add(data.request);
+          if (entry.kind === BOOKED && typeof data.request === "number") {
+            written.add(data.request);
+            (data.unpriced === true ? unpriced : priced).add(data.request);
+          } else if (entry.kind === PRICED_LATE && typeof data.request === "number") priced.add(data.request);
           else if (entry.kind === MESSAGE && typeof data.id === "string") accepted.set(data.id, { id: data.id, content: String(data.content ?? ""), recorded: Promise.resolve() });
           else if (entry.kind === MESSAGE_END && typeof data.id === "string") accepted.delete(data.id);
         }
@@ -328,7 +351,8 @@ export function adapterRun(
       // A request a crash cut off is booked once, unknown, before anything is sent.
       await booking.bookCut();
       // Each request the session booked and the root has no entry for: its cost, with no content.
-      for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request)) costed.push({ request, usage });
+      // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
+      for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
       session = await adapter.open({ ...spec, tools: fileTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
       queue.push(...accepted.values());
