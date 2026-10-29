@@ -48,8 +48,8 @@ async function run(store, deps, kept, layout) {
 }
 
 /** The decision requests the run's last commit holds. */
-async function decisionsOf(inner, layout) {
-  const driver = await openRecovery(inner, workflow, { key: KEY, layout });
+async function decisionsOf(inner, layout, document = workflow) {
+  const driver = await openRecovery(inner, document, { key: KEY, layout });
   try { return Object.values(driver.decisionRequests?.() ?? {}); } finally { await driver.close(); }
 }
 
@@ -146,5 +146,39 @@ for (const layout of LAYOUTS) {
     await driver.close();
     const [request] = await decisionsOf(inner, layout);
     assert.deepEqual([request?.status, request?.cost_usd], ['answered', 0.003], 'the decision in flight ended answered before the pause was taken');
+  });
+
+  test(`a loop's judged until is asked once per iteration under the driver, and each ask is booked (${layout})`, async () => {
+    const looped = { v: 2, name: 'decision-loop', schemas: SCHEMAS, output: { schemaId: 'Out', path: 'final' },
+      root: { node: 'chain', steps: [
+        { node: 'loop', label: 'retry', maxIters: 3, until: { predicate: 'ask', instructions: 'Is the filing complete?', gte: 0.6 }, body: { node: 'code', label: 'tick', code: '(s) => ({ n: (s.n ?? 0) + 1 })' } },
+        { node: 'code', label: 'finish', code: '() => ({ final: { ok: true } })' },
+      ] } };
+    const store = memoryStore(); let asked = 0;
+    const driver = await openRecovery(store, looped, { key: KEY, layout });
+    const deps = withRecovery(driver, { runJudge: async () => { asked += 1; return { answers: { holds: { type: 'noul', noul: asked >= 2 ? 0.9 : 0.1 } }, cost_usd: 0.001 }; } });
+    let result;
+    try { result = await runWorkflow(looped, INPUT, deps).catch((error) => ({ status: 'threw', message: String(error?.message) })); } finally { await driver.close(); }
+    assert.equal(result.status, 'complete', `the loop's until question is admitted: ${JSON.stringify(result).slice(0, 300)}`);
+    assert.equal(asked, 2, 'asked once per iteration until it holds');
+    const requests = await decisionsOf(store, layout, looped);
+    assert.deepEqual(requests.map((request) => [request.kind, request.status, request.cost_usd]), [['ask', 'answered', 0.001], ['ask', 'answered', 0.001]]);
+  });
+
+  test(`an answered decision's outcome and its spend are one commit: no checkpoint holds the one without the other (${layout})`, async () => {
+    const saved = [];
+    const inner = memoryStore();
+    const watching = { open: async (bound) => {
+      const journal = await inner.open(bound);
+      const held = Object.create(journal);
+      held.save = async (state, ...rest) => { if (typeof state !== 'function') saved.push(structuredClone(state)); return journal.save(state, ...rest); };
+      return held;
+    } };
+    const driver = await openRecovery(watching, workflow, { key: KEY, layout });
+    const deps = withRecovery(driver, { runJudge: async () => structuredClone(answer) });
+    try { assert.equal((await runWorkflow(workflow, INPUT, deps)).status, 'complete'); } finally { await driver.close(); }
+    const answered = saved.filter((state) => Object.values(state?.pin?.decisions ?? {}).some((requests) => Object.values(requests).some((request) => request.status === 'answered')));
+    assert.ok(answered.length > 0, 'a checkpoint holds the answered request');
+    assert.deepEqual(answered.map((state) => state.questionSpendUsd), answered.map(() => 0.003), 'every checkpoint that holds the answered request holds its spend');
   });
 }
