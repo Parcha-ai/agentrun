@@ -13,6 +13,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
@@ -262,15 +263,29 @@ function inWords(line: string): string {
   return [text("event"), text("message") ?? text("error")].filter(Boolean).join(": ") || "the run's process left no message";
 }
 
+/** The line of the run process's log a failure's message is made of: its last, past any harness's own lines (a proxy's
+ *  refusal just before a crash says nothing of why the process went). */
+export function failureLine(log: string): string {
+  const lines = log.trim().split("\n");
+  const own = lines.findLast((line) => {
+    try {
+      return (JSON.parse(line) as { event?: unknown } | null)?.event !== HARNESS_LOG_EVENT;
+    } catch {
+      return true;
+    }
+  });
+  return own ?? lines.at(-1) ?? "";
+}
+
 /** The last line of the run process's log, in words, for a failure's message. */
-async function lastLogLine(run: Run): Promise<string> {
+export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
   try {
     const { size } = await file.stat();
     const length = Math.min(size, 4096);
     const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
-    return clip(inWords(buffer.toString("utf8").trim().split("\n").at(-1) ?? ""), 300);
+    return clip(inWords(failureLine(buffer.toString("utf8"))), 300);
   } finally {
     await file.close();
   }

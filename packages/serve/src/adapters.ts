@@ -18,6 +18,31 @@ export const INSTALL: Record<string, string> = {
  *  takes it only under its own guard (AGENTRUN_CODEX_STANDIN=1, under a test runner). */
 export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
 
+/** The event of a harness's own lines in the run's log (its model proxy's refusals and failures): a failed run's message
+ *  is never taken from one (runs.ts lastLogLine). */
+export const HARNESS_LOG_EVENT = "harness";
+
+/** Names whose values are secrets: no line of the run's log carries one. */
+const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
+
+/**
+ * A harness's log, into the run's log: the run process's stderr, which serve opens on the run's process.log. One JSON
+ * line per call, as pi-durable-disk writes them (`{at, event, message, ...}`). A request's path loses its query string,
+ * and every value of the environment's key-shaped variables is cut out of the line, so a key a client sent in either
+ * place, or one serve holds, never reaches the log.
+ */
+export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line: string) => void = (line) => void process.stderr.write(line)) {
+  const secrets = Object.entries(env)
+    .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
+    .map(([, value]) => value as string);
+  return (message: string, fields: Record<string, unknown> = {}): void => {
+    const { path, ...rest } = fields;
+    let line = JSON.stringify({ at: new Date().toISOString(), event: HARNESS_LOG_EVENT, harness, message, ...rest, ...(typeof path === "string" ? { path: path.split("?")[0] } : {}) });
+    for (const secret of secrets) line = line.split(secret).join("[redacted]");
+    write(`${line}\n`);
+  };
+}
+
 /** Why this server cannot run a harness here, in words a person can act on. */
 export class HarnessUnavailable extends Error {}
 
@@ -96,7 +121,7 @@ async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Ag
   const provider = claudeProvider(env, needs.model);
   try {
     // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once).
-    return claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider, price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}) });
+    return claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
@@ -123,7 +148,7 @@ async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Age
   }
   // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is
   // provider-qualified), or OpenAI's model id, which chooseModel has already taken out of "openai/<id>".
-  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), log: harnessLog("codex", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
