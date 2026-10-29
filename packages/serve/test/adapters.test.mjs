@@ -40,3 +40,16 @@ test("claude-agent's provider: Anthropic Messages only, at ANTHROPIC_BASE_URL's 
   assert.throws(() => claudeProvider({}, anthropic), refused(/ANTHROPIC_API_KEY/));
   assert.throws(() => claudeProvider({ ANTHROPIC_API_KEY: key }, { provider: "openai", modelId: "gpt-5.4-mini" }), refused(/claude-agent runs Anthropic models/));
 });
+
+test("the model id codex is given is the one model.ts chose: OpenAI's own id direct, the gateway's whole name through a gateway", async (t) => {
+  const { chooseModel } = await import("../dist/model.js");
+  // pi-ai's providers look for their key in the environment.
+  const saved = process.env.OPENAI_API_KEY;
+  t.after(() => (saved === undefined ? delete process.env.OPENAI_API_KEY : (process.env.OPENAI_API_KEY = saved)));
+  process.env.OPENAI_API_KEY = `not-a-secret-${"direct"}`;
+  const key = { OPENAI_API_KEY: process.env.OPENAI_API_KEY };
+  assert.deepEqual((await chooseModel(key, "openai/gpt-4o")).model, { provider: "openai", modelId: "gpt-4o" }, "direct: OpenAI's id, the provider already taken out");
+  const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" };
+  assert.equal((await chooseModel(gateway, "openai/gpt-4o")).model.modelId, "openai/gpt-4o", "through a gateway: its name, whole");
+  assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-4o")).model.modelId, "gpt-4o", "unless the gateway takes bare ids");
+});
