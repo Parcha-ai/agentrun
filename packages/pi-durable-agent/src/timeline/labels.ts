@@ -18,6 +18,17 @@ export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec): vo
   if (fold) folds.set(tool, fold);
 }
 
+const turnEnding = new Set<string>();
+
+/** Registers a tool that ends its turn (pi's `terminate`): what the person sends after a round of such tools is their
+ *  next message, never a steer into a running turn. A host adds its own tools here. */
+export function registerTurnEnding(tool: string): void {
+  turnEnding.add(tool);
+}
+
+/** Whether `tool` ends its turn (registerTurnEnding). */
+export const endsTurn = (tool: string): boolean => turnEnding.has(tool);
+
 /** The label of a call; `result` is given once the call has finished. Unknown tools get Grep's own fallback. */
 export function labelOf(tool: string, args: Obj, result?: ToolResultView, extra?: Record<string, LabelFn>): string {
   const own = extra && Object.hasOwn(extra, tool) ? extra[tool] : undefined;
