@@ -35,6 +35,36 @@ for (const harness of ["codex", "claude-agent"]) {
 }
 
 for (const harness of ["codex", "claude-agent"]) {
+  test(`a cancel that lands after its check passed and before the request's record is written: on ${harness} the request is not sent, and nothing is booked`, async () => {
+    const adapter = fauxAdapter({ script: () => [{ say: "Hi.", usd: 0.001 }] });
+    let cancelled = false;
+    // The cap is asked right after the cancel check passed: the cancel lands there, before the runner writes the record.
+    const cap = { beforeRequest: () => void (cancelled = true) };
+    const app = adapterRun(async () => adapter, harness, { key: "run:1", label: "a", system: ["Answer."], context: "fresh" }, ctx, undefined, [], undefined, cap, () => cancelled);
+    const durable = await Harness.open(new MemoryStorage(), { registry: createRegistry(), models: {} }, ctx);
+    const events = [];
+    app.door.attach((e) => events.push(e.type));
+    await app.onOpen(runOf(durable));
+    const door = { run: { harness: durable }, signal: new AbortController().signal, emit: (e) => events.push(e.type), adopt: () => {} };
+    assert.deepEqual(await app.door.submit({ requestId: "m1", content: "hello", whenBusy: "followUp" }, door), { accepted: true });
+    for (let i = 0; !events.includes("run_end") && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(events.includes("run_end"), `the turn ended: ${events.join(", ")}`);
+    assert.equal(adapter.requests, 0, "no model request was sent");
+    const entries = [];
+    const conversation = await durable.conversation(ROOT_CONVERSATION_ID, ctx);
+    for (let cursor; ; ) {
+      const page = await conversation.entries({ order: "ascending" }, 500, cursor, ctx);
+      entries.push(...page.items);
+      if (page.next === undefined) break;
+      cursor = page.next;
+    }
+    const assistant = entries.flatMap((e) => (e.model ?? []).filter((m) => m.role === "assistant"));
+    assert.equal(assistant.filter((m) => m.stopReason !== "error").length, 0, "no request was booked");
+    assert.match(assistant.map((m) => m.errorMessage ?? "").join(" "), /the run was cancelled/, "the turn ended on the cancel");
+  });
+}
+
+for (const harness of ["codex", "claude-agent"]) {
   test(`the run's app on ${harness} reads the cancel serve writes: built on a cancelled run's directory, its turn sends nothing`, { timeout: 90_000 }, async (t) => {
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
     assert.equal((await api("POST", "/agents", agent("calc", { harness }))).status, 201);

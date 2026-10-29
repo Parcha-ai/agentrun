@@ -94,10 +94,18 @@ export function adapterRun(
 ): AdapterRun {
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
+  const CANCELLED = "the run was cancelled: the model request was not sent";
   const guard = (request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
-    const answer = cancelled() ? { refuse: "the run was cancelled: the model request was not sent" } : cap?.beforeRequest(request);
+    const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;
+  };
+  /** The cancel, as the booking's stop: read again after this check and after the request's record is written, so a
+   *  cancel that lands between them still keeps the request from leaving. */
+  const cancelStop = (): Error | undefined => {
+    if (!cancelled()) return undefined;
+    refused ??= CANCELLED;
+    return new Error(CANCELLED);
   };
   // A paid request whose cost could not be written: the booking admits no request after it, and the turn stops on it.
   let halted: Error | undefined;
@@ -343,7 +351,7 @@ export function adapterRun(
         ...(budgetUsd !== undefined ? { budgetUsd } : {}),
         beforeRequest: guard as never,
         onEvent: onModel,
-        stopped: () => halted,
+        stopped: () => halted ?? cancelStop(),
         stop: (reason, message) => {
           const error = new Error(message ?? reason);
           if (reason === "model_error" && !halted) {
