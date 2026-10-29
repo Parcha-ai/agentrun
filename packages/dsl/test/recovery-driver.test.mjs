@@ -404,6 +404,19 @@ test('a decision whose outcome was lost after sending is never asked again by th
   assert.equal((await operator(store, judged)).state.questionSpendUsd, 0.001, 'booked once');
 });
 
+test('a decision that failed before it was sent is asked again by the next process, and nothing is booked for it: it failed, not interrupted', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const store = memoryStore();
+  let asked = 0;
+  const judge = { runJudge: async () => { asked += 1; if (asked === 1) throw new DecisionProviderError('rate_limited', 'Parallel answered HTTP 429 without Retry-After.', { status: 429, attempts: 1 }); return { cost_usd: 0.001, answers: { legit: { type: 'noul', noul: 0.9 } } }; } };
+  await assert.rejects(run(store, judged, judge), (error) => error instanceof DecisionProviderError && error.code === 'rate_limited');
+  const first = await operator(store, judged);
+  assert.deepEqual([first.state.questionSpendUsd, first.state.unpricedQuestionCount], [undefined, undefined], 'a request refused before it was sent costs nothing');
+  const second = await run(store, judged, judge);
+  assert.deepEqual([asked, second.status], [2, 'complete'], 'the next process asks it again');
+  assert.equal((await operator(store, judged)).state.questionSpendUsd, 0.001, 'only the answered ask is booked');
+});
+
 test('a route is decided once, only a route is decided, and its receipts are carried until the host has written them', async () => {
   const store = memoryStore(); const receipts = { invocation: 'question:triage:0@1', request_bytes: 120, latency_ms: 30 };
   let driver = await open(store, routed);
