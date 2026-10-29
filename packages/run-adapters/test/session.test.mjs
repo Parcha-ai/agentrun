@@ -89,6 +89,28 @@ test('a pause waits for the calls in flight, sends no new turn meanwhile, then s
   assert.equal(calls.draining, false, 'the next turn starts clean');
 });
 
+test('after an interrupt, the next send runs on a fresh drive and its turn completes, recorded', async () => {
+  let drives = 0;
+  const halted = [];
+  const { session, events } = await open(async (drive) => {
+    drives += 1;
+    // The first turn waits until it is stopped; any later one completes.
+    if (drives === 1) return new Promise((_, reject) => drive.signal.addEventListener('abort', () => reject(new Error('halted')), { once: true }));
+    halted.push(drive.signal.aborted);
+    const journal = new NativeJournal(drive);
+    journal.message({ type: 'turn', status: 'completed' });
+    await journal.flush();
+  });
+  await session.send('first');
+  await new Promise((resolve) => setImmediate(resolve));
+  await session.interrupt();
+  assert.deepEqual(await session.turnEnd(), { status: 'interrupted' });
+  await session.send('second');
+  assert.deepEqual(await session.turnEnd(), { status: 'completed' });
+  assert.deepEqual(halted, [false], 'the second turn ran on a drive that was not halted');
+  assert.deepEqual(events.map((e) => e.status), ['interrupted', 'completed']);
+});
+
 test('drainMs is checked, and a closed session refuses a new turn', async () => {
   const { session } = await open(restarting(0).drive);
   await assert.rejects(session.interrupt({ drainMs: -1 }), /^Error: agentrun-test: drainMs must be a non-negative number of milliseconds$/);

@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { childEnv, confined, openLocalMachine } from '@parcha/agentrun-kernel/host';
+import { childEnv, confined, INHERITED_ENV, openLocalMachine, processAlive } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'kernel-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -42,7 +42,8 @@ async function output(proc) {
   return out;
 }
 
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// A zombie is gone: under a PID 1 that does not reap orphans, a killed grandchild stays one, and kill(pid, 0) still finds it.
+const alive = processAlive;
 async function gone(pid) {
   for (let i = 0; i < 100 && alive(pid); i++) await new Promise((resolve) => setTimeout(resolve, 30));
   return !alive(pid);
@@ -57,6 +58,27 @@ test("a child's environment is the allowlist and what the harness names, and its
   assert.equal(env.HOME, machine.dirs.home);
   assert.equal(env.GIT_CEILING_DIRECTORIES, dir);
   assert.deepEqual(childEnv({ PATH: '/bin', OTHER: 'x' }, { HOME: '/h' }), { PATH: '/bin', HOME: '/h' });
+});
+
+test('the allowlist is exactly PATH, LANG and TZ: a home, a user or a provider key in this process never reaches a child', () => {
+  assert.deepEqual([...INHERITED_ENV], ['PATH', 'LANG', 'TZ']);
+  const from = { PATH: '/bin', LANG: 'C.UTF-8', TZ: 'UTC', HOME: '/root', USER: 'root', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'y' };
+  assert.deepEqual(childEnv(from), { PATH: '/bin', LANG: 'C.UTF-8', TZ: 'UTC' });
+});
+
+test('close() resolves only once its children have exited: none is alive the moment it returns', async (t) => {
+  const machine = await machineAt(t, scratch());
+  const proc = machine.start({ command: '/bin/sh', args: ['-c', 'sleep 300'] });
+  assert.ok(alive(proc.child.pid), 'the child is running');
+  let exited = false;
+  void proc.exited.then(() => { exited = true; });
+  await machine.close();
+  assert.equal(alive(proc.child.pid), false, 'the child is gone when close() resolves, with no wait after it');
+  // The pid alone cannot tell: a SIGKILLed child is gone (or a zombie) within moments. The machine's own record can: its
+  // exit is already in when close() returns, which only a close that waited for it gives.
+  await Promise.resolve();
+  assert.equal(exited, true, "the child's exit was in before close() returned");
+  assert.equal(proc.alive(), false);
 });
 
 test('close() ends a child and the grandchild it forked: the kill is the process group', async (t) => {
