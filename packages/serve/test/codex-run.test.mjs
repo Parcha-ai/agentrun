@@ -109,6 +109,21 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million");
 });
 
+test("through a gateway, codex sends the model id the revision names whole, as pi does: the gateway's own name, never stripped", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const gw = await gateway(t);
+  const { api } = await codexServe(t, gw);
+  assert.equal((await api("POST", "/agents", agent("named", { harness: "codex", model: "openai/gpt-4o" }))).status, 201);
+  const run = await api("POST", "/agents/named/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  for (let i = 0; gw.seen.length === 0; i++) {
+    assert.ok(i < 300, "the turn's model request reaches the gateway");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  gw.release();
+  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(gw.seen[0].body.model, "openai/gpt-4o", "the gateway gets the name it was configured with");
+});
+
 /** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
 const alive = processAlive;
 

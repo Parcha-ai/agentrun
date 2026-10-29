@@ -26,6 +26,8 @@ import { durableSessions } from "./sessions.js";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
+/** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
+export const BOOKING_WAIT_MS = 2_000;
 /** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
 export const MESSAGE = "adapter.message";
 export const MESSAGE_END = "adapter.message_end";
@@ -110,6 +112,19 @@ export function adapterRun(
   let calls: ToolCall[] = [];
   const costed: Pending[] = [];
   const written = new Set<number>();
+  // Requests admitted and not yet booked, by turn: the proxy answers the harness before it books a response, so a turn
+  // can end with its last request's cost still on its way.
+  const open = new Set<number>();
+  let booked: () => void = () => {};
+  /** Until every admitted request is booked, or `ms` pass. */
+  const bookings = async (ms: number) => {
+    for (const deadline = Date.now() + ms; open.size && Date.now() < deadline; ) {
+      await new Promise<void>((resolve) => {
+        booked = resolve;
+        setTimeout(resolve, Math.max(0, deadline - Date.now())).unref();
+      });
+    }
+  };
   // Writes in order, one at a time: the entries keep the order their events came in.
   let writing = Promise.resolve();
   const later = (work: () => Promise<void>) => (writing = writing.then(work, work));
@@ -120,18 +135,24 @@ export function adapterRun(
    *  Content with no cost yet waits for one, but at a turn's end (`final`) it is written as a request of unknown cost. */
   const flush = (final = false): Promise<void> =>
     later(async () => {
+      // A cost that came in after its request was written (at unknown cost, below) stays with that entry.
+      while (costed.length && written.has(costed[0]!.request)) costed.shift();
       if (!text && !calls.length && !costed.length) return;
       if (!costed.length && !final) return;
       const request = costed.shift();
       const content = { text, calls };
       text = "";
       calls = [];
-      if (request && written.has(request.request)) return;
+      // At a turn's end with no cost in: the request still unbooked is the one this content answers. It is written at
+      // unknown cost and marked booked, so a later open never writes it again.
+      const unbooked = !request && final && open.size ? Math.min(...open) : undefined;
+      if (unbooked !== undefined) open.delete(unbooked);
+      const marked = request?.request ?? unbooked;
       await commit(async (tx) => {
         await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, request, content.text, content.calls) as never] });
-        if (request) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: request.request } });
+        if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked } });
       });
-      if (request) written.add(request.request);
+      if (marked !== undefined) written.add(marked);
       // More costs than content: each later one still gets its own entry, cost only.
       while (costed.length) {
         const next = costed.shift()!;
@@ -145,9 +166,13 @@ export function adapterRun(
     });
 
   const onModel = (event: ModelPortEvent) => {
-    if (event.type === "request_start") void flush();
-    else {
+    if (event.type === "request_start") {
+      open.add(event.turn);
+      void flush();
+    } else {
+      open.delete(event.turn);
       costed.push({ request: event.turn, usage: event.usage });
+      booked();
     }
   };
 
@@ -209,6 +234,8 @@ export function adapterRun(
         } catch (error) {
           failed = String((error as Error)?.message ?? error);
         } finally {
+          // The last request's cost, booked once the proxy has answered: waited for, so the answer is written with it.
+          await bookings(BOOKING_WAIT_MS);
           await flush(true);
           await writing;
           // A turn that failed ends the run on its error, as a pi run's does: the cap's refusal, a cost the booking could
