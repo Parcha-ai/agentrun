@@ -37,8 +37,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
     listAgents: (cursor?: string | null) => call<{ agents: { agent_id: string; definition: { name?: string; harness?: string } }[]; next_cursor: string | null }>("GET", `/agents${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     getRun: (id: string) => call<Run>("GET", run(id)),
-    /** An agent's harness (`definition.harness`; none means the default, pi). */
-    agentHarness: (agentId: string) => call<{ definition: { harness?: string } }>("GET", `/agents/${encodeURIComponent(agentId)}`).then((a) => a.definition.harness),
+    /** An agent's revisions, newest first, each with its definition (`definition.harness`; none means the default, pi). */
+    listRevisions: (agentId: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; definition: { harness?: string } }[]; next_cursor: string | null }>("GET", `/agents/${encodeURIComponent(agentId)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     getTimeline: (id: string, { after, waitMs, signal }: { after?: number; waitMs?: number; signal?: AbortSignal } = {}) => {
       const q = new URLSearchParams();
       if (after !== undefined) q.set("after", String(after));

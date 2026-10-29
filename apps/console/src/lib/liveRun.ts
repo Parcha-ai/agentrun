@@ -15,8 +15,25 @@ export function messageOffer(
   return { messages: caps.features.messages, steers: harnessSteers(harness.id, caps.harnesses) };
 }
 
-/** Reads a run's agent for its harness: read (none named is the default, pi) or failed. A failed read is never taken
- *  for pi: messageOffer then offers no steer. */
-export function readHarness(v2: { agentHarness: (agentId: string) => Promise<string | undefined> }, agentId: string): Promise<HarnessRead> {
-  return v2.agentHarness(agentId).then((id): HarnessRead => ({ state: "read", id }), (): HarnessRead => ({ state: "failed" }));
+type RevisionPage = { revisions: { revision: string; definition: { harness?: string } }[]; next_cursor: string | null };
+
+/** Reads the harness of the revision a run started from (`run.revision`), not the agent's current one: an edit after
+ *  the run started never changes how that run takes a message. Read (none named is the default, pi) or failed: a
+ *  failed read, or no revision that is the run's, is never taken for pi, and messageOffer then offers no steer. */
+export async function readHarness(
+  v2: { listRevisions: (agentId: string, cursor?: string | null) => Promise<RevisionPage> },
+  run: { agent_id: string; revision: string },
+): Promise<HarnessRead> {
+  try {
+    let cursor: string | null = null;
+    do {
+      const page: RevisionPage = await v2.listRevisions(run.agent_id, cursor);
+      const own = page.revisions.find((r) => r.revision === run.revision);
+      if (own) return { state: "read", id: own.definition.harness };
+      cursor = page.next_cursor;
+    } while (cursor);
+  } catch {
+    // Falls through to failed.
+  }
+  return { state: "failed" };
 }
