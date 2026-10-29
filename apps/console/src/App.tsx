@@ -9,7 +9,7 @@ export function App() {
   const f = runFixture("run.with-files");
   return (
     <Shell active={section} onNavigate={setSection}>
-      <RunDetail run={f.run} agentName={f.agentName} messages={messageFeatures} rows={f.page.rows} files={f.files} readFile={async () => recordedFileText()} />
+      <RunDetail run={f.run} agentName={f.agentName} messages={messageFeatures} harnessSteers rows={f.page.rows} files={f.files} readFile={async () => recordedFileText()} />
     </Shell>
   );
 }

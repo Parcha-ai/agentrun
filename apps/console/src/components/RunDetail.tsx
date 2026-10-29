@@ -16,6 +16,8 @@ export type RunDetailProps = {
   agentName: string;
   /** The server's `features.messages` from GET /v2/capabilities: the composer offers only the modes it takes. */
   messages: MessageFeatures;
+  /** Whether the run's harness steers mid-turn (`harnessSteers`): on one that does not, a working run takes a follow_up. */
+  harnessSteers: boolean;
   rows: TimelineRow[];
   files: RunFile[];
   /** Reads a file's text (the authenticated bytes from /v2/runs/{id}/files/{path}). */
@@ -28,8 +30,8 @@ export type RunDetailProps = {
 type Tab = "report" | "timeline" | "files";
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, rows, files, readFile, openFile = null, actions, onMessage, tab: initial }: RunDetailProps) {
-  const view = runState(run.status, run.state, run.kind, messages);
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, readFile, openFile = null, actions, onMessage, tab: initial }: RunDetailProps) {
+  const view = runState(run.status, run.state, run.kind, messages, harnessSteers);
   const [tab, setTab] = useState<Tab>(initial ?? (view.final && run.status === "completed" ? "report" : "timeline"));
   const [open, setOpen] = useState<{ file: RunFile; text: string | null } | null>(openFile ? { file: openFile, text: null } : null);
   const waiting = pendingQuestion(run.status, run.state, rows);

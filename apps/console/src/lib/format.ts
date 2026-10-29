@@ -12,9 +12,11 @@ export function bytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** A local estimate stays an estimate, and an unpriced run says so: never a billed amount, never an invented zero. */
+/** A local estimate stays an estimate, and a cost the server does not know says so: the contract's "Null while unknown.
+ *  A client shows null as unknown, never as $0" (a request cut before its answer, a cost still pending, or a model with
+ *  no price). Never a billed amount, never an invented zero. */
 export function cost(c: Cost | null | undefined): string {
-  if (!c || c.usd === null) return "Unpriced";
+  if (!c || c.usd === null) return "Unknown";
   const usd = c.usd < 0.01 ? `$${c.usd.toFixed(4)}` : `$${c.usd.toFixed(2)}`;
   return c.basis === "estimate" ? `${usd} est.` : usd;
 }

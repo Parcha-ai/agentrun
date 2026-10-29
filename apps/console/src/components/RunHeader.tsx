@@ -11,7 +11,7 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; busy?: "s
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, and stop versus cancel.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm. */
 export function RunHeader({ run, agentName, actions = {} }: { run: Run; agentName: string; actions?: RunActions }) {
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES);
+  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true);
   const [confirming, setConfirming] = useState(false);
   return (
     <header className="border-b px-5 py-4 md:px-8">
