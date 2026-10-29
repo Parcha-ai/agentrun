@@ -1,116 +1,90 @@
 Patch: 007-code-mode-nested
-Reason: a host tool a code-mode model's script calls arrives as a nested call under an id of Codex's own (exec-<uuid>) that no rollout line carries, so a never tool's barrier waited for a line that never comes and the call was declined for good; it is durable once the script it runs under is in the log (the exec's line, and a yielded script's cell until the wait that finishes it), and it is tied to that exec, in the session's records
+Reason: a host tool a code-mode model's script calls arrives as a nested call under an id of Codex's own (exec-<uuid>) that no rollout line carries, and nothing on the app-server's stream names the exec it belongs to, so a never tool's barrier waited for a line that never comes and the call was declined for good; it is tied to the one live script (the exec's line in the log, kept until an output says it finished, a yielded script's cell until the wait that finishes it, and the exec the proxy's latest answer carried) and is held until that exec's line is in the log, and declined while two scripts are live
 Upstream: ours
 Pins: code mode: an exec that calls a never host tool runs it exactly once
 Pins: code mode: two nested calls of one exec (a Promise.all) each pass the barrier once, under the one exec, and run once
 Pins: code mode: a never tool called after its exec yielded runs once, under the cell that is still running
+Pins: code mode: a model that writes a new exec while a cell still runs: a never tool its new script calls is declined, not run
 ---
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index 068cb7a..c5d2d4b 100644
+index 068cb7a..9727793 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
-@@ -36,6 +36,7 @@ import {
-   endsTurn,
-   isRolloutPath,
-   isSessionMeta,
-+  parseLine,
-   type RolloutCall,
-   rolloutPathIn,
-   rolloutStream,
-@@ -225,6 +226,10 @@ export function codexItemReplay(item: { type?: string; commandActions?: { type?:
+@@ -44,6 +44,7 @@ import {
+   THREAD_STREAM,
+   type ThreadRecord,
+ } from './rollout.ts';
++import { NESTED_CALL, Scripts } from './scripts.ts';
+ 
+ /**
+  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
+@@ -225,6 +226,8 @@ export function codexItemReplay(item: { type?: string; commandActions?: { type?:
   */
  export const KEY_ENV = 'HARNESS_CODEX_GATEWAY_KEY';
  
-+/** The id Codex gives a host tool called from a code-mode script. */
-+const NESTED_CALL = /^exec-[0-9a-f-]{36}$/;
 +/** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec }`, written before the call runs. */
 +export const NESTED_STREAM = 'codex.nested';
  /** How long the drive waits for a call's `function_call` line before it declines the call: `SYNC` and look again, this many times, with a growing pause. */
  const BARRIER_TRIES = 5;
  /** What the model is told when a call was declined because its line wasn't in the log yet. */
-@@ -570,9 +575,47 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -570,9 +573,14 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
        let threadId = '';
        /** The calls whose `function_call` (or `custom_tool_call`) line is in the log: what the barrier looks for. */
        const logged = new Set<string>();
-+      /**
-+       * Code mode: the scripts that may call a host tool now, oldest first. A host tool the model's script calls arrives as a
-+       * nested call under an id of Codex's own (`exec-<uuid>`), which no line of the rollout carries; it is tied to the script
-+       * that is running. A script is running from its `exec` line until an output says it finished: its own, or, when that
-+       * says "Script running with cell ID N" (the script yielded and went on), the output of the `wait` that resumes cell N.
-+       * The proxy sends `parallel_tool_calls: false`, so the model writes one `exec` at a time; several nested calls of one
-+       * script (a `Promise.all`) all tie to it.
-+       */
-+      const scripts: { exec: string; cell?: string }[] = [];
-+      /** The `wait` calls in the log, by call id: the cell each resumes. */
-+      const waitsOn = new Map<string, string>();
++      /** Code mode: which script a nested call of the model's belongs to (see scripts.ts). */
++      const code = new Scripts();
 +      /** The exec each nested call was admitted under. */
 +      const execOf = new Map<string, string>();
-+      const noteScript = (line: string) => {
-+        if (!line.includes('call_id')) return;
-+        const p = parseLine(line)?.payload;
-+        if (!p || typeof p.call_id !== 'string') return;
-+        const id: string = p.call_id;
-+        const text = typeof p.output === 'string' ? p.output : Array.isArray(p.output) ? p.output.map((o: { text?: unknown }) => (typeof o?.text === 'string' ? o.text : '')).join('\n') : '';
-+        const running = /Script running with cell ID (\S+)/.exec(text);
-+        if (p.type === 'custom_tool_call' && p.name === 'exec') {
-+          if (!scripts.some((x) => x.exec === id)) scripts.push({ exec: id });
-+        } else if (p.type === 'custom_tool_call_output') {
-+          const at = scripts.findIndex((x) => x.exec === id);
-+          if (at < 0) return;
-+          if (running) scripts[at]!.cell = running[1]!;
-+          else scripts.splice(at, 1);
-+        } else if (p.type === 'function_call' && p.name === 'wait') {
-+          try {
-+            const cell = (JSON.parse(String(p.arguments)) as { cell_id?: unknown }).cell_id;
-+            if (cell !== undefined) waitsOn.set(id, String(cell));
-+          } catch {}
-+        } else if (p.type === 'function_call_output' && waitsOn.has(id) && !running) {
-+          const at = scripts.findIndex((x) => x.cell === waitsOn.get(id));
-+          if (at >= 0) scripts.splice(at, 1);
-+        }
-+      };
        for (const line of lines) {
          const id = callIdOf(line);
          if (id) logged.add(id);
-+        noteScript(line);
++        code.note(line);
        }
  
        /**
-@@ -608,6 +651,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -608,6 +616,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
            journal.append(stream, line);
            const id = callIdOf(line);
            if (id) logged.add(id);
-+          noteScript(line);
++          code.note(line);
            if (endsTurn(line)) turnEnds++;
          }
        };
-@@ -628,10 +672,20 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -628,10 +637,27 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         * asynchronous, so the line is looked for again after each drain, a
         * bounded number of times. False: it never came, and the call must be
         * declined (it never ran; the model is told to make it again).
 +       *
 +       * A nested call of code mode has no line of its own: it is durable once
-+       * the `exec` it runs under is (that line lands before the script runs a
-+       * nested call), so it waits for a running script in the log and is tied to it.
++       * the `exec` it runs under is, so it is tied to the one live script and
++       * waits for that `exec`'s line; with two scripts live it is declined.
         */
        const barrier = async (callId: string): Promise<boolean> => {
 +        const nested = NESTED_CALL.test(callId);
          for (let i = 0; ; i++) {
            await synced();
-+          if (nested && scripts.length > 0) {
-+            execOf.set(callId, scripts[scripts.length - 1]!.exec);
-+            await journal.flush();
-+            return true;
++          if (nested) {
++            const tie = code.tie(machine.announcedExec?.(), (id) => logged.has(id));
++            if (tie.kind === 'ambiguous') {
++              log('codex: declined a nested call while two scripts are live', { callId, live: tie.live });
++              return false;
++            }
++            if (tie.kind === 'tied') {
++              execOf.set(callId, tie.exec);
++              await journal.flush();
++              return true;
++            }
 +          }
            if (logged.has(callId)) {
              await journal.flush();
              return true;
-@@ -812,6 +866,13 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -812,6 +838,14 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
                return { contentItems: [{ type: 'inputText', text: LAGGING_RESULT }], success: false };
              }
              mirror();
 +            if (NESTED_CALL.test(callId)) {
-+              const exec = execOf.get(callId) ?? scripts[scripts.length - 1]?.exec;
++              const tie = code.tie(machine.announcedExec?.(), (id) => logged.has(id));
++              const exec = execOf.get(callId) ?? (tie.kind === 'tied' || tie.kind === 'held' ? tie.exec : undefined);
 +              if (exec) {
 +                execOf.set(callId, exec);
 +                journal.append(NESTED_STREAM, { callId, exec });

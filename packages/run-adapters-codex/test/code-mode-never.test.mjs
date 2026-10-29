@@ -139,3 +139,25 @@ test("code mode: a never tool called after its exec yielded runs once, under the
   assert.deepEqual(messages.filter((m) => /declined a call/.test(m)), [], 'the barrier did not decline it');
   assert.ok(toldAbout(seen, 'call_wait').join('\n').includes('charged'), 'the wait reported its result to the model');
 });
+
+test("code mode: a model that writes a new exec while a cell still runs: a never tool its new script calls is declined, not run", { skip, timeout: 120_000 }, async () => {
+  let charged = 0;
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((resolve) => setTimeout(resolve, 6000)); return { text: 'slept' }; } };
+  const wait = (callId, cell) => ({ type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: cell, yield_time_ms: 20000 }), call_id: callId });
+  // Script A yields and goes on; then the model writes exec B (it was not offered one) and B calls the never tool.
+  const { seen, fetch } = provider([
+    [exec('call_a', `// @exec: {"yield_time_ms": 100}\nawait tools.slow({}); text('a done');`)],
+    [exec('call_b', `text('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));`)],
+    [wait('call_wait', '1')],
+    [exec('call_submit', `text(JSON.stringify(await tools.submit({ value: { answer: 'ok' } })));`)],
+  ]);
+  const messages = [];
+  const runNode = createHarnessRunner(adapter(fetch, (message) => messages.push(message)), { store: memorySessionStore(), tools: [slow, charge], timeoutMs: 100_000 });
+  const output = await runNode({ kind: 'agent', label: 'pay', system: ['Pay.'], user: 'Charge 5.', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: ['slow', 'charge'] });
+  assert.deepEqual(output, { answer: 'ok' });
+  assert.ok(toldAbout(seen, 'call_a').join('\n').includes('Script running with cell ID 1'), 'script A yielded and was still running when exec B was written');
+  assert.equal(charged, 0, 'the never tool did not run: which script called it could not be told');
+  assert.ok(messages.some((m) => /declined a nested call while two scripts are live/.test(m)), 'the barrier declined it for that reason');
+  assert.match(toldAbout(seen, 'call_b').join('\n'), /Not run/, 'the model was told it did not run');
+});

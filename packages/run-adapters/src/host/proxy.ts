@@ -55,6 +55,11 @@ export interface ProviderPolicy {
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
+  /** Called once for each request the proxy forwards, before its answer starts: the observer it returns is given each piece
+   *  of the answer as text, BEFORE that piece is written to the client. So what the observer saw of a response, the client
+   *  has not yet acted on: it is the one thing the proxy can say causally about what a client does next. It only reads;
+   *  one that throws is reported and the answer goes on. */
+  watch?(): { chunk(text: string): void } | undefined;
   /** The model the body `apply` returned asks for, once `apply` checked it is one this session may use (its own, or a
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
@@ -425,8 +430,24 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       began = { ok: upstream.ok };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
+      let watcher: { chunk(text: string): void } | undefined;
+      try {
+        watcher = policy.watch?.();
+      } catch (error) {
+        say(`model proxy (${policy.id}): the response watcher could not start`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
       if (upstream.body) {
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
+          // What the watcher reads of a piece, it reads before the client has the piece.
+          const text = decoder.decode(chunk, { stream: true });
+          if (watcher) {
+            try {
+              watcher.chunk(text);
+            } catch (error) {
+              say(`model proxy (${policy.id}): the response watcher failed`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+              watcher = undefined;
+            }
+          }
           // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
           if (!res.write(chunk)) {
             // One wait, and nothing left behind: whichever comes first takes both listeners off.
@@ -437,7 +458,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
             });
           }
           // The usage is at the start, the end, or both: keep those, not the whole answer.
-          const text = decoder.decode(chunk, { stream: true });
           length += text.length;
           if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
           tail = (tail + text).slice(-USAGE_WINDOW);

@@ -2,6 +2,7 @@
 // may write and tail. No network.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { request } from 'node:http';
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -147,4 +148,33 @@ test("a child that forks a grandchild leaves none alive after close()", async (t
   const left = await gone(grandchild);
   if (!left) process.kill(grandchild, 'SIGKILL');
   assert.ok(left, 'the grandchild outlived the machine');
+});
+
+test("the machine knows the exec the model proxy's latest answer carried: set as the answer passes, and cleared by the next answer, which holds none", async () => {
+  const exec = (callId) => ({ type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: callId, input: 'text(1)' } });
+  const done = { type: 'response.completed', response: { id: 'r', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } };
+  const stream = (events) => events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
+  const answers = [stream([exec('call_a'), done]), stream([exec('call_b'), done]), stream([done])];
+  const acquire = localMachine({ dir: scratch(), proxy: { hooks, tools: [], fetch: async () => new Response(answers.shift(), { status: 200, headers: { 'content-type': 'text/event-stream' } }) } });
+  const machine = await acquire({ ctx: { runId: 'announce' }, model: gatewayHandler(route) });
+  try {
+    const ask = () => new Promise((resolve, reject) => {
+      const { hostname, port } = new URL(machine.modelUrl);
+      const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${machine.modelKey}` } }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode));
+      });
+      req.on('error', reject);
+      req.end(JSON.stringify({ model: 'm', stream: true, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] }] }));
+    });
+    assert.equal(machine.announcedExec(), undefined, 'nothing announced yet');
+    assert.equal(await ask(), 200);
+    assert.equal(machine.announcedExec(), 'call_a');
+    assert.equal(await ask(), 200);
+    assert.equal(machine.announcedExec(), 'call_b', 'the latest answer, not the one before');
+    assert.equal(await ask(), 200);
+    assert.equal(machine.announcedExec(), undefined, 'an answer with no exec clears it');
+  } finally {
+    await machine.close();
+  }
 });
