@@ -7,7 +7,7 @@ const ICON = { Queued: Loader, Working: Loader, Completed: Check, Failed: Circle
 
 /** The run's status as a chip: the label the console gives serve's status and state. */
 export function StatusBadge({ run }: { run: Pick<Run, "status" | "state" | "kind"> }) {
-  const view = runState(run.status, run.state, run.kind, NO_MESSAGES);
+  const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true);
   const Icon = ICON[view.label as keyof typeof ICON];
   return (
     <Chip tone={view.tone}>
