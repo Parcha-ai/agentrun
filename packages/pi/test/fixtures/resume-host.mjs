@@ -21,6 +21,8 @@ const pi = {
 };
 createAgentRunExtension({
   hostTools: () => [tool('first'), tool('second')],
+  // `after-judge`: the process dies as the second call's node starts, once the judge's node has committed.
+  onWorkflowEvent: ({ event }) => { if (hang === 'after-judge' && event?.type === 'node.start' && event?.label === 'call-second') { writeFileSync(join(cwd, 'armed'), ''); process.kill(process.pid, 'SIGKILL'); } },
   createJudge: () => async () => {
     appendFileSync(ledger, 'judge\n');
     if (hang === 'hang') { writeFileSync(join(cwd, 'armed'), ''); await new Promise(() => {}); }

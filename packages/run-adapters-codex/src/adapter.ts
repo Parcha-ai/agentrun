@@ -7,12 +7,14 @@
 // `afterRequest`.
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
 import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION } from "./binary.js";
 import { readCodeModeModels } from "./code-mode.js";
+import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
@@ -63,7 +65,9 @@ export interface CodexAdapterOptions {
 function kernelTool(tool: HostTool): KernelTool {
   return {
     name: tool.name,
-    description: tool.description,
+    // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
+    // (the schema itself is the host's, and every call is checked against it).
+    description: describedDescription(tool.description, tool.inputSchema),
     inputSchema: tool.inputSchema,
     replay: tool.replay,
     async execute(input, io) {
@@ -118,6 +122,20 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (!TOOL_NAME.test(tool.name)) problems.push(`the tool name ${JSON.stringify(tool.name.slice(0, 80))} is not one Codex accepts (letters, digits, _ and -, at most 64)`);
         if (seen.has(tool.name)) problems.push(`the tool ${tool.name} is given twice`);
         seen.add(tool.name);
+        // What no harness takes (an object root, valid 2020-12, no remote $ref), then what Codex would drop or retype in
+        // the tool's schema: refused here, by name, not found out mid-turn. A place the first already refused is not
+        // refused again by the second.
+        // Nothing in it may throw: a tool whose schema cannot be checked is a problem at "/", naming the tool.
+        try {
+          const shared = toolSchemaProblems(tool.name, tool.inputSchema);
+          // A schema the shared check refuses as a whole (its root, or that it is not JSON: a cycle only code can build)
+          // is not walked again: Codex's rules would never reach the end of a cycle.
+          const wholly = shared.some((problem) => problem.startsWith(`${tool.name}: /:`));
+          const refusedAt = new Set(shared.map((problem) => /^[^:]*: (\S+):/.exec(problem)?.[1]));
+          problems.push(...shared, ...(wholly ? [] : codexSchemaProblems(tool.name, tool.inputSchema).filter((problem) => !refusedAt.has(/^[^:]*: (\S+):/.exec(problem)?.[1]))));
+        } catch (error) {
+          problems.push(`${tool.name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`);
+        }
       }
       if (checked !== undefined) {
         codeMode ??= (options.readCodeModeModels ?? readCodeModeModels)(checked);

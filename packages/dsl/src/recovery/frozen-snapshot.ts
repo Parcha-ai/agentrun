@@ -41,6 +41,7 @@ export type ItemRecord = {
     routes: PathFrame["routes"];
     inputs: PathFrame["inputs"];
     steps: PathFrame["steps"];
+    decisions?: PathFrame["decisions"];
   };
   effects: string[];
   clocks: Record<string, number>;
@@ -87,6 +88,25 @@ export type QuestionReceipts = { invocation: string; request_bytes: number; late
 /** `choice` is null and `refused` true for a refused answer, which took the route's unsure branch. */
 export type RouteDecision = { label: string; branch: string; choice: string | null; unsure: boolean; refused?: true; request_sha256: string | null; result: Record<string, unknown>; receipts: QuestionReceipts | null };
 
+/** A decision's request to the host's judge, as the kernel books a paid request: written and committed before the judge
+ *  is asked (`requested`), with one outcome after. `answered` and `failed` are written by the process that asked;
+ *  `interrupted` by a later process that found it still `requested`: the answer, if the provider gave one, was lost with
+ *  the process, so the decision is never asked again and its cost is unknown (null, never 0). A `failed` request is
+ *  asked again as its next attempt. */
+export type DecisionRequest = {
+  record: "decision.request";
+  decision_id: string; kind: string; label: string;
+  /** The model the request named, when it named one. */
+  model: string | null;
+  /** The digest of what the judge was sent: the kind, the label, the state and the questions. */
+  request_sha256: string;
+  attempt: number;
+  status: "requested" | "answered" | "failed" | "interrupted";
+  /** The outcome's spend: absent while requested, null when unknown. */
+  cost_usd?: number | null;
+};
+export const DECISION_REQUEST = "decision.request";
+
 /** What one document's run committed, by execution path. `done` is every committed path in commit
  *  order; `states` keeps the committed state of the paths a resume may still be answered from (a
  *  chain's frontier step, a finished map item or parallel branch whose structure has not committed, a
@@ -104,6 +124,8 @@ export type PathFrame = {
   routes: Record<string, RouteDecision>;
   inputs: Record<string, string>;
   steps: Record<string, StepRecord>;
+  /** Each decision node's requests to the judge, by decision id. Absent in a frame written before decisions were kept. */
+  decisions?: Record<string, Record<string, DecisionRequest>>;
   /** A map that ended on an item's failure: the finished items' results, keyed by the map's `as`, so
    *  the handoff carries the completed child work and a redispatch never loses it. */
   partial?: { path: string; as: string; results: unknown[] };
@@ -177,6 +199,14 @@ export const isItemOutcome = (value: unknown): value is ItemOutcome => {
   return Boolean(at && Object.keys(at).length === 3 && typeof at.code === "string" && typeof at.label === "string" && typeof at.message === "string");
 };
 const nonNegativeInt = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
+/** Whether `value` is a decision request the driver wrote under `id`: requested with no spend, or ended with its spend or null. */
+const isDecisionRequest = (id: string, value: unknown): boolean => {
+  const at = fields(value);
+  if (!at || at.record !== DECISION_REQUEST || at.decision_id !== id || typeof at.kind !== "string" || typeof at.label !== "string") return false;
+  if (!(at.model === null || typeof at.model === "string") || typeof at.request_sha256 !== "string" || !Number.isSafeInteger(at.attempt) || (at.attempt as number) < 1) return false;
+  if (at.status === "requested") return at.cost_usd === undefined;
+  return ["answered", "failed", "interrupted"].includes(String(at.status)) && (at.cost_usd === null || (typeof at.cost_usd === "number" && Number.isFinite(at.cost_usd) && at.cost_usd >= 0));
+};
 
 /** Whether a saved frame is one the driver could have written for its document. */
 function validFrame(value: unknown, resolves: (path: string) => boolean): boolean {
@@ -189,7 +219,9 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
   const [states, chains, loops, routes, inputs, steps] = [frame.states, frame.chains, frame.loops, frame.routes, frame.inputs, frame.steps].map(entriesOf);
   const partial = frame.partial === undefined ? undefined : fields(frame.partial);
   const failures = frame.failures === undefined ? [] : entriesOf(frame.failures);
-  return Boolean(states && states.every(([path, state]) => done.has(path) && record(state))
+  const decisions = frame.decisions === undefined ? [] : entriesOf(frame.decisions);
+  return Boolean(decisions && decisions.every(([path, requests]) => resolves(path) && (entriesOf(requests)?.every(([id, request]) => isDecisionRequest(id, request)) ?? false))
+    && states && states.every(([path, state]) => done.has(path) && record(state))
     && failures && failures.every(([item, outcome]) => /\/items\/(?:0|[1-9]\d*)$/.test(item) && resolves(`${item}/body`) && isItemOutcome(outcome))
     && chains && chains.every(([, head]) => { const at = fields(head); return Boolean(at && nonNegativeInt(at.index) && typeof at.path === "string" && done.has(at.path)); })
     && loops && loops.every(([loop, count]) => resolves(loop) && nonNegativeInt(count))

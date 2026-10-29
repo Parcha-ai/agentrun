@@ -5,7 +5,7 @@
 // probabilities are missing or invalid fall back to 0, and validation then refuses them.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deriveConfidence, completeConfidence, runWorkflow } from '../dist/index.js';
+import { deriveConfidence, completeConfidence, runWorkflow, validateAnswers } from '../dist/index.js';
 
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
 const choiceOf = (probabilities, choice) => ({ type: 'choice', choice, probabilities });
@@ -56,6 +56,17 @@ test('completeConfidence keeps a provider confidence, derives a missing one, and
   close(answers.level.confidence, 0.25);
   assert.deepEqual(confidence_source, { pick: 'provider', level: 'derived' });
   assert.equal('confidence' in answers.holds, false, 'a noul carries no confidence');
+});
+
+test('a question named __proto__ keeps its own answer and confidence source', () => {
+  const asked = JSON.parse('{"__proto__": {"type": "choice", "instructions": "Which?", "criteria": {"a": null, "b": null}}}');
+  const given = JSON.parse('{"__proto__": {"type": "choice", "choice": "a", "probabilities": {"a": 0.75, "b": 0.25}}}');
+  const { answers, confidence_source } = completeConfidence(asked, given);
+  assert.ok(Object.hasOwn(answers, '__proto__'), 'the answer is an own key, not the prototype');
+  close(answers.__proto__.confidence, 0.5);
+  assert.ok(Object.hasOwn(confidence_source, '__proto__'));
+  assert.equal(confidence_source.__proto__, 'derived');
+  validateAnswers(asked, answers);
 });
 
 test('completeConfidence falls back to 0 only when there is nothing to derive from', () => {
