@@ -32,7 +32,7 @@ export interface DecisionCapabilities {
   maxStateBytes: number | null;
 }
 
-export type DecisionRequest = Pick<JudgeParams, "label" | "kind" | "state" | "questions" | "item" | "executionPath">;
+export type DecisionRequest = Pick<JudgeParams, "label" | "kind" | "state" | "questions" | "item" | "executionPath" | "model">;
 
 export interface DecisionContext {
   /** The decision receipt's id: the same request asked again has the same id. */
@@ -115,7 +115,7 @@ export function checkCapabilities(capabilities: DecisionCapabilities, request: P
  *  answers are validated against the questions, and ones that do not match them are invalid_response. */
 export function judgeFromProvider(provider: DecisionProvider, options: { deadlineMs?: number | null } = {}): RunJudge {
   return async (params) => {
-    const request: DecisionRequest = { label: params.label, kind: params.kind, state: params.state, questions: params.questions, ...(params.item ? { item: params.item } : {}), ...(params.executionPath !== undefined ? { executionPath: params.executionPath } : {}) };
+    const request: DecisionRequest = { label: params.label, kind: params.kind, state: params.state, questions: params.questions, ...(params.item ? { item: params.item } : {}), ...(params.executionPath !== undefined ? { executionPath: params.executionPath } : {}), ...(params.model !== undefined ? { model: params.model } : {}) };
     checkCapabilities(provider.capabilities, request);
     const outcome = await provider.decide(request, { decisionId: params.decisionId ?? "", signal: params.signal ?? new AbortController().signal, deadlineMs: options.deadlineMs ?? null });
     const { answers, confidence_source } = completeConfidence(params.questions, (outcome.answers ?? {}) as Record<string, unknown>);
@@ -126,5 +126,35 @@ export function judgeFromProvider(provider: DecisionProvider, options: { deadlin
       evidence: outcome.evidence, provider_request_id: outcome.provider_request_id, confidence_source,
     };
     return result;
+  };
+}
+
+/** The interpreter's runJudge over a host's providers: each request goes to the provider its node names, or to
+ *  `default`, with the node's pinned model, within the shorter of the node's `timeoutMs` and the provider's own
+ *  `deadlineMs`: a node only ever shortens it. The node's bound is kept here: when it passes, the call is cut, and a cut
+ *  call may already have been sent and billed, so it is `outcome_unknown` (the decision escalates as interrupted), never
+ *  asked again. The result names the provider that answered. */
+export function judgeFromProviders(options: { providers: Readonly<Record<string, DecisionProvider>>; default: string; deadlineMs?: number | null }): RunJudge {
+  return async (params) => {
+    const id = params.provider ?? options.default;
+    const provider = options.providers[id];
+    if (!provider) throw new DecisionProviderError("configuration", `No decision provider "${id}" on this host.`);
+    const own = options.deadlineMs ?? null;
+    const node = params.timeoutMs ?? null;
+    const shorter = node !== null && (own === null || node < own);
+    const deadlineMs = shorter ? node : own;
+    const cut = new AbortController();
+    const timer = shorter ? setTimeout(() => cut.abort(new DOMException("The decision node's timeoutMs passed", "TimeoutError")), node) : undefined;
+    const signal = params.signal ? AbortSignal.any([params.signal, cut.signal]) : cut.signal;
+    try {
+      const result = await judgeFromProvider(provider, { deadlineMs })({ ...params, signal, ...(params.model !== undefined ? { model: params.model } : {}) });
+      return { ...result, provider: id };
+    } catch (error) {
+      if (cut.signal.aborted && error instanceof DecisionProviderError && (error.code === "aborted" || error.code === "timeout")) {
+        throw new DecisionProviderError("outcome_unknown", `${id}: cut by the node's timeoutMs (${node} ms) after it may have been sent`, {
+          attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}) });
+      }
+      throw error;
+    } finally { if (timer !== undefined) clearTimeout(timer); }
   };
 }
