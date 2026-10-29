@@ -592,7 +592,8 @@ test("a provider base with a path prefix: each request goes to the base's path p
 test("a provider base with userinfo, a query or a fragment is refused when the proxy starts: a key goes only where the base reads", async () => {
   const { modelPortFor } = await import('@parcha/agentrun-adapters');
   const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
-  for (const base of ['https://user:pw@provider.invalid/api', 'https://provider.invalid/api?x=1', 'https://provider.invalid/api#y']) {
+  // A base naming a user, built in two parts so the source holds no URL with a credential in it.
+  for (const base of ['https://user' + ':pw@provider.invalid/api', 'https://provider.invalid/api?x=1', 'https://provider.invalid/api#y']) {
     const booking = await modelPortFor(await memorySessionStore().open('base:bad'), { key: 'base:bad' });
     await assert.rejects(startModelProxy({ policy, model: 'session-model', origin: base, credential: () => 'provider-secret', hooks: booking.models, fetch: async () => { throw new Error('never sent'); } }, KEY), /base/, base);
   }

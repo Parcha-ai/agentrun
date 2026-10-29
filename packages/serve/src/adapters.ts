@@ -35,15 +35,38 @@ export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
   return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
 }
 
-/** Where Codex's model requests go: OpenAI with its key, or a gateway at its origin (the proxy sends the Responses API
- *  to origin + /v1/responses, so a gateway under another path cannot be reached yet). */
-export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
-  if (env.AGENT_MODEL_BASE_URL) {
-    const url = new URL(env.AGENT_MODEL_BASE_URL);
-    const path = url.pathname.replace(/\/+$/, "");
-    if (path !== "" && path !== "/v1") throw new HarnessUnavailable(`codex sends the Responses API to the gateway's origin + /v1/responses; AGENT_MODEL_BASE_URL has the path ${path}, which it cannot reach yet.`);
-    return { origin: url.origin, credential: () => env.AGENT_MODEL_API_KEY || "none" };
+/** Hosts a gateway may be reached at over plain http: this machine. */
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * The base `setting` (a gateway's URL) gives the model proxy: its origin and its path, one trailing `/v1` taken off, since
+ * every route the proxy sends to begins with `/v1/`. So `https://openrouter.ai/api` and `https://openrouter.ai/api/v1` both
+ * send to `https://openrouter.ai/api/v1/...`. A provider's key goes wherever this points, so a value that could point
+ * somewhere other than it reads is refused, by the setting's name: userinfo, a query or a fragment, a "." or ".." path
+ * segment (raw or percent-encoded), whitespace, or plain http to anything but this machine.
+ */
+export function gatewayBase(setting: string, value: string): string {
+  const wrong = (why: string) => new HarnessUnavailable(`${setting} must be an https URL of a gateway, with a path if it serves the API under one; it ${why}.`);
+  if (/\s/.test(value)) throw wrong("holds whitespace");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw wrong("is not a URL");
   }
+  if (url.username || url.password) throw wrong("names a user");
+  if (url.search || url.hash || /[?#]/.test(value)) throw wrong("has a query or a fragment");
+  // The URL parser resolves dot segments, so they are looked for in the text as given.
+  const path = value.slice(value.indexOf("//") + 2).replace(/^[^/]*/, "");
+  if (path.split("/").some((segment) => /^(\.|%2e){1,2}$/i.test(segment))) throw wrong("has a . or .. path segment");
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) throw wrong(`is ${url.protocol.replace(/:$/, "")}, not https`);
+  return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
+}
+
+/** Where Codex's model requests go: OpenAI with its key, or a gateway at AGENT_MODEL_BASE_URL's base (gatewayBase: the
+ *  proxy sends the Responses API to <base>/v1/responses). */
+export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
+  if (env.AGENT_MODEL_BASE_URL) return { origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL), credential: () => env.AGENT_MODEL_API_KEY || "none" };
   if (model.provider !== "openai") throw new HarnessUnavailable(`codex runs OpenAI models; the run's model is ${model.provider}/${model.modelId}.`);
   if (!env.OPENAI_API_KEY) throw new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.");
   return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "" };
@@ -59,18 +82,13 @@ export function priceOf(needs: AdapterNeeds) {
   };
 }
 
-/** Where claude-agent's requests go: Anthropic Messages only, at ANTHROPIC_BASE_URL's origin (an Anthropic-compatible
- *  endpoint) or api.anthropic.com, with ANTHROPIC_API_KEY. Its own settings only: AGENT_MODEL_BASE_URL is the other
+/** Where claude-agent's requests go: Anthropic Messages only, at ANTHROPIC_BASE_URL's base (an Anthropic-compatible
+ *  endpoint, with its path: <base>/v1/messages) or api.anthropic.com, with ANTHROPIC_API_KEY. Its own settings only: AGENT_MODEL_BASE_URL is the other
  *  harnesses' gateway, and Claude's requests never go there. */
 export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
   if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${model.provider}/${model.modelId}.`);
   if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.");
-  let origin = "https://api.anthropic.com";
-  if (env.ANTHROPIC_BASE_URL) {
-    const url = new URL(env.ANTHROPIC_BASE_URL);
-    if (url.pathname.replace(/\/+$/, "") !== "") throw new HarnessUnavailable(`claude-agent sends Anthropic Messages to the endpoint's origin + /v1/messages; ANTHROPIC_BASE_URL has the path ${url.pathname}, which it cannot reach yet.`);
-    origin = url.origin;
-  }
+  const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : "https://api.anthropic.com";
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "" };
 }
 
