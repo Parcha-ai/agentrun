@@ -310,8 +310,10 @@ node, with typed answers and their probabilities.
   `details.decisions: {jev: {reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"]}}`.
 - Each question's receipt is a row of the run's store (`agentrun.decisions`) before its answer acts, and a resumed run
   takes an answered one instead of asking again.
-- Jev's API reports no cost. A receipt keeps its cost unknown (`null`), and so does the run: its `cost.usd` reads
-  `null`, never `0`, while any of its decisions' costs is unknown.
+- Jev's API reports token counts and no price, so each answered decision is booked at TypeSafe's published price
+  ($0.042 per million input tokens; output tokens are free) as an estimate, and the run's `cost.usd` is its decisions'
+  sum, with `basis: "estimate"`. A decision whose cost is unknown (no token counts, the OpenRouter route, or a call that
+  failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe key never enters a run's environment, which its tools and its model's provider read. The server drops
   `TYPESAFE_API_KEY` from every run's process. It hands the value to a workflow run's process once, on an inherited pipe
   (descriptor 63), at each launch, a resume after a restart included. The process reads it into the judge's runner,
