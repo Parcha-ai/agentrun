@@ -10,7 +10,7 @@ import { after, test as nodeTest } from 'node:test';
 import { createHarnessRunner, HarnessRunError } from '@parcha/agentrun-adapters';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { claudeAgentAdapter } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
+import { fakeAnthropic, fakeSdk, sentSystemPrompt } from '@parcha/agentrun-claude-agent/testing';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
@@ -85,4 +85,26 @@ test('after a crash mid-turn, the recovery note is in the resuming drive\'s syst
   for (const text of [...first.users, ...next.users]) assert.ok(!text.includes('[Recovery]'), `no user message carries the note: ${text.slice(0, 200)}`);
   assert.equal(next.users[0], RECOVERY_NUDGE, 'the resuming user turn is the bare nudge: the user said nothing new');
   assert.ok(!/interrupted|recovery|resumed/i.test(next.users[0]), 'and the nudge says nothing of the recovery');
+});
+
+test("the fake's snapshot rule is the real CLI's, case by case, as measured (Agent SDK 0.3.286)", () => {
+  // Each case: the launches of one session, [append, snapshot], and the append each request carried on the wire.
+  const cases = [
+    { name: '1: a resume under a record drops its own append', launches: [['A', true], ['B', true]], sent: ['A', 'A'] },
+    { name: '2: snapshot off on both launches', launches: [['A', false], ['B', false]], sent: ['A', 'B'] },
+    { name: '3: a recorded start, then a resume with snapshot off', launches: [['A', true], ['B', false]], sent: ['A', 'B'] },
+    { name: '4: the snapshot-off resume records nothing: the next launch sends the original', launches: [['A', true], ['B', false], ['C', true]], sent: ['A', 'B', 'A'] },
+    { name: '5: a first launch with snapshot off, then resumes with it on: the first of those records its own', launches: [['A', false], ['B', true], ['C', true]], sent: ['A', 'B', 'B'] },
+  ];
+  for (const c of cases) {
+    const records = new Map();
+    assert.deepEqual(c.launches.map(([append, snapshot]) => sentSystemPrompt(records, 'session', append, snapshot)), c.sent, c.name);
+  }
+  // A recovery drive that is the session's FIRST launch (the crash came before the CLI stored the session) records
+  // nothing, so the next drive records the usual prompt, and the note is not lost or kept.
+  const records = new Map();
+  assert.equal(sentSystemPrompt(records, 'session', 'tools + instructions + NOTE', false), 'tools + instructions + NOTE');
+  assert.equal(sentSystemPrompt(records, 'session', 'tools + instructions', true), 'tools + instructions');
+  assert.equal(sentSystemPrompt(records, 'session', 'tools + instructions', true), 'tools + instructions');
+  assert.equal(sentSystemPrompt(records, 'other-session', 'x', true), 'x', 'records are per session');
 });

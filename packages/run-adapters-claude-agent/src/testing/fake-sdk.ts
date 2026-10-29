@@ -62,9 +62,7 @@ export interface FakeSdkOptions {
   /** Called with each user message the fake consumes. */
   onMessage?: (message: { uuid: string; text: string; priority?: string }) => void;
   /**
-   * Called once per `query()` with the system prompt it sends, by the CLI's snapshot rule (measured on the real CLI,
-   * Agent SDK 0.3.286): a session's first launch records its prompt unless `snapshot: false`; a resume sends the
-   * recorded prompt when `snapshot` is true or omitted, whatever it passes, and its own, unrecorded, when false.
+   * Called once per `query()` with the system prompt it sends, by the CLI's snapshot rule (`sentSystemPrompt`).
    */
   onSystem?: (system: { sessionId: string; resumed: boolean; snapshot: boolean; sent: string }) => void;
   /** Stream what it says from the model behind `ANTHROPIC_BASE_URL` (see above). */
@@ -153,8 +151,25 @@ async function sessionTools(instance: any, listed: FakeSdk['listed']): Promise<M
   );
 }
 
-/** Each session's recorded system prompt (the CLI keeps it with the session, so it outlives one fake's process). */
+/**
+ * Each session's recorded system prompt. The CLI keeps it with the session, which it keys by project (its cwd) and
+ * session id, so it outlives one fake's process; keyed the same way here, two tests share a record only if they share
+ * a cwd and a session.
+ */
 const recordedPrompts = new Map<string, string>();
+
+/**
+ * The system prompt a launch sends, by the CLI's snapshot rule (measured on the real CLI, Agent SDK 0.3.286, in five
+ * cases: a later launch's own append dropped under a record; sent fresh with `snapshot: false`; a first or resumed
+ * launch with snapshot on recording its prompt when the session has none; a `false` launch recording nothing): with
+ * snapshot on (or omitted), the session's record, made from this launch's prompt if there is none yet; with it off,
+ * this launch's own prompt, recorded nowhere.
+ */
+export function sentSystemPrompt(records: Map<string, string>, session: string, text: string, snapshot: boolean): string {
+  if (!snapshot) return text;
+  if (!records.has(session)) records.set(session, text);
+  return records.get(session)!;
+}
 
 /** The text of a `systemPrompt` option: a preset's name, a custom prompt, then the append. */
 function systemText(prompt: unknown): string {
@@ -181,9 +196,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
       {
         const text = systemText(options.systemPrompt);
         const snapshot = (options.systemPrompt as { snapshot?: boolean } | undefined)?.snapshot !== false;
-        let sent = text;
-        if (!options.resume) { if (snapshot) recordedPrompts.set(sessionId, text); }
-        else if (snapshot) sent = recordedPrompts.get(sessionId) ?? text;
+        const sent = sentSystemPrompt(recordedPrompts, `${options.cwd}\0${sessionId}`, text, snapshot);
         fake.onSystem?.({ sessionId, resumed: !!options.resume, snapshot, sent });
       }
       const key = { projectKey: `-fake${options.cwd.replace(/[^A-Za-z0-9]/g, '-')}`, sessionId };
