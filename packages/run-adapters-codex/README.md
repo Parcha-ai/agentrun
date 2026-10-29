@@ -20,8 +20,13 @@ const runNode = createHarnessRunner(
 - **The host's tools only.** Codex's app-server runs with its built-in tools off: no shell, no file edits, no web, no
   images, no sub-agents. A classic model is offered exactly the host's tools (and the runner's `submit`); a code-mode
   model is offered code mode's `exec` and `wait`, whose runtime has no Node modules, no process and no network, and
-  reaches the host's tools by their own names. `test/tool-off.test.mjs` runs the pinned binary against a scripted model
-  that calls every built-in, and checks that nothing runs, writes or spawns.
+  reaches the host's tools by their own names, as nested calls of the script it writes. The proxy passes `exec` and
+  `wait` and drops the sub-agent and user-input tools Codex lists beside them, and keeps parallel tool calls off for a
+  code-mode request, so one `exec` is open at a time. A nested call has an id of Codex's own (`exec-<uuid>`) that no line
+  of the rollout carries; the session ties it to the open `exec`, whose line is in the log before the script runs, so a
+  `never` tool called from a script runs once. `test/tool-off.test.mjs` runs the pinned binary against a scripted model
+  that calls every built-in, and checks that nothing runs, writes or spawns; `test/code-mode-never.test.mjs` runs a
+  `never` tool from code mode.
 - **The model behind a proxy.** Codex talks to a model proxy on the loopback interface with a key of its session's own;
   it never holds the provider key. The proxy forwards `POST /v1/responses` only, fixes the model, stores nothing at the
   provider, drops any tool that is not the session's, and asks the runner before every paid request, so the turn cap and
