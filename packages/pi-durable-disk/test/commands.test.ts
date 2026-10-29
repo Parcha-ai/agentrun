@@ -368,14 +368,15 @@ describe("command records, from a scripted /proc", () => {
 });
 
 describe("command records, from a scripted ps (macOS)", () => {
-  /** A ps and sysctl that answer from `rows()` (`pid ppid pgid second`: the second it started at) and `environments`. */
-  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean } = {}): CommandRunner {
+  /** A ps and sysctl that answer from `rows()` (`pid ppid pgid second`: the second it started at) and `environments`; a
+   *  row's state is `S` unless `options.states` names another (`Z`: a zombie). */
+  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; states?: Record<number, string> } = {}): CommandRunner {
     const lstart = (second: number) => `Thu Oct 15 06:00:${String(second).padStart(2, "0")} 2026`;
     return (file, args) => {
       if (file === "/usr/sbin/sysctl") return "boot-1\n";
       if (args.includes("-A")) {
         if (options.failListing) throw new Error("ps: cannot list processes");
-        return rows().map(([pid, ppid, pgrp, second]) => `${pid} ${ppid} ${pgrp} S ${lstart(second!)}`).join("\n");
+        return rows().map(([pid, ppid, pgrp, second]) => `${pid} ${ppid} ${pgrp} ${options.states?.[pid!] ?? "S"} ${lstart(second!)}`).join("\n");
       }
       const text = environments[Number(args[args.indexOf("-p") + 1])];
       if (text === undefined) throw new Error("no such process");
@@ -383,6 +384,26 @@ describe("command records, from a scripted ps (macOS)", () => {
     };
   }
   const startAt = (second: number) => Date.UTC(2026, 9, 15, 6, 0, second) / 1000;
+
+  it("a zombie left in a killed group is not waited for: the listing marks it Z, and it is not running", async () => {
+    const dir = scratchRoot("commands-ps-zombie");
+    const records = join(dir.root, "commands");
+    // 4300 leads the killed group; 4301, in it and never recorded, is already a zombie its parent has not reaped.
+    let rows = [
+      [4300, 1, 4300, 5],
+      [4301, 1, 4300, 6],
+    ];
+    const table = psTable(scriptedPs(() => rows, {}, { states: { 4301: "Z" } }));
+    try {
+      mkdirSync(records);
+      writeFileSync(join(records, `4300-${startAt(5)}.json`), JSON.stringify({ boot: "boot-1", leader: { pid: 4300, start: startAt(5) }, members: [] }));
+      const kill = (target: number) => { if (target === -4300) rows = rows.filter(([pid]) => pid !== 4300); };
+      assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 100 }), { signalled: 1, survivors: [] }, "the zombie is not a survivor");
+      assert.equal(existsSync(records), false, "and the record is cleared");
+    } finally {
+      dir.remove();
+    }
+  });
 
   it("records a marked command's group from the listing, and the next open kills the group and clears the records", async () => {
     const dir = scratchRoot("commands-ps");
