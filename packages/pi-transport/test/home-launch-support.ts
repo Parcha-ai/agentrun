@@ -360,25 +360,64 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 		},
 	);
 
+	// A plain launch starts its processes through detach, a framed one (stdin or secrets) through detach_framed.
+	for (const framed of [false, true])
+		each(
+			`each process the launcher starts carries its launch's generation, and the program never sees it (${framed ? "a framed launch" : "a plain launch"})`,
+			async (box) => {
+				if ((await sh(box, "test -r /proc/self/environ")).exitCode !== 0) return; // no /proc to read a process's environment from
+				const spec = program(recording("env > prog.env; exec sleep 300"));
+				const result = await launch(box, "carry", framed ? { ...spec, secrets: { CARRY: "x" } } : spec, context);
+				// A box whose ptrace scope is under 1 refuses every framed launch: there is nothing to check there.
+				if (framed && !result.ok && result.error.code === "refused") return;
+				const dir = unwrap(result).directory;
+				const gen = (await sh(box, `sed -n "s/^GEN='\\(.*\\)'$/\\1/p" ${dir}/spec.sh`)).text.trim();
+				expect(gen).not.toBe("");
+				await until("the program", async () => ((await pids(box)).length === 1 ? true : undefined));
+				for (const file of ["launcher.pid", "watch.pid"]) {
+					const env = (await sh(box, `tr '\\0' '\\n' < /proc/$(cat ${dir}/${file})/environ`)).text.split("\n");
+					expect(env, file).toContain(`PI_TRANSPORT_LAUNCH_GEN=${gen}`);
+				}
+				await until("the program's environment", async () =>
+					(await sh(box, "cat prog.env 2>/dev/null")).text.includes("PATH=") ? true : undefined,
+				);
+				expect((await sh(box, "cat prog.env")).text).not.toContain("PI_TRANSPORT_LAUNCH_GEN");
+			},
+		);
+
 	each(
-		"each process the launcher starts carries its launch's generation, and the program never sees it",
+		"the host's own calls read the spec's generation, whatever the caller's environment holds, and a stop's hook never sees it",
 		async (box) => {
-			if ((await sh(box, "test -r /proc/self/environ")).exitCode !== 0) return; // no /proc to read a process's environment from
+			const hookEnv = `${(await sh(box, "pwd")).text.trim()}/hook.env`;
 			const started = unwrap(
-				await launch(box, "carry", program(recording("env > prog.env; exec sleep 300")), context),
+				await launch(
+					box,
+					"host",
+					{
+						...program(recording("exec sleep 300")),
+						beforeStop: { argv: ["sh", "-c", `env > "${hookEnv}"`], timeoutMs: 5_000 },
+					},
+					context,
+				),
 			);
 			const dir = started.directory;
-			const gen = (await sh(box, `sed -n "s/^GEN='\\(.*\\)'$/\\1/p" ${dir}/spec.sh`)).text.trim();
-			expect(gen).not.toBe("");
 			await until("the program", async () => ((await pids(box)).length === 1 ? true : undefined));
-			for (const file of ["launcher.pid", "watch.pid"]) {
-				const env = (await sh(box, `tr '\\0' '\\n' < /proc/$(cat ${dir}/${file})/environ`)).text.split("\n");
-				expect(env, file).toContain(`PI_TRANSPORT_LAUNCH_GEN=${gen}`);
-			}
-			await until("the program's environment", async () =>
-				(await sh(box, "cat prog.env 2>/dev/null")).text.includes("PATH=") ? true : undefined,
+			const [pid] = await pids(box);
+			// A stop that names no generation (an older caller's) is for the spec's launch: a value in its caller's environment
+			// must not make it take the launch for another's and leave the program running.
+			const stopped = await sh(
+				box,
+				`PI_TRANSPORT_LAUNCH_GEN=not-this-launch sh ${dir}/launcher.sh stop ${dir} 10 </dev/null 2>&1; echo "EXIT $?"`,
 			);
-			expect((await sh(box, "cat prog.env")).text).not.toContain("PI_TRANSPORT_LAUNCH_GEN");
+			expect(stopped.text).toContain("EXIT 0");
+			await until(
+				"the program to be gone",
+				async () => ((await isAlive(box, pid ?? 0)) ? undefined : true),
+				HANG_GUARD_MS,
+			);
+			const env = (await sh(box, `cat "${hookEnv}" 2>/dev/null`)).text;
+			expect(env).toContain("PATH=");
+			expect(env).not.toContain("PI_TRANSPORT_LAUNCH_GEN");
 		},
 	);
 

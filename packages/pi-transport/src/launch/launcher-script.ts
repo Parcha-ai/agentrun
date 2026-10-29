@@ -74,7 +74,9 @@ case "$MODE" in supervise|watch|run) if [ -n "$PI_TRANSPORT_LAUNCH_GEN" ]; then 
 unset PI_TRANSPORT_LAUNCH_GEN
 stale() { [ "$(current_gen)" != "$MYGEN" ]; }
 # Every process started from $SELF reads this directory again: none starts unless it and the spool are still the launcher's own.
-# Each carries this process's generation (in its environment only: run_program clears it before the program).
+# Each carries this process's generation in its environment. The unset above clears it in every launcher process once read,
+# so a stop's hook (before_stop execs it with the launcher's environment) never sees it; run_program also unsets every name
+# the launch does not keep, and inheritEnv refuses PI_TRANSPORT_*, so the program never sees it either.
 detach() { own_dirs || exit 13; ( PI_TRANSPORT_LAUNCH_GEN=$MYGEN $SETSID sh "$SELF" "$@" </dev/null >/dev/null 2>&1 & ); }
 # The same, with this process's frame on the new process's stdin (a pipe from the builtin printf: no argv holds it).
 detach_framed() { own_dirs || exit 13; ( send_frame | PI_TRANSPORT_LAUNCH_GEN=$MYGEN $SETSID sh "$SELF" "$@" >/dev/null 2>&1 & ); }
