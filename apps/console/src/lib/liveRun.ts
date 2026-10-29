@@ -14,3 +14,9 @@ export function messageOffer(
   if (harness.state === "failed") return { messages: caps.features.messages, steers: false };
   return { messages: caps.features.messages, steers: harnessSteers(harness.id, caps.harnesses) };
 }
+
+/** Reads a run's agent for its harness: read (none named is the default, pi) or failed. A failed read is never taken
+ *  for pi: messageOffer then offers no steer. */
+export function readHarness(v2: { agentHarness: (agentId: string) => Promise<string | undefined> }, agentId: string): Promise<HarnessRead> {
+  return v2.agentHarness(agentId).then((id): HarnessRead => ({ state: "read", id }), (): HarnessRead => ({ state: "failed" }));
+}
