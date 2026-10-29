@@ -199,6 +199,17 @@ test("a message after a tool round that ends the turn is the person's next messa
   );
 });
 
+test("a failed call of a turn-ending tool does not end the turn: the agent goes on, so a message then steers", () => {
+  registerTurnEnding("probe_ask");
+  const rows = timelineOf([
+    user("Pick a region", 0),
+    assistant([call("a", "probe_ask", { question: "Which one?" })], 1),
+    result("a", "probe_ask", "probe_ask is not a tool of this agent", 2, { isError: true }),
+    user("Use EU", 3),
+  ]);
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Pick a region", "You (steer): Use EU"]);
+});
+
 test("a failed model request is an error row; an aborted partial is nothing", () => {
   const rows = timelineOf([
     assistant([], 0, { stopReason: "error", errorMessage: "529 overloaded\nretry later" }),

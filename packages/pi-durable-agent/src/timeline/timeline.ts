@@ -234,9 +234,10 @@ function createProjector(options: TimelineOptions) {
       const id = str(message.toolCallId) ?? "";
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
-      ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name));
-      const args = call?.args ?? {};
       const view = viewOf(message);
+      // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
+      ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
+      const args = call?.args ?? {};
       const named = label(name, args, view);
       if (call) {
         call.done = true;
