@@ -380,12 +380,23 @@ test('a paid request a crash cut off is booked once as cut, at an unknown price,
 });
 
 test('a session that opens after the run was stopped is interrupted and closed, so no harness outlives the node', async () => {
-  const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'late' } }], openDelayMs: 200 });
+  const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'late' } }] });
+  // A slow harness start, held by the test: the open begins, the run is stopped, and only then does the open finish.
+  let opening = false;
+  let finishOpen;
+  const gate = new Promise((resolve) => { finishOpen = resolve; });
+  const open = adapter.open.bind(adapter);
+  adapter.open = async (spec, io) => { opening = true; await gate; return open(spec, io); };
   const stop = new AbortController();
   const running = createHarnessRunner(adapter, { store: memorySessionStore(), timeoutMs: 5_000 })(stepRequest({ signal: stop.signal }));
-  setTimeout(() => stop.abort(new Error('cancel')), 50);
-  await assert.rejects(running, (error) => error.reason === 'aborted');
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await until(() => opening, 'the session opening');
+  stop.abort(new Error('cancel'));
+  const rejected = assert.rejects(running, (error) => error.reason === 'aborted');
+  finishOpen();
+  await rejected;
+  await until(() => adapter.closed.length === 1, 'the late session closed');
+  // A window for a request the closed session must not make; it can only miss one, never fail the test by itself.
+  await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual([adapter.opened.length, adapter.closed.length, adapter.requests], [1, 1, 0]);
 });
 

@@ -10,8 +10,10 @@ import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
@@ -46,14 +48,8 @@ const SETTLE_RETRY_MS = 30_000;
 const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "failed", stopped: "cancelled" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
+// A run's process that exited and was never reaped (a zombie, under a PID 1 that does not reap) is not alive.
+const alive = processAlive;
 /** Waits between carry backs that found the store busy: each attempt itself waits 5 s for the store's lock. */
 const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 /** How long a run's process may live on after it released the run before its store is read anyway: the process holds the
@@ -104,6 +100,8 @@ export type Run = {
   agentId: string;
   kind: RevisionKind;
   revision: string;
+  /** The harness its revision names, read at its first message. */
+  harness?: string;
   /** The revision's number among its agent's. */
   version: number;
   dir: string;
@@ -245,7 +243,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -646,6 +644,7 @@ export class Runs {
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
+      ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
     };
     delete env[CAP_ENV];
@@ -775,7 +774,8 @@ export class Runs {
       // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
       // run as it was in the store.
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
-      run.costUsd = cost ?? 0;
+      // An unknown cost stays unknown: never stored as 0.
+      if (cost !== null) run.costUsd = cost;
       run.endedAt ??= new Date().toISOString();
       run.outcome = outcome;
       run.finishing = undefined;
@@ -893,6 +893,13 @@ export class Runs {
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
+  /** Whether the run's harness takes a message mid-turn. */
+  private async steers(run: Run): Promise<boolean> {
+    if (run.kind !== "agentic") return true;
+    run.harness ??= ((await this.options.agents.revision(run.agentId, run.revision))?.revision.body as { harness?: string } | undefined)?.harness ?? DEFAULT_HARNESS;
+    return steersMidTurn(run.harness);
+  }
+
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
@@ -901,7 +908,10 @@ export class Runs {
     if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
-    const mode = status === "queued" || (status === "working" && state === "working") ? "steer" : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
+    // the same run, which the contract calls follow_up, never a steer it does not do.
+    const working = status === "queued" || (status === "working" && state === "working");
+    const mode = working ? ((await this.steers(run)) ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
     run.submitted++;
     this.refresh(run);

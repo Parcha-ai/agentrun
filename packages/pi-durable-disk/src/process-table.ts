@@ -20,6 +20,8 @@ export interface ProcessSnapshot {
   info(pid: number): ProcessInfo | undefined;
   /** The direct children of `pid`. */
   children(pid: number): number[];
+  /** The live processes of the process group `pgrp`, a zombie not among them: what a killed group still has running. */
+  group(pgrp: number): number[];
   /** Whether `pid` was started with `name=value` in its environment (false when it cannot be read). */
   marked(pid: number, name: string, value: string): boolean;
   /** Its command line, for a message; `?` when it cannot be read. */
@@ -65,6 +67,16 @@ export function procTable(proc = "/proc"): ProcessTable {
           return [];
         }
       });
+    },
+    // Every process's `stat`: a group's members are no one process's children once their leader is gone.
+    group(pgrp) {
+      let pids: string[];
+      try {
+        pids = readdirSync(proc).filter((name) => /^\d+$/.test(name));
+      } catch {
+        return [];
+      }
+      return pids.map(Number).filter((pid) => snapshot.info(pid)?.pgrp === pgrp);
     },
     marked(pid, name, value) {
       try {
@@ -133,6 +145,7 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
       return {
         info: (pid) => rows.get(pid),
         children: (pid) => [...rows].filter(([, info]) => info.ppid === pid).map(([child]) => child),
+        group: (pgrp) => [...rows].filter(([, info]) => info.pgrp === pgrp).map(([pid]) => pid),
         // `-E` prints the environment the process was started with after its arguments, separated by spaces; a mark is
         // a name and a UUID, which hold none.
         marked(pid, name, value) {
