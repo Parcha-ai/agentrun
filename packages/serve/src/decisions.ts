@@ -70,6 +70,8 @@ export async function jevJudgeOf(env: NodeJS.ProcessEnv) {
   const route = handed !== undefined ? "typesafe" : isSet(env[JEV_OPENROUTER_KEY_ENV]) ? "openrouter" : undefined;
   if (!route) return undefined;
   const faux = env[FAUX_ENV] && env[FAUX_JEV_ENV] ? ((await import(pathToFileURL(env[FAUX_JEV_ENV]).href)) as { default: typeof fetch }).default : undefined;
-  const [{ jevProvider }, { judgeFromProvider }] = await Promise.all([import("@parcha/agentrun-jev"), import("@parcha/agentrun-dsl")]);
-  return judgeFromProvider(jevProvider({ ...(route === "typesafe" ? { apiKey: handed } : { provider: "openrouter" }), ...(faux ? { fetch: faux } : {}) }));
+  const [{ jevProvider }, { judgeFromProviders }] = await Promise.all([import("@parcha/agentrun-jev"), import("@parcha/agentrun-dsl")]);
+  // Through the providers' dispatch, so each receipt names the provider that answered and a node's timeoutMs holds.
+  const jev = jevProvider({ ...(route === "typesafe" ? { apiKey: handed } : { provider: "openrouter" }), ...(faux ? { fetch: faux } : {}) });
+  return judgeFromProviders({ providers: { jev }, default: "jev" });
 }
