@@ -54,6 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs
+      - name: Build the console (apps/console, its own lockfile), which serve's build copies into its dist
+        run: npm ci --ignore-scripts --prefix apps/console && npm run build --prefix apps/console
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: node scripts/generate-author-contract.mjs --check
@@ -62,6 +64,8 @@ jobs:
       - run: npm run export:source
       - run: node scripts/check-generated.mjs
       - run: npm run verify:packages
+        env:
+          AGENTRUN_REQUIRE_CONSOLE: '1'
       - run: npm run verify:source
       - run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"
       - name: Publish exact verified archives in dependency order

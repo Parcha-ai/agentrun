@@ -171,6 +171,15 @@ try {
         }
       }
     }
+    // AgentRun Server's package carries the console's build (dist/console: index.html and its hashed assets). Where the
+    // console is built first (the release, and CI's console job: AGENTRUN_REQUIRE_CONSOLE=1), a serve package without it
+    // is refused; its files went through every check above like the rest of the package.
+    if (directory === 'serve' && process.env.AGENTRUN_REQUIRE_CONSOLE === '1') {
+      assert.ok(names.includes('package/dist/console/index.html'), 'the serve package has no console: build apps/console before serve');
+      assert.ok(names.some(n => /^package\/dist\/console\/assets\/[^/]+\.js$/.test(n)), 'the serve package has the console page but none of its scripts');
+      assert.ok(!names.some(n => n.startsWith('package/dist/console/storybook/')), 'the console\'s Storybook is not part of the package');
+      receipt.checks.push('The serve package carries the console build (dist/console), without its Storybook.');
+    }
     const fileHash = createHash('sha256').update(await readFile(tarball)).digest('hex');
     receipt.packages.push({ name: manifest.name, version: manifest.version, filename: packed.filename, sha256: fileHash, files: names, size: packed.size, unpackedSize: packed.unpackedSize, license: manifest.license });
     tarballs.push(tarball);
@@ -298,7 +307,7 @@ import { z } from 'zod';
 import { supportTriage } from '@parcha/agentrun-dsl/demo';
 import { openRecovery, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
 import { registerStoreConformance } from '@parcha/agentrun-dsl/recovery/testing';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -387,7 +396,7 @@ assert.deepEqual(Object.keys(agentWorkflow).sort(),['checkWorkflowBody','readWor
 { const dir=await mkdtemp(join(tmpdir(),'agentrun-agent-workflows-')); try { const work=join(dir,'work'), checkout=join(dir,'checkout'); await mkdir(work); await mkdir(checkout); const saved=await new piWorkflows.WorkflowStore(work).save('consumer-add',workflow); const records={[saved.digest+'.json']:await readFile(join(work,'.pi/agentrun/workflows/consumer-add',saved.digest+'.json'),'utf8'),latest:saved.digest+'\\n'}; const main={main:'0'.repeat(40),read:async()=>undefined,list:async()=>[]}; const candidate={run:'r1',name:'consumer-add',description:'Add two numbers.',records,untrusted:false}; assert.equal((await agentLearn.workflowAdmitter({tmpRoot:dir})({...main,workflow:candidate})).status,'held'); const admitted=await agentLearn.workflowAdmitter({tmpRoot:dir,allowExecutableCode:true})({...main,workflow:candidate}); assert.equal(admitted.status,'admitted'); assert.equal(agentLearn.parseTrial(admitted.files['.agents/skills/consumer-add/trial.json'],'consumer-add').status,'trial'); for (const [file,text] of Object.entries(admitted.files)) if (file.startsWith('.pi/')) { await mkdir(join(checkout,file,'..'),{recursive:true}); await writeFile(join(checkout,file),text); } assert.equal((await new piWorkflows.WorkflowStore(checkout).load('consumer-add')).digest,saved.digest); assert.equal(agentLearn.matches([{pointer:'/left',op:'gte',value:1}],{left:2}),true); } finally { await rm(dir,{recursive:true,force:true}); } }
 { const ready=piSignin.checkKeys({name:'consumer',models:{lead:{needs:['text']}},keys:[{env:'CONSUMER_KEY',why:'w',where:'x',required:true}],programs:[],expectedCalls:0,expectedCost:0},{env:{}}); assert.equal(ready.exitCode,2); assert.equal(typeof piSignin.resolveModel,'function'); }
 assert.ok(loadAuthorReference('language').includes(authorContract()));
-{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); for (const file of ['index.html','locked.html','serve.css','serve.js']) assert.ok((await readFile(join(servePkg,'dist','page',file),'utf8')).length>0,'the install has dist/page/'+file); const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',fast:null,default:null,strong:null}); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+{ assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); if (process.env.AGENTRUN_REQUIRE_CONSOLE==='1') { assert.ok((await readFile(join(servePkg,'dist','console','index.html'),'utf8')).includes('./assets/'),'the install has the console: dist/console/index.html'); assert.ok((await readdir(join(servePkg,'dist','console','assets'))).some(f=>f.endsWith('.js')),'the install has the console scripts'); } const caps=serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',fast:null,default:null,strong:null}); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
 for (const name of ['demo','run','placeAt','localHost','codeOf','tapBox']) assert.equal(typeof reference[name],'function',name); assert.equal(typeof referenceScan.credentialIn,'function'); assert.equal(typeof referencePlace.localPlace,'function'); assert.ok(existsSync(fileURLToPath(import.meta.resolve('@parcha/agentrun-harness/child-app'))),'the child app resolves to a file');
 { const draft={v:2,name:'w',schemas:{S:{type:'object'}},output:{schemaId:'S'},root:{node:'agent',label:'a',instructions:'Do it.',out:'S',as:'a',tools:['bash']}}; const changes=[{path:'workflows/w/workflow.json',status:'added',bytes:Buffer.from(JSON.stringify(draft))},{path:'AGENTS.md',status:'modified',bytes:Buffer.from('x')}]; assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes}).problems.map(p=>p.rule),['no_tool_list','locked','memo_missing']); assert.deepEqual(learnCheck.checkRun({branch:'runs/r1',changes,tools:['fetch_page']}).problems.map(p=>p.rule),['workflow','locked','memo_missing']); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
