@@ -3,16 +3,29 @@
 // started with, after its arguments) and the boot's uuid, comes from /proc. `onPlatform` makes the code that picks a
 // default by platform pick macOS's. Neither proves anything about a Mac: the macOS CI job does.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import type { CommandRunner } from "../src/process-table.ts";
 
 /** Linux only. */
 export const linuxPs: CommandRunner = (file, args) => {
   if (file.endsWith("/sysctl")) return readFileSync("/proc/sys/kernel/random/boot_id", "utf8");
   if (args.includes("-E")) {
-    const pid = args[args.indexOf("-p") + 1];
-    const words = (name: string) => readFileSync(`/proc/${pid}/${name}`, "utf8").split("\0").filter(Boolean);
-    return `${[...words("cmdline"), ...words("environ")].join(" ")}\n`;
+    const words = (pid: string, name: string) => readFileSync(`/proc/${pid}/${name}`, "utf8").split("\0").filter(Boolean);
+    // `-A -o pid=,command=`: every process, its pid then its command and environment, as macOS prints them.
+    if (args.includes("-A")) {
+      return readdirSync("/proc")
+        .filter((entry) => /^\d+$/.test(entry))
+        .flatMap((pid) => {
+          try {
+            return [`${pid} ${[...words(pid, "cmdline"), ...words(pid, "environ")].join(" ")}`];
+          } catch {
+            return []; // gone, or another user's
+          }
+        })
+        .join("\n");
+    }
+    const pid = args[args.indexOf("-p") + 1]!;
+    return `${[...words(pid, "cmdline"), ...words(pid, "environ")].join(" ")}\n`;
   }
   return execFileSync("ps", args, { encoding: "utf8", env: { LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"] });
 };
