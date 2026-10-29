@@ -84,8 +84,12 @@ test("the token link signs in whatever a token holds: + as sent raw (a space) or
     assert.equal(res.status, 303, query);
     assert.match(res.headers.get("set-cookie") ?? "", /HttpOnly/);
   }
-  assert.equal((await open(`token=${encodeURIComponent(AWKWARD.replace("Ab", "Zz"))}`)).status, 401);
-  assert.equal((await open(`token=${AWKWARD.replaceAll("+", "-")}`)).status, 401, "only a space stands for +");
+  // A wrong token is no link: the console's public page, with no cookie set.
+  for (const [query, why] of [[`token=${encodeURIComponent(AWKWARD.replace("Ab", "Zz"))}`, "another token"], [`token=${AWKWARD.replaceAll("+", "-")}`, "only a space stands for +"]]) {
+    const res = await open(query);
+    assert.equal(res.status, 200, why);
+    assert.equal(res.headers.get("set-cookie"), null, why);
+  }
 });
 
 test("the printed link encodes the token, and a token the first boot did not make is never printed", async () => {
@@ -128,7 +132,8 @@ test("one log line per request (method, path without its query, status, ms), per
   await follow(api, run.run_id, ["completed"]);
   assert.equal((await client(server.baseUrl, "wrong-token-value")("GET", "/agents")).status, 401);
   assert.equal((await client(server.baseUrl)("GET", "/runs")).status, 401);
-  assert.equal((await fetch(`${server.url}/?token=${server.token.slice(0, 20)}`)).status, 401);
+  const wrongLink = await fetch(`${server.url}/?token=${server.token.slice(0, 20)}`, { redirect: "manual" });
+  assert.deepEqual([wrongLink.status, wrongLink.headers.get("set-cookie")], [200, null], "a wrong link is the public page, with no cookie");
   await api("GET", "/capabilities?probe=1");
   for (const line of lines) {
     assert.match(line, LINE);

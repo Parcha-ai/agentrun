@@ -1,15 +1,31 @@
-// The page at "/" and how a browser holds the token: the link the server prints sets a cookie once, the cookie stands in
-// for the Bearer header (a write only from the page's own origin, with a JSON body), and without it the page says to open
-// the link. The page's data is pi-durable-agent's store page over the agent store in the data directory.
+// The page at "/" is the console (apps/console's build in dist/console), and how a browser holds the token: the link the
+// server prints sets a cookie once, the cookie stands in for the Bearer header (a write only from the page's own origin,
+// with a JSON body). The console's files are public and hold no data; every path that is the API's (an unknown /v2 path,
+// /api/*, a file the console does not have) answers as the API does, never with the console's page.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore } from "@parcha/pi-durable-agent";
-import { STORE_PAGE_FILES } from "@parcha/pi-durable-agent/serve";
 import { agent, scratch, serve } from "./support.mjs";
+
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/** A console build as Vite makes one: index.html with one module script and one stylesheet, both external, and assets/. */
+const INDEX = `<!doctype html>\n<html lang="en" class="dark"><head><meta charset="utf-8"><title>AgentRun</title><script type="module" crossorigin src="./assets/index-a1b2.js"></script><link rel="stylesheet" crossorigin href="./assets/index-c3d4.css"></head><body><div id="root"></div></body></html>\n`;
+async function consoleBuild(t) {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-console-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await mkdir(join(dir, "assets"));
+  await writeFile(join(dir, "index.html"), INDEX);
+  await writeFile(join(dir, "assets", "index-a1b2.js"), "export const console = 1;\n");
+  await writeFile(join(dir, "assets", "index-c3d4.css"), "body{margin:0}\n");
+  await writeFile(join(dir, "assets", "font-e5f6.woff2"), Buffer.from([0x77, 0x4f, 0x46, 0x32]));
+  await writeFile(join(dir, "secret.txt"), "outside assets\n");
+  return dir;
+}
 
 /** One request with every header the caller names, Host and Origin included (fetch sets those itself). */
 function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
@@ -32,8 +48,8 @@ function call(port, { method = "GET", path = "/", headers = {}, body } = {}) {
 }
 
 /** A server whose data directory also holds an agent store with one agent, and the cookie its printed link sets. */
-async function served(t) {
-  const server = await serve(t);
+async function served(t, options = {}) {
+  const server = await serve(t, { consoleDir: await consoleBuild(t), ...options });
   const store = openStore(server.data);
   try {
     store.createAgent({ id: "calc", name: "Calc" });
@@ -46,22 +62,65 @@ async function served(t) {
   return { ...server, opened, cookie, origin: `http://127.0.0.1:${server.port}` };
 }
 
-test("without the cookie the page is a plain page that says to open the printed link; a wrong token sets nothing; the page's files are public, its data is not", async (t) => {
+test("the console is public: index.html at / and at any path with no extension, under the CSP; a wrong token sets nothing and no file holds the token; its data is not public", async (t) => {
   const { port, token } = await served(t);
-  for (const path of ["/", "/?token=wrong", `/?token=${token}x`]) {
+  for (const path of ["/", "/agents/x", "/runs/r1", "/setup", "/sign-in", "/?token=wrong", `/?token=${token}x`]) {
     const res = await call(port, { path });
-    assert.equal(res.status, 401, path);
-    assert.match(res.headers["content-type"], /^text\/html/);
-    assert.match(res.text, /Open the link agentrun-serve printed/);
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers["content-type"], "text/html; charset=utf-8", path);
+    assert.equal(res.text, INDEX, `${path} is the console's index.html`);
+    assert.equal(res.headers["content-security-policy"], CSP, path);
+    assert.equal(res.headers["x-content-type-options"], "nosniff", path);
+    assert.equal(res.headers["referrer-policy"], "no-referrer", path);
+    assert.equal(res.headers["cache-control"], "no-store", path);
     assert.equal(res.headers["set-cookie"], undefined, path);
-    assert.ok(!res.text.includes(token), "the page never holds the token");
+    assert.ok(!res.text.includes(token), `${path}: the page never holds the token`);
   }
-  const data = await call(port, { path: "/api/store" });
-  assert.equal(data.status, 401);
-  assert.equal(data.json.error.code, "unauthenticated");
-  for (const path of ["/page.css", "/page.js", "/graph.js", "/serve.js", "/serve.css"]) assert.equal((await call(port, { path })).status, 200, path);
-  assert.equal((await call(port, { path: "/v2/agents" })).status, 401);
-  assert.equal((await call(port, { path: "/nothing" })).json.error.code, "not_found", "a path that is not the page's is the API's 404");
+  assert.equal((await call(port, { path: "/v2/agents" })).status, 401, "the page's data needs a credential");
+});
+
+test("the console's files: from its assets only, with their type and a long cache; anything else is the API's 404, never the page", async (t) => {
+  const { port, token } = await served(t);
+  for (const [path, type] of [["/assets/index-a1b2.js", "text/javascript; charset=utf-8"], ["/assets/index-c3d4.css", "text/css; charset=utf-8"], ["/assets/font-e5f6.woff2", "font/woff2"]]) {
+    const res = await call(port, { path });
+    assert.equal(res.status, 200, path);
+    assert.equal(res.headers["content-type"], type, path);
+    assert.equal(res.headers["cache-control"], "public, max-age=31536000, immutable", path);
+    assert.equal(res.headers["content-security-policy"], CSP, path);
+    assert.equal(res.headers["x-content-type-options"], "nosniff", path);
+    assert.ok(!res.text.includes(token), path);
+  }
+  for (const path of ["/v2/nope", "/v2/agents/x/nope", "/api/store", "/api/runs", "/nope.js", "/assets/missing.js", "/assets/../secret.txt", "/assets/%2e%2e/secret.txt", "/assets/%2E%2E%2Fsecret.txt", "/assets/..%5csecret.txt", "/assets/index-a1b2.exe", "/secret.txt", "/assets/"]) {
+    const res = await call(port, { path });
+    assert.equal(res.status, path.startsWith("/v2/agents/x") ? 404 : 404, path);
+    assert.match(res.headers["content-type"], /^application\/json/, `${path} answers JSON, never the page`);
+    assert.equal(res.json.error.code, "not_found", path);
+    assert.ok(!res.text.includes("<html"), path);
+  }
+});
+
+test("the page takes GET and HEAD only: a HEAD has the GET's headers and no body, a POST is 405", async (t) => {
+  const { port } = await served(t);
+  const head = await call(port, { method: "HEAD", path: "/agents/x" });
+  assert.equal(head.status, 200);
+  assert.equal(head.headers["content-type"], "text/html; charset=utf-8");
+  assert.equal(head.headers["content-security-policy"], CSP);
+  assert.equal(head.text, "");
+  assert.equal((await call(port, { method: "HEAD", path: "/assets/index-a1b2.js" })).status, 200);
+  const post = await call(port, { method: "POST", path: "/" });
+  assert.equal(post.status, 405);
+  assert.equal(post.headers.allow, "GET, HEAD");
+});
+
+test("a server built without its console says so at its pages, plainly, and the API is unchanged", async (t) => {
+  const empty = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-no-console-"));
+  t.after(() => rm(empty, { recursive: true, force: true }));
+  const { port } = await served(t, { consoleDir: empty });
+  const page = await call(port, { path: "/" });
+  assert.equal(page.status, 200);
+  assert.match(page.text, /built without its console/);
+  assert.doesNotMatch(page.text, /<script|<style|\sstyle=|\son[a-z]+=/i);
+  assert.equal((await call(port, { path: "/assets/index-a1b2.js" })).status, 404);
 });
 
 test("the printed link sets an HttpOnly, SameSite=Strict cookie that is not the token, once, and redirects to the same path without it", async (t) => {
@@ -80,28 +139,14 @@ test("the printed link sets an HttpOnly, SameSite=Strict cookie that is not the 
   assert.equal(https.headers["set-cookie"][0].split(";")[0], cookie, "the same cookie for the same token");
 });
 
-test("with the cookie: the page is the store page with serve.js before page.js, under a CSP; its /api is the store's; a wrong cookie is no cookie", async (t) => {
+test("with the cookie the page is the same public console, and a wrong cookie is no credential", async (t) => {
   const { port, cookie } = await served(t);
   const page = await call(port, { headers: { cookie } });
   assert.equal(page.status, 200);
-  assert.match(page.headers["content-security-policy"], /default-src 'self'; script-src 'self'; style-src 'self'/);
-  assert.equal(page.headers["x-content-type-options"], "nosniff");
-  assert.equal(page.headers["referrer-policy"], "no-referrer");
-  assert.equal(page.headers["cache-control"], "no-store");
-  assert.deepEqual([...page.text.matchAll(/<(?:script src|link rel="stylesheet" href)="([^"]+)"/g)].map((m) => m[1]), ["/page.css", "/serve.css", "/graph.js", "/serve.js", "/page.js", "/account.js"]);
-  assert.match(page.text, /<html lang="en" data-serve="store">/);
-  assert.doesNotMatch(page.text, /<style|\sstyle=|\son[a-z]+=|https?:|<script>/i);
-  for (const route of ["/page.css", "/page.js", "/graph.js"]) assert.equal((await call(port, { path: route })).text, await readFile(STORE_PAGE_FILES[route].path, "utf8"), `${route} is pi-durable-agent's own`);
-  const store = await call(port, { path: "/api/store", headers: { cookie } });
-  assert.equal(store.status, 200);
-  assert.deepEqual(store.json.agents.map((a) => [a.id, a.name, a.currentKind]), [["calc", "Calc", "agentic"]]);
-  assert.equal((await call(port, { path: "/api/agents/calc", headers: { cookie } })).json.agent.id, "calc");
-  assert.equal((await call(port, { path: "/api/runs", headers: { cookie } })).status, 200);
+  assert.equal(page.text, INDEX);
+  assert.equal((await call(port, { path: "/v2/agents", headers: { cookie } })).status, 200);
   const wrong = cookie.replace(/=./, (m) => (m === "=A" ? "=B" : "=A"));
-  assert.equal((await call(port, { headers: { cookie: wrong } })).status, 401);
-  assert.equal((await call(port, { path: "/api/store", headers: { cookie: wrong } })).status, 401);
   assert.equal((await call(port, { path: "/v2/agents", headers: { cookie: wrong } })).status, 401);
-  assert.equal((await call(port, { method: "POST", headers: { cookie } })).status, 405, "the page takes GET and HEAD");
 });
 
 test("the cookie stands in for the Bearer header: every GET, and a write only from the page's own origin with a JSON body", async (t) => {
@@ -129,6 +174,13 @@ test("the cookie stands in for the Bearer header: every GET, and a write only fr
   assert.equal(bearer.status, 201, "the Bearer header works as before, with no Origin");
   const both = await call(port, { path: "/v2/agents", headers: { cookie, authorization: "Bearer wrong" } });
   assert.equal(both.status, 401, "a Bearer header that is sent is the one checked");
+});
+
+test("a write to /v2 from another origin gets no Bearer from the cookie", async (t) => {
+  const { port, cookie } = await served(t);
+  const res = await call(port, { method: "POST", path: "/v2/agents", headers: { cookie, "content-type": "application/json", origin: "https://evil.example" }, body: agent("from-elsewhere") });
+  assert.equal(res.status, 401);
+  assert.equal(res.json.error.code, "unauthenticated");
 });
 
 test("the bin prints the page's link once, with the token, beside the base URL and the key", { timeout: 20_000 }, async (t) => {

@@ -1,42 +1,42 @@
-// The page at "/": pi-durable-agent's store page over the agent store in the data directory, with this package's
-// serve.js and serve.css beside it. A browser holds the owner's session cookie (owner.ts), or the server's token as a
-// cookie that the printed link sets once; either stands in for the Bearer header on /v2, and for a write only from the
-// page's own origin with a JSON body. With accounts, a browser holding neither gets the setup page (no password yet) or
-// the sign-in page.
+// The page at "/": the console (apps/console, built into dist/console by scripts/copy-page.mjs), a static app that
+// reads this server's /v2. A browser holds the owner's session cookie (owner.ts), or the server's token as a cookie that
+// the printed link sets once; either stands in for the Bearer header on /v2, and for a write only from the page's own
+// origin with a JSON body. The console's code is public: it carries no data, no token and no address, and asks /v2 for
+// everything, the owner's session included (GET /v2/auth/session), so it shows setup, sign-in or the console itself.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Owner } from "./owner.js";
+import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { STORE_PAGE_FILES, storeApi } from "@parcha/pi-durable-agent/serve";
+import type { Owner } from "./owner.js";
 import { ApiError } from "./errors.js";
 
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
-const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
+const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" };
 const HTML = "text/html; charset=utf-8";
-const own = (file: string, type: string) => ({ path: fileURLToPath(new URL(`./page/${file}`, import.meta.url)), type });
-/** The page's files, public: code and styles, no data. */
-const FILES: Record<string, { path: string; type: string }> = {
-  "/page.css": STORE_PAGE_FILES["/page.css"]!,
-  "/page.js": STORE_PAGE_FILES["/page.js"]!,
-  "/graph.js": STORE_PAGE_FILES["/graph.js"]!,
-  "/serve.css": own("serve.css", "text/css; charset=utf-8"),
-  "/serve.js": own("serve.js", "text/javascript; charset=utf-8"),
-  "/account.js": own("account.js", "text/javascript; charset=utf-8"),
+/** The console's build: index.html and assets/, beside the server. */
+export const CONSOLE_DIR = fileURLToPath(new URL("./console/", import.meta.url));
+/** What a server whose build has no console answers at its pages: plain, no script, under the same CSP. */
+const NO_CONSOLE = `<!doctype html><meta charset="utf-8"><title>AgentRun Server</title><p>This server was built without its console. The API is at /v2.</p>\n`;
+/** The types of the console's files, by extension. Anything else is not served. */
+const TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
 };
-const PAGE = own("index.html", HTML);
-const LOCKED = own("locked.html", HTML);
-/** With accounts: the setup and sign-in pages' styles, public like the page's files. */
-const ACCOUNT_FILES: Record<string, { path: string; type: string }> = {
-  "/account.css": own("account.css", "text/css; charset=utf-8"),
-};
-const SETUP = own("setup.html", HTML);
-const SIGN_IN = own("sign-in.html", HTML);
 
 const read = new Map<string, Promise<Buffer>>();
 const bytesOf = (path: string) => {
   let bytes = read.get(path);
-  if (!bytes) read.set(path, (bytes = readFile(path)));
+  if (!bytes) {
+    read.set(path, (bytes = readFile(path)));
+    // A file that is not there is read again next time: a build can land under a running server.
+    bytes.catch(() => read.delete(path));
+  }
   return bytes;
 };
 
@@ -66,49 +66,61 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
   res.end(req.method === "HEAD" ? undefined : bytes);
 }
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
-  send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
+  send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), { "cache-control": "no-store", ...error.headers });
 
-type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner };
+type PageServer = { token: string; dir: string; authFailed?: (route: string, reason: string) => void; owner?: Owner; consoleDir?: string };
 
-const redirect = (res: ServerResponse, location: string) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0 }), void res.end());
-
-async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
-  if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the page answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
-  const owner = server.owner;
-  const file = FILES[raw] ?? (owner ? ACCOUNT_FILES[raw] : undefined);
-  if (file) return send(req, res, 200, file.type, await bytesOf(file.path));
-  if (owner && raw === "/setup") return owner.hasPassword() ? redirect(res, "/sign-in") : send(req, res, 200, HTML, await bytesOf(SETUP.path));
-  if (owner && raw === "/sign-in") return owner.hasPassword() ? send(req, res, 200, HTML, await bytesOf(SIGN_IN.path)) : redirect(res, "/setup");
-  const url = new URL(req.url ?? "/", "http://serve");
-  if (raw.startsWith("/api/")) {
-    if (!held && !same(String(req.headers.authorization ?? ""), `Bearer ${server.token}`)) {
-      server.authFailed?.(raw, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
-      return refuse(req, res, new ApiError("unauthenticated", "the page's data needs the cookie the printed link sets, or Authorization: Bearer <the token>"));
-    }
-    const { status, value } = await storeApi({ dir: server.dir })(url.pathname, url.searchParams);
-    return send(req, res, status, "application/json; charset=utf-8", JSON.stringify(value));
+/** The console's own file for a request path under /assets/, or undefined: the name decoded once, inside the console's
+ *  assets directory only (no "..", no backslash, no NUL), with a type the console serves. */
+function assetOf(raw: string, dir: string): { path: string; type: string } | undefined {
+  let name: string;
+  try {
+    name = decodeURIComponent(raw.slice("/assets/".length));
+  } catch {
+    return undefined;
   }
-  // With an owner the page is the owner's session alone: the token is for scripts and the CLI, and its link signs no
-  // browser in, so nothing outlives a sign-out.
-  if (owner) return held ? send(req, res, 200, HTML, await bytesOf(PAGE.path)) : redirect(res, owner.hasPassword() ? "/sign-in" : "/setup");
+  if (!name || name.includes("..") || name.includes("\0") || name.includes("\\")) return undefined;
+  const base = join(dir, "assets");
+  const path = normalize(join(base, name));
+  const type = TYPES[extname(path).toLowerCase()];
+  return path.startsWith(base + sep) && type ? { path, type } : undefined;
+}
+
+async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): Promise<void> {
+  if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the page answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
+  const dir = server.consoleDir ?? CONSOLE_DIR;
+  if (raw.startsWith("/assets/")) {
+    const asset = assetOf(raw, dir);
+    const bytes = asset ? await bytesOf(asset.path).catch(() => undefined) : undefined;
+    if (!asset || !bytes) return refuse(req, res, new ApiError("not_found", `no file ${raw}`));
+    // Hashed names: a file's content never changes under its name, so it may be kept.
+    return send(req, res, 200, asset.type, bytes, { "cache-control": "public, max-age=31536000, immutable" });
+  }
+  const url = new URL(req.url ?? "/", "http://serve");
   const given = url.searchParams.get("token");
-  // A token holds no whitespace, so a space in the link is a "+" that was not encoded.
-  if (given !== null && (same(given, server.token) || same(given.replaceAll(" ", "+"), server.token))) {
+  // Without accounts, the printed link sets the token's cookie once and drops the token from the address. With an
+  // owner the token's link signs no browser in: the page is the owner's session alone, so nothing outlives a sign-out.
+  if (given !== null && !server.owner && (same(given, server.token) || same(given.replaceAll(" ", "+"), server.token))) {
     url.searchParams.delete("token");
     const rest = url.searchParams.toString();
     const cookie = `${cookieName(req)}=${sessionOf(server.token)}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}`;
-    res.writeHead(303, { ...SECURITY, location: `${raw}${rest ? `?${rest}` : ""}`, "set-cookie": cookie, "content-length": 0 });
+    res.writeHead(303, { ...SECURITY, "cache-control": "no-store", location: `${raw}${rest ? `?${rest}` : ""}`, "set-cookie": cookie, "content-length": 0 });
     return void res.end();
   }
   if (given !== null) server.authFailed?.(raw, "wrong_link_token");
-  if (!held || given !== null) return send(req, res, 401, HTML, await bytesOf(LOCKED.path));
-  return send(req, res, 200, HTML, await bytesOf(PAGE.path));
+  const index = await bytesOf(join(dir, "index.html")).catch(() => undefined);
+  return send(req, res, 200, HTML, index ?? NO_CONSOLE, { "cache-control": "no-store" });
 }
 
+/** A path the console answers with its index.html: one with no extension (a route of the console), never the API's. */
+const consolePath = (raw: string) => raw !== "/v2" && !raw.startsWith("/v2/") && raw !== "/api" && !raw.startsWith("/api/") && !extname(raw);
+
 /**
- * Answers the page's paths ("/", its files and its /api/*) and returns true; returns false for every other path. On a
- * /v2 path with no Authorization header, the page's cookie becomes the Bearer header for a GET or HEAD, and for any other
- * method only when the request's Origin is the page's own origin and its body is application/json.
+ * Answers the console's paths ("/", any path with no extension, and /assets/*) and returns true; returns false for
+ * every other path, so the API's own routes (and their JSON errors) answer it: an unknown /v2 path, /api/*, and a file
+ * the console does not have are never the page. On a /v2 path with no Authorization header, the page's cookie becomes
+ * the Bearer header for a GET or HEAD, and for any other method only when the request's Origin is the page's own origin
+ * and its body is application/json.
  */
 export function answerPage(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): boolean {
   const held = server.owner ? signedIn(req, server.owner) : cookiesOf(req, cookieName(req)).some((value) => same(value, sessionOf(server.token)));
@@ -117,9 +129,8 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     if (held && req.headers.authorization === undefined && (safe || (req.headers.origin?.toLowerCase() === ownOrigin(req) && isJson(req)))) req.headers.authorization = `Bearer ${server.token}`;
     return false;
   }
-  const accountPage = server.owner !== undefined && (raw === "/setup" || raw === "/sign-in" || Boolean(ACCOUNT_FILES[raw]));
-  if (raw !== "/" && !FILES[raw] && !accountPage && !raw.startsWith("/api/")) return false;
-  answer(req, res, raw, server, held).catch(() => {
+  if (!raw.startsWith("/assets/") && !consolePath(raw)) return false;
+  answer(req, res, raw, server).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the page could not be read"));
     else res.destroy();
   });

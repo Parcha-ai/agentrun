@@ -46,6 +46,8 @@ export type ServeOptions = {
   /** The data directory: the agent store (`store.sqlite`) and its runs (`runs/<id>/`). */
   data: string;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
+  /** The console's build to serve at "/" (default: dist/console beside the server). Tests point it at a fixture. */
+  consoleDir?: string;
   accounts?: boolean;
   /** With accounts: the first visit sets the password with no setup code (a server with no public address). Off, setup
    *  takes the code this server prints, or the token. */
@@ -787,7 +789,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const raw = (req.url ?? "/").split("?")[0]!;
     // Before the page: its cookie must not stand in for the token on the owner's own routes.
     if (owner && (raw === "/v2/setup" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
-    if (answerPage(req, res, raw, { token, dir: data, authFailed, ...(owner ? { owner } : {}) })) return;
+    if (answerPage(req, res, raw, { token, dir: data, authFailed, ...(owner ? { owner } : {}), ...(options.consoleDir ? { consoleDir: options.consoleDir } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
   });
