@@ -128,18 +128,30 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
  *  only by the person who wants it (its SDK is an optional peer). */
 const CLAUDE_PACKAGE = "@parcha/agentrun-claude-agent";
 
-async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const claude = (await import(CLAUDE_PACKAGE).catch(() => {
+/** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
+export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = () => import(CLAUDE_PACKAGE)): Promise<AgentAdapter> {
+  const claude = (await load().catch(() => {
     throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`);
   })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
-  const provider = claudeProvider(env, needs.model);
+  // What no key fixes is said first: the adapter is built before the provider's refusal is thrown, and its construction
+  // checks the SDK's version, zod and the pinned CLI (claude --version, once). The provider is read only when a session
+  // opens, so an adapter built with an unusable one is never returned.
+  let provider: ReturnType<typeof claudeProvider> | undefined;
+  let refused: unknown;
   try {
-    // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once).
-    return claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
+    provider = claudeProvider(env, needs.model);
+  } catch (error) {
+    refused = error;
+  }
+  let adapter: AgentAdapter;
+  try {
+    adapter = claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
   }
+  if (refused !== undefined) throw refused;
+  return adapter;
 }
 
 /** The run's thinking level as the harness takes it: serve's levels run to max; Codex's reasoning efforts stop at xhigh. */
