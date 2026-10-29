@@ -108,7 +108,7 @@ describe("localRun", () => {
       instance.kill("SIGKILL");
       await new Promise((resolve) => instance.once("close", resolve));
       await new Promise((resolve) => setTimeout(resolve, 200));
-      assert.ok(alive(command), "the instance's SIGKILL does not reach its command, which leads a process group of its own");
+      assert.ok(alive(command), "the instance's SIGKILL does not reach its command's child, in the command's own process group");
       const scripted = scriptedHarness();
       const steps: [string, boolean][] = [];
       let factorySaw: boolean | undefined;

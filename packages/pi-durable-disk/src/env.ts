@@ -203,20 +203,34 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
   // command's own. A string command becomes the argv of the shell pi would have run it through, which is how
   // setpriv gets in front of the shell; failures pi reports before spawning (no such program, no such shell) are
   // reported the same way here instead of as setpriv's exit status.
+  /** The argv every command here starts under, ending in `--`; empty when the run confines no command. A program the
+   *  run starts beside pi (another harness's CLI) goes under the same prefix. `--pdeathsig KILL`: the command dies the
+   *  moment the process that started it does, so a run process killed mid-turn leaves no command running; only that
+   *  command, since the kernel does not pass the signal on to its own children. The kernel also clears it when the
+   *  process's credentials change, so under runAs it holds only if setpriv sets it after switching the uid: that mode's
+   *  container test must show a command dying with its parent under --reuid before the mode ships. */
+  confinePrefix(): string[] {
+    const { setpriv, noNewPrivs, runAs } = this.#scope;
+    if (setpriv === undefined) return [];
+    return [
+      setpriv,
+      // A root instance's capabilities stay with it: the command's bounding and inheritable sets are emptied too.
+      ...(runAs ? [`--reuid=${runAs.uid}`, `--regid=${runAs.gid}`, "--clear-groups", "--inh-caps=-all", "--bounding-set=-all"] : []),
+      ...(noNewPrivs ? ["--no-new-privs"] : []),
+      "--pdeathsig",
+      "KILL",
+      "--",
+    ];
+  }
+
   async #confine(
     command: ExecCommand,
     options: ShellExecOptions | undefined,
     context: Context,
   ): Promise<Result<ExecCommand, ExecutionError>> {
-    const { setpriv, noNewPrivs, runAs, shellPath, shellEnv } = this.#scope;
-    if (setpriv === undefined) return ok(command);
-    const confine = [
-      setpriv,
-      // A root instance's capabilities stay with it: the command's bounding and inheritable sets are emptied too.
-      ...(runAs ? [`--reuid=${runAs.uid}`, `--regid=${runAs.gid}`, "--clear-groups", "--inh-caps=-all", "--bounding-set=-all"] : []),
-      ...(noNewPrivs ? ["--no-new-privs"] : []),
-      "--",
-    ];
+    const { shellPath, shellEnv } = this.#scope;
+    const confine = this.confinePrefix();
+    if (!confine.length) return ok(command);
     const cwd = options?.cwd === undefined ? this.cwd : getOrDefault(await this.absolutePath(options.cwd, context), this.cwd);
     const env = options?.inheritEnv === false ? { ...options.env } : { ...process.env, ...shellEnv, ...options?.env };
     if (typeof command === "string") {
