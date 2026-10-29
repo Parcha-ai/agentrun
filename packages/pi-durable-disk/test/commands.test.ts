@@ -692,17 +692,53 @@ describe("a recorder's mark", () => {
     }
   });
 
+  it("a process both a record and a mark name is signalled once: the reap never sends a group's SIGKILL twice, nor a member's after its group's", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
+    const dir = scratchRoot("commands-mark-once");
+    const records = join(dir.root, "commands");
+    const token = randomUUID();
+    const child = command(token);
+    const pid = child.pid ?? 0;
+    try {
+      // The leader carries the mark (it has exec'd) and its member is in its group.
+      await until(() => processTable().snapshot().marked(pid, COMMANDS_MARK, token) && processTable().snapshot().group(pid).length >= 2);
+      const look = processTable().snapshot();
+      const member = look.group(pid).find((p) => p !== pid)!;
+      const boot = processTable().bootId();
+      mkdirSync(records);
+      writeFileSync(join(records, `${pid}-${look.info(pid)!.start}.json`), JSON.stringify({ boot, leader: { pid, start: look.info(pid)!.start }, members: [{ pid: member, start: look.info(member)!.start }] }));
+      writeFileSync(join(records, `mark-${token}.json`), JSON.stringify({ boot, token }));
+      // A kill that records its target and sends nothing: every process is still there for the whole reap, record and mark alike.
+      const targets: number[] = [];
+      const reaped = await reapCommands(records, { kill: (target) => void targets.push(target), timeoutMs: 100 });
+      assert.deepEqual(targets, [-pid], "one SIGKILL, to the group, whatever names it");
+      assert.equal(reaped.signalled, 1);
+    } finally {
+      killGroup(pid);
+      dir.remove();
+    }
+  });
+
   it("that still names a live process after the reap's deadline is kept as it was, so the next open looks for its token again and ends it", async () => {
     const dir = scratchRoot("commands-mark-kept");
     const records = join(dir.root, "commands");
     const token = randomUUID();
     const mark = join(records, `mark-${token}.json`);
-    const child = command(token);
+    // The command carries its mark only once it has exec'd: before, a spawned child still has this process's environment.
+    // It starts unmarked, held on a fifo in front of the exec that gives it the mark, so the test sees that window.
+    const fifo = join(dir.root, "go");
+    spawnSync("mkfifo", [fifo]);
+    const child = spawn("/bin/sh", ["-c", `read _ < '${fifo}'; exec env ${COMMANDS_MARK}=${token} /bin/sh -c 'sleep 600 & exec sleep 600'`], { detached: true, stdio: "ignore" });
     const pid = child.pid ?? 0;
+    const marked = () => processTable().snapshot().marked(pid, COMMANDS_MARK, token);
     try {
       mkdirSync(records);
       writeFileSync(mark, JSON.stringify({ boot: processTable().bootId(), token }));
       await until(() => alive(pid));
+      assert.equal(marked(), false, "held before its exec, the command does not carry the mark yet");
+      writeFileSync(fifo, "go\n");
+      // The reap looks for the mark, so it runs only once the command carries it.
+      await until(marked);
+      assert.ok(marked(), "the command carries the mark");
       // A kill that does nothing: the marked command outlives the first reap's deadline.
       await assert.rejects(reapOrRefuse(records, { kill: () => {}, timeoutMs: 100 }), (error: unknown) => error instanceof HeldError && error.holder === "commands");
       assert.ok(alive(pid), "the command survived the first reap");
