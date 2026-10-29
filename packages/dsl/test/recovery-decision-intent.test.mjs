@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { memoryStore, openRecovery, withRecovery } from '@parcha/agentrun-dsl/recovery';
+import { memoryStore, openRecovery, recoveryBound, withRecovery } from '@parcha/agentrun-dsl/recovery';
 
 const KEY = 'run-1';
 const INPUT = { text: 'a filing' };
@@ -180,5 +180,22 @@ for (const layout of LAYOUTS) {
     const answered = saved.filter((state) => Object.values(state?.pin?.decisions ?? {}).some((requests) => Object.values(requests).some((request) => request.status === 'answered')));
     assert.ok(answered.length > 0, 'a checkpoint holds the answered request');
     assert.deepEqual(answered.map((state) => state.questionSpendUsd), answered.map(() => 0.003), 'every checkpoint that holds the answered request holds its spend');
+  });
+
+  test(`killed right after the answered outcome commits, the reopened run's spend holds the answer's cost, never less (${layout})`, async () => {
+    const inner = memoryStore(); let dead = false;
+    const answeredIn = (state) => Object.values(state?.pin?.decisions ?? {}).some((requests) => Object.values(requests).some((request) => request.status === 'answered'));
+    // The process dies the moment the commit that holds the answered request has landed.
+    const store = { open: async (bound) => {
+      const journal = await inner.open(bound);
+      const held = Object.create(journal);
+      held.save = async (state, ...rest) => { if (dead) throw new Error('the process died'); const landed = await journal.save(state, ...rest); if (typeof state !== 'function' && answeredIn(state)) dead = true; return landed; };
+      for (const write of ['note', 'admit', 'complete', 'called']) held[write] = async (...args) => { if (dead) throw new Error('the process died'); return journal[write](...args); };
+      return held;
+    } };
+    const driver = await openRecovery(store, workflow, { key: KEY, layout });
+    try { await assert.rejects(runWorkflow(workflow, INPUT, withRecovery(driver, { runJudge: async () => structuredClone(answer) })), /the process died/); } finally { await driver.close().catch(() => undefined); }
+    const journal = await inner.open(recoveryBound(workflow));
+    try { assert.equal(journal.state.questionSpendUsd, 0.003, 'the run\'s recorded spend holds the answer it was paid for'); } finally { await journal.close(); }
   });
 }
