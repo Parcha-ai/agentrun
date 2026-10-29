@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { env } from "node:process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -121,6 +121,13 @@ for (const [what, codex, named] of [
     assert.match(result.stderr, named);
   });
 }
+
+test("the image check accepts a tree given as a path relative to its working directory", { skip }, async (t) => {
+  const root = await tree(t, kept);
+  const result = spawnSync("sh", [CHECK, basename(root)], { cwd: dirname(root), encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Codex 0\.164\.0 .* is the pinned build/);
+});
 
 // A CODEX_BIN the build inherits (or an operator sets) that names the pinned binary elsewhere must not stand in for the
 // tree's own: the tree's wrong Codex is still refused.

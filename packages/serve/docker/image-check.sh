@@ -20,13 +20,13 @@ fi
 echo "image check: no Claude Agent SDK or Claude CLI under $root"
 env -u CODEX_BIN node --input-type=module -e '
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { argv, exit } from "node:process";
 import { pathToFileURL } from "node:url";
 const root = argv[1];
 let pkg;
 try {
-  pkg = dirname(createRequire(join(root, "package.json")).resolve("@parcha/agentrun-codex/package.json"));
+  pkg = dirname(createRequire(resolve(root, "package.json")).resolve("@parcha/agentrun-codex/package.json"));
 } catch {
   console.error(`image check: ${root} has no @parcha/agentrun-codex to check its Codex CLI with`);
   exit(1);
