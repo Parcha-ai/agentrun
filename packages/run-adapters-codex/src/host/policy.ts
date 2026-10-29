@@ -12,8 +12,10 @@
 // format (plain text, or the JSON schema a node's output schema becomes) and a verbosity, and the model is the session's.
 // `max_output_tokens` is clamped. No tool the provider runs on its own passes: web search, which the CLI
 // adds whatever its config says, is dropped, and any other provider-hosted tool is refused. A function or custom tool
-// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. This adapter
-// runs classic function tools only: a code-mode request (its `additional_tools` carriers, exec and wait) is refused.
+// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. A code-mode
+// model's request carries Codex's own `exec` and `wait` in an `additional_tools` item; those pass, and nothing else in
+// the item does (the sub-agent and user-input tools it also lists are dropped), so the model is offered exactly the
+// host's tools, called from `exec` as nested ones.
 //
 // Usage is read from the stream's `response.completed` (or `response.incomplete`, a paid response cut at its output
 // limit), each `data:` line parsed as JSON on its own, never matched as text. OpenAI counts cached and cache-write tokens
@@ -172,6 +174,23 @@ export function usageOf(text: string): ProxyUsage | undefined {
   }
 }
 
+/** The code-mode runtime a request may carry: Codex's `exec` (a custom tool) and `wait` (a function), in the `functions`
+ *  namespace of an `additional_tools` item. Every other tool the item lists is dropped, and an item of any other shape is
+ *  refused. Other input items pass as they are. */
+const CODE_MODE_TOOLS = new Map([["exec", "custom"], ["wait", "function"]]);
+function codeModeCarrier(item: unknown): unknown {
+  if (!isPlain(item) || item.type !== "additional_tools") return item;
+  if (!Array.isArray(item.tools)) throw new ProxyRefusal(400, "an additional_tools item has no tools list");
+  const kept: unknown[] = [];
+  for (const namespace of item.tools) {
+    if (!isPlain(namespace) || namespace.type !== "namespace" || !Array.isArray(namespace.tools)) throw new ProxyRefusal(400, "an additional_tools item holds something other than a namespace");
+    if (namespace.name !== "functions") continue;
+    const own = namespace.tools.filter((tool) => isPlain(tool) && typeof tool.name === "string" && CODE_MODE_TOOLS.get(tool.name) === tool.type);
+    kept.push({ ...namespace, tools: own });
+  }
+  return { ...item, tools: kept };
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
@@ -199,8 +218,13 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (out.text !== undefined) out.text = textOptions(out.text);
       if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed);
       if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed);
-      if (Array.isArray(out.input)) {
-        if (out.input.some((item) => isPlain(item) && item.type === "additional_tools")) throw new ProxyRefusal(400, "code mode is not supported by this adapter yet: its tools run as classic function calls only");
+      if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
+        out.input = out.input.map(codeModeCarrier);
+        // One `exec` is open at a time (the session's barrier for a code-mode call rests on it): a code-mode request that allows
+        // parallel calls is refused, and one that says nothing is sent with them off. A classic request is as the CLI sent it.
+        if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
+        if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
+        out.parallel_tool_calls = false;
       }
       const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
       return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };

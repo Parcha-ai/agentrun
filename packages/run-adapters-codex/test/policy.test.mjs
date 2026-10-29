@@ -233,15 +233,49 @@ test('a paid answer cut at its output limit (response.incomplete) is booked at i
   assert.deepEqual(reports, [{ input: 2000, output: 32_000, cacheRead: 1000, cacheWrite: 0, usd: (2000 + 32_000 + 1000) / 1e6, estimated: true }]);
 });
 
-test("a code-mode request (its exec and wait carriers) is refused at the proxy: this adapter runs classic tools only", async () => {
+const CODE_MODE_CARRIER = {
+  type: 'additional_tools', id: 'at_1', role: 'developer',
+  tools: [
+    { type: 'namespace', name: 'functions', description: '', tools: [
+      { type: 'custom', name: 'exec', description: 'Run JavaScript.', format: { type: 'text' } },
+      { type: 'function', name: 'wait', description: 'Wait.', parameters: { type: 'object', properties: {} } },
+      { type: 'function', name: 'request_user_input', parameters: { type: 'object', properties: {} } },
+      { type: 'function', name: 'exec', parameters: { type: 'object', properties: {} } },
+    ] },
+    { type: 'namespace', name: 'collaboration', description: '', tools: [{ type: 'function', name: 'spawn_agent', parameters: { type: 'object', properties: {} } }] },
+  ],
+};
+
+test("a code-mode request passes with Codex's exec and wait and nothing else of its additional_tools: sub-agent and user-input tools are dropped", async () => {
   const { p, forwarded } = await proxy();
-  const carriers = { type: 'additional_tools', tools: [{ type: 'namespace', name: 'code_mode', tools: [{ type: 'custom', name: 'exec' }, { type: 'function', name: 'wait', parameters: { type: 'object', properties: {} } }] }] };
-  for (const input of [[carriers], [...RECORDED_REQUEST.input, carriers], [{ type: 'additional_tools', tools: [] }]]) {
-    const r = await send(p.url, { body: { ...RECORDED_REQUEST, input } });
-    assert.equal(r.status, 400, JSON.stringify(input).slice(0, 80));
-    assert.match(r.text, /code mode/);
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input: [...RECORDED_REQUEST.input, CODE_MODE_CARRIER] } });
+  assert.equal(r.status, 200, r.text);
+  const carrier = forwarded[0].body.input.find((item) => item.type === 'additional_tools');
+  assert.deepEqual(carrier.tools.map((t) => [t.name, t.tools.map((x) => `${x.type}:${x.name}`)]), [['functions', ['custom:exec', 'function:wait']]]);
+  assert.equal(carrier.id, 'at_1', 'the rest of the item is as sent');
+  assert.deepEqual(forwarded[0].body.input.filter((item) => item.type !== 'additional_tools'), RECORDED_REQUEST.input, 'other input items are as sent');
+  // A carrier of another shape is refused, never passed on as it is.
+  for (const bad of [{ type: 'additional_tools' }, { type: 'additional_tools', tools: [{ type: 'function', name: 'exec' }] }, { type: 'additional_tools', tools: 'exec' }]) {
+    const refused = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input: [...RECORDED_REQUEST.input, bad] } });
+    assert.equal(refused.status, 400, JSON.stringify(bad));
   }
   // A top-level carrier is not the session's tool either: it is dropped, so no code-mode runtime is offered.
   assert.equal((await send(p.url, { body: { ...RECORDED_REQUEST, tools: [{ type: 'custom', name: 'exec' }, { type: 'function', name: 'wait' }, { type: 'function', name: 'lookup' }] } })).status, 200);
-  assert.deepEqual(forwarded.map((f) => f.body.tools.map((t) => t.name)), [['lookup']]);
+  assert.deepEqual(forwarded.at(-1).body.tools.map((t) => t.name), ['lookup']);
+});
+
+test("a code-mode request has parallel tool calls off: written false when the CLI says nothing, false kept, true refused; a classic request is as sent", async () => {
+  const { p, forwarded } = await proxy();
+  const codeMode = { ...RECORDED_REQUEST, input: [...RECORDED_REQUEST.input, CODE_MODE_CARRIER] };
+  const { parallel_tool_calls: _, ...without } = codeMode;
+  assert.equal((await send(p.url, { body: without })).status, 200);
+  assert.equal(forwarded.at(-1).body.parallel_tool_calls, false, 'written when absent');
+  assert.equal((await send(p.url, { body: { ...codeMode, parallel_tool_calls: false } })).status, 200);
+  assert.equal(forwarded.at(-1).body.parallel_tool_calls, false);
+  const before = forwarded.length;
+  for (const value of [true, 'yes', 1, null]) assert.equal((await send(p.url, { body: { ...codeMode, parallel_tool_calls: value } })).status, 400, String(value));
+  assert.equal(forwarded.length, before, 'nothing was forwarded');
+  assert.equal(RECORDED_REQUEST.parallel_tool_calls, true, 'the recorded classic request allows them');
+  assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
+  assert.equal(forwarded.at(-1).body.parallel_tool_calls, true, 'a classic request is as the CLI sent it');
 });
