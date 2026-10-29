@@ -23,13 +23,14 @@ What it does with Parallel's answers:
 - **Refusals.** Parallel may decline a question (`{ "type": "refusal" }`). It stays a refusal: the DSL never decodes it to a value. The run escalates for a person (`decision_refused`), or a route takes its `unsure` branch.
 - **Confidence.** A choice or score that comes back without a confidence gets one derived from its probabilities, and the decision receipt's `confidence_source` says so.
 - **Evidence.** Parallel's citations apply to the whole request, not to one answer, so each is evidence with `scope: "call"`.
-- **Cost.** The response carries no cost, so every attempt that may have been billed is booked at Parallel's list price, `PARALLEL_LIST_PRICE_USD` ($0.001 per request), with `cost_basis: "estimate"`. That is the answered attempt plus each earlier one that failed after it may have been served (a 408, a 5xx, a lost connection), but not a 429, which is refused unanswered. A call that gives up books an unknown cost (null). Its `decision_id` is the `provider_request_id`.
-- **Replay.** The API takes no idempotency key, so the provider declares `replay: "never"`: a decision is never asked again across a crash or a restart. Within one call it is retried only on a retryable error, and each attempt is booked as above.
+- **Cost.** The response carries no cost, so the answered request is booked at Parallel's list price, `PARALLEL_LIST_PRICE_USD` ($0.001 per request), with `cost_basis: "estimate"`. So is one sent whose outcome was lost (below). Its `decision_id` is the `provider_request_id`.
+- **Replay.** The API takes no idempotency key, so the provider declares `replay: "never"`: a paid request is never re-sent unasked. It is sent again only when it provably never reached Parallel (no DNS answer, no connection, no TLS handshake), or on a 429 that says when to retry (`Retry-After`). A 408, a 5xx or a connection lost after sending is sent once and fails `outcome_unknown`, booked at list price as an estimate. The run then escalates the decision for a person as interrupted (`decision_interrupted`), and it is never asked again.
 - **Errors.** Each one is a `DecisionProviderError`:
   - 401 and 403 are `auth`;
   - 400 and 422 are `invalid_request`, with Parallel's `ref_id` as `refId` and the body dropped;
-  - a 429 is retried after its `Retry-After`, then `rate_limited`;
-  - a 408, 5xx or lost connection is retried with backoff, then `http` or `connection`;
+  - a 429 is retried after its `Retry-After`, and is `rate_limited` without one or once the attempts are spent;
+  - a 408, a 5xx or a connection lost after sending is `outcome_unknown`, with `costUsd` and `costBasis` on the error;
+  - a request that never reached Parallel is retried with backoff, then `connection`;
   - a body that is not JSON, or answers that do not match the questions, is `invalid_response`;
   - the host's abort is `aborted`, and the deadline (`timeoutMs`, 30 s by default, or the host's shorter one) is `timeout`.
 

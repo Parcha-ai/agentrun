@@ -20,9 +20,11 @@ export interface DecisionCapabilities {
   probability: "calibrated" | "model" | "self_reported" | "none";
   /** Whether it looks things up on the web. */
   grounding: boolean;
-  /** "never": a request is paid when sent, so a decision is never asked again across a crash or a restart; within one
-   *  call a provider may retry a retryable error, booking each attempt that may have been billed. "deduped": the
-   *  provider answers a decision id it has seen with the same answer and no new charge. */
+  /** "never": a request is paid once sent, so it is never sent again unasked. The provider retries only a request that
+   *  provably never reached the service (a connect error before sending) or one refused unanswered with a time to
+   *  retry (a 429 with Retry-After). A failure after sending (a 408, a 5xx, a lost connection) is `outcome_unknown`,
+   *  and the decision escalates as interrupted. "deduped": the provider answers a decision id it has seen with the
+   *  same answer and no new charge. */
   replay: "never" | "deduped";
   /** The most questions one request may hold, or null for no limit. */
   maxQuestions: number | null;
@@ -61,7 +63,10 @@ export interface DecisionOutcome {
   provider_request_id: string | null;
 }
 
-export type DecisionProviderErrorCode = "configuration" | "auth" | "rate_limited" | "timeout" | "aborted" | "invalid_request" | "invalid_response" | "http" | "connection";
+/** `outcome_unknown`: the request was sent and its outcome is not known (a 408, a 5xx, a connection lost after
+ *  sending). It may have been answered and billed, so it is not sent again; the run escalates the decision as
+ *  interrupted. */
+export type DecisionProviderErrorCode = "configuration" | "auth" | "rate_limited" | "timeout" | "aborted" | "invalid_request" | "invalid_response" | "http" | "connection" | "outcome_unknown";
 
 /** A provider's failure. Its message names what failed, never a key, a header, a request or response body. */
 export class DecisionProviderError extends Error {
@@ -69,12 +74,17 @@ export class DecisionProviderError extends Error {
   readonly attempts: number;
   /** The provider's own reference for the failure, when it gives one. */
   readonly refId?: string;
-  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string } = {}) {
+  /** What a request that may have been billed is booked at (`outcome_unknown`), with how it was reached; null when unknown. */
+  readonly costUsd?: number | null;
+  readonly costBasis?: CostBasis;
+  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis } = {}) {
     super(message);
     this.name = "DecisionProviderError";
     this.attempts = details.attempts ?? 0;
     if (details.status !== undefined) this.status = details.status;
     if (details.refId !== undefined) this.refId = details.refId;
+    if (details.costUsd !== undefined) this.costUsd = details.costUsd;
+    if (details.costBasis !== undefined) this.costBasis = details.costBasis;
   }
 }
 

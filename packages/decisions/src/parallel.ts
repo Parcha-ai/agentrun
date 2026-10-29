@@ -1,8 +1,8 @@
 // Parallel Decisions (POST https://api.parallel.ai/v1/decisions) as a DecisionProvider: typed questions about a JSON
-// state, answered with probabilities and grounded in live web evidence. The API takes no idempotency key, so a decision is
-// never asked again across a crash (replay "never"). Within one call it is retried only on a retryable error (408, 429,
-// 5xx, a lost connection). The response carries no cost, so each attempt that may have been billed (every one but a 429,
-// which is refused unanswered) is booked at list price, as an estimate.
+// state, answered with probabilities and grounded in live web evidence. The response carries no cost and the API takes no
+// idempotency key, so the answered request is booked at list price as an estimate, and a paid request is never re-sent
+// unasked: only one that provably never reached Parallel (a connect error before sending) or a 429 that says when to
+// retry is sent again. A 408, a 5xx or a connection lost after sending is outcome_unknown, booked at list price.
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
 import type { DecisionCapabilities, DecisionContext, DecisionEvidence, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer, SystemOneQuestion } from "@parcha/agentrun-dsl";
@@ -23,7 +23,8 @@ export interface ParallelOptions {
   fetch?: typeof fetch;
   /** The longest one request may take, every attempt included (default 30 s); a shorter deadline from the host wins. */
   timeoutMs?: number;
-  /** Attempts for a 408, 429, 5xx or a lost connection (default 3). */
+  /** Attempts for a request that never reached Parallel, or a 429 that says when to retry (default 3). A failure after
+   *  sending is never retried. */
   maxAttempts?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
@@ -33,7 +34,13 @@ export interface ParallelOptions {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const unit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
-const retryable = (status: number) => status === 408 || status === 429 || (status >= 500 && status <= 599);
+/** Failures a request meets before it is sent: no DNS answer, no connection, no TLS handshake. Any other is after. */
+const BEFORE_SENDING = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT",
+  "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "ERR_TLS_CERT_ALTNAME_INVALID"]);
+const neverSent = (error: unknown): boolean => {
+  const cause = isRecord(error) ? error.cause : undefined;
+  return isRecord(cause) && typeof cause.code === "string" && BEFORE_SENDING.has(cause.code);
+};
 
 /** A question as Parallel takes it: a choice option with no description is described by its own name, and a noul's
  *  criteria name both outcomes. */
@@ -57,7 +64,7 @@ function checkLimits(questions: Record<string, SystemOneQuestion>): void {
 }
 
 /** The answers, sources and metering of a 200 response, checked against the questions asked. */
-function readResponse(body: unknown, questions: Record<string, SystemOneQuestion>, attempts: number, billed: number): DecisionOutcome {
+function readResponse(body: unknown, questions: Record<string, SystemOneQuestion>, attempts: number): DecisionOutcome {
   const invalid = (why: string) => new DecisionProviderError("invalid_response", `Parallel returned ${why}.`, { attempts });
   if (!isRecord(body) || !isRecord(body.answers)) throw invalid("no answers");
   const asked = Object.keys(questions);
@@ -81,7 +88,7 @@ function readResponse(body: unknown, questions: Record<string, SystemOneQuestion
   const usage = isRecord(body.usage) && Number.isSafeInteger(body.usage.input_tokens) && (body.usage.input_tokens as number) >= 0 ? { input_tokens: body.usage.input_tokens as number, output_tokens: 0 } : null;
   return {
     answers, evidence, model: typeof body.mode === "string" ? `parallel-${body.mode}` : null, usage,
-    cost_usd: billed * PARALLEL_LIST_PRICE_USD, cost_basis: "estimate", provider_request_id: typeof body.decision_id === "string" ? body.decision_id : null,
+    cost_usd: PARALLEL_LIST_PRICE_USD, cost_basis: "estimate", provider_request_id: typeof body.decision_id === "string" ? body.decision_id : null,
   };
 }
 
@@ -116,16 +123,16 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         ? new DecisionProviderError("aborted", "The Parallel request was cancelled.", { attempts })
         : new DecisionProviderError("timeout", "The Parallel request passed its deadline.", { attempts });
       const fetcher = options.fetch ?? fetch;
-      // Attempts before this one that may have been billed: a lost answer, a 408 or a 5xx. A 429 was refused unanswered.
-      let billedBefore = 0;
+      // Sent and lost: it may have been answered and billed, so it is booked and never sent again.
+      const lost = (attempts: number, what: string, status?: number) => new DecisionProviderError("outcome_unknown", `Parallel ${what} after the request was sent; it may have been answered, and is not sent again.`, { attempts, ...(status !== undefined ? { status } : {}), costUsd: PARALLEL_LIST_PRICE_USD, costBasis: "estimate" });
       for (let attempt = 1; ; attempt++) {
         let response: Response;
         try {
           response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal });
-        } catch {
+        } catch (error) {
           if (signal.aborted) throw stopped(attempt);
+          if (!neverSent(error)) throw lost(attempt, "lost the connection");
           if (attempt >= maxAttempts) throw new DecisionProviderError("connection", "Parallel could not be reached.", { attempts: attempt });
-          billedBefore++;
           await sleep(Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1)), undefined, { signal }).catch(() => { throw stopped(attempt); });
           continue;
         }
@@ -133,12 +140,13 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
           let parsed: unknown;
           try { parsed = await response.json(); }
           catch { if (signal.aborted) throw stopped(attempt); throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt }); }
-          return readResponse(parsed, request.questions, attempt, billedBefore + 1);
+          return readResponse(parsed, request.questions, attempt);
         }
         const status = response.status;
-        if (retryable(status) && attempt < maxAttempts) {
-          if (status !== 429) billedBefore++;
-          const wait = (status === 429 || status === 503 ? retryAfterMs(response) : undefined) ?? Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
+        if (status === 408 || (status >= 500 && status <= 599)) { await response.body?.cancel().catch(() => {}); throw lost(attempt, `answered HTTP ${status}`, status); }
+        // A 429 was refused unanswered; it is sent again only when Parallel says when.
+        const wait = status === 429 ? retryAfterMs(response) : undefined;
+        if (wait !== undefined && attempt < maxAttempts) {
           await response.body?.cancel().catch(() => {});
           await sleep(wait, undefined, { signal }).catch(() => { throw stopped(attempt); });
           continue;

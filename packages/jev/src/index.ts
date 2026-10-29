@@ -349,11 +349,13 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
 }
 
 /** Jev as a DecisionProvider: `createJevRunner(options)` behind the DSL's provider seam, for a host that runs every
- *  decision model through `judgeFromProvider`. Its errors become DecisionProviderErrors with the same message, and a
- *  deadline that ends the request is a timeout. The cost basis is "reported" for a cost with no configured price, and
- *  "estimate" when `pricing` is set, since the runner then reports either one as the cost. */
+ *  decision model through `judgeFromProvider`. A paid request is never sent twice: it runs with `maxAttempts: 1`, and a
+ *  408, a 5xx or a connection error (the SDK cannot tell one before sending from one after) is `outcome_unknown`, at an
+ *  unknown cost. Its other errors become DecisionProviderErrors with the same message, and a deadline that ends the
+ *  request is a timeout. The cost basis is "reported" for a cost with no configured price, and "estimate" when
+ *  `pricing` is set, since the runner then reports either one as the cost. */
 export function jevProvider(options: JevOptions = {}): DecisionProvider {
-  const judge = createJevRunner(options);
+  const judge = createJevRunner({ ...options, maxAttempts: 1 });
   const provider = options.provider ?? "typesafe";
   const capabilities: DecisionProvider["capabilities"] = {
     types: ["noul", "choice", "score", "box"], inputs: ["text", "json", "image"], evidence: "none", probability: "model", grounding: false,
@@ -374,7 +376,8 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
       } catch (error) {
         if (!(error instanceof JevError)) throw new DecisionProviderError("http", "Jev request failed.");
         const timedOut = Boolean(deadline?.aborted) && !ctx.signal.aborted;
-        throw new DecisionProviderError(jevErrorCode(error, timedOut), error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts });
+        const code = jevErrorCode(error, timedOut);
+        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" ? { costUsd: null, costBasis: "unknown" as const } : {}) });
       }
     },
   };
@@ -382,7 +385,9 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
 
 function jevErrorCode(error: JevError, timedOut: boolean): DecisionProviderErrorCode {
   if (error.code === "aborted") return timedOut ? "timeout" : "aborted";
+  if (error.code === "connection") return "outcome_unknown";
   if (error.code !== "http") return error.code;
+  if (error.status === 408 || (error.status !== undefined && error.status >= 500)) return "outcome_unknown";
   if (error.status === 401 || error.status === 403) return "auth";
   if (error.status === 429) return "rate_limited";
   if (error.status === 400 || error.status === 422) return "invalid_request";
