@@ -51,6 +51,16 @@ export type DecisionRow = {
   cost_usd: number | null;
   latency_ms: number;
   error?: string;
+  /** How the request ended (`answered`, `failed` or `cancelled`); absent on a row written before it was kept. */
+  status?: "answered" | "failed" | "cancelled";
+  /** The provider that answered, when the host's judge names it or the node pins it. */
+  provider?: string;
+  /** The sources the provider grounded its answers in, as the receipt has them; absent when it gave none. */
+  evidence?: Array<{ url: string; title: string | null; excerpts: string[]; scope: string }>;
+  /** The questions whose answer came back as a refusal. */
+  refused?: string[];
+  /** For each choice and score answer, whether its confidence is the provider's own or was derived. */
+  confidence_source?: Record<string, string>;
   /** The request's spend is on its frozen driver's state, so a cost fold counts it there, not here. */
   driver_spend?: true;
   /** The receipt's id, its place among its node's requests, the digest of the state it was asked with, and the key of
