@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { confineHooks, PathOutsideWorkError } from "../src/confine.ts";
 import { tmpdir } from "node:os";
@@ -403,6 +403,60 @@ describe("temporary files live under <root>/tmp", () => {
       const full = (await readFile(spill, "utf8")).trimEnd().split("\n");
       assert.equal(full.length, 100000);
       assert.equal(full.at(-1), "100000");
+    });
+  });
+});
+
+describe("the confinement prefix", () => {
+  it("is the argv every command here starts under, for a program the run starts beside pi: setpriv --no-new-privs -- by default on Linux, and [] when nothing is confined", { skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async () => {
+    await withRun(async ({ root, work }) => {
+      const confined = (await archilEnv({ root, work })({})) as unknown as { confinePrefix(): string[] };
+      assert.deepEqual(confined.confinePrefix(), ["/usr/bin/setpriv", "--no-new-privs", "--pdeathsig", "KILL", "--"]);
+      const open = (await archilEnv({ root, work }, { noNewPrivs: false })({})) as unknown as { confinePrefix(): string[] };
+      assert.deepEqual(open.confinePrefix(), []);
+    });
+  });
+});
+
+describe("a command when the process that started it dies", () => {
+  /** Whether `pid` still runs: a zombie, waiting to be reaped, does not. */
+  const running = (pid: number) => {
+    try {
+      return !/^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8"));
+    } catch {
+      return false;
+    }
+  };
+
+  it("dies with it (setpriv --pdeathsig KILL): a pi command under the run's env does not outlive a SIGKILLed run process", { skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async () => {
+    await withRun(async ({ root, work }) => {
+      // The run's process, as pi starts commands from it: archilEnv's env, a command through its exec.
+      const spawner = join(root, "spawner.ts");
+      const pidFile = join(root, "sleep.pid");
+      writeFileSync(spawner, [
+        `import { archilEnv } from ${JSON.stringify(new URL("../src/env.ts", import.meta.url).pathname)};`,
+        `import { BACKGROUND_CONTEXT } from ${JSON.stringify(import.meta.resolve("@earendil-works/chord/context"))};`,
+        `const env = await archilEnv({ root: ${JSON.stringify(root)}, work: ${JSON.stringify(work)} })({});`,
+        `await env.exec(${JSON.stringify(`echo $$ > ${pidFile}; exec sleep 300`)}, {}, BACKGROUND_CONTEXT);`,
+      ].join("\n"));
+      const child = spawn(process.execPath, [spawner], { stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = "";
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      let pid = 0;
+      for (let i = 0; !pid; i++) {
+        assert.ok(i < 200, `the command started: ${stderr}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8").trim() || 0) : 0;
+      }
+      assert.ok(running(pid), "the command runs");
+      child.kill("SIGKILL");
+      for (let i = 0; running(pid); i++) {
+        if (i >= 40) {
+          process.kill(pid, "SIGKILL");
+          assert.fail(`the command (pid ${pid}) outlived the process that started it by 2 s`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
     });
   });
 });
