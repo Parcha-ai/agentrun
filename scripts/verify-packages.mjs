@@ -169,6 +169,15 @@ try {
         }
       }
     }
+    // AgentRun Server's package carries the console's build (dist/console: index.html and its hashed assets). Where the
+    // console is built first (the release, and CI's console job: AGENTRUN_REQUIRE_CONSOLE=1), a serve package without it
+    // is refused; its files went through every check above like the rest of the package.
+    if (directory === 'serve' && process.env.AGENTRUN_REQUIRE_CONSOLE === '1') {
+      assert.ok(names.includes('package/dist/console/index.html'), 'the serve package has no console: build apps/console before serve');
+      assert.ok(names.some(n => /^package\/dist\/console\/assets\/[^/]+\.js$/.test(n)), 'the serve package has the console page but none of its scripts');
+      assert.ok(!names.some(n => n.startsWith('package/dist/console/storybook/')), 'the console\'s Storybook is not part of the package');
+      receipt.checks.push('The serve package carries the console build (dist/console), without its Storybook.');
+    }
     const fileHash = createHash('sha256').update(await readFile(tarball)).digest('hex');
     receipt.packages.push({ name: manifest.name, version: manifest.version, filename: packed.filename, sha256: fileHash, files: names, size: packed.size, unpackedSize: packed.unpackedSize, license: manifest.license });
     tarballs.push(tarball);

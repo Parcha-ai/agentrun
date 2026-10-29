@@ -10,7 +10,11 @@ COPY . .
 # Claude Agent SDK, which its adapter develops against (a dev dependency, so npm ci installs it), with its platform
 # packages (they hold the Claude CLI) and bin link, until its licence is reviewed for the image: docker/image-check.sh
 # names them. Never `npm prune --omit=dev`: the pi packages the server loads are dev dependencies too.
-RUN npm ci --ignore-scripts && npm run build \
+# The console (apps/console, its own lockfile) builds first: serve's build copies its dist into packages/serve/dist/console,
+# and its node_modules are not part of the image.
+RUN npm ci --ignore-scripts --prefix apps/console && npm run build --prefix apps/console \
+ && npm ci --ignore-scripts && npm run build \
+ && rm -rf apps/console/node_modules apps/console/dist \
  && rm -rf packages/harness node_modules/@parcha/agentrun-harness \
  && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
       node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \

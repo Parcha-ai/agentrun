@@ -16,13 +16,14 @@ const buildx = spawnSync("docker", ["buildx", "version"], { stdio: "ignore" }).s
 test("the image's build context holds the workspace and never a .env, an .npmrc, node_modules or dist", { skip: !buildx && "docker buildx is not installed", timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const context = join(dir, "context");
-  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-pi-demo.mjs", "examples/typed-research.ts", "examples/typed-research-fixtures.ts"];
+  const kept = ["package.json", "package-lock.json", "tsconfig.base.json", "packages/serve/src/server.ts", "packages/serve/docker/Dockerfile", "scripts/build-pi-demo.mjs", "examples/typed-research.ts", "examples/typed-research-fixtures.ts", "apps/console/package.json", "apps/console/package-lock.json", "apps/console/src/App.tsx"];
   const dropped = [
     ".env", ".env.local", ".env.production", ".npmrc",
     "packages/serve/.env", "packages/serve/.env.test", "packages/serve/.npmrc", "packages/serve/src/.env",
     "scripts/.env", "examples/.env",
     "node_modules/zod/index.js", "packages/serve/node_modules/x/index.js", "packages/serve/dist/cli.js", "packages/serve/tsconfig.tsbuildinfo",
     ".git/config", "docs/releasing.md", "examples/starter/index.ts", "render.yaml", "changes/x.md",
+    "apps/console/node_modules/react/index.js", "apps/console/dist/index.html", "apps/console/.env", "apps/viewer/index.html",
   ];
   for (const path of [...kept, ...dropped]) {
     await mkdir(dirname(join(context, path)), { recursive: true });
