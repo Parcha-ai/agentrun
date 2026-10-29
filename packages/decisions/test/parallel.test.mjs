@@ -234,6 +234,20 @@ test('a 429 whose Retry-After is an HTTP date waits until that date and retries;
   assert.ok(Date.now() - started < 1_000, 'a wait that would not end before the deadline is never started');
 });
 
+test('a 429 whose Retry-After cannot be read is rate_limited after one request, never retried at once', async () => {
+  const { fetch, seen } = fakeFetch([json({ type: 'error', error: {} }, 429, { 'retry-after': 'soon' }), () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
+  await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx()), code('rate_limited'));
+  assert.equal(seen.length, 1);
+});
+
+test('a 429 that arrives late asks for a wait the time left cannot hold, though the whole budget could: it gives up at once', async () => {
+  // A 2 s budget. The 429 comes back after 1.4 s and asks for 1 s: within the budget, but not within the 0.6 s left.
+  const late429 = () => new Promise((resolve) => setTimeout(() => resolve(json({ type: 'error', error: {} }, 429, { 'retry-after': '1' })), 1_400));
+  const { fetch, seen } = fakeFetch([late429, () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
+  await assert.rejects(parallelProvider({ ...settings, fetch, timeoutMs: 2_000 }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx()), code('rate_limited'));
+  assert.equal(seen.length, 1, 'no second request');
+});
+
 test('a 429 is retried only when it says when: without Retry-After it is rate_limited at once', async () => {
   const { fetch, seen } = fakeFetch([json({ type: 'error', error: {} }, 429), () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
   await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx()), code('rate_limited'));

@@ -34,6 +34,7 @@ const EXPECTED = {
   'needs-a-value': [/^needs names environment variables, never their values/],
   'retries-after-send': [/^a provider that cannot replay never retries a failure after the request was sent/],
   'declares-box': [/^it declares only what the seam can send/],
+  'declares-image-input': [/^it declares only what the seam can send/],
 };
 
 test('every mutant has an expectation, and the provider that keeps every rule passes the suite', () => {
