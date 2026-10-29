@@ -107,6 +107,19 @@ test('T2b: an ask predicate is checked against the host\'s providers before any 
   }
 });
 
+test('T2c: a judge that asks more questions than one request to its provider may hold is refused before any node runs', async () => {
+  const three = { type: 'object', required: ['a', 'b', 'c'], properties: Object.fromEntries(['a', 'b', 'c'].map((key) => [key, { type: 'boolean', description: `Is ${key} true of this filing?` }])) };
+  const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+  const workflow = { ...doc([first, judge({ provider: 'parallel' }, 'Three')]), schemas: { ...SCHEMAS, Three: three } };
+  assert.equal(validateWorkflow(workflow).ok, true, JSON.stringify(validateWorkflow(workflow).errors ?? []));
+  const parallel = provider('parallel', { maxQuestions: 2 });
+  let ran = 0;
+  const outcome = await outcomeOf(runWorkflow(workflow, INPUT, { ...hosted([parallel]), onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+  assert.equal(outcome.status, 'threw', 'the run is refused');
+  assert.match(outcome.message, /judge node "check" asks 3 questions, more than the 2 one request to parallel may hold/);
+  assert.deepEqual([ran, parallel.asked.length], [0, 0], 'refused before any node runs, the provider never asked');
+});
+
 test('T3: each node is asked through its own provider and model, an unnamed one through the default, within the shorter deadline', async () => {
   const jev = provider('jev'), parallel = provider('parallel');
   const workflow = doc([judge({ provider: 'parallel', model: 'base-1', timeoutMs: 500 }, 'Check', 'pinned'), judge({ timeoutMs: 9000 }, 'Check', 'plain')]);
