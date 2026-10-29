@@ -685,12 +685,12 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     if (typeof at !== "string" || !nodeAt(doc, at)) throw pathFault(at, "The interpreter named a path this run's document does not hold");
     return at;
   };
-  /** Where a decision's requests are kept: its own node, or, for a question the interpreter asks at a path no node holds
-   *  (a loop's `until` at `<loop>/iterations/<n>`), the nearest node that encloses it. */
+  /** Where a decision's requests are kept: its own node, or the loop whose `until` the interpreter asks at
+   *  `<loop>/iterations/<n>`, the one path a question is asked at that no node holds. Any other path is refused. */
   const decisionPlace = (at: unknown, doc: Workflow): string => {
-    if (typeof at !== "string") throw pathFault(at, "The interpreter named a path this run's document does not hold");
-    for (let path = at; path.length > 0; path = path.slice(0, path.lastIndexOf("/"))) if (nodeAt(doc, path)) return path;
-    throw pathFault(at, "The interpreter named a path this run's document does not hold");
+    const loop = typeof at === "string" ? /^(.+)\/iterations\/(?:0|[1-9][0-9]*)$/.exec(at)?.[1] : undefined;
+    if (loop !== undefined && nodeAt(doc, loop)?.node === "loop") return loop;
+    return placed(at, doc);
   };
   /** The committed state a resume at `at` is answered from: its own, or the frontier of a chain it sits
    *  in when the frontier lies past it. A chain threads one state, so every step before its frontier,
