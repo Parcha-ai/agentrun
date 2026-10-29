@@ -4,14 +4,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, symlinkSync } from "node:fs";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
-import { client, follow, scratch } from "./support.mjs";
+import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
+import { agent, client, follow, scratch } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname;
+const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
+const CONFINED = existsSync("/usr/bin/setpriv");
 const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY"];
@@ -79,10 +84,17 @@ function descriptors(pid) {
   return out;
 }
 
-/** The server, started by its launcher in a session of its own, with `secrets` in its environment. */
-async function launched(t, secrets) {
+/** A canary for every secret this test expects the launcher to name, checked against its list. */
+function canaries() {
+  for (const name of READ) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
+  const canary = `not-a-secret-${process.pid}-${Date.now()}`;
+  return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name) => [name, `${canary}-${name}`])) };
+}
+
+/** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment. */
+async function launched(t, env, args = ["--faux", CUSTODY]) {
   const data = join(await scratch(t), "agents");
-  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", "--faux", CUSTODY], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...secrets } });
+  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
   t.after(() => {
     try {
       process.kill(-child.pid, "SIGKILL");
@@ -95,14 +107,49 @@ async function launched(t, secrets) {
     assert.ok(i < 300, `the server started: ${out}`);
     await sleep(50);
   }
-  return { session: child.pid, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], secrets.AGENTRUN_TOKEN) };
+  return { root: child.pid, api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], env.AGENTRUN_TOKEN) };
+}
+
+/** `root` and every process under it (a harness's CLI may start a session of its own, so not by session). */
+function treeOf(root) {
+  const out = new Set([root]);
+  for (const queue = [root]; queue.length; ) {
+    const pid = queue.shift();
+    let tasks = [];
+    try {
+      tasks = readdirSync(`/proc/${pid}/task`);
+    } catch {}
+    for (const task of tasks) {
+      for (const child of (read(`/proc/${pid}/task/${task}/children`)?.toString() ?? "").split(" ").filter(Boolean).map(Number)) {
+        if (!out.has(child)) out.add(child), queue.push(child);
+      }
+    }
+  }
+  return out;
+}
+
+/** No process of this user holds `canary` in its environment or command line; none under `root` (the launcher's, now
+ *  the server's) holds the launcher's pipe or a pipe with `canary` unread. Answers those processes' command lines. */
+function noSecretAnywhere(root, canary) {
+  const all = processes();
+  const tree = treeOf(root);
+  const ours = all.filter((p) => tree.has(p.pid));
+  for (const p of all) {
+    assert.ok(!p.environ.includes(canary), `pid ${p.pid}'s environment holds a secret: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
+    assert.ok(!p.cmdline.includes(canary), `pid ${p.pid}'s command line holds a secret`);
+  }
+  for (const p of ours) {
+    for (const { fd, target, unread } of descriptors(p.pid)) {
+      assert.ok(!/agentrun-serve\.[^/]+\/secrets/.test(target), `pid ${p.pid} still holds the launcher's pipe on fd ${fd}`);
+      assert.ok(!unread.includes(canary), `pid ${p.pid}'s fd ${fd} (${target}) has a secret unread`);
+    }
+  }
+  return ours.map((p) => p.cmdline.toString().replaceAll("\0", " "));
 }
 
 test("started by its launcher, no process of its user holds a secret in its environment, command line or a pipe, and a run's process gets its own over its pipe", { timeout: 120_000 }, async (t) => {
-  for (const name of READ) assert.ok(SECRET_NAMES.includes(name), `${name} is on the launcher's list of secrets`);
-  const canary = `not-a-secret-${process.pid}-${Date.now()}`;
-  const secrets = Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name) => [name, `${canary}-${name}`]));
-  const { session, api } = await launched(t, secrets);
+  const { canary, secrets } = canaries();
+  const { root, api } = await launched(t, secrets);
   assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
 
   // A run's process says what it was handed: each secret but the server's own, none in its environment, its pipe closed.
@@ -120,19 +167,8 @@ test("started by its launcher, no process of its user holds a secret in its envi
     await sleep(50);
   }
   await sleep(500);
-  const all = processes();
-  const ours = all.filter((p) => p.session === session);
-  assert.ok(ours.length >= 2, `the server and the run's process are found: ${ours.map((p) => p.cmdline.toString().slice(0, 60)).join(" | ")}`);
-  for (const p of all) {
-    assert.ok(!p.environ.includes(canary), `pid ${p.pid}'s environment holds a secret: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
-    assert.ok(!p.cmdline.includes(canary), `pid ${p.pid}'s command line holds a secret`);
-  }
-  for (const p of ours) {
-    for (const { fd, target, unread } of descriptors(p.pid)) {
-      assert.ok(!/agentrun-serve\.[^/]+\/secrets/.test(target), `pid ${p.pid} still holds the launcher's pipe on fd ${fd}`);
-      assert.ok(!unread.includes(canary), `pid ${p.pid}'s fd ${fd} (${target}) has a secret unread`);
-    }
-  }
+  const seen = noSecretAnywhere(root, canary);
+  assert.ok(seen.length >= 2, `the server and the run's process are found: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
 });
 
 test("the launcher run through a link, as a package manager installs a bin, finds the server beside its real path", async (t) => {
@@ -145,4 +181,67 @@ test("the launcher run through a link, as a package manager installs a bin, find
   const code = await new Promise((resolve) => child.once("exit", resolve));
   assert.equal(code, 0, out);
   assert.match(out, /^usage: agentrun-serve /m);
+});
+
+/** A loopback gateway that holds the first Responses request until released: Codex's process lives meanwhile. */
+async function heldGateway(t) {
+  const seen = [];
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const server = createServer(async (req, res) => {
+    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    for await (const _ of req);
+    seen.push({ path: req.url, authorization: req.headers.authorization });
+    await held;
+    const events = [{ type: "response.output_text.delta", delta: "Codex answered." }, { type: "response.completed", response: { usage: { input_tokens: 10, output_tokens: 5 } } }];
+    res.writeHead(200, { "content-type": "text/event-stream" }).end(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return { seen, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+test("on codex, with its turn held inside Codex's own process, no process of the user holds a secret; Codex's model request still carries the gateway's key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+  const { canary, secrets } = canaries();
+  const gw = await heldGateway(t);
+  const standIn = join(await scratch(t), "codex-stand-in.mjs");
+  copyFileSync(STAND_IN, standIn);
+  const { root, api } = await launched(t, {
+    ...secrets,
+    AGENTRUN_CODEX_STANDIN: "1",
+    AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
+    AGENT_MODEL_BASE_URL: gw.origin,
+    AGENT_MODEL: "gpt-test",
+    AGENT_MODEL_PRICE: "1,2,0.5",
+  }, []);
+  assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
+  assert.equal((await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } })).status, 202);
+  for (let i = 0; gw.seen.length === 0; i++) {
+    assert.ok(i < 400, "Codex's model request reaches the gateway");
+    await sleep(100);
+  }
+  assert.equal(gw.seen[0].authorization, `Bearer ${secrets.AGENT_MODEL_API_KEY}`, "the gateway's key reached the run's process over its pipe, and its proxy put it on the request");
+  const seen = noSecretAnywhere(root, canary);
+  assert.ok(seen.some((cmdline) => cmdline.includes(standIn)), `Codex's process is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
+});
+
+test("on claude-agent, with its turn held inside the Claude CLI, no process of the user holds a secret; the CLI's request still carries a key", { timeout: 120_000, skip: !CONFINED && "no setpriv" }, async (t) => {
+  const { canary, secrets } = canaries();
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const fake = await fakeAnthropic({ reply: () => ({ hold: held, then: { text: "Claude answered." } }) });
+  t.after(() => fake.close());
+  const { root, api } = await launched(t, { ...secrets, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: "anthropic/claude-haiku-4-5" }, []);
+  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent" }))).status, 201);
+  assert.equal((await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } })).status, 202);
+  for (let i = 0; fake.messages().length === 0; i++) {
+    assert.ok(i < 600, "the CLI's model request reaches the endpoint");
+    await sleep(100);
+  }
+  assert.equal(fake.messages()[0].authorized, true, "a key reached the CLI's request, through the run's proxy");
+  const seen = noSecretAnywhere(root, canary);
+  assert.ok(seen.some((cmdline) => /claude-agent-sdk-[a-z0-9-]+\/claude /.test(`${cmdline} `)), `the Claude CLI is among those read: ${seen.map((c) => c.slice(0, 60)).join(" | ")}`);
 });

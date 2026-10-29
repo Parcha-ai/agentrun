@@ -71,12 +71,14 @@ function readExactly(fd: number, length: number): Buffer {
 /** A secret's value: as handed over, else (no launcher) as this process's environment has it now. */
 export const secret = (name: string): string | undefined => held.get(name) ?? process.env[name];
 
-/** `env` with the secrets this process holds: for this process's own reading only, never a spawn's environment. */
+/** `env` with the secrets this process holds, for this process's own reading. Each secret is a property that does not
+ *  enumerate: `env.NAME` reads it, while a spread of the object, or a spawn given it (Node builds a child's environment
+ *  from its enumerable keys), leaves it out. */
 export const withSecrets = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const out: NodeJS.ProcessEnv = { ...env };
   for (const name of SECRET_NAMES) {
     const value = secret(name);
-    if (value !== undefined) out[name] = value;
+    if (value !== undefined) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
   }
   return out;
 };
