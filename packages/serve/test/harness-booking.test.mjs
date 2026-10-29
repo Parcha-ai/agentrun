@@ -6,7 +6,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createRegistry, Harness, MemoryStorage, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, timelineOf } from "@parcha/pi-durable-agent/timeline";
+import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spentIn } from "../dist/cap.js";
 import { adapterRun, BOOKED, BOOKING_WAIT_MS, PRICED_LATE } from "../dist/harness-app.js";
 
 const deferred = () => {
@@ -71,8 +76,11 @@ async function rootOf(harness) {
 }
 const assistants = (entries) => entries.flatMap((e) => (e.model ?? []).filter((m) => m.role === "assistant" && m.stopReason !== "error"));
 const answers = (entries) => assistants(entries).filter((m) => m.content.some((c) => c.text));
-/** The run's spend as its cap reads it (cap.ts): every assistant entry's known cost. */
-const spend = (entries) => Math.round(assistants(entries).reduce((sum, m) => sum + (m.usage?.cost?.total ?? 0), 0) * 1e6) / 1e6;
+/** The run's spend as cap.ts's spentIn reads a store: each answer's known cost, and each cost written apart from one. */
+const spend = (entries) =>
+  Math.round(entries.reduce((sum, e) => sum + (e.kind === "pi.assistant" ? e.model?.[0]?.usage?.cost?.total ?? 0 : [REQUEST_COST, REQUEST_COST_LATE].includes(e.kind) ? (e.data?.usd ?? 0) : 0), 0) * 1e6) / 1e6;
+/** The run's usage as the timeline (and so /usage and the run's cost) reads it. */
+const usage = (entries, settled = false) => timelineOf(entries, { settled }).findLast((r) => r.kind === "usage")?.usage;
 const bookedMarks = (entries) => entries.filter((e) => e.kind === BOOKED);
 const until = async (check, ms = 10_000) => {
   for (const end = Date.now() + ms; !check(); ) {
@@ -105,7 +113,7 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   assert.deepEqual(await first.app.door.submit({ requestId: "m1", content: "hi", whenBusy: "followUp" }, first.door), { accepted: true });
   await until(() => first.events.includes("run_end"), BOOKING_WAIT_MS * 3);
   // Its cost not in yet: the run's cost reads unknown, never a known $0.
-  assert.equal(timelineOf(await rootOf(first.harness)).findLast((r) => r.kind === "usage")?.usage?.usd, null, "unknown while the cost is out");
+  assert.deepEqual(usage(await rootOf(first.harness)), { usd: null, requests: 1 }, "one request, its cost unknown while it is out");
   // The cost comes in after the answer was written: it goes in at once, with no next turn to carry it.
   const released = Date.now();
   late.book();
@@ -119,6 +127,7 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   const before = await rootOf(first.harness);
   assert.deepEqual(answers(before).map((m) => [m.content.map((c) => c.text).join(""), m.usage?.cost?.total]), [["Answered.", undefined]], "one answer, written at unknown cost");
   assert.equal(spend(before), 0.003, "its cost, come in late, is in the run's spend");
+  assert.deepEqual(usage(before), { usd: 0.003, requests: 1 }, "one request, at its cost: the late cost is not a request of its own");
   assert.equal(bookedMarks(before).length, 1, "marked booked once");
   assert.equal(before.filter((e) => e.kind === PRICED_LATE).length, 1, "its late cost written once");
   // A later process opens the run: the request is booked in its session, and already written with its cost.
@@ -126,6 +135,7 @@ test("a request whose cost comes after the wait: its answer is written at unknow
   const after = await rootOf(next.harness);
   assert.equal(answers(after).length, 1, "no second answer for the same request");
   assert.equal(spend(after), 0.003, "nor its cost counted twice");
+  assert.deepEqual(usage(after, true), { usd: 0.003, requests: 1 }, "still one request at its cost");
   assert.equal(bookedMarks(after).length, 1, "still booked once");
 });
 
@@ -148,6 +158,28 @@ test("a late cost the session booked but the root never got (its process went fi
   const after = await rootOf(next.harness);
   assert.equal(answers(after).length, 1, "one answer");
   assert.equal(spend(after), 0.003, "the next open wrote the cost the session booked");
+  assert.deepEqual(usage(after, true), { usd: 0.003, requests: 1 }, "one request, at its cost");
   assert.equal(bookedMarks(after).length, 1, "booked once");
   assert.equal(after.filter((e) => e.kind === PRICED_LATE).length, 1, "its late cost written once");
+});
+
+test("the cap's spend read from a store sums each answer's cost and each cost written apart, a compaction's and a late one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "spent-in-"));
+  try {
+    const file = join(dir, "run.sqlite");
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE entries (record TEXT)");
+    const put = db.prepare("INSERT INTO entries (record) VALUES (?)");
+    for (const entry of [
+      { kind: "pi.assistant", model: [{ usage: { cost: { total: 0.001 } } }] },
+      { kind: REQUEST_COST, data: { request: "compaction", usd: 0.002 } },
+      { kind: "pi.assistant", model: [{ usage: { cost: {} } }] },
+      { kind: REQUEST_COST_PENDING, data: {} },
+      { kind: REQUEST_COST_LATE, data: { usd: 0.003 } },
+    ]) put.run(JSON.stringify(entry));
+    db.close();
+    assert.equal(Math.round(spentIn(file) * 1e6) / 1e6, 0.006);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

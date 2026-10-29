@@ -7,6 +7,7 @@
 // request in flight holds its worst case until it answers.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
+import { REQUEST_COST, REQUEST_COST_LATE } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -23,15 +24,16 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
   return cap;
 }
 
-/** What the run's store says its model requests cost: every response of every conversation in it. */
+/** What the run's store says its model requests cost: every response of every conversation in it, and each cost
+ *  written apart from a response (a compaction summary's; a harness request's that came in after its answer). */
 export function spentIn(storeFile: string): number {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true });
   try {
     let spent = 0;
     for (const row of db.prepare("SELECT record FROM entries").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[] };
-      const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : undefined;
+      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[]; data?: { usd?: unknown } };
+      const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : entry.kind === REQUEST_COST || entry.kind === REQUEST_COST_LATE ? entry.data?.usd : undefined;
       if (typeof total === "number" && Number.isFinite(total)) spent += total;
     }
     return spent;
