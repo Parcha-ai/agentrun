@@ -329,33 +329,35 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   while (alive().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
   const survivors: ProcessMark[] = [];
   const after = pending.length === 0 ? before : table.snapshot();
-  // Records first, then marks: a mark's survivors may be written into a record this reap just rewrote.
-  for (const record of [...pending.filter((p) => !p.mark), ...pending.filter((p) => p.mark)]) {
+  // Every record file this reap writes goes through `keep`, which unions what this reap writes to one file (members by
+  // pid and start, a leader kept): a mark's survivors may land in the file of a record this reap rewrites, and in
+  // whatever order the two come, neither drops what the other named. Every record file in the directory is one of
+  // this reap's, so a rewrite holds just what survived, plus anything another of its writes named there.
+  const kept = new Map<string, CommandRecord>();
+  const gone = new Set<string>();
+  const keep = (file: string, boot: string, leader: ProcessMark | null, members: readonly ProcessMark[]) => {
+    const known = kept.get(file);
+    const all = [...(known?.members ?? [])];
+    for (const m of members) if (!all.some((k) => k.pid === m.pid && k.start === m.start)) all.push(m);
+    kept.set(file, { boot, leader: leader ?? known?.leader ?? null, members: all });
+  };
+  for (const record of pending) {
     const leader = record.leader !== null && same(after, record.leader) ? record.leader : null;
     const members = record.members.filter((member) => same(after, member));
     if (leader === null && members.length === 0) {
-      rmSync(record.file, { force: true });
+      gone.add(record.file);
       continue;
     }
     survivors.push(...(leader ? [leader] : []), ...members);
-    if (record.mark) {
-      // The mark is kept as it is, so the next open looks for its token again. Its survivors are also recorded by pid
-      // and start: one that cleared its environment carries no mark, so once the marked leader is gone nothing else
-      // would name it.
-      const file = join(dir, `${members[0]!.pid}-${members[0]!.start}.json`);
-      let known: readonly ProcessMark[] = [];
-      try {
-        known = (JSON.parse(readFileSync(file, "utf8")) as CommandRecord).members ?? [];
-      } catch {
-        // no record of that name yet
-      }
-      const all = [...known, ...members.filter((m) => !known.some((k) => k.pid === m.pid && k.start === m.start))];
-      writeFileSync(`${file}.tmp`, JSON.stringify({ boot: record.boot, leader: null, members: all } satisfies CommandRecord));
-      renameSync(`${file}.tmp`, file);
-      continue;
-    }
-    writeFileSync(`${record.file}.tmp`, JSON.stringify({ boot: record.boot, leader, members } satisfies CommandRecord));
-    renameSync(`${record.file}.tmp`, record.file);
+    // A mark is kept as it is, so the next open looks for its token again. Its survivors are also recorded by pid and
+    // start: one that cleared its environment carries no mark, so once the marked leader is gone nothing else names it.
+    if (record.mark) keep(join(dir, `${members[0]!.pid}-${members[0]!.start}.json`), record.boot, null, members);
+    else keep(record.file, record.boot, leader, members);
+  }
+  for (const file of gone) if (!kept.has(file)) rmSync(file, { force: true });
+  for (const [file, record] of kept) {
+    writeFileSync(`${file}.tmp`, JSON.stringify(record));
+    renameSync(`${file}.tmp`, file);
   }
   if (survivors.length === 0) rmSync(dir, { recursive: true, force: true });
   return { signalled, survivors };

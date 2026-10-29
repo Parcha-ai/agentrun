@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { COMMANDS_MARK, CommandRecorder, reapCommands, reapOrRefuse, type CommandRecord } from "../src/commands.ts";
 import { HeldError } from "../src/errors.ts";
-import { processTable, psTable, type CommandRunner, type ProcessTable } from "../src/process-table.ts";
+import { processTable, procTable, psTable, type CommandRunner, type ProcessTable } from "../src/process-table.ts";
 import { linuxPs } from "./_macos.ts";
 import { alive, scratchRoot, waitGone } from "./_run-support.ts";
 
@@ -584,6 +584,72 @@ describe("command records, from a scripted ps (macOS)", () => {
 });
 
 describe("a recorder's mark", () => {
+  it("a mark cannot be looked for in a /proc that cannot be read: the listing throws, never reads as no process", () => {
+    const dir = scratchRoot("commands-no-proc");
+    try {
+      assert.throws(() => procTable(join(dir.root, "no-proc")).snapshot().withMark(COMMANDS_MARK, randomUUID()), /ENOENT/);
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a record and a mark that name the same file are both kept: every survivor of both is named on disk after a refused open, and the next reap ends them all", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
+    const dir = scratchRoot("commands-mark-collision");
+    const records = join(dir.root, "commands");
+    const token = randomUUID();
+    const env = { ...process.env, [COMMANDS_MARK]: token };
+    const sleep = '"$(command -v sleep)"';
+    // L: a marked leader whose child S left its group (setsid) and cleared its environment: only L's record names S.
+    // M: a second marked leader whose member E cleared its environment: only M's group, then the survivors' record, names E.
+    const L = spawn("/bin/sh", ["-c", `setsid env -i ${sleep} 600 & echo $! > '${dir.root}/S'; exec sleep 600`], { detached: true, stdio: "ignore", env });
+    const M = spawn("/bin/sh", ["-c", `env -i ${sleep} 600 & echo $! > '${dir.root}/E'; exec sleep 600`], { detached: true, stdio: "ignore", env });
+    const pids = { L: L.pid ?? 0, M: M.pid ?? 0, S: 0, E: 0 };
+    const unmarked = (pid: number) => {
+      try {
+        return readFileSync(`/proc/${pid}/comm`, "utf8").trim() === "sleep" && !readFileSync(`/proc/${pid}/environ`, "utf8").includes(`${COMMANDS_MARK}=`);
+      } catch {
+        return false;
+      }
+    };
+    try {
+      for (const name of ["S", "E"] as const) {
+        await until(() => existsSync(join(dir.root, name)) && readFileSync(join(dir.root, name), "utf8").trim() !== "");
+        pids[name] = Number(readFileSync(join(dir.root, name), "utf8"));
+        await until(() => unmarked(pids[name]));
+        assert.ok(unmarked(pids[name]), `${name} has exec'd sleep and carries no mark`);
+      }
+      const look = processTable().snapshot();
+      assert.notEqual(look.info(pids.S)?.pgrp, pids.L, "S left L's group");
+      assert.equal(look.info(pids.E)?.pgrp, pids.M, "E is in M's group");
+      const startOf = (pid: number) => look.info(pid)!.start;
+      mkdirSync(records);
+      const boot = processTable().bootId();
+      writeFileSync(join(records, `${pids.L}-${startOf(pids.L)}.json`), JSON.stringify({ boot, leader: { pid: pids.L, start: startOf(pids.L) }, members: [{ pid: pids.S, start: startOf(pids.S) }] }));
+      writeFileSync(join(records, `mark-${token}.json`), JSON.stringify({ boot, token }));
+      // A kill that does nothing: all four outlive the deadline, and the open refuses.
+      await assert.rejects(reapOrRefuse(records, { kill: () => {}, timeoutMs: 100 }), (error: unknown) => error instanceof HeldError);
+      const named = new Set<number>();
+      for (const name of readdirSync(records).filter(isRecord)) {
+        const record = JSON.parse(readFileSync(join(records, name), "utf8")) as CommandRecord;
+        if (record.leader) named.add(record.leader.pid);
+        for (const m of record.members) named.add(m.pid);
+      }
+      for (const [name, pid] of Object.entries(pids)) assert.ok(named.has(pid), `${name} (pid ${pid}) is named by a record on disk: ${JSON.stringify([...named])}`);
+      // L and M end; S and E, which no mark names, are left to the records alone.
+      process.kill(pids.L, "SIGKILL");
+      process.kill(pids.M, "SIGKILL");
+      assert.ok((await waitGone(pids.L)) && (await waitGone(pids.M)), "the marked leaders are gone");
+      assert.deepEqual((await reapOrRefuse(records)).survivors, []);
+      for (const [name, pid] of Object.entries(pids)) assert.ok(await waitGone(pid), `${name} is gone`);
+      assert.equal(existsSync(records), false, "and the records and the mark are cleared");
+    } finally {
+      for (const pid of Object.values(pids)) {
+        if (pid > 0) try { process.kill(pid, "SIGKILL"); } catch {}
+      }
+      dir.remove();
+    }
+  });
+
   it("whose group outlives the reap's deadline has its survivors recorded too: a member that cleared its environment is ended at the next open once its marked leader is gone", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
     const dir = scratchRoot("commands-mark-survivors");
     const records = join(dir.root, "commands");
