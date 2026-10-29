@@ -32,7 +32,7 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect"], decisions: undefined });
   assert.deepEqual(body.workflows.decisions.providers.map((p) => [p.id, p.available]), [["jev", false]]);
   // And with TYPESAFE_API_KEY set, they do: runJudge is an adapter, and jev is available.
-  process.env.TYPESAFE_API_KEY = "ts-test-not-a-key";
+  process.env.TYPESAFE_API_KEY = "fake-test-key";
   const withJev = (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.workflows;
   assert.deepEqual([withJev.adapters, withJev.decisions.providers], [["runNode", "runEffect", "runJudge"], [{ id: "jev", available: true }]]);
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);

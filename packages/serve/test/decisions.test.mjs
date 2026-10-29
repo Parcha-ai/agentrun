@@ -202,7 +202,7 @@ test("capabilities lists the decision providers: jev available where its key is 
   assert.deepEqual((await on.api("GET", "/capabilities")).body.workflows.decisions?.providers, [{ id: "jev", available: true }]);
   assert.ok((await on.api("GET", "/capabilities")).body.workflows.adapters.includes("runJudge"));
   delete process.env.TYPESAFE_API_KEY;
-  process.env.OPENROUTER_API_KEY = "sk-or-test-not-a-key";
+  process.env.OPENROUTER_API_KEY = "fake-test-key";
   const gateway = await serve(t);
   const [routed] = (await gateway.api("GET", "/capabilities")).body.workflows.decisions.providers;
   assert.deepEqual([routed.id, routed.available, routed.reason], ["jev", true, undefined]);
