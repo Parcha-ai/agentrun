@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import { judgeFromProvider, judgeFromProviders } from '@parcha/agentrun-dsl';
+import * as jev from '../dist/index.js';
 import { jevProvider } from '../dist/index.js';
 
 const KEY = 'jev-canary-key-0123456789';
@@ -98,4 +99,30 @@ test('a Jev 200 that breaks the response rules was paid for: invalid_response at
     assert.deepEqual([error.costUsd, error.costBasis], [null, 'unknown']);
     return true;
   });
+});
+
+// TypeSafe's published price: https://docs.typesafe.ai/models ($0.042 per million input tokens; output tokens are free).
+const PUBLISHED = { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 };
+const askOnce = (provider) => provider.decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Does it hold?' } } }, { decisionId: 'd', signal: new AbortController().signal, deadlineMs: 5000 });
+const answered = (usage) => async () => json({ model: 'jev-test', answers: { holds: { type: 'noul', noul: 0.9 } }, ...(usage === undefined ? {} : { usage }) });
+
+test('a call TypeSafe answers is booked at its published price, as an estimate: input tokens priced, output tokens free', async () => {
+  assert.deepEqual(jev.JEV_PUBLISHED_PRICING, PUBLISHED, 'the price the docs publish');
+  const outcome = await askOnce(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: answered({ input_tokens: 1000, output_tokens: 50 }) }));
+  assert.equal(outcome.cost_usd, (1000 * 0.042 + 50 * 0) / 1_000_000);
+  assert.equal(outcome.cost_basis, 'estimate');
+});
+
+test('a cost TypeSafe reports wins over the published price, and is booked as reported', async () => {
+  const outcome = await askOnce(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: answered({ input_tokens: 1000, output_tokens: 0, cost: 0.002 }) }));
+  assert.deepEqual([outcome.cost_usd, outcome.cost_basis], [0.002, 'reported']);
+});
+
+test('with no token counts, a failed call, or the OpenRouter route, the cost is unknown: null, never 0', async () => {
+  const bare = await askOnce(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: answered(undefined) }));
+  assert.deepEqual([bare.cost_usd, bare.cost_basis], [null, 'unknown'], 'no usage: nothing to price');
+  await assert.rejects(askOnce(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: async () => json({ error: { message: 'down' } }, 503) })),
+    (error) => error.code === 'outcome_unknown' && error.costUsd === null && error.costBasis === 'unknown', 'a call that may have been billed is unknown, never 0');
+  const routed = await askOnce(jevProvider({ provider: 'openrouter', apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: answered({ input_tokens: 1000, output_tokens: 0 }) }));
+  assert.deepEqual([routed.cost_usd, routed.cost_basis], [null, 'unknown'], "TypeSafe's price is not OpenRouter's");
 });
