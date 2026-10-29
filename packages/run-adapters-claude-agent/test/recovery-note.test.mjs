@@ -136,3 +136,39 @@ test('a turn a crash cut off before the transcript got its prompt, and a message
   assert.equal(recoveryUserTurn(state, { hasUser: () => true }, note.pending), 'And list the late ones.');
   assert.equal(recoveryUserTurn(state, { hasUser: () => true }, []), RECOVERY_NUDGE);
 });
+
+test('the DRIVE resumes with the message sent during the outage as its user turn, exactly, not the nudge', async (t) => {
+  const { openDrive } = await import('@parcha/agentrun-adapters/kernel');
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:outage', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const dir = join(mkdtempSync(join(ROOT, 't-')), 'sessions');
+
+  // The first process: the call starts, then the process dies mid-turn.
+  const first = await claude(t, { script: ['call charge {"amount":5}'], sessionsDir: dir });
+  const died = new AbortController();
+  const a = await first.adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {} });
+  await a.send('Charge the card.');
+  await reached;
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+
+  // During the outage a message arrives: the host records it in the session's log, as serve does.
+  const between = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  await between.submit({ id: 'm-outage', kind: 'followUp', text: 'Also refund the last order.' });
+
+  // The next process recovers the turn: the CLI's first user message is that message, whole.
+  const next = await claude(t, { sessionsDir: dir });
+  const b = await next.adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'open_turn');
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(next.users[0], 'Also refund the last order.', `the resuming user turn is the message: ${JSON.stringify(next.users)}`);
+  assert.ok(!next.users.some((u) => u.includes('[Recovery]')), 'no user message carries the note');
+  assert.match(next.systems[0]?.sent ?? '', /\[Recovery\]/, 'the note is in the system prompt');
+});
