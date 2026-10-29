@@ -316,6 +316,33 @@ describe("command records, from a scripted /proc", () => {
     }
   });
 
+  it("a group id handed to an unrelated group after the kill is never taken for the killed group: its processes are no targets", async () => {
+    // The killed leader 4242 is gone at once, and its pid now leads an unrelated group with a child of its own, 4270. That
+    // group's processes are not the record's: neither waited for, nor kept as targets for the next open's SIGKILL.
+    const dir = scratchRoot("commands-group-reused");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "commands");
+    const stat = (pid: number, comm: string, pgrp: number, start: number) => `${pid} (${comm}) ${["S", "1", String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4242"));
+      writeFileSync(join(proc, "4242", "stat"), stat(4242, "sh", 4242, 77));
+      mkdirSync(records);
+      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      const kill = (target: number) => {
+        if (target !== -4242) return;
+        writeFileSync(join(proc, "4242", "stat"), stat(4242, "other", 4242, 300)); // the pid, handed out again
+        mkdirSync(join(proc, "4270"));
+        writeFileSync(join(proc, "4270", "stat"), stat(4270, "child", 4242, 301));
+      };
+      assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 1, survivors: [] }, "the unrelated group's child is no survivor");
+      assert.equal(existsSync(records), false, "and nothing of it is kept for the next open");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("an open refuses the run while a process a killed incarnation left is still alive, and keeps its record", async () => {
     const dir = scratchRoot("commands-refuse");
     const proc = join(dir.root, "proc");
@@ -384,6 +411,29 @@ describe("command records, from a scripted ps (macOS)", () => {
     };
   }
   const startAt = (second: number) => Date.UTC(2026, 9, 15, 6, 0, second) / 1000;
+
+  it("a live child left in a killed group, never recorded, is waited for, and kept as a survivor at the deadline", async () => {
+    const dir = scratchRoot("commands-ps-live-member");
+    const records = join(dir.root, "commands");
+    // 4300 leads the killed group; 4301, its child in it and never recorded, outlives it.
+    let rows = [
+      [4300, 1, 4300, 5],
+      [4301, 4300, 4300, 6],
+    ];
+    const table = psTable(scriptedPs(() => rows));
+    try {
+      mkdirSync(records);
+      writeFileSync(join(records, `4300-${startAt(5)}.json`), JSON.stringify({ boot: "boot-1", leader: { pid: 4300, start: startAt(5) }, members: [] }));
+      const kill = (target: number) => { if (target === -4300) rows = rows.filter(([pid]) => pid !== 4300); };
+      assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 100 }), { signalled: 1, survivors: [{ pid: 4301, start: startAt(6) }] });
+      assert.deepEqual(JSON.parse(readFileSync(join(records, `4300-${startAt(5)}.json`), "utf8")), { boot: "boot-1", leader: null, members: [{ pid: 4301, start: startAt(6) }] }, "kept for the next open");
+      rows = []; // it died after the deadline
+      assert.deepEqual(await reapCommands(records, { table, kill, timeoutMs: 100 }), { signalled: 0, survivors: [] });
+      assert.equal(existsSync(records), false);
+    } finally {
+      dir.remove();
+    }
+  });
 
   it("a zombie left in a killed group is not waited for: the listing marks it Z, and it is not running", async () => {
     const dir = scratchRoot("commands-ps-zombie");

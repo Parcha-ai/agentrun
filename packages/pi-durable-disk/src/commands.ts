@@ -236,25 +236,25 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
       rmSync(file, { force: true }); // another boot's pids mean nothing on this one
       continue;
     }
+    // The group as it is before the kill, while its leader is still the recorded process: a group's id is its leader's
+    // pid, which no other process holds while the leader lives, so each process listed then is this group's, never
+    // another's. Kept only if the leader is still the same once the listing is read. SIGKILL to the group reaches all of
+    // them, a child no walk recorded yet included, but each dies when it next runs, and one can outlive its leader for a
+    // moment, or for long in an uninterruptible wait: so each is waited for by pid and start, and kept for the next open
+    // if it outlives the deadline.
+    let listed: ProcessMark[] = [];
+    if (record.leader !== null && same(before, record.leader)) {
+      const group = before.group(record.leader.pid).flatMap((pid) => {
+        const info = pid === record.leader!.pid ? undefined : before.info(pid);
+        return info ? [{ pid, start: info.start }] : [];
+      });
+      if (same(before, record.leader)) listed = group;
+    }
     const leader = record.leader !== null && same(before, record.leader) && kill(-record.leader.pid, record.leader) ? record.leader : null;
     // A member that is the leader went with its group.
     const members = (record.members ?? []).filter((member) => member.pid !== record.leader?.pid && same(before, member) && kill(member.pid, member));
+    if (leader !== null) for (const mark of listed) if (!members.some((member) => member.pid === mark.pid)) members.push(mark);
     pending.push({ file, boot, leader, members });
-  }
-  // SIGKILL to a group reaches every process in it, a child the instance had not recorded yet included, and each dies
-  // when it next runs: one can outlive its leader for a moment, or for long in an uninterruptible wait. So what is waited
-  // for, and kept for the next open, is each process the killed group still has after the kill, by pid and start. (A pid
-  // handed out again since, leading a new group of that number, would be waited for too, and at worst refuse the open.)
-  if (pending.some((record) => record.leader !== null)) {
-    const killed = table.snapshot();
-    for (const record of pending) {
-      if (record.leader === null) continue;
-      for (const pid of killed.group(record.leader.pid)) {
-        const info = killed.info(pid);
-        if (pid === record.leader.pid || info === undefined || record.members.some((member) => member.pid === pid)) continue;
-        record.members.push({ pid, start: info.start });
-      }
-    }
   }
   const alive = () => {
     const marks = pending.flatMap((p) => [...(p.leader ? [p.leader] : []), ...p.members]);
