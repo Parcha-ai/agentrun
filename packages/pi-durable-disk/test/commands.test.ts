@@ -259,6 +259,63 @@ describe("command records, from a scripted /proc", () => {
     }
   });
 
+  it("waits for every process of a killed group, one never recorded included, before it says the group is gone", async () => {
+    // A command's child that the instance had not seen when it was killed: in the leader's group, in no record. SIGKILL to
+    // the group reaches it, but it can die after the leader: here its /proc entry stays 100 ms after the kill.
+    const dir = scratchRoot("commands-group");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "commands");
+    const stat = (pid: number, comm: string, pgrp: number, start: number) => `${pid} (${comm}) ${["S", "1", String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4242"));
+      writeFileSync(join(proc, "4242", "stat"), stat(4242, "sh", 4242, 77));
+      mkdirSync(join(proc, "4250"));
+      writeFileSync(join(proc, "4250", "stat"), stat(4250, "sleep", 4242, 80));
+      mkdirSync(records);
+      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      const kill = (target: number) => {
+        if (target !== -4242) return;
+        rmSync(join(proc, "4242"), { recursive: true }); // the leader dies at once
+        setTimeout(() => rmSync(join(proc, "4250"), { recursive: true }), 100); // its child a little later
+      };
+      const reaped = await reapCommands(records, { proc, kill });
+      assert.equal(existsSync(join(proc, "4250")), false, "it said the group was gone while a process of it was still alive");
+      assert.deepEqual(reaped, { signalled: 1, survivors: [] });
+      assert.equal(existsSync(records), false, "and cleared the record once nothing in the group was alive");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a process of a killed group still alive at the deadline, one never recorded included, is a survivor and is recorded for the next open", async () => {
+    const dir = scratchRoot("commands-group-survivor");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "commands");
+    const stat = (pid: number, comm: string, state: string, pgrp: number, start: number) => `${pid} (${comm}) ${[state, "1", String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4242"));
+      writeFileSync(join(proc, "4242", "stat"), stat(4242, "sh", "S", 4242, 77));
+      mkdirSync(join(proc, "4250"));
+      writeFileSync(join(proc, "4250", "stat"), stat(4250, "tar", "D", 4242, 80)); // in an uninterruptible wait
+      mkdirSync(join(proc, "4260"));
+      writeFileSync(join(proc, "4260", "stat"), stat(4260, "other", "S", 4260, 90)); // another group: never a target
+      mkdirSync(records);
+      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      const kill = (target: number) => { if (target === -4242) rmSync(join(proc, "4242"), { recursive: true }); };
+      assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 1, survivors: [{ pid: 4250, start: 80 }] });
+      assert.deepEqual(JSON.parse(readFileSync(join(records, "4242-77.json"), "utf8")), { boot: "fake-boot", leader: null, members: [{ pid: 4250, start: 80 }] }, "recorded, so the next open tries again");
+      rmSync(join(proc, "4250"), { recursive: true }); // it died after the deadline
+      assert.deepEqual(await reapCommands(records, { proc, kill, timeoutMs: 100 }), { signalled: 0, survivors: [] });
+      assert.equal(existsSync(records), false);
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("an open refuses the run while a process a killed incarnation left is still alive, and keeps its record", async () => {
     const dir = scratchRoot("commands-refuse");
     const proc = join(dir.root, "proc");
