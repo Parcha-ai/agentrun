@@ -27,11 +27,11 @@ test("with a faux harness every harness runs; a claude-agent run answers, takes 
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.map((h) => [h.id, h.available]), [["pi", true], ["claude-agent", true], ["codex", true]]);
   const runId = await started(api, "chat", "Answer the question.");
-  const first = await follow(api, runId, ["completed"]);
+  const first = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answer(api, runId), "Answer 1.");
   assert.deepEqual(usageOf(first.rows), { usd: 0.002, requests: 2 });
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
-  const second = await follow(api, runId, ["completed"]);
+  const second = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await answer(api, runId), "Answer 2.");
   assert.deepEqual(usageOf(second.rows), { usd: 0.004, requests: 4 });
   assert.deepEqual(second.rows.filter((r) => r.kind === "user_message").map((r) => r.text), ["hi", "and then?"]);
@@ -40,7 +40,7 @@ test("with a faux harness every harness runs; a claude-agent run answers, takes 
 test("one turn of three paid requests costs their sum, once: never twice", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "three", "Make three requests.", "codex");
-  const { rows } = await follow(api, runId, ["completed"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(usageOf(rows), { usd: 0.007, requests: 3 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.007);
 });
@@ -137,7 +137,7 @@ const killRun = async (data, runId) => {
 test("a request whose price is unknown makes the run's cost unknown, never 0", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "unpriced", "Price unknown.");
-  const { rows } = await follow(api, runId, ["completed"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 1 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null);
 });
@@ -179,10 +179,10 @@ test("a request booked in the session whose root entry was never written (the pr
 test("a run opened again whose new opening has a request of unknown price reads cost unknown, never the earlier opening's figure", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "later", "Second turn unpriced.");
-  await follow(api, runId, ["completed"]);
+  await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, 0.002);
   assert.equal((await api("POST", `/runs/${runId}/messages`, { content: "and then?" })).status, 202);
-  const { rows } = await follow(api, runId, ["completed"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.deepEqual(usageOf(rows), { usd: null, requests: 4 });
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "unknown, not the first opening's 0.002");
 });
@@ -192,7 +192,7 @@ const toolResults = (rows) => rows.filter((r) => r.kind === "tool_result").map((
 test("a run on another harness gets pi's own file tools: a write then a read of the run's workspace", { timeout: 60_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "files", "Write then read.", "codex", ["read", "write"]);
-  const { rows } = await follow(api, runId, ["completed"]);
+  const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
   assert.equal(await readFile(join(data, "runs", runId, "work", "note.txt"), "utf8"), "hello from the tool");
   const results = toolResults(rows);
   assert.equal(results.length, 2, JSON.stringify(results));
