@@ -22,9 +22,12 @@ import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, Re
 
 
 /** The branch a route runs for its answer, as the interpreter takes it: the node's `unsure` branch when
- *  the answer's confidence is below `unsure.gte`, else the choice the answer names. */
-export function routeTaken(node: RouteNode, answers: unknown): { branch: string; choice: string; unsure: boolean } {
-  const answer = (answers as Record<string, { choice?: unknown; confidence?: unknown }> | undefined)?.branch;
+ *  the answer's confidence is below `unsure.gte`, else the choice the answer names. A refused answer chose no branch:
+ *  with an `unsure` branch the route took it (choice null, refused); without one the run escalated, and there is no
+ *  decision (null). */
+export function routeTaken(node: RouteNode, answers: unknown): { branch: string; choice: string | null; unsure: boolean; refused?: true } | null {
+  const answer = (answers as Record<string, { type?: unknown; choice?: unknown; confidence?: unknown }> | undefined)?.branch;
+  if (answer?.type === "refusal") return node.unsure ? { branch: node.unsure.branch, choice: null, unsure: true, refused: true } : null;
   const choice = String(answer?.choice ?? "");
   const unsure = Boolean(node.unsure && typeof answer?.confidence === "number" && answer.confidence < node.unsure.gte);
   return { branch: unsure ? node.unsure!.branch : choice, choice, unsure };
@@ -974,7 +977,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
         const node = nodeAt(doc, at);
         if (node?.node !== "route") throw pathFault(at, "Only a route's answer is a decision");
         if (frame.routes[at]) throw pathFault(at, "A route is decided once");
-        decision = { at, row: { label: route.label, ...routeTaken(node, route.result.answers), request_sha256: typeof route.result.request_sha256 === "string" ? route.result.request_sha256 : null, result: route.result, receipts: route.receipts } };
+        const taken = routeTaken(node, route.result.answers);
+        if (taken) decision = { at, row: { label: route.label, ...taken, request_sha256: typeof route.result.request_sha256 === "string" ? route.result.request_sha256 : null, result: route.result, receipts: route.receipts } };
       }
       if (usd !== null && Number.isFinite(usd) && usd >= 0) snapshot.questionSpendUsd = +((snapshot.questionSpendUsd ?? 0) + usd).toFixed(8);
       else snapshot.unpricedQuestionCount = (snapshot.unpricedQuestionCount ?? 0) + 1;
