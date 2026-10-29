@@ -104,7 +104,8 @@ export type FauxHelpers = {
 
 /** The models for a run, and its model of each tier it uses and of no other: an agentic revision's `ref` (or the
  *  default) is its `default`, and a workflow's tiers are the ones its nodes name. The faux module's replies, the gateway
- *  in the environment, or pi-ai's providers. */
+ *  in the environment, or pi-ai's providers. `unpriced`: the ids of its models serve has no price for (a gateway model the
+ *  catalog does not list, with no price set), which a cap cannot be kept on. */
 export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined, tiers: readonly Tier[] = ["default"]) {
   const ai = await import("@earendil-works/pi-ai");
   const { createModels, createProvider } = await import("@earendil-works/pi-ai/models");
@@ -120,11 +121,12 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const model = byTier.get("default");
   if (!faux && !env.AGENT_MODEL_BASE_URL) {
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    return { models: builtinModels(), model, byTier };
+    return { models: builtinModels(), model, byTier, unpriced: new Set<string>() };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
   const models = createModels();
-  if (!ids.length) return { models, model, byTier };
+  const unpriced = new Set<string>();
+  if (!ids.length) return { models, model, byTier, unpriced };
   if (faux) {
     const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | "unknown"; contextWindow?: number };
     const price = typeof mod.cost === "object" ? mod.cost : undefined;
@@ -162,28 +164,35 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
       models: core.models,
       api: { stream: priced, streamSimple: priced, fetchDeferred: core.fetchDeferred, cancelDeferred: core.cancelDeferred },
     }));
-    return { models, model, byTier };
+    return { models, model, byTier, unpriced };
   }
   const baseUrl = env.AGENT_MODEL_BASE_URL!.replace(/\/+$/, "");
   const { openAIResponsesApi } = await import("@earendil-works/pi-ai/api/openai-responses.lazy");
   // USD per million input, output, cache-read and cache-write tokens, so the run's usage has a price. A tier's own price
   // (`AGENT_MODEL_FAST_PRICE`, `AGENT_MODEL_STRONG_PRICE`) goes with its model, else the default's; a model two tiers
-  // share takes the default's. With none set, pi-ai's catalog prices it (listedPrice); an id it does not list is $0.
+  // share takes the default's. With none set, pi-ai's catalog prices it (listedPrice); an id it does not list is unpriced:
+  // its cost reads $0, and a cap refuses it.
   const prices = new Map<string, { given: string | undefined; named: string | undefined }>();
   for (const tier of ["default", "fast", "strong"] as const) {
     const id = byTier.get(tier)?.modelId;
     if (id !== undefined && !prices.has(id)) prices.set(id, { given: (tier !== "default" && env[`${TIER_ENV[tier]}_PRICE`]) || env.AGENT_MODEL_PRICE || undefined, named: namedBy.get(tier) });
   }
   const catalog = [...prices.values()].some((price) => price.given === undefined) ? await catalogPrices() : new Map<string, Listed[]>();
+  const listedOf = (id: string, named: string | undefined): ModelCost | undefined => {
+    // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
+    if (named !== undefined) return listedPrice(catalog.get(id.startsWith(`${named}/`) ? id.slice(named.length + 1) : id) ?? [], named);
+    // A host model set whole (`vendor/model`) the catalog does not list as it is: priced as its model, the vendor named.
+    const slash = id.indexOf("/");
+    if (catalog.has(id) || slash < 1) return listedPrice(catalog.get(id) ?? [], undefined);
+    return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
+  };
   const priceOf = (id: string): ModelCost => {
     const { given, named } = prices.get(id)!;
     if (given === undefined) {
-      // A revision's ref names its provider: priced as that provider's entry for the model, whether it went whole or bare.
-      if (named !== undefined) return listedPrice(catalog.get(id.startsWith(`${named}/`) ? id.slice(named.length + 1) : id) ?? [], named);
-      // A host model set whole (`vendor/model`) the catalog does not list as it is: priced as its model, the vendor named.
-      const slash = id.indexOf("/");
-      if (catalog.has(id) || slash < 1) return listedPrice(catalog.get(id) ?? [], undefined);
-      return listedPrice(catalog.get(id.slice(slash + 1)) ?? [], id.slice(0, slash));
+      const listed = listedOf(id, named);
+      if (listed) return listed;
+      unpriced.add(id);
+      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     }
     const [input = 0, output = 0, cacheRead = 0, cacheWrite = input] = given.split(",").map(Number);
     return { input, output, cacheRead, cacheWrite };
@@ -198,7 +207,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
     })),
     api: openAIResponsesApi(),
   }));
-  return { models, model, byTier };
+  return { models, model, byTier, unpriced };
 }
 
 type Listed = { provider: string; cost: ModelCost };
@@ -218,8 +227,10 @@ async function catalogPrices(): Promise<Map<string, Listed[]>> {
 /** A gateway model's catalog price: the paid entry of the provider its ref names, when the catalog lists one. Else, as
  *  the gateway does not say whose model answers (a named provider is a hint), the highest any provider lists, so the
  *  estimate and a cap on it err high: one entry's whole price, the one with the most input plus output (the first of
- *  equals), so a $0 entry never wins over a paid one, a named provider's included. An id no entry prices is $0. */
-function listedPrice(entries: readonly Listed[], named: string | undefined): ModelCost {
+ *  equals), so a $0 entry never wins over a paid one, a named provider's included. An id the catalog lists at $0 is a
+ *  known $0; one it does not list has no price (undefined). */
+function listedPrice(entries: readonly Listed[], named: string | undefined): ModelCost | undefined {
+  if (!entries.length) return undefined;
   const own = named === undefined ? undefined : entries.find((entry) => entry.provider === named);
   if (own && own.cost.input + own.cost.output > 0) return own.cost;
   return entries.reduce<ModelCost>((top, { cost }) => (cost.input + cost.output > top.input + top.output ? cost : top), { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });

@@ -39,7 +39,7 @@ async function claudeModels(ref: string | undefined) {
   const choice = claudeModel(process.env, ref);
   if ("why" in choice) throw new Error(choice.why);
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels(), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]) };
+  return { models: builtinModels(), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: new Set<string>() };
 }
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
@@ -64,7 +64,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const cap = capOf(process.env);
   // Each request is marked as it leaves (request-start.ts), inside the cap: a request the cap refuses never leaves.
   const marked = await markRequests(chosen.models, cancelledIn(where.root));
-  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)));
+  const models = cap === undefined ? marked.models : await capModels(marked.models, cap, spentIn(join(where.store, RUN_STORE_FILE)), { unpriced: chosen.unpriced });
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
@@ -80,7 +80,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const harness = revision.body.harness;
     const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
-    const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never);
+    const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never, { listed: !chosen.unpriced.has(model!.modelId) });
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard);
     return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
   }

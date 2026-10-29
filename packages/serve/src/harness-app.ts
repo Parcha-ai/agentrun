@@ -92,7 +92,7 @@ export function adapterRun(
 ): AdapterRun {
   // The run's cap refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
-  const guard = cap && ((request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
+  const guard = cap && ((request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const answer = cap.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;
