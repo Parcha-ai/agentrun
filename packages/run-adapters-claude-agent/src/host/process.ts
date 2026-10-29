@@ -10,7 +10,6 @@ import type { DriveContext } from "./kernel.js";
 
 export {
   BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, toolBridge, waitForSubmissions,
-  zodShapeFromJsonSchema,
 } from "@parcha/agentrun-adapters/process";
 export type { JournalRecord, TranscriptEntry } from "@parcha/agentrun-adapters/process";
 
