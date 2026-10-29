@@ -25,15 +25,17 @@ const request = { kind: 'agent', label: 'task', system: [], user: 'Search, then 
 async function claude(t, { script, sessionsDir }) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
+  // The system prompt each query sends (the recovery note rides there on a resumed drive).
+  const systems = [];
   const adapter = claudeAgentAdapter({
     model: 'claude-test',
     provider: { origin: provider.url, credential: () => 'provider-secret' },
     price: (_model, usage) => (usage.input + usage.output) / 1e6,
     sessionsDir,
     standIn: { command: process.execPath },
-    sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 10, script }),
+    sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 10, script, onSystem: (s) => systems.push(s) }),
   });
-  return { adapter, provider };
+  return { adapter, provider, systems };
 }
 
 /** A paid search: it takes `ms`, and stops (failing) if its signal aborts first, as a request in flight does. */
@@ -88,10 +90,11 @@ test('a pause DURING a paid call: it runs on to its recorded outcome, and the re
   assert.equal(search.runs, 1, 'the search ran once');
   assert.deepEqual((await kernelRecords(store)).filter((r) => r.kind === 'kernel.retry'), [], 'no kernel.retry');
   assert.equal((await searchEnd(store)).length, 1, 'one outcome for the search');
-  // The resumed CLI is told the recorded result: the recovery message its transcript (mirrored to the store) holds.
+  // The resumed CLI is told the recorded result, in the system prompt its resuming drive sends; no user message carries it.
+  assert.match(next.systems[0]?.sent ?? '', /\[Recovery\][\s\S]*search\(\{"q":"x"\}\), call \S+: completed\. Its result:\s+results for x/, `the CLI was told: ${(next.systems[0]?.sent ?? '').slice(-400)}`);
   const told = (await store.read('step:pause')).flatMap((r) => r.data?.input?.streams?.claude?.entries ?? [])
     .map((e) => e.data?.message).filter((m) => m?.role === 'user' && typeof m.content === 'string');
-  assert.ok(told.some((m) => /\[Recovery\]/.test(m.content) && /search\(\{"q":"x"\}\), call \S+: completed\. Its result:\s+results for x/.test(m.content)), `the CLI was told: ${JSON.stringify(told).slice(0, 400)}`);
+  assert.ok(!told.some((m) => /\[Recovery\]/.test(m.content)), `no user message carries the note: ${JSON.stringify(told).slice(0, 400)}`);
 });
 
 test("the host hears a call ended only after its outcome is in the session's records", async (t) => {
@@ -183,8 +186,9 @@ test('a call that outlives the drain is cut at the bound: the pause ends, and th
   const steps = new Set(records.filter((r) => r.kind === 'kernel.start' && r.data.name === 'tool.charge').map((r) => r.data.stepId));
   const ends = records.filter((r) => r.kind === 'kernel.end' && steps.has(r.data.stepId)).map((r) => r.data);
   assert.ok(ends.length === 1 && ends[0].status === 'failed' && ends[0].error?.interrupted === true, `the call is recorded interrupted: ${JSON.stringify(ends)}`);
+  assert.match(next.systems[0]?.sent ?? '', /\[Recovery\][\s\S]*charge\(\{\}\), call \S+: interrupted/, `the resumed CLI is told the call was interrupted: ${(next.systems[0]?.sent ?? '').slice(-400)}`);
   const told = records.flatMap((r) => r.data?.input?.streams?.claude?.entries ?? []).map((e) => e.data?.message).filter((m) => m?.role === 'user' && typeof m.content === 'string');
-  assert.ok(told.some((m) => /\[Recovery\]/.test(m.content) && /charge\(\{\}\), call \S+: interrupted/.test(m.content)), `the resumed CLI is told the call was interrupted: ${JSON.stringify(told).slice(0, 400)}`);
+  assert.ok(!told.some((m) => /\[Recovery\]/.test(m.content)), `no user message carries the note: ${JSON.stringify(told).slice(0, 400)}`);
 });
 
 test('a call a pause cut off leaves nothing to wait for: the next pause, with nothing in flight, returns at once', async (t) => {

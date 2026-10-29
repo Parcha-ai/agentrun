@@ -666,6 +666,11 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
+        // A turn a crash cut off: the harness's own account of it (which calls completed, which may have half-run) goes
+        // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
+        // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this
+        // drive alone renders its own (`snapshot: false`, which records nothing: the next drive's is the recorded one).
+        const recovered = recoveryNote(ctx.state(), { pending: [] });
         const queryOptions: QueryOptions = {
           model,
           cwd: machine.root,
@@ -692,8 +697,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions].filter(Boolean).join('\n\n'),
-            snapshot: true,
+            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered ? recoverySystemNote(recovered.text) : undefined].filter(Boolean).join('\n\n'),
+            snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
           ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
@@ -853,12 +858,16 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // An earlier invocation that ended before its snapshot: the manifest catches up first.
           await driveFiles?.catchUp();
           const open = openTurn(ctx.state());
-          const note = recoveryNote(ctx.state(), { prompts: !!open && lostPrompts(ctx.state(), open.placed, store).length > 0 });
+          const note = recovered && recoveryNote(ctx.state());
           if (note) {
             if (open) ledger.turn(open.placed[0] ?? `open:${open.since}`);
             // The CLI answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
             ctx.live(restartEvent(note.turn));
-            await send(note.text, note.pending, { synthetic: 'recovery' });
+            // The user's turn holds only the user's words: the prompts of that turn the transcript never got, then the
+            // messages sent since. With none, a bare nudge: a resumed session moves only on a user message.
+            const lost = open ? lostPrompts(ctx.state(), open.placed, store) : [];
+            const words = [...lost.map((id) => ctx.state().submissions.find((x) => x.id === id)?.text), ...note.pending.map((x) => x.text)].filter((t): t is string => !!t);
+            await send(words.length ? words.join('\n\n') : RECOVERY_NUDGE, note.pending, { synthetic: 'recovery' });
             await runTurn();
           }
           // The inbox, one submission per turn.
@@ -950,6 +959,14 @@ function mirrorUnmapped(why: string): Unavailable {
 /** A Bash call the invocation's clamp ended (§5.6 "Deadlines"): a definite outcome, never an open intent. */
 function outOfTime(limitMs: number, output: string): string {
   return `Ran out of time in this invocation of the session (its timeout was cut to ${Math.round(limitMs / 1000)} s); partial effects may exist. Output so far:\n${output}`;
+}
+
+/** The user's turn that resumes a cut-off turn when the user has said nothing new: no recovery text in it. */
+export const RECOVERY_NUDGE = 'Continue.';
+
+/** The harness's recovery note, as the resuming drive's system prompt carries it: from the harness, about the turn before. */
+export function recoverySystemNote(note: string): string {
+  return `The harness, not the user, adds this about the turn before this one:\n${note}`;
 }
 
 /**
