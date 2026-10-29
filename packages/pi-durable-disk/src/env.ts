@@ -203,13 +203,26 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
   // command's own. A string command becomes the argv of the shell pi would have run it through, which is how
   // setpriv gets in front of the shell; failures pi reports before spawning (no such program, no such shell) are
   // reported the same way here instead of as setpriv's exit status.
-  /** The argv every command here starts under, ending in `--`; empty when the run confines no command. A program the
-   *  run starts beside pi (another harness's CLI) goes under the same prefix. `--pdeathsig KILL`: the command dies the
-   *  moment the process that started it does, so a run process killed mid-turn leaves no command running; only that
-   *  command, since the kernel does not pass the signal on to its own children. The kernel also clears it when the
-   *  process's credentials change, so under runAs it holds only if setpriv sets it after switching the uid: that mode's
-   *  container test must show a command dying with its parent under --reuid before the mode ships. */
+  /** The argv a program the run starts beside pi (another harness's CLI) starts under, ending in `--`; empty when the
+   *  run confines no command. `--pdeathsig KILL`: the program dies the moment the process that started it does, so a
+   *  run process killed mid-turn leaves it running no longer; only that program, since the kernel does not pass the
+   *  signal on to its own children. The kernel also clears it when the process's credentials change, so under runAs it
+   *  holds only if setpriv sets it after switching the uid: that mode's container test must show a program dying with
+   *  its parent under --reuid before the mode ships. pi's own commands start under the same prefix, without the death
+   *  signal when the run records them (`#prefix`). */
   confinePrefix(): string[] {
+    return this.#prefix(true);
+  }
+
+  /**
+   * The prefix, with or without `--pdeathsig KILL`. A command the run's recorder records (a run on a local directory)
+   * starts without it: the next open ends its whole process group, and only while the group's leader is still the
+   * recorded process can it verify the group is the command's and kill every member, a child no walk recorded included.
+   * A death signal would end the leader alone with the instance and leave its children running, out of the reap's reach
+   * unless a walk had recorded them. Such a command, a single process included, runs on after a killed instance until
+   * the next open.
+   */
+  #prefix(deathSignal: boolean): string[] {
     const { setpriv, noNewPrivs, runAs } = this.#scope;
     if (setpriv === undefined) return [];
     return [
@@ -217,8 +230,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
       // A root instance's capabilities stay with it: the command's bounding and inheritable sets are emptied too.
       ...(runAs ? [`--reuid=${runAs.uid}`, `--regid=${runAs.gid}`, "--clear-groups", "--inh-caps=-all", "--bounding-set=-all"] : []),
       ...(noNewPrivs ? ["--no-new-privs"] : []),
-      "--pdeathsig",
-      "KILL",
+      ...(deathSignal ? ["--pdeathsig", "KILL"] : []),
       "--",
     ];
   }
@@ -229,7 +241,7 @@ class ArchilExecutionEnv extends NodeExecutionEnv {
     context: Context,
   ): Promise<Result<ExecCommand, ExecutionError>> {
     const { shellPath, shellEnv } = this.#scope;
-    const confine = this.confinePrefix();
+    const confine = this.#prefix(this.#scope.recorder === undefined);
     if (!confine.length) return ok(command);
     const cwd = options?.cwd === undefined ? this.cwd : getOrDefault(await this.absolutePath(options.cwd, context), this.cwd);
     const env = options?.inheritEnv === false ? { ...options.env } : { ...process.env, ...shellEnv, ...options?.env };

@@ -9,12 +9,15 @@ import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
+import { reapOrRefuse } from "../src/commands.ts";
 import { FencedError, HeldError } from "../src/errors.ts";
 import { processTable } from "../src/process-table.ts";
 import { alive, ctx, killQuietly, scratchRoot, scriptedHarness, startCommand } from "./_run-support.ts";
 
 const ref = { disk: "dsk-local", region: "local", id: "run-1" };
 const LOCAL_COMMAND = fileURLToPath(new URL("./fixtures/local-command.ts", import.meta.url));
+const HELD_FORK = fileURLToPath(new URL("./fixtures/held-fork-command.ts", import.meta.url));
+const BESIDE = fileURLToPath(new URL("./fixtures/beside-program.ts", import.meta.url));
 
 /** Root's processes but pid 1 and kernel threads, from /proc on Linux and ps elsewhere (macOS). */
 function rootPids(): number[] {
@@ -128,6 +131,79 @@ describe("localRun", () => {
     } finally {
       instance.kill("SIGKILL");
       if (command > 0) killQuietly(command);
+      dir.remove();
+    }
+  });
+
+  it("ends a command's child forked after the recorder's last walk: the command, its group's leader, outlives a SIGKILLed instance, so the next open kills its whole group", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("held-fork");
+    const root = join(dir.root, "run");
+    const fifo = join(dir.root, "hold.fifo");
+    execFileSync("mkfifo", [fifo]);
+    const instance = spawn(process.execPath, [HELD_FORK, root, fifo], { stdio: ["ignore", "pipe", "inherit"] });
+    const closed = new Promise((resolve) => instance.once("close", resolve));
+    let leader = 0;
+    let child = 0;
+    try {
+      const line = (await createInterface({ input: instance.stdout! })[Symbol.asyncIterator]().next()).value as string | undefined;
+      leader = Number(/^ready (\d+)$/.exec(line ?? "")?.[1] ?? 0);
+      assert.ok(leader > 0 && alive(leader), `the agent's command runs: ${line}`);
+      const commands = join(root, "commands");
+      const record = () => {
+        const name = readdirSync(commands).find((entry) => entry.startsWith(`${leader}-`));
+        return name === undefined ? undefined : (JSON.parse(readFileSync(join(commands, name), "utf8")) as { leader: { pid: number } | null; members: { pid: number }[] });
+      };
+      assert.equal(record()?.leader?.pid, leader, "the command is recorded as its group's leader");
+      // No walk runs from here: the instance is stopped. The command forks its child only now, after the last walk.
+      instance.kill("SIGSTOP");
+      writeFileSync(fifo, "go\n");
+      const childFile = join(root, "work", "held.child");
+      for (let i = 0; i < 500 && !(existsSync(childFile) && readFileSync(childFile, "utf8").trim() !== ""); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      child = Number(readFileSync(childFile, "utf8").trim());
+      assert.ok(child > 0 && alive(child), "the command forked its child");
+      assert.equal(processTable().snapshot().info(child)?.pgrp, leader, "the child is in the command's group");
+      assert.deepEqual(record()?.members, [], "no walk recorded the child");
+      instance.kill("SIGKILL");
+      await closed;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.ok(alive(leader), "the command, its group's leader, outlives the instance: a recorded command has no death signal");
+      assert.ok(alive(child), "and so does its child");
+      // The open's commands step (run.ts), on the record the killed instance left.
+      const reaped = await reapOrRefuse(commands);
+      assert.ok(reaped.signalled >= 1, `the reap signalled the group: ${JSON.stringify(reaped)}`);
+      assert.deepEqual(reaped.survivors, []);
+      assert.equal(alive(child), false, "the child no walk recorded is gone");
+      assert.equal(alive(leader), false, "the command is gone");
+      assert.equal(existsSync(commands), false, "the record is cleared");
+      const scripted = scriptedHarness();
+      const run = await openDurableRun({ disk: "dsk-local", region: "local", id: "held-fork" }, { ...localRun(root), harness: { models: scripted.models, registry: scripted.registry } });
+      assert.equal(run.generation, 2);
+      await run.release();
+    } finally {
+      instance.kill("SIGKILL");
+      killQuietly(child);
+      killQuietly(leader);
+      dir.remove();
+    }
+  });
+
+  it("a program started beside pi under the run's confinePrefix (another harness's CLI) still dies with the instance that started it", { timeout: 60_000 }, async (t) => {
+    const dir = scratchRoot("beside");
+    const instance = spawn(process.execPath, [BESIDE, join(dir.root, "run")], { stdio: ["ignore", "pipe", "inherit"] });
+    const closed = new Promise((resolve) => instance.once("close", resolve));
+    let program = 0;
+    try {
+      const line = (await createInterface({ input: instance.stdout! })[Symbol.asyncIterator]().next()).value as string | undefined;
+      program = Number(/^ready (\d+)$/.exec(line ?? "")?.[1] ?? -1);
+      if (program === 0) return t.skip("the run confines nothing here (no setpriv), so there is no death signal to keep");
+      assert.ok(program > 0 && alive(program), `the program runs: ${line}`);
+      instance.kill("SIGKILL");
+      await closed;
+      for (let i = 0; i < 500 && alive(program); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(alive(program), false, "the program died with the instance (--pdeathsig KILL)");
+    } finally {
+      instance.kill("SIGKILL");
+      killQuietly(program);
       dir.remove();
     }
   });
