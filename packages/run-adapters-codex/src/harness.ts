@@ -231,6 +231,8 @@ export const KEY_ENV = 'HARNESS_CODEX_GATEWAY_KEY';
 
 /** The id Codex gives a host tool called from a code-mode script. */
 const NESTED_CALL = /^exec-[0-9a-f-]{36}$/;
+/** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec }`, written before the call runs. */
+export const NESTED_STREAM = 'codex.nested';
 /** How long the drive waits for a call's `function_call` line before it declines the call: `SYNC` and look again, this many times, with a growing pause. */
 const BARRIER_TRIES = 5;
 /** What the model is told when a call was declined because its line wasn't in the log yet. */
@@ -577,29 +579,46 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       /** The calls whose `function_call` (or `custom_tool_call`) line is in the log: what the barrier looks for. */
       const logged = new Set<string>();
       /**
-       * Code mode: the `exec` calls whose line is in the log and whose output is not, oldest first. A host tool the model's
-       * script calls arrives as a nested call under an id of Codex's own (`exec-<uuid>`), which no line of the rollout
-       * carries; it is tied to the exec that is open. The proxy sends `parallel_tool_calls: false`, so the model writes one
-       * `exec` at a time and one is open at a time; several nested calls of one script (a `Promise.all`) all tie to it.
+       * Code mode: the scripts that may call a host tool now, oldest first. A host tool the model's script calls arrives as a
+       * nested call under an id of Codex's own (`exec-<uuid>`), which no line of the rollout carries; it is tied to the script
+       * that is running. A script is running from its `exec` line until an output says it finished: its own, or, when that
+       * says "Script running with cell ID N" (the script yielded and went on), the output of the `wait` that resumes cell N.
+       * The proxy sends `parallel_tool_calls: false`, so the model writes one `exec` at a time; several nested calls of one
+       * script (a `Promise.all`) all tie to it.
        */
-      const openExecs: string[] = [];
+      const scripts: { exec: string; cell?: string }[] = [];
+      /** The `wait` calls in the log, by call id: the cell each resumes. */
+      const waitsOn = new Map<string, string>();
       /** The exec each nested call was admitted under. */
       const execOf = new Map<string, string>();
-      const noteExec = (line: string) => {
-        if (!line.includes('custom_tool_call')) return;
+      const noteScript = (line: string) => {
+        if (!line.includes('call_id')) return;
         const p = parseLine(line)?.payload;
         if (!p || typeof p.call_id !== 'string') return;
+        const id: string = p.call_id;
+        const text = typeof p.output === 'string' ? p.output : Array.isArray(p.output) ? p.output.map((o: { text?: unknown }) => (typeof o?.text === 'string' ? o.text : '')).join('\n') : '';
+        const running = /Script running with cell ID (\S+)/.exec(text);
         if (p.type === 'custom_tool_call' && p.name === 'exec') {
-          if (!openExecs.includes(p.call_id)) openExecs.push(p.call_id);
+          if (!scripts.some((x) => x.exec === id)) scripts.push({ exec: id });
         } else if (p.type === 'custom_tool_call_output') {
-          const at = openExecs.indexOf(p.call_id);
-          if (at >= 0) openExecs.splice(at, 1);
+          const at = scripts.findIndex((x) => x.exec === id);
+          if (at < 0) return;
+          if (running) scripts[at]!.cell = running[1]!;
+          else scripts.splice(at, 1);
+        } else if (p.type === 'function_call' && p.name === 'wait') {
+          try {
+            const cell = (JSON.parse(String(p.arguments)) as { cell_id?: unknown }).cell_id;
+            if (cell !== undefined) waitsOn.set(id, String(cell));
+          } catch {}
+        } else if (p.type === 'function_call_output' && waitsOn.has(id) && !running) {
+          const at = scripts.findIndex((x) => x.cell === waitsOn.get(id));
+          if (at >= 0) scripts.splice(at, 1);
         }
       };
       for (const line of lines) {
         const id = callIdOf(line);
         if (id) logged.add(id);
-        noteExec(line);
+        noteScript(line);
       }
 
       /**
@@ -635,7 +654,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           journal.append(stream, line);
           const id = callIdOf(line);
           if (id) logged.add(id);
-          noteExec(line);
+          noteScript(line);
           if (endsTurn(line)) turnEnds++;
         }
       };
@@ -659,14 +678,14 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
        *
        * A nested call of code mode has no line of its own: it is durable once
        * the `exec` it runs under is (that line lands before the script runs a
-       * nested call), so it waits for an open exec in the log and is tied to it.
+       * nested call), so it waits for a running script in the log and is tied to it.
        */
       const barrier = async (callId: string): Promise<boolean> => {
         const nested = NESTED_CALL.test(callId);
         for (let i = 0; ; i++) {
           await synced();
-          if (nested && openExecs.length > 0) {
-            execOf.set(callId, openExecs[openExecs.length - 1]!);
+          if (nested && scripts.length > 0) {
+            execOf.set(callId, scripts[scripts.length - 1]!.exec);
             await journal.flush();
             return true;
           }
@@ -850,6 +869,13 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
               return { contentItems: [{ type: 'inputText', text: LAGGING_RESULT }], success: false };
             }
             mirror();
+            if (NESTED_CALL.test(callId)) {
+              const exec = execOf.get(callId) ?? scripts[scripts.length - 1]?.exec;
+              if (exec) {
+                execOf.set(callId, exec);
+                journal.append(NESTED_STREAM, { callId, exec });
+              }
+            }
             const text = takeSaid(active);
             journal.message({ type: 'message', role: 'assistant', text, toolCalls: [{ id: callId, name: String(p.tool) }] });
             // Tracked for the invocation: a re-attach waits for it, so the next drive reads its real outcome.

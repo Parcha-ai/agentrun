@@ -117,3 +117,25 @@ test("code mode: two nested calls of one exec (a Promise.all) each pass the barr
   assert.deepEqual(messages.filter((m) => /declined a call/.test(m)), [], 'neither was declined by the barrier');
   assert.ok(toldAbout(seen, 'call_both').join('\n').includes('charged 1'), 'the exec reported both results');
 });
+
+test("code mode: a never tool called after its exec yielded runs once, under the cell that is still running", { skip, timeout: 120_000 }, async () => {
+  let charged = 0;
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  // The script yields after 100 ms (its pragma) while this runs, so its exec has an output before the charge is called.
+  const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((resolve) => setTimeout(resolve, 800)); return { text: 'slept' }; } };
+  const wait = (callId, cell) => ({ type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: cell, yield_time_ms: 5000 }), call_id: callId });
+  const { seen, fetch } = provider([
+    [exec('call_js', `// @exec: {"yield_time_ms": 100}\nawait tools.slow({}); text('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));`)],
+    [wait('call_wait', '1')],
+    [exec('call_submit', `text(JSON.stringify(await tools.submit({ value: { answer: 'ok' } })));`)],
+  ]);
+  const messages = [];
+  const started = [];
+  const runNode = createHarnessRunner(adapter(fetch, (message) => messages.push(message)), { store: memorySessionStore(), tools: [slow, charge], timeoutMs: 90_000, onEvent: (e) => { if (e.type === 'tool_start') started.push(e); } });
+  const output = await runNode({ kind: 'agent', label: 'pay', system: ['Pay.'], user: 'Charge 5.', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: ['slow', 'charge'] });
+  assert.deepEqual(output, { answer: 'ok' });
+  assert.ok(toldAbout(seen, 'call_js').join('\n').includes('Script running with cell ID 1'), 'the exec yielded: its output came before the charge was called');
+  assert.equal(charged, 1, 'the never tool ran once');
+  assert.deepEqual(messages.filter((m) => /declined a call/.test(m)), [], 'the barrier did not decline it');
+  assert.ok(toldAbout(seen, 'call_wait').join('\n').includes('charged'), 'the wait reported its result to the model');
+});
