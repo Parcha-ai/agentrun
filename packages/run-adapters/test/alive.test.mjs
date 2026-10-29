@@ -46,6 +46,10 @@ test("passed straight to an array method, which adds the index (and the array) a
   assert.deepEqual([pid].filter(processAlive), [], "filter passes (pid, 0, array): the zombie is not alive");
   assert.equal([pid].some(processAlive), false);
   assert.equal(processAlive(pid, 0), false, "an index where the stat reader would go: the zombie is not alive");
+  // At a truthy index too: a guard that only tests for a truthy seam would take 1 for the reader.
+  assert.deepEqual([process.pid, pid].filter(processAlive), [process.pid], "the zombie at index 1 is not alive either");
+  assert.equal([process.pid, pid].some((p, i) => i === 1 && processAlive(p, i)), false);
+  assert.equal(processAlive(pid, 1), false);
   assert.deepEqual([process.pid, parent.pid].filter(processAlive), [process.pid, parent.pid], "and running processes are");
   assert.equal([process.pid].every(processAlive), true);
 });
