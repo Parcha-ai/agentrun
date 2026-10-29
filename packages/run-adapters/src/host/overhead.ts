@@ -41,8 +41,17 @@ export const ANTHROPIC_IMAGE_TOKENS_MAX = 4_784;
  */
 export const OPENAI_IMAGE_TOKENS_MAX = 73_800;
 
-/** The API kinds whose figures are known, as pi names them. Azure's and Codex's Responses are billed as OpenAI's. */
-export const INPUT_OVERHEAD_APIS: readonly string[] = Object.freeze(["anthropic-messages", "openai-responses", "azure-openai-responses", "openai-codex-responses"]);
+/**
+ * The API kinds whose figures are known, as pi names them. Azure's and Codex's Responses are billed as OpenAI's.
+ * Chat Completions ("openai-completions", which OpenAI-compatible gateways speak too) adds formatting tokens around each
+ * message, 3 a message, 1 for a name, and 3 that prime the reply (num_tokens_from_messages in
+ * https://developers.openai.com/cookbook/examples/how_to_count_tokens_with_tiktoken). Each message's own JSON in the
+ * body ({"role":...,"content":...}) is more bytes than that, and so is the request's, so the byte bound covers them: it
+ * adds nothing for them or for tools, whose definitions are in the body, and an image at OpenAI's per-image maximum. The
+ * others in pi's union ("mistral-conversations", "bedrock-converse-stream", "google-generative-ai", "google-vertex",
+ * "pi-messages") have no figure here: a request on them is unmeasured.
+ */
+export const INPUT_OVERHEAD_APIS: readonly string[] = Object.freeze(["anthropic-messages", "openai-responses", "azure-openai-responses", "openai-codex-responses", "openai-completions"]);
 
 /**
  * The input tokens a provider bills for a request of `shape` beyond its body's bytes, on the API `api` (pi's names:

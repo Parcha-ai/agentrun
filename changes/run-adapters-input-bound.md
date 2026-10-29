@@ -6,7 +6,8 @@ The model proxy now tells the host, before a paid request is sent, the most inpu
 - What a provider adds is in one place, `providerInputOverhead(api, shape)` from `@parcha/agentrun-adapters/host`. `api` is pi's API kind, and `shape` is whether the request has tools, its tool_choice and its image count. Each figure is the largest the provider documents for any current model:
   - `anthropic-messages`: the tool-use system prompt the Messages API adds to a body with tools, 675 tokens for tool_choice auto or none and 804 for any or tool, plus 4,784 tokens for each image, its high-resolution tier's maximum.
   - `openai-responses`, and the Azure and Codex Responses kinds: no prompt of their own, and 73,800 tokens for each image. That is 30,000 patches, the most an image may have, times 2.46, the largest model multiplier.
-  - Any other API: undefined, so a caller treats the input as unmeasured.
+  - `openai-completions`, which OpenAI-compatible gateways speak too: nothing for its per-message formatting or for tools, since the body's bytes already bound them, and 73,800 tokens for each image.
+  - The rest of pi's API kinds, `mistral-conversations`, `bedrock-converse-stream`, `google-generative-ai`, `google-vertex` and `pi-messages`, and any other: undefined, since there is no figure for them. A caller treats the input as unmeasured, and a cap that refuses unmeasured input refuses a run on them.
 - Images are billed by their area, not their bytes, so a small compressed image of large dimensions is counted at its maximum. A Codex body with a file input (a PDF, billed by its pages) is left unmeasured.
 - A provider policy says what its provider adds with `serverInputOverhead(body)`. The Claude and Codex policies read their body's shape and use the figures above.
 - The faux adapter in `@parcha/agentrun-adapters/testing` measures its prompt's UTF-8 bytes for each request, as a real adapter's proxy measures its body.

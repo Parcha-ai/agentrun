@@ -112,8 +112,12 @@ test("providerInputOverhead holds each provider's figures in one place: Anthropi
     of('openai-responses', { tools: false, images: 2 }),
     of('azure-openai-responses', { tools: false, images: 1 }),
     of('openai-codex-responses', { tools: false, images: 1 }),
-  ], [0, 675, 675, 804, 804 + 2 * 4784, 4784, 0, 2 * 73_800, 73_800, 73_800]);
-  for (const api of ['openai-completions', 'google-generative-ai', 'bedrock-converse-stream', 'unknown']) assert.equal(of(api, { tools: false, images: 0 }), undefined, `${api}: unknown, never 0`);
+    of('openai-completions', { tools: true, images: 0 }),
+    of('openai-completions', { tools: true, toolChoice: 'any', images: 2 }),
+  ], [0, 675, 675, 804, 804 + 2 * 4784, 4784, 0, 2 * 73_800, 73_800, 73_800, 0, 2 * 73_800]);
+  // The rest of pi's API union, and anything else: no figure, so unmeasured, never 0.
+  for (const api of ['mistral-conversations', 'bedrock-converse-stream', 'google-generative-ai', 'google-vertex', 'pi-messages', 'unknown']) assert.equal(of(api, { tools: false, images: 0 }), undefined, `${api}: unknown, never 0`);
+  assert.deepEqual([...host.INPUT_OVERHEAD_APIS].sort(), ['anthropic-messages', 'azure-openai-responses', 'openai-codex-responses', 'openai-completions', 'openai-responses']);
   assert.throws(() => of('anthropic-messages', { tools: false, images: -1 }), /not an image count/);
 });
 
