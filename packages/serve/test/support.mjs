@@ -11,9 +11,10 @@ import { startServe } from "../dist/index.js";
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
 /** The bin, `args` after it, in a process of its own (so a test can kill it as a crash would), resolved once its stdout
- *  matches `ready`. It is rejected at once, with what it wrote to stdout and stderr, if it exits first, and after `ms`
- *  otherwise: a bound inside the test's own budget, so a slow start on a loaded machine is waited for, not failed. */
-export function startBin(t, args, { env = process.env, ready = /AGENTRUN_API_KEY=/, ms = 60_000 } = {}) {
+ *  matches `ready`. It is rejected at once, with all it wrote to stdout and stderr (read to their end), if it exits
+ *  first, and after `ms` otherwise: long enough for a slow start on a loaded machine, and short enough that two starts fit
+ *  inside a 60 s test with room to say why. */
+export function startBin(t, args, { env = process.env, ready = /AGENTRUN_API_KEY=/, ms = 20_000 } = {}) {
   const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, ...args], { stdio: ["ignore", "pipe", "pipe"], env });
   t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
   const seen = { out: "", err: "" };
@@ -25,14 +26,15 @@ export function startBin(t, args, { env = process.env, ready = /AGENTRUN_API_KEY
     const done = (error) => {
       clearTimeout(timer);
       child.stdout.off("data", check);
-      child.off("exit", exited);
+      child.off("close", exited);
       error ? reject(error) : resolve({ child, seen, value });
     };
     const check = () => ready.test(seen.out) && done();
     const exited = (code, signal) => done(new Error(`the server exited (${signal ?? code}) before it started: ${said()}`));
     const timer = setTimeout(() => done(new Error(`the server did not start in ${ms} ms: ${said()}`)), ms);
     child.stdout.on("data", check);
-    child.once("exit", exited);
+    // "close", not "exit": its pipes are read to the end first, so what it wrote just before it went is in the message.
+    child.once("close", exited);
   });
 }
 
