@@ -99,12 +99,5 @@
   ],
   "expectedCalls": 80,
   "expectedCost": 0.5,
-  "kills": [
-    {
-      "point": "judge.asked triage",
-      "n": 10,
-      "why": "a typed question is in flight when the process dies; the resumed run asks that one question again (its answer was never recorded) and asks no answered question a second time"
-    }
-  ],
   "browser": false
 }

@@ -1,0 +1,59 @@
+{
+  "repo": "github.com/vercel-labs/durable-harness",
+  "commit": "ea8aa4060cf4fb8cd39737ce8ab21c4e0f40c741",
+  "license": "Apache-2.0",
+  "copyright": "Copyright 2026 Vercel Inc.",
+  "notice": null,
+  "files": {
+    "src/harness.ts": {
+      "upstream": "packages/harness-claude-code/src/harness.ts",
+      "blob": "5666c64e0ad9ae1735bfa6e17755932239950bae",
+      "sha256": "5201e82b7595bf299371113509e3062020d85fbd6e1ff67b6aa1dff1b4803b5f"
+    },
+    "src/transcript.ts": {
+      "upstream": "packages/harness-claude-code/src/transcript.ts",
+      "blob": "65851c9aa4a6254743609713f8d68836b3b27656",
+      "sha256": "d45c99f2d72bcb2b10d5332f676b77ff3b201871a4676e7609a8ff45204f7bbf"
+    },
+    "src/store.ts": {
+      "upstream": "packages/harness-claude-code/src/store.ts",
+      "blob": "14adbbd67f9ee551366d17ef22a8928b966503ac",
+      "sha256": "5d0c561be93b26448280d254804f355d5fc551d24dc1fb1bdb121bb4aef68c14"
+    },
+    "src/inbox.ts": {
+      "upstream": "packages/harness-claude-code/src/inbox.ts",
+      "blob": "bf05a952e2da087179aeefb47b772b369038022f",
+      "sha256": "17e046da54f8b935f5e2e34d60f1f9880aeff28c544d2c65009bf7e4b4dd0907"
+    },
+    "src/ids.ts": {
+      "upstream": "packages/harness-claude-code/src/ids.ts",
+      "blob": "e1611dd61f881b0a33bd3b43e7f0f7529c76ca4f",
+      "sha256": "dfc94889df310eb045fca95a56cc12667f1c254cbb0120fa36114841441f7cca"
+    },
+    "src/env.ts": {
+      "upstream": "packages/harness-claude-code/src/env.ts",
+      "blob": "8ab38d02325f7fc05347be67cfc54e9d08add46e",
+      "sha256": "69dd08daf5f54d72bf9b3d638ef4e0524d491da40d02a8dae62116ecd9cdc168"
+    },
+    "src/versions.ts": {
+      "upstream": "packages/harness-claude-code/src/versions.ts",
+      "blob": "4ed9a3997a1935a24d0532fb9ddb60a8c84c1f25",
+      "sha256": "bf6c0e69e3276393d3c5636a5a66494a5efb6e1fb5fa5a7ab454ffb7c4aed930"
+    },
+    "src/binary.ts": {
+      "upstream": "packages/harness-claude-code/src/binary.ts",
+      "blob": "2cd673d9026f12f526c53f8f33699241338f1e00",
+      "sha256": "f3e4b62692cc08767fe1d653e85ad164802a9e239839eb3bb134ecd0b5a806b8"
+    },
+    "src/testing/fake-sdk.ts": {
+      "upstream": "packages/harness-claude-code/test/fake-sdk.ts",
+      "blob": "babd0f394dccc1775266959a9379ec01e82b49ad",
+      "sha256": "06f7b4f506fb3c15acf87315f5f02f8c615501efbac82bbbf731685cd96d1068"
+    },
+    "src/testing/fake-anthropic.ts": {
+      "upstream": "packages/harness-claude-code/test/fake-anthropic.ts",
+      "blob": "f6764ca8d18538982e3f1efcb52f566cbc4023a1",
+      "sha256": "9d7c87553b594d2da897700bafaf598bef784e69761b58bf5dc5fee2f94d74c9"
+    }
+  }
+}

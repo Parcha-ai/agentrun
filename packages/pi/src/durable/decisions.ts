@@ -60,6 +60,10 @@ export type DecisionRow = {
   request?: { index: number; count: number; items?: number[] };
   state_sha256?: string;
   run_key?: string;
+  /** The id its host admitted the request under before sending it, when the host admits its requests so that one the run
+   *  stopped before it answered is still counted. The row settles that admission in the row's own commit: a cost fold
+   *  counts an admission no row names, and never one a row names. */
+  admission?: string;
 };
 
 /** The old form: one session document whose `receipts` list is rewritten at every commit. Read, and written only in a store that holds it. */

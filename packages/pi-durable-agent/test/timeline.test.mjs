@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPS, foldLabel, groupTimeline, registerLabel, renderText, timelineOf, timelineReducer } from "../dist/timeline/index.js";
+import { CAPS, foldLabel, groupTimeline, registerLabel, registerTurnEnding, renderText, REQUEST_COST, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, timelineOf, timelineReducer } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const GREP_FIELDS = [
@@ -173,12 +173,50 @@ test("a user message, a steer after a tool round, a custom input kind with an au
   assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Check the build", "You (steer): Use pnpm", "ann: ann: can you check?"]);
 });
 
+test("a message after a tool round that ends the turn is the person's next message, not a steer", () => {
+  registerTurnEnding("probe_ask");
+  const rows = timelineOf([
+    user("Pick a region", 0),
+    assistant([call("a", "probe_ask", { question: "Which one?" })], 1),
+    result("a", "probe_ask", "asked", 2),
+    user("EU", 3),
+    assistant([call("b", "bash", { command: "make" })], 4),
+    result("b", "bash", "ok", 5),
+    user("Use pnpm", 6),
+    assistant([call("c", "bash", { command: "ls" }), call("d", "probe_ask", { question: "Sure?" })], 7),
+    result("c", "bash", "ok", 8),
+    result("d", "probe_ask", "asked", 9),
+    user("Yes", 10),
+    assistant([call("e", "probe_ask", { question: "Which city?" }), call("f", "probe_ask", { question: "Which day?" })], 11),
+    result("e", "probe_ask", "asked", 12),
+    result("f", "probe_ask", "asked", 13),
+    user("Paris, Monday", 14),
+  ]);
+  assert.deepEqual(
+    rows.filter((r) => r.kind === "user_message").map((r) => r.summary),
+    ["You: Pick a region", "You: EU", "You (steer): Use pnpm", "You (steer): Yes", "You: Paris, Monday"],
+    "a round that only partly ends the turn goes on, so what comes in it steers; one whose tools all end it does not",
+  );
+});
+
+test("a failed call of a turn-ending tool does not end the turn: the agent goes on, so a message then steers", () => {
+  registerTurnEnding("probe_ask");
+  const rows = timelineOf([
+    user("Pick a region", 0),
+    assistant([call("a", "probe_ask", { question: "Which one?" })], 1),
+    result("a", "probe_ask", "probe_ask is not a tool of this agent", 2, { isError: true }),
+    user("Use EU", 3),
+  ]);
+  assert.deepEqual(rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: Pick a region", "You (steer): Use EU"]);
+});
+
 test("a failed model request is an error row; an aborted partial is nothing", () => {
   const rows = timelineOf([
     assistant([], 0, { stopReason: "error", errorMessage: "529 overloaded\nretry later" }),
     assistant([{ type: "text", text: "cut off" }], 1, { stopReason: "aborted" }),
   ]);
-  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: $0.0200 over 2 model requests"]]);
+  // The cut request's partial usage is not what it cost, so the sum is unknown (the cost test below).
+  assert.deepEqual(rows.map((r) => [r.kind, r.summary]), [["error", "Model request failed: 529 overloaded"], ["usage", "Cost so far: unknown over 2 model requests"]]);
 });
 
 test("a reset, a compaction and a changed prompt are phase rows; the first system entry is not", () => {
@@ -199,6 +237,75 @@ test("cost: a sum, and unknown when any answer carries none, never $0", () => {
   const unknown = timelineOf([assistant([{ type: "text", text: "a" }], 0), assistant([{ type: "text", text: "b" }], 1, { usage: undefined })]).at(-1);
   assert.equal(unknown.summary, "Cost so far: unknown over 2 model requests");
   assert.equal(unknown.usage.usd, null);
+});
+
+test("cost: a request marked as it left and cut before its first content counts, at an unknown cost; one still in flight does not make it unknown", () => {
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const ended = { kind: REQUEST_ENDED, data: {} };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  assert.deepEqual(timelineOf([started, ended, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "marked, ended, answered: one priced request");
+  assert.deepEqual(timelineOf([started, a, ended]).at(-1).usage, { usd: 0.01, requests: 1 }, "in either order");
+  assert.deepEqual(timelineOf([started, ended, a, started]).at(-1).usage, { usd: 0.01, requests: 2 }, "the next request in flight: the sum so far");
+  const stopped = timelineOf([started, ended, a, started, ended]).at(-1);
+  assert.deepEqual(stopped.usage, { usd: null, requests: 2 }, "stopped before its first content: ended with no entry");
+  assert.equal(stopped.summary, "Cost so far: unknown over 2 model requests");
+  assert.deepEqual(timelineOf([started, ended, a, started, started]).at(-1).usage, { usd: null, requests: 3 }, "a crash cut one, and the next process's is in flight");
+  // A run settled with its last request unanswered (its process died mid-request, and it never resumed): that request
+  // was cut, not in flight.
+  assert.deepEqual(timelineOf([started, a, started], { settled: true }).at(-1).usage, { usd: null, requests: 2 });
+  assert.deepEqual(timelineOf([user("hi", 0), started], { settled: true }).map((r) => [r.kind, r.usage ?? null]), [["user_message", null], ["usage", { usd: null, requests: 1 }]], "its only request, cut");
+  // While it runs, one request in flight alone makes no usage row yet; its answer makes one.
+  assert.deepEqual(timelineOf([user("hi", 0), started]).map((r) => r.kind), ["user_message"], "in flight alone: no usage row");
+  assert.deepEqual(timelineOf([user("hi", 0), started, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "answered: its row");
+  // A run written before requests were marked reads as it did.
+  assert.deepEqual(timelineOf([a]).at(-1).usage, { usd: 0.01, requests: 1 });
+  // A run written before requests were marked, continued after: its earlier answers are not the marked requests' entries.
+  assert.deepEqual(timelineOf([a, started, ended]).at(-1).usage, { usd: null, requests: 2 }, "the new request was cut");
+  assert.deepEqual(timelineOf([a, started, assistant([{ type: "text", text: "b" }], 1)]).at(-1).usage, { usd: 0.02, requests: 2 }, "the new request answered");
+  assert.deepEqual(timelineOf([a, started], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "settled with the new one unanswered");
+});
+
+test("cost: a compaction's summary is a paid request: its cost is summed; one aborted, or open when the run settles, makes the cost unknown; one in flight beside a generation does not", () => {
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const compacting = { kind: REQUEST_STARTED, data: { request: "compaction" } };
+  const summarized = (usd) => ({ kind: REQUEST_COST, data: { request: "compaction", usd } });
+  const aborted = { kind: REQUEST_ENDED, data: { request: "compaction" } };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  assert.deepEqual(timelineOf([started, a, compacting, summarized(0.005)]).at(-1).usage, { usd: 0.015, requests: 2 });
+  assert.deepEqual(timelineOf([started, a, compacting, summarized(null)]).at(-1).usage, { usd: null, requests: 2 }, "a summary of unknown price");
+  assert.deepEqual(timelineOf([started, a, compacting, aborted]).at(-1).usage, { usd: null, requests: 2 }, "aborted before its answer");
+  assert.deepEqual(timelineOf([started, a, compacting, started]).at(-1).usage, { usd: 0.01, requests: 3 }, "a compaction and a generation both in flight");
+  assert.deepEqual(timelineOf([started, a, compacting], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
+});
+
+test("a request the host refused before it left (a cancelled run) is not a request: its error entry is neither counted nor shown", () => {
+  const refused = { kind: REQUEST_REFUSED, data: {} };
+  const answer = (stopReason, errorMessage) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason, errorMessage, usage: { input: 0, output: 0, cost: { total: 0 } } }] });
+  assert.deepEqual(timelineOf([user("hi", 0), refused, answer("error", "the run was cancelled")]).map((r) => r.kind), ["user_message"], "no request, no error row, no usage row");
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  const rows = timelineOf([user("hi", 0), started, a, refused, answer("error", "the run was cancelled")]);
+  assert.deepEqual(rows.at(-1).usage, { usd: 0.01, requests: 1 });
+  assert.ok(!rows.some((r) => r.kind === "error"));
+  // A real failure after it still counts and shows.
+  assert.equal(timelineOf([started, answer("error", "overloaded")]).filter((r) => r.kind === "error").length, 1);
+});
+
+test("cost: a request cut before its end makes the sum unknown, never $0, with or without the usage its stream had reported", () => {
+  const done = assistant([{ type: "text", text: "a" }], 0);
+  // The Responses API reports usage only at its end, so a cut stream leaves pi's zero usage, priced $0.
+  const cut = assistant([], 1, { stopReason: "aborted", usage: { input: 0, output: 0, cost: { total: 0 } } });
+  // Anthropic's message_start reports the input and the first output token; the rest never came.
+  const partial = assistant([{ type: "text", text: "Half an ans" }], 1, { stopReason: "aborted", usage: { input: 900, output: 1, cost: { total: 0.0027 } } });
+  for (const [name, aborted] of [["no usage", cut], ["partial usage", partial]]) {
+    const usage = timelineOf([done, aborted]).at(-1);
+    assert.equal(usage.summary, "Cost so far: unknown over 2 model requests", name);
+    assert.deepEqual(usage.usage, { usd: null, requests: 2 }, name);
+    // A later request that completes does not make it known again.
+    assert.equal(timelineOf([done, aborted, assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage.usd, null, name);
+  }
+  // Completed requests alone still sum to the cent.
+  assert.deepEqual(timelineOf([done, assistant([call("c1", "read")], 1), assistant([{ type: "text", text: "b" }], 2)]).at(-1).usage, { usd: 0.03, requests: 3 });
 });
 
 test("an unknown entry kind and an unknown event are skipped, never thrown on", () => {
@@ -321,6 +428,16 @@ test("a snapshot rebuilds from its entries and drops what it no longer holds", (
   const out = reducer.apply([{ type: "snapshot", entries: entries.slice(0, 1) }]);
   assert.deepEqual(out.rows.map((r) => r.summary), ["You: one"]);
   assert.deepEqual(out.drop.sort(), before.filter((id) => id !== out.rows[0].id).sort());
+});
+
+test("isLive tells a live row (a phase the events made) from a committed one (an entry's)", () => {
+  const reducer = timelineReducer();
+  reducer.apply([{ type: "run_start" }, { type: "message_end", entry: user("one", 0) }]);
+  const rows = reducer.rows();
+  const phase = rows.find((r) => r.kind === "phase");
+  const message = rows.find((r) => r.kind === "user_message");
+  assert.equal(reducer.isLive(phase.id), true);
+  assert.equal(reducer.isLive(message.id), false);
 });
 
 test("a host labels its own tools; agent_label names the conversation", () => {

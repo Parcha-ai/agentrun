@@ -50,8 +50,9 @@ export class RowLog {
   }
 
   /** Make the served rows equal `rows`: new ids are added after every row served so far, changed ones keep their seq,
-   *  and ids no longer there are dropped. Returns whether anything changed. */
-  sync(rows: readonly TimelineEvent[]): boolean {
+   *  and ids no longer there are dropped, except those `keep` says stay (a row a committed entry made: the timeline only
+   *  grows). Returns whether anything changed. */
+  sync(rows: readonly TimelineEvent[], keep?: (id: string) => boolean): boolean {
     let changed = false;
     const present = new Set<string>();
     for (const row of rows) {
@@ -75,7 +76,7 @@ export class RowLog {
       changed = true;
     }
     for (const [key, slot] of this.slots) {
-      if (slot.dropped || key !== slot.source || present.has(slot.source)) continue;
+      if (slot.dropped || key !== slot.source || present.has(slot.source) || keep?.(slot.source)) continue;
       slot.dropped = true;
       slot.change = this.next();
       changed = true;

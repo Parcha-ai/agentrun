@@ -133,10 +133,12 @@ export async function startCommandIn(
   run: Pick<DurableRun, "harness" | "claim">,
   agent: AgentChange,
   name = `sleeper-${process.pid}-${Date.now()}`,
+  /** The bash command, given the file the pid it reports goes in; default the command itself, sleeping. */
+  script: (pidFile: string) => string = (pidFile) => `echo $$ > '${pidFile}'; exec sleep 600`,
 ): Promise<{ pid: number; conversationId: ConversationId }> {
   const pidFile = join(run.claim.work, `${name}.pid`);
   const conversation = await run.harness.createConversation({ ownership: { kind: "ownerless" }, agent }, ctx);
-  await conversation.submit({ type: "input", content: `bash: echo $$ > '${pidFile}'; exec sleep 600` }, ctx);
+  await conversation.submit({ type: "input", content: `bash: ${script(pidFile)}` }, ctx);
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     try {

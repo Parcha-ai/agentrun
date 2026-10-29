@@ -84,6 +84,7 @@ test("ask_person makes the run input_required and waiting; a message answers it 
   const done = await follow(api, run_id, ["completed"], { after: waiting.after });
   assert.equal(done.pages.filter((p) => p.reset).length, 0);
   assert.deepEqual((await api("GET", `/runs/${run_id}`)).body.result, { output: null, final_answer: '{"region":"EU"}' });
+  assert.deepEqual(done.rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: EU"], "the answer is the person's next message, never a steer");
   // What the model read back for its ask_person call, as the run's store holds it: never empty, on every pi-durable this
   // package takes (1.1 reads a result's `content`, 1.2 and later its `output`).
   const db = new DatabaseSync(join(data, "runs", run_id, "store", "run.sqlite"), { readOnly: true });
@@ -111,6 +112,37 @@ test("stop ends the turn and leaves the run input_required and idle; a message t
   assert.equal(next.body.mode, "follow_up");
   await follow(api, run_id, ["completed"]);
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "On go on: done.");
+});
+
+test("a stop the run's door refuses leaves no stop behind: the run reads working, and its saved meta keeps no stop", async (t) => {
+  const { api, data } = await serve(t);
+  const { run_id } = await startRun(api, "slow", "Take your time.");
+  for (let i = 0; (await api("GET", `/runs/${run_id}`)).body.state !== "working" || (await api("GET", `/runs/${run_id}`)).body.status !== "working"; i++) {
+    assert.ok(i < 200, "the run starts working");
+    await sleep(50);
+  }
+  // The server reaches the run's door with fetch, the test's client never does: refuse the door's abort alone.
+  const real = globalThis.fetch;
+  let refused = 0;
+  globalThis.fetch = (input, init) => {
+    if (new URL(input instanceof Request ? input.url : String(input)).pathname !== "/abort") return real(input, init);
+    refused++;
+    return Promise.resolve(new Response(JSON.stringify({ error: "internal" }), { status: 500, headers: { "content-type": "application/json" } }));
+  };
+  t.after(() => { globalThis.fetch = real; });
+  const stop = await api("POST", `/runs/${run_id}/stop`);
+  globalThis.fetch = real;
+  assert.equal(refused, 1, "the door was asked to abort");
+  assert.equal(stop.body.stopped, false);
+  const run = (await api("GET", `/runs/${run_id}`)).body;
+  assert.deepEqual([run.status, run.state], ["working", "working"], "not stopped");
+  const meta = JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8"));
+  assert.equal(meta.stopped_at, undefined, "no stop kept");
+  assert.equal(meta.stopped_after, undefined, "no stop kept");
+  // The turn was never stopped, so it can be: the next stop holds.
+  assert.equal((await api("POST", `/runs/${run_id}/stop`)).body.stopped, true);
+  await follow(api, run_id, ["input_required"]);
+  assert.equal(typeof JSON.parse(await readFile(join(data, "runs", run_id, "serve.json"), "utf8")).stopped_at, "string", "this stop is kept");
 });
 
 test("cancel ends a working run cancelled once its process has exited; a second cancel says it already ended", async (t) => {
