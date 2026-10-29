@@ -68,11 +68,21 @@ async function until(ready, what, ms = 5_000) {
   }
 }
 
-/** A promise and the function that settles it: for a hook or a stub to say it was reached. */
+/** For a hook or a stub to say it was reached: `fire()` it, and `wait(what)` for it, which fails naming `what` past `ms`,
+ *  so an event that never comes fails the test instead of hanging it. */
 function signal() {
   let fire;
   const reached = new Promise((resolve) => { fire = resolve; });
-  return { reached, fire };
+  const wait = async (what, ms = 5_000) => {
+    let timer;
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms); });
+    try {
+      await Promise.race([reached, late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  return { fire: () => fire(), wait };
 }
 
 /** A raw request to the proxy: any method, any path text, any key, any headers. */
@@ -332,7 +342,7 @@ test('close() while a request waits for the runner: it is not sent, and it is re
   const credential = () => new Promise((resolve) => setTimeout(() => resolve('provider-secret'), 60));
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential, hooks: { beforeRequest: () => { entered.fire(); return waiting; }, afterRequest: async (u) => { after.push(u); } }, fetch: async (url, init) => { forwarded.push(url); return new Response(sse()); } }, KEY);
   const answer = send(p.url, { path: '/v1/test?beta=true' }).catch((error) => ({ error }));
-  await entered.reached;
+  await entered.wait("the request inside the runner's admission");
   const closing = p.close();
   admit();
   await closing;
@@ -354,7 +364,7 @@ test('nothing is admitted once close() has begun: a request still reading its cr
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => { reached.fire(); return reading.then(() => 'provider-secret'); }, hooks: { beforeRequest: async (r) => { before.push(r); }, afterRequest: async (u) => { after.push(u); } }, fetch: async (url) => { forwarded.push(url); return new Response(sse()); } }, KEY);
   const answer = send(p.url, { path: '/v1/test?beta=true' }).catch((error) => ({ error }));
   // Closed while the request is reading its credential: the credential says it was reached, so this is never a guess.
-  await reached.reached;
+  await reached.wait('the request reading its credential');
   const closing = p.close();
   release();
   await closing;
@@ -476,13 +486,13 @@ test('two paid requests in flight through the proxy, answered in reverse: each i
   const booking = await modelPortFor(await store.open('chat:proxy'), { key: 'chat:proxy', onEvent: (e) => { if (e.type === 'request_end') { ends.push([e.turn, e.usage.input]); if (e.turn === 2) fastBooked.fire(); } } });
   const fetchStub = async (_url, init) => {
     const body = JSON.parse(init.body);
-    if (body.input === 'slow') { slowSent.fire(); await fastBooked.reached; }
+    if (body.input === 'slow') { slowSent.fire(); await fastBooked.wait('the fast request booked'); }
     return new Response(sse({ in: body.input === 'slow' ? 100 : 7, out: 1 }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
   t.after(() => p.close());
   const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
-  await slowSent.reached;
+  await slowSent.wait('the slow request with the provider');
   const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
   await Promise.all([first, second]);
   await until(() => ends.length === 2, 'both answers booked');
@@ -575,13 +585,13 @@ test("two requests in flight, answered in reverse: each is booked with its own r
   const booking = await modelPortFor(await store.open(key), { key, onEvent: (e) => { if (e.type === 'request_end' && e.turn === 2) fastBooked.fire(); } });
   const fetchStub = async (_url, init) => {
     const { input } = JSON.parse(init.body);
-    if (input === 'slow') { slowSent.fire(); await fastBooked.reached; }
+    if (input === 'slow') { slowSent.fire(); await fastBooked.wait('the fast request booked'); }
     return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', 'request-id': `req_${input}`, 'x-litellm-call-id': `call-${input}` } });
   };
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
   t.after(() => p.close());
   const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
-  await slowSent.reached;
+  await slowSent.wait('the slow request with the provider');
   const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
   await Promise.all([first, second]);
   const count = async (kind) => (await store.read(key)).filter((r) => r.kind === kind).length;
