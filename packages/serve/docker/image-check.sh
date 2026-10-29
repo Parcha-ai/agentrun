@@ -6,18 +6,41 @@
 # The Codex CLI is one: it ships with its adapter, from the lock, and the tree must hold the build @parcha/agentrun-codex
 # is pinned to for the image's platform. The adapter's own check reads the pins (its platform package's version, the
 # binary's sha256 and the version it reports); a missing or different build fails with the typed error it prints.
+# With CLAUDE_AGENT_SDK set (an image built with that build arg, for testing claude-agent), the SDK is meant to be there
+# instead: the check is then that the adapter finds that version and its pinned CLI.
 #   image-check.sh <root>
 set -eu
 root=${1:?usage: image-check.sh <root>}
-found=$(find "$root" \( \
-  -path '*/node_modules/@anthropic-ai/claude-agent-sdk' -o -path '*/node_modules/@anthropic-ai/claude-agent-sdk-*' \
-  -o -path '*/node_modules/@anthropic-ai/claude-code' -o -path '*/node_modules/.bin/claude' \
-  \) -prune -print)
-if [ -n "$found" ]; then
-  printf 'image check: %s carries a coding-agent CLI the image may not ship yet:\n%s\n' "$root" "$found" >&2
-  exit 1
+if [ -n "${CLAUDE_AGENT_SDK:-}" ]; then
+  node --input-type=module -e '
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
+import { argv, exit } from "node:process";
+import { pathToFileURL } from "node:url";
+const [root, want] = argv.slice(1);
+const pkg = dirname(createRequire(resolve(root, "package.json")).resolve("@parcha/agentrun-claude-agent/package.json"));
+const { verifyClaudeAgent } = await import(pathToFileURL(join(pkg, "dist", "index.js")).href);
+const sdk = JSON.parse(await (await import("node:fs/promises")).readFile(join(root, "node_modules/@anthropic-ai/claude-agent-sdk/package.json"), "utf8")).version;
+if (sdk !== want) { console.error(`image check: CLAUDE_AGENT_SDK=${want}, but the tree holds @anthropic-ai/claude-agent-sdk ${sdk}`); exit(1); }
+try {
+  const { cliPath } = verifyClaudeAgent({});
+  console.log(`image check: Claude Agent SDK ${sdk} and its pinned CLI at ${cliPath} (CLAUDE_AGENT_SDK=${want})`);
+} catch (error) {
+  console.error(`image check: CLAUDE_AGENT_SDK=${want}, but the adapter does not find what it runs: ${error?.message ?? error}`);
+  exit(1);
+}
+' "$root" "$CLAUDE_AGENT_SDK"
+else
+  found=$(find "$root" \( \
+    -path '*/node_modules/@anthropic-ai/claude-agent-sdk' -o -path '*/node_modules/@anthropic-ai/claude-agent-sdk-*' \
+    -o -path '*/node_modules/@anthropic-ai/claude-code' -o -path '*/node_modules/.bin/claude' \
+    \) -prune -print)
+  if [ -n "$found" ]; then
+    printf 'image check: %s carries a coding-agent CLI the image may not ship yet:\n%s\n' "$root" "$found" >&2
+    exit 1
+  fi
+  echo "image check: no Claude Agent SDK or Claude CLI under $root"
 fi
-echo "image check: no Claude Agent SDK or Claude CLI under $root"
 env -u CODEX_BIN node --input-type=module -e '
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";

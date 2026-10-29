@@ -1,9 +1,13 @@
 # AgentRun Server in one container, built from a checkout of this repository (from its root):
 #   docker build -f packages/serve/docker/Dockerfile -t agentrun-server .
+# With --build-arg CLAUDE_AGENT_SDK=<the version the lock pins, 0.3.286>, the image keeps the Claude Agent SDK and its CLI,
+# so claude-agent runs in it. Without it (the default, and every published image), the image carries neither.
 # Everything it keeps is under /data: store.sqlite and runs/. Mount a volume there.
 # The base is pinned by digest (a multi-arch index); the dependencies by the workspace's package-lock.json, dev ones
 # included: the pi packages the server loads are the workspace's development dependencies, peers of its packages.
 FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6 AS build
+# Empty: the SDK is removed, as below. A version: it is kept, and must be the one the lock installed.
+ARG CLAUDE_AGENT_SDK=
 WORKDIR /src
 COPY . .
 # The reference harness is not part of the server: it is removed from the image after the workspace build. So is the
@@ -12,8 +16,13 @@ COPY . .
 # names them. Never `npm prune --omit=dev`: the pi packages the server loads are dev dependencies too.
 RUN npm ci --ignore-scripts && npm run build \
  && rm -rf packages/harness node_modules/@parcha/agentrun-harness \
- && rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
-      node_modules/@anthropic-ai/claude-code node_modules/.bin/claude \
+ && if [ -z "$CLAUDE_AGENT_SDK" ]; then \
+      rm -rf node_modules/@anthropic-ai/claude-agent-sdk node_modules/@anthropic-ai/claude-agent-sdk-* \
+        node_modules/@anthropic-ai/claude-code node_modules/.bin/claude; \
+    else \
+      v="$(node -p 'require("./node_modules/@anthropic-ai/claude-agent-sdk/package.json").version')" \
+      && { [ "$v" = "$CLAUDE_AGENT_SDK" ] || { echo "CLAUDE_AGENT_SDK=$CLAUDE_AGENT_SDK, but the lock installs $v" >&2; exit 1; }; }; \
+    fi \
  && chmod -R a+rX,go-w /src
 
 FROM node:22.23.2-trixie-slim@sha256:c5849ff9c9ebcd66615412f0b548ca5b8ecaef84003dc9ac2e077ebe46aaa3f6
@@ -28,7 +37,8 @@ RUN v="$(git --version | cut -d' ' -f3)" && dpkg --compare-versions "$v" ge 2.40
 COPY --from=build --chown=root:root /src /opt/agentrun
 # The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
 # is not the build its adapter is pinned to.
-RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
+ARG CLAUDE_AGENT_SDK=
+RUN CLAUDE_AGENT_SDK="$CLAUDE_AGENT_SDK" sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
 WORKDIR /opt/agentrun
 USER node
 ENV NODE_ENV=production

@@ -32,3 +32,7 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      # Leave empty for the default image. 0.3.286 (the version the lock pins) builds the image with the Claude Agent SDK
+      # and its CLI, so claude-agent runs: Render passes a Docker service's environment to the build as build args.
+      - key: CLAUDE_AGENT_SDK
+        sync: false
