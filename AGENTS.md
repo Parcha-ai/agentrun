@@ -30,14 +30,14 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/pi-agent-learn` | Learning agent on `pi-git-remote`; locks `agent.json` and `AGENTS.md`, so `examples/agent-learn/agent/AGENTS.md` is runtime content. Tests need git 2.40+ |
 | `packages/learn` | Held. `SPEC.md` is the learning-repository contract; `agentrun-learn check` reads git with plumbing only. Depends on `dsl` alone |
 | `packages/harness` | Held. The reference host; `pi-transport` is an optional peer. Covered by `examples/reference*.test.mjs` |
-| `packages/run-adapters`, `run-adapters-claude-agent` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code from vercel-labs/durable-harness is tracked in `vendor/durable-harness/UPSTREAM.json`; never hand-edit `vendor/durable-harness/upstream/`. The Claude adapter pins an exact SDK/CLI pair; CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` |
+| `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code from vercel-labs/durable-harness is tracked in `vendor/durable-harness/UPSTREAM.json`; never hand-edit `vendor/durable-harness/upstream/`. The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
 | `apps/viewer` | Run viewer; `npm run test:viewer` (in `npm run check`) |
 | `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ models `Receipts.tla` and `Door.tla` (see Models of recovery) |
 | `examples/` | Offline (`npm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
 | `changes/`, `docs/`, `scripts/` | Changelog fragments; guides (`guide.md`, `authoring.md`, `host-integration.md`, `releasing.md`); generation and verification scripts |
 
-Fifteen packages share one version. `"private": true` holds `harness`, `serve`, `learn`,
-`run-adapters` and `run-adapters-claude-agent`: built, tested, verified and versioned like the
+Sixteen packages share one version. `"private": true` holds `harness`, `serve`, `learn`,
+`run-adapters`, `run-adapters-claude-agent` and `run-adapters-codex`: built, tested, verified and versioned like the
 rest, never published; removing the flag lifts a hold. Release order: `scripts/release-preflight.mjs`.
 
 ## Setup and checks
