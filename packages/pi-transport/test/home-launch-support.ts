@@ -367,7 +367,8 @@ export function registerLaunchSuite(label: string, withBox: WithBox): void {
 			async (box, test) => {
 				if ((await sh(box, "test -r /proc/self/environ")).exitCode !== 0) return; // no /proc to read a process's environment from
 				// A root launcher runs a framed launch only with a toolsUser (launch.ts refuses it as invalid otherwise).
-				if (framed && (await sh(box, "id -u")).text.trim() === "0") test.skip("this box's launcher runs as root: a framed launch needs a toolsUser");
+				if (framed && (await sh(box, "id -u")).text.trim() === "0")
+					test.skip("this box's launcher runs as root: a framed launch needs a toolsUser");
 				const spec = program(recording("env > prog.env; exec sleep 300"));
 				const result = await launch(box, "carry", framed ? { ...spec, secrets: { CARRY: "x" } } : spec, context);
 				// A box whose ptrace scope is under 1 refuses every framed launch: the case is reported skipped, never passed.
