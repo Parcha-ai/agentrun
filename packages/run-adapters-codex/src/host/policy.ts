@@ -207,5 +207,9 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     },
     usageOf,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
+    // The Responses API documents no prompt of its own that it adds and bills on these routes (no hosted tool passes the
+    // policy). The framing it puts around each input item and tool definition is a few tokens each, fewer than the bytes
+    // of the JSON keys that same item already spends in the body.
+    serverInputOverhead: () => 0,
   };
 }

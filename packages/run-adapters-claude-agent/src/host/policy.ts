@@ -226,6 +226,22 @@ export function anthropicUsage(text: string): ProxyUsage | undefined {
 }
 
 /** The Claude Agent CLI's provider policy for one session. */
+/**
+ * The tool-use system prompt the Messages API adds, server-side, to a request that carries tools: input tokens it bills
+ * that the body does not carry. Its size is per model and tool_choice, documented under "Pricing" in
+ * https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview. Taken here at the largest figure listed for any
+ * current model (Claude Opus 4.7's), so no model is undercounted: 675 tokens for tool_choice auto or none, 804 for any or
+ * tool. A body with no tools gets none. The policy offers only custom tools, which add nothing beyond their definitions.
+ */
+export const TOOL_USE_SYSTEM_PROMPT_TOKENS = Object.freeze({ autoOrNone: 675, anyOrTool: 804 });
+
+/** The input tokens the provider bills for `body` that it does not carry: the tool-use system prompt, when it has tools. */
+export function anthropicServerInputOverhead(body: Record<string, unknown>): number {
+  if (!Array.isArray(body.tools) || body.tools.length === 0) return 0;
+  const choice = isPlain(body.tool_choice) ? body.tool_choice.type : undefined;
+  return choice === "any" || choice === "tool" ? TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : TOOL_USE_SYSTEM_PROMPT_TOKENS.autoOrNone;
+}
+
 export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy {
   return {
     id: "anthropic",
@@ -244,6 +260,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     apply: (body, route) => applyAnthropic(body, route, options),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
+    serverInputOverhead: anthropicServerInputOverhead,
     usageOf: anthropicUsage,
   };
 }

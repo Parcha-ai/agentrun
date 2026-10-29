@@ -268,7 +268,7 @@ test('a request the runner refuses is never forwarded, and answers a status the 
   const r = await send(p.url);
   assert.equal(r.status, 400);
   assert.match(r.text, /turn_limit/);
-  assert.deepEqual([forwarded.length, hooks.after.length, hooks.before], [0, 0, [{ model: 'session-model' }]]);
+  assert.deepEqual([forwarded.length, hooks.after.length, hooks.before], [0, 0, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(JSON.stringify({ model: 'session-model', input: 'hi' })) }]]);
   const own = await proxy(t, { refuse: 'budget', policy: { ...policy, refusedStatus: 403 } });
   assert.equal((await send(own.p.url)).status, 403);
 });

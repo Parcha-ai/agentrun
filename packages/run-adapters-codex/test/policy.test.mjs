@@ -27,7 +27,7 @@ async function proxy({ tools = ['lookup'], answer = () => new Response(RECORDED_
     origin: 'https://provider.invalid',
     credential: () => 'provider-secret',
     price: (_model, u) => (u.input + u.output + u.cacheRead) / 1e6,
-    fetch: async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body) }); return answer(); },
+    fetch: async (url, init) => { forwarded.push({ url, headers: init.headers, body: JSON.parse(init.body), raw: init.body }); return answer(); },
   }, KEY);
   after(() => p.close());
   return { p, forwarded, asked, reports };
@@ -61,9 +61,17 @@ test("the recorded request reaches the provider as the policy shapes it: the ses
   assert.deepEqual([f.body.model, f.body.store, f.body.max_output_tokens, f.body.include], ['session-model', false, 32_000, ['reasoning.encrypted_content']]);
   // web search, the CLI's built-ins and its multi-agent namespace are not the session's: only `lookup` is offered.
   assert.deepEqual(f.body.tools.map((t) => `${t.type}:${t.name}`), ['function:lookup']);
-  assert.deepEqual(asked, [{ model: 'session-model' }], "the runner is asked about the applied body's model");
+  assert.deepEqual(asked, [{ model: 'session-model', inputTokensMax: Buffer.byteLength(f.raw, 'utf8') }], "the runner is asked about the applied body's model, with its input bound: the sent body's bytes");
   const sent = JSON.stringify(f);
   for (const id of ['<x-codex-installation-id>', '<session_id>', 'sid', 'tid', 'rid', 'wid', 'codex_exec', KEY]) assert.ok(!sent.includes(id), `${id} does not reach the provider`);
+});
+
+test("the Responses API adds no billed input the body does not carry: the input bound is the sent body's bytes, tools or not", async () => {
+  const policy = codexPolicy({ model: 'session-model', tools: ['lookup'] });
+  for (const body of [{}, { tools: [{ type: 'function', name: 'lookup' }], tool_choice: 'required' }, RECORDED_REQUEST]) assert.equal(policy.serverInputOverhead(body), 0);
+  const { p, forwarded, asked } = await proxy();
+  await send(p.url, { body: { ...RECORDED_REQUEST, tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] } });
+  assert.deepEqual(asked.map((r) => r.inputTokensMax), [Buffer.byteLength(forwarded[0].raw, 'utf8')]);
 });
 
 test("the recorded stream's usage is booked from response.completed, read as JSON", async () => {
