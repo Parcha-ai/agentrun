@@ -31,10 +31,10 @@ const flow = (steps) => ({
     In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
     Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
     Probe: {
-      type: "object", required: ["leaked", "key_set", "fd_open", "sub_leaked", "sub_fd_open", "node_leaked", "node_fd_open"],
+      type: "object", required: ["leaked", "key_set", "fd_open", "sub_leaked", "sub_fd_open", "node_leaked", "node_fd_open", "host_env_leaked"],
       properties: {
         leaked: { type: "boolean" }, key_set: { type: "boolean" }, fd_open: { type: "boolean" }, sub_leaked: { type: "boolean" }, sub_fd_open: { type: "boolean" },
-        node_leaked: { type: "boolean" }, node_fd_open: { type: "boolean" },
+        node_leaked: { type: "boolean" }, node_fd_open: { type: "boolean" }, host_env_leaked: { type: "boolean" },
       },
     },
   },
@@ -43,7 +43,7 @@ const flow = (steps) => ({
   root: { node: "chain", steps },
 });
 /** What a run that cannot reach the key reports. */
-const CLEAN = { leaked: false, key_set: false, fd_open: false, sub_leaked: false, sub_fd_open: false, node_leaked: false, node_fd_open: false };
+const CLEAN = { leaked: false, key_set: false, fd_open: false, sub_leaked: false, sub_fd_open: false, node_leaked: false, node_fd_open: false, host_env_leaked: false };
 const QUESTION = "State of Delaware. Certificate of Incorporation of Example Widgets, Inc.";
 
 /** The canary as the decision key and a file for the fake Jev's calls, in this process's environment for test `t`. */
