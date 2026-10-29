@@ -343,7 +343,7 @@ test("on the four gateway variables alone, the run's process is handed AGENT_MOD
 });
 
 /** decisionProvidersOf in a process of its own, as a run's process calls it: its environment is `env` alone, and
- *  `handed` (a route and key) comes on the decision descriptor when given. Whether it made a judge, and what the fake
+ *  `handed` (keys by name) comes on the decision descriptor when given. Whether it made a judge, and what the fake
  *  Jev took. */
 async function judgeIn(t, env, handed) {
   const calls = join(await scratch(t), "jev-calls.jsonl");
@@ -358,8 +358,8 @@ process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answe
     // As a run's process has them: the secrets pipe on 3 (none here), the key on the next.
     stdio: ["ignore", "pipe", "pipe", "ignore", ...(handed ? ["pipe"] : [])],
   });
-  // What the server writes there: the route, a newline, the key.
-  if (handed) child.stdio[Number(KEY_FD)].end(`${handed.route}\n${handed.key}`);
+  // What the server writes there: the keys by name, as one JSON object.
+  if (handed) child.stdio[Number(KEY_FD)].end(JSON.stringify(handed));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -371,7 +371,7 @@ process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answe
 }
 
 test("a run's judge runs on the key handed on the decision descriptor alone: with no key in its environment it answers, and with keys only in its environment there is no judge", async (t) => {
-  const handedOnly = await judgeIn(t, {}, { route: "openrouter", key: CANARY });
+  const handedOnly = await judgeIn(t, {}, { OPENROUTER_API_KEY: CANARY });
   assert.deepEqual(handedOnly, { judge: true, noul: 0.92, sent: [["/api/v1/systemone", true]] }, "the gateway's key, deleted from its environment, still reaches OpenRouter from the descriptor");
   const envOnly = await judgeIn(t, { OPENROUTER_API_KEY: CANARY, AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: CANARY, TYPESAFE_API_KEY: CANARY });
   assert.deepEqual(envOnly, { judge: false, noul: null, sent: [] }, "a key in the environment is never the judge's");

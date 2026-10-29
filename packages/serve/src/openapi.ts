@@ -161,7 +161,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
           type: "object", additionalProperties: false, required: ["providers"],
           description: "The decision providers a workflow's typed questions (judge, pick, sift, route, ask) run on, and whether this server runs each: when not, why (`reason`); when it runs in a way an operator should know of, a `note`. `runJudge` is among `adapters` once one runs.",
           properties: {
-            providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" } } } },
+            providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev", "parallel"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" } } } },
           },
           "x-agentrun-serve": "decisions/1",
         },

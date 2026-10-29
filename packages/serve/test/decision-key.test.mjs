@@ -79,20 +79,20 @@ process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
   assert.equal((await api("GET", "/capabilities")).status, 200, "and it still answers");
 });
 
-test("the run's process reads the key once and closes its descriptor: the number no longer names the pipe", { skip: !existsSync("/proc/self/fdinfo") && "no /proc here" }, async () => {
-  // As the server launches it: the key on the first descriptor after stdio and the secrets pipe. Read, then a file
-  // opened takes the lowest free number, which is the key's if it was closed.
+test("the run's process reads the keys once and closes their descriptor: the number no longer names the pipe", { skip: !existsSync("/proc/self/fdinfo") && "no /proc here" }, async () => {
+  // As the server launches it: the keys on the first descriptor after stdio and the secrets pipe. Read, then a file
+  // opened takes the lowest free number, which is the keys' if it was closed.
   const script = `const { readlinkSync, openSync } = await import("node:fs");
-const { handedKey } = await import(${JSON.stringify(DECISIONS)});
+const { handedKeys } = await import(${JSON.stringify(DECISIONS)});
 const fd = Number(process.env.AGENTRUN_SERVE_DECISION_KEY_FD);
 const before = readlinkSync("/proc/self/fd/" + fd);
-const key = handedKey(process.env);
+const keys = handedKeys(process.env);
 openSync(process.execPath, "r");
 let after = null;
 try { after = readlinkSync("/proc/self/fd/" + fd); } catch {}
-process.stdout.write(JSON.stringify({ fd, before, key, after }));`;
+process.stdout.write(JSON.stringify({ fd, before, keys, after }));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe", "ignore", "pipe"], env: { ...process.env, AGENTRUN_SERVE_DECISION_KEY_FD: "4" } });
-  child.stdio[4].end(CANARY);
+  child.stdio[4].end(JSON.stringify({ TYPESAFE_API_KEY: CANARY }));
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
@@ -100,7 +100,7 @@ process.stdout.write(JSON.stringify({ fd, before, key, after }));`;
   const code = await new Promise((resolve) => child.once("exit", resolve));
   assert.equal(code, 0, err);
   const seen = JSON.parse(out);
-  assert.equal(seen.key, CANARY, "the key came through the descriptor");
+  assert.deepEqual(seen.keys, { TYPESAFE_API_KEY: CANARY }, "the keys came through the descriptor");
   assert.match(seen.before, /^(socket|pipe):\[\d+\]$/, "before the read, the descriptor is the handed pipe");
   assert.notEqual(seen.after, seen.before, "after it, the number names something else or nothing");
 });
