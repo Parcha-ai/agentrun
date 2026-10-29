@@ -193,7 +193,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     const stoppedNow = options.stopped?.();
     if (stoppedNow) {
       answered.add(turn);
-      await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
+      // Through the booking's own write: a response's ids still waiting to be carried go with the withdrawal.
+      await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
       throw stoppedNow;
     }
     open.push({ turn, model });
