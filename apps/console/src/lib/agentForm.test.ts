@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, editBody, harnessOptions, saveError } from "./agentForm";
+import { createBody, editBody, harnessOptions, same, saveError } from "./agentForm";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -38,6 +38,14 @@ describe("editBody", () => {
     expect(same.unchanged).toBe(true);
     expect(same.definition.version).toBe(agent.body.definition.version);
     expect(editBody(w, { instructions: "", tools: (workflow.body.definition as { tools: string[] }).tools }, "").unchanged).toBe(true);
+  });
+
+  it("is unchanged whatever the order of the definition's keys: the server's order and the form's differ", () => {
+    const d = agent.body.definition as Record<string, unknown>;
+    const reordered = Object.fromEntries(Object.entries(d).reverse());
+    const same = editBody({ ...(agent.body as object), definition: reordered } as never, { instructions: d.instructions as string, tools: d.tools as string[] }, "");
+    expect(same.unchanged).toBe(true);
+    expect(same.definition.version).toBe(d.version);
   });
 
   it("sends no note when there is none", () => {
@@ -97,5 +105,14 @@ describe("saveError", () => {
   });
   it("reads a 422 as the fields to fix, by field", () => {
     expect(saveError(err(invalid as never))).toEqual({ kind: "invalid", message: invalid.body.error.message, fields: { "definition.harness": "definition.harness is one of pi, claude-agent, codex" } });
+  });
+});
+
+describe("same", () => {
+  it("compares JSON by value whatever the order of its keys, nested objects included, and arrays in order", () => {
+    expect(same({ a: 1, b: { c: 1, d: [1, 2] } }, { b: { d: [1, 2], c: 1 }, a: 1 })).toBe(true);
+    expect(same({ a: 1, b: { c: 1 } }, { a: 1, b: { c: 2 } })).toBe(false);
+    expect(same({ tools: ["read", "write"] }, { tools: ["write", "read"] })).toBe(false);
+    expect(same({ a: 1, gone: undefined }, { a: 1 })).toBe(true);
   });
 });

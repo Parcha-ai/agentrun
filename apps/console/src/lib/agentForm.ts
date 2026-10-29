@@ -26,7 +26,7 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
 }
 
 /** Deep equality of two JSON values, whatever their keys' order. */
-function same(a: unknown, b: unknown): boolean {
+export function same(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
   const ka = Object.keys(a as object).filter((k) => (a as Record<string, unknown>)[k] !== undefined);

@@ -3,6 +3,8 @@ import { ClientError, allPages, createClient, follow } from "./client";
 import type { TimelinePage } from "./v2";
 import page412 from "../fixtures/error.definition-stale-etag.json";
 import running from "../fixtures/run.working.working.1.timeline.json";
+import invalid from "../fixtures/write.definition-invalid-harness.json";
+import { saveError } from "./agentForm";
 
 type Call = { url: string; init?: RequestInit };
 function fakeFetch(answers: (call: Call) => Response) {
@@ -174,5 +176,23 @@ describe("follow's pace", () => {
     const gaps = at.slice(1).map((t, i) => t - at[i]);
     expect(gaps.length).toBe(4);
     for (const g of gaps) expect(g).toBeGreaterThanOrEqual(35);
+  });
+});
+
+describe("allPages and a 422", () => {
+  it("asks each page with the cursor the last one gave, from none, and stops at the page with none", async () => {
+    const pages = [{ agents: [{ agent_id: "a" }], next_cursor: "c1" }, { agents: [{ agent_id: "b" }], next_cursor: "c2" }, { agents: [{ agent_id: "c" }], next_cursor: null }];
+    const asked: (string | null)[] = [];
+    const all = await allPages(async (cursor) => { asked.push(cursor); return pages.shift()!; }, (p) => p.agents);
+    expect(asked).toEqual([null, "c1", "c2"]);
+    expect(all.map((a) => a.agent_id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("carries a 422's field issues on the ClientError, so the editor shows them by field", async () => {
+    const { fn } = fakeFetch(() => json(invalid.status, invalid.body));
+    const err = await createClient({ fetch: fn }).updateDefinition("a1", { definition: { version: 2 } }, '"rev-1"').catch((e) => e);
+    expect(err).toBeInstanceOf(ClientError);
+    expect(err.fields).toEqual(invalid.body.error.fields);
+    expect(saveError(err)).toEqual({ kind: "invalid", message: invalid.body.error.message, fields: { "definition.harness": invalid.body.error.fields[0].message } });
   });
 });
