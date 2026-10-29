@@ -52,3 +52,17 @@ export function curlFor(origin: string, agentId: string, body: StartBody, key: s
 /** A run started only when the server said so (2xx). A lost answer (no status) or a refusal keeps the request's key, so
  *  sending it again is the same request and cannot start a second run. */
 export const started = (status: number): boolean => status >= 200 && status < 300;
+
+/** Sends one start under the request's key, and resets the key only when the run started (2xx): a refusal or a lost
+ *  answer keeps it, so sending the same request again is a retry the server answers with the run it may have started,
+ *  never a second run. Both start screens send through this. */
+export async function submitStart<R extends { status: number }>(
+  keys: ReturnType<typeof keeper>,
+  agentId: string,
+  body: StartBody,
+  send: (agentId: string, body: StartBody, key: string) => Promise<R>,
+): Promise<R> {
+  const r = await send(agentId, body, keys.keyFor(agentId, body));
+  if (started(r.status)) keys.done();
+  return r;
+}
