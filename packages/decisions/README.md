@@ -32,7 +32,7 @@ What it does with Parallel's answers:
   - a 408, a 5xx or a connection lost after sending is `outcome_unknown`, with `costUsd` and `costBasis` on the error;
   - a request that never reached Parallel is retried with backoff, then `connection`;
   - a body that is not JSON, or answers that do not match the questions, is `invalid_response`;
-  - the host's abort is `aborted`, and the deadline (`timeoutMs`, 30 s by default, or the host's shorter one) is `timeout`.
+  - the host's own cancel is `aborted`. The deadline (`timeoutMs`, 30 s by default, or the host's shorter one) ending a request in flight is `outcome_unknown`, booked at list price, since Parallel may have answered it. One that ends a wait between attempts, with nothing in flight, is `timeout`.
 
   No message carries the key, a header or a body.
 

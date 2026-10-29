@@ -130,7 +130,8 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         try {
           response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal });
         } catch (error) {
-          if (signal.aborted) throw stopped(attempt);
+          // A deadline that ends a request in flight may have ended it after Parallel answered: only the host's cancel is not a lost outcome.
+          if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline");
           if (!neverSent(error)) throw lost(attempt, "lost the connection");
           if (attempt >= maxAttempts) throw new DecisionProviderError("connection", "Parallel could not be reached.", { attempts: attempt });
           await sleep(Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1)), undefined, { signal }).catch(() => { throw stopped(attempt); });
@@ -139,7 +140,7 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         if (response.ok) {
           let parsed: unknown;
           try { parsed = await response.json(); }
-          catch { if (signal.aborted) throw stopped(attempt); throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt }); }
+          catch { if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline"); throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt }); }
           return readResponse(parsed, request.questions, attempt);
         }
         const status = response.status;
