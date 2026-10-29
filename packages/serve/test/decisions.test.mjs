@@ -181,19 +181,29 @@ test("a System One request that fails after it was sent (a 503) is sent once, an
   assert.equal(run.status, "failed");
   assert.equal(run.error?.code, "escalated", JSON.stringify(run.error));
   assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"], "the run waits for review as an interrupted decision");
+  assert.equal(run.cost.usd, null, "a decision that may have been billed leaves the run's cost unknown, never $0");
 });
 
-test("a decision whose cost is unknown leaves the run's cost unknown, never $0", async (t) => {
+test("each decision Jev answers is booked at TypeSafe's published price as an estimate, and the run's cost is their sum, once", async (t) => {
   await withCanary(t);
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
-  const runId = await startFlow(api, [judge, probe()]);
+  // Two decisions and no model node: the run's cost is the decisions' alone.
+  const twice = { ...flow([judge, { ...judge, label: "coi_again", as: "coi_again" }]), output: { schemaId: "Coi", path: "coi" } };
+  const made = await api("POST", "/agents", flowAgent("coi", twice));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = await api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "completed", JSON.stringify(run.error));
+  // The fake answers each call with 120 input tokens and none out; TypeSafe prices input at $0.042 per million.
+  const each = (120 * 0.042 + 0 * 0) / 1_000_000;
   const rows = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
-  assert.equal(rows[0].cost_usd, null, "Jev reports no cost, and no price is set: the receipt says unknown");
-  assert.equal(run.cost.usd, null, "the run's cost reads unknown");
-  assert.equal(storeRun(data, runId).costUsd ?? null, null, "and the store keeps no cost for it");
+  assert.deepEqual(rows.map((row) => row.cost_usd), [each, each], "each receipt holds its own estimate");
+  assert.equal(run.cost.usd, each + each, "the run's cost is the two decisions' sum, counted once");
+  assert.equal(run.cost.basis, "estimate");
+  assert.equal(storeRun(data, runId).costUsd, each + each, "and the store keeps the same");
 });
 
 test("with no decision key, a judge workflow saves with a warning, and its run is 409 not_set_up_here naming TYPESAFE_API_KEY", async (t) => {
