@@ -1,5 +1,6 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
@@ -8,6 +9,34 @@ import { openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
+
+/** The bin, `args` after it, in a process of its own (so a test can kill it as a crash would), resolved once its stdout
+ *  matches `ready`. It is rejected at once, with all it wrote to stdout and stderr (read to their end), if it exits
+ *  first, and after `ms` otherwise: long enough for a slow start on a loaded machine, and short enough that two starts fit
+ *  inside a 60 s test with room to say why. */
+export function startBin(t, args, { env = process.env, ready = /AGENTRUN_API_KEY=/, ms = 20_000 } = {}) {
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, ...args], { stdio: ["ignore", "pipe", "pipe"], env });
+  t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
+  const seen = { out: "", err: "" };
+  child.stdout.on("data", (chunk) => (seen.out += chunk));
+  child.stderr.on("data", (chunk) => (seen.err += chunk));
+  const value = (name) => new RegExp(`${name}=(\\S+)`).exec(seen.out)?.[1];
+  return new Promise((resolve, reject) => {
+    const said = () => `stdout: ${seen.out || "(none)"}; stderr: ${seen.err || "(none)"}`;
+    const done = (error) => {
+      clearTimeout(timer);
+      child.stdout.off("data", check);
+      child.off("close", exited);
+      error ? reject(error) : resolve({ child, seen, value });
+    };
+    const check = () => ready.test(seen.out) && done();
+    const exited = (code, signal) => done(new Error(`the server exited (${signal ?? code}) before it started: ${said()}`));
+    const timer = setTimeout(() => done(new Error(`the server did not start in ${ms} ms: ${said()}`)), ms);
+    child.stdout.on("data", check);
+    // "close", not "exit": its pipes are read to the end first, so what it wrote just before it went is in the message.
+    child.once("close", exited);
+  });
+}
 
 export async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));

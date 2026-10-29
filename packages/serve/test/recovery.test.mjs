@@ -9,22 +9,14 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
+import { agent, client, FAUX, flowAgent, follow, scratch, startBin, startRun, storeRun } from "./support.mjs";
 
-const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const alive = processAlive;
 
 /** A server in a process of its own, so a test can kill it the way a crash does and leave its runs behind. */
-async function serverProcess(data) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
-    assert.ok(i < 200, `the server did not start: ${out}`);
-    await sleep(50);
-  }
-  const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
+async function serverProcess(t, data) {
+  const { child, value } = await startBin(t, ["--data", data, "--port", "0", "--faux", FAUX]);
   // The banner prints the token only when this start made it; a later start on the same directory names its file.
   return { child, api: client(value("AGENTRUN_BASE_URL"), (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
@@ -32,7 +24,7 @@ async function serverProcess(data) {
 /** Start a run of a new agent in a server process, wait until it is working, then kill the server with SIGKILL. */
 async function crashMidRun(t, content, { create = agent("calc"), input = { content } } = {}) {
   const data = join(await scratch(t), "agents");
-  const first = await serverProcess(data);
+  const first = await serverProcess(t, data);
   t.after(() => first.child.kill("SIGKILL"));
   assert.equal((await first.api("POST", "/agents", create)).status, 201);
   const { body: run } = await first.api("POST", `/agents/${create.definition.id}/runs`, { input });
@@ -435,11 +427,11 @@ test("a stopped run whose live process the next server adopts is input_required 
     }
     return stateOf(api, runId);
   };
-  const first = await serverProcess(data);
+  const first = await serverProcess(t, data);
   t.after(() => first.child.kill("SIGKILL"));
   const runId = await stopWhileWorking(first.api, "slow");
   await crash(first, runId);
-  const second = await serverProcess(data);
+  const second = await serverProcess(t, data);
   t.after(() => second.child.kill("SIGKILL"));
   assert.deepEqual(await adopted(second.api, runId), ["input_required", "idle"]);
   assert.equal((await second.api("POST", `/runs/${runId}/messages`, { content: "Take your time again." })).body.mode, "follow_up");
@@ -477,7 +469,7 @@ test("a reply that answers only once its turn is stopped leaves the run stopped,
 test("a stop saved before its abort reached the run is finished by the next server: the adopted turn is aborted, so a follow-up runs at once", { timeout: 60_000 }, async (t) => {
   const start = servers(t);
   const data = join(await scratch(t), "agents");
-  const first = await serverProcess(data);
+  const first = await serverProcess(t, data);
   t.after(() => first.child.kill("SIGKILL"));
   const { run_id } = await startRun(first.api, "slow", "Take your time.");
   await untilState(first.api, run_id, ["working", "working"]);
