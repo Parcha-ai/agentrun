@@ -107,7 +107,6 @@ async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Ag
 export const thinkingFor = (harness: string, level: string): SessionSpec["thinking"] => (harness === "codex" && level === "max" ? "xhigh" : level) as SessionSpec["thinking"];
 
 /** The bare id Codex takes: serve's "openai/<id>" without its provider. */
-const bareId = (model: ModelRef) => (model.modelId.startsWith("openai/") ? model.modelId.slice("openai/".length) : model.modelId);
 
 async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const codex = await import("@parcha/agentrun-codex").catch(() => {
@@ -122,7 +121,9 @@ async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Age
       throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL.codex})`);
     }
   }
-  return codex.codexAdapter({ model: bareId(needs.model), provider: codexProvider(env, needs.model), price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is
+  // provider-qualified), or OpenAI's model id, which chooseModel has already taken out of "openai/<id>".
+  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
