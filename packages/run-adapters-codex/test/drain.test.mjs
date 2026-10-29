@@ -96,6 +96,10 @@ test('a pause the host starts on a tool_start waits for that call: it runs once,
   let pausing;
   // The host pauses the moment it hears the call started, as the runner's stop can.
   const onEvent = (e) => { if (e.type === 'tool_start' && !pausing) pausing = session.interrupt({ drainMs: 5_000 }); };
+  // Whether the host had heard the call start when the tool was entered: the order the pause relies on.
+  let heardFirst;
+  const call = pay.tool.call;
+  pay.tool.call = (args, options) => { heardFirst = pausing !== undefined; return call(args, options); };
   session = await codex.open(spec, { writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent });
   t.after(async () => { await session.interrupt().catch(() => {}); await session.close(); });
   await session.send('pay');
@@ -104,8 +108,21 @@ test('a pause the host starts on a tool_start waits for that call: it runs once,
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   await pausing;
+  assert.equal(heardFirst, true, 'the host heard tool_start before the tool ran');
   assert.equal(pay.runs, 1, 'the call the host was told started ran once');
   const ends = (await store.read('step:pause')).filter((r) => r.kind === 'kernel.end' && r.data.stepId?.startsWith('tool:')).map((r) => r.data);
   assert.equal(ends.length, 1, JSON.stringify(ends));
   assert.notEqual(ends[0].status, 'failed', `the call's outcome is recorded, not refused: ${JSON.stringify(ends[0])}`);
+});
+
+test("a pause ends once the call in flight has its outcome recorded, not at drainMs", async (t) => {
+  const pay = charge(200);
+  const { session } = await open(t, pay.tool);
+  await session.send('pay');
+  await pay.started;
+  const began = Date.now();
+  await session.interrupt({ drainMs: 30_000 });
+  const took = Date.now() - began;
+  assert.ok(took < 5_000, `the pause took ${took} ms: it should end when the charge's outcome is in, not wait out drainMs`);
+  assert.equal(pay.runs, 1);
 });
