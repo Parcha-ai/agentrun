@@ -62,12 +62,14 @@ function handedKey(env: NodeJS.ProcessEnv): string | undefined {
 }
 
 /** In a run's process: the judge its workflow's typed questions run on, or undefined when the server gave it no route
- *  to Jev. Called once per process, since the handed key can be read once. */
+ *  to Jev. Called once per process, since the handed key can be read once. Jev is a decision provider, which sends a
+ *  request once: one that fails after it was sent may have been answered and billed, so the decision escalates as
+ *  interrupted instead of being asked again. */
 export async function jevJudgeOf(env: NodeJS.ProcessEnv) {
   const handed = handedKey(env);
   const route = handed !== undefined ? "typesafe" : isSet(env[JEV_OPENROUTER_KEY_ENV]) ? "openrouter" : undefined;
   if (!route) return undefined;
   const faux = env[FAUX_ENV] && env[FAUX_JEV_ENV] ? ((await import(pathToFileURL(env[FAUX_JEV_ENV]).href)) as { default: typeof fetch }).default : undefined;
-  const { createJevRunner } = await import("@parcha/agentrun-jev");
-  return createJevRunner({ ...(route === "typesafe" ? { apiKey: handed } : { provider: "openrouter" }), ...(faux ? { fetch: faux } : {}) });
+  const [{ jevProvider }, { judgeFromProvider }] = await Promise.all([import("@parcha/agentrun-jev"), import("@parcha/agentrun-dsl")]);
+  return judgeFromProvider(jevProvider({ ...(route === "typesafe" ? { apiKey: handed } : { provider: "openrouter" }), ...(faux ? { fetch: faux } : {}) }));
 }
