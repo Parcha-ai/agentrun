@@ -1062,22 +1062,24 @@ describe("fences during the run", () => {
     let pid = 0;
     try {
       const exit = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+      // The fixture forces the order: heartbeats blocked, a commit, then the lease's limit passed (its clock moved).
       let commits = 0;
-      let blockedAt = 0;
+      let lapsedAt = 0;
       for await (const line of createInterface({ input: child.stdout! })) {
-        const event = JSON.parse(line) as { pid?: number; commits?: number };
+        const event = JSON.parse(line) as { pid?: number; commits?: number; lapsed?: boolean };
         if (event.pid) {
           pid = event.pid;
-          blockedAt = performance.now();
           assert.ok(alive(pid));
         }
         if (event.commits) commits = event.commits;
+        if (event.lapsed) lapsedAt = performance.now();
       }
       assert.equal(await exit, 75, stderr);
-      const ms = performance.now() - blockedAt;
+      const ms = performance.now() - lapsedAt;
       assert.match(stderr, /LEASE_LAPSED/);
       assert.ok(commits > 0, "the store kept committing while the heartbeat was blocked");
-      assert.ok(ms < 2_500, `exited ${Math.round(ms)} ms after heartbeats were blocked (self-fence at 800 ms)`);
+      assert.ok(lapsedAt > 0, "the lease lapsed after that commit");
+      assert.ok(ms < 2_500, `exited ${Math.round(ms)} ms after the lease's limit passed (the self-fence checks every 10 ms)`);
       assert.ok(await waitGone(pid), "the command died with the instance");
     } finally {
       child.kill("SIGKILL");
