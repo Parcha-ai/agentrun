@@ -2,15 +2,13 @@
 // it works, and completes; each paid request is counted once, also when the run's process dies mid-turn and the next
 // one resumes the session.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, serve, startBin } from "./support.mjs";
 
-const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
@@ -65,15 +63,7 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
 test("a chat sent while a turn works, then the server and the run's process die: the next server's run finishes the turn and answers the chat before it completes, never dropping it", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   // The first server in a process of its own, so it dies as a crash kills it, and the next one knows nothing it knew.
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_SERVE_FAUX_HARNESS: FAUX_HARNESS } });
-  t.after(() => child.kill("SIGKILL"));
-  let out = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
-    assert.ok(i < 200, `the server did not start: ${out}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
+  const { child, value } = await startBin(t, ["--data", data, "--port", "0", "--faux", FAUX], { env: { ...process.env, AGENTRUN_SERVE_FAUX_HARNESS: FAUX_HARNESS } });
   const first = client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY"));
   const go = join(await scratch(t), "go");
   const runId = await started(first, "chat-resume", `Wait for ${go}, then answer the chat.`);

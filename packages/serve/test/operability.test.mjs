@@ -1,15 +1,13 @@
 // Running the server as an operator does: a stop inside the platform's grace, a token link that survives any token, one
 // stdout line per request, run and refused credential (never a token), and the stored token printed only once.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
-import { agent, client, FAUX, follow, scratch, withEnv } from "./support.mjs";
+import { agent, client, FAUX, follow, scratch, startBin, withEnv } from "./support.mjs";
 
-const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = new URL("../docker/", import.meta.url);
 const ROOT = new URL("../../../", import.meta.url);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -19,15 +17,7 @@ const AWKWARD = "Ab+cD/ef=Gh+iJ/kl=Mn+oP/qr=St+uV/wx==";
 
 /** The bin on `data`, its stdout kept; resolves once it printed its banner. */
 async function bin(t, data, args = [], env = {}) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX, ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  const seen = { out: "", err: "" };
-  child.stdout.on("data", (chunk) => (seen.out += chunk));
-  child.stderr.on("data", (chunk) => (seen.err += chunk));
-  for (let i = 0; !/^Open /m.test(seen.out); i++) {
-    assert.ok(i < 200 && child.exitCode === null, `the server did not start: ${seen.out}${seen.err}`);
-    await sleep(50);
-  }
+  const { child, seen } = await startBin(t, ["--data", data, "--port", "0", "--faux", FAUX, ...args], { env: { ...process.env, ...env }, ready: /^Open /m });
   const base = /AGENTRUN_BASE_URL=(\S+)/.exec(seen.out)[1];
   return { child, seen, base, exited: new Promise((resolve) => child.once("exit", (code) => resolve(code))) };
 }
