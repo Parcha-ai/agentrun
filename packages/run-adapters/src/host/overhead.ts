@@ -42,28 +42,48 @@ export const ANTHROPIC_IMAGE_TOKENS_MAX = 4_784;
 export const OPENAI_IMAGE_TOKENS_MAX = 73_800;
 
 /**
- * The API kinds whose figures are known, as pi names them. Azure's and Codex's Responses are billed as OpenAI's.
- * Chat Completions ("openai-completions", which OpenAI-compatible gateways speak too) adds formatting tokens around each
- * message, 3 a message, 1 for a name, and 3 that prime the reply (num_tokens_from_messages in
- * https://developers.openai.com/cookbook/examples/how_to_count_tokens_with_tiktoken). Each message's own JSON in the
- * body ({"role":...,"content":...}) is more bytes than that, and so is the request's, so the byte bound covers them: it
- * adds nothing for them or for tools, whose definitions are in the body, and an image at OpenAI's per-image maximum. The
- * others in pi's union ("mistral-conversations", "bedrock-converse-stream", "google-generative-ai", "google-vertex",
- * "pi-messages") have no figure here: a request on them is unmeasured.
+ * Chat Completions ("openai-completions") is spoken by OpenAI and by OpenAI-compatible gateways, which route to other
+ * providers' models (Anthropic's among them). Its figure is the largest of any provider it may reach:
+ *  - messages: nothing. It adds formatting tokens around each message, 3 a message, 1 for a name and 3 that prime the
+ *    reply (num_tokens_from_messages in https://developers.openai.com/cookbook/examples/how_to_count_tokens_with_tiktoken),
+ *    and each message's own JSON in the body ({"role":...,"content":...}, some 30 bytes of keys) is more bytes than that,
+ *    so the byte bound covers them;
+ *  - tools: never nothing. A gateway that routes to an Anthropic model is billed Anthropic's tool-use system prompt
+ *    whatever API it speaks, and OpenAI renders tools into a prompt of its own with a fixed header; the largest documented
+ *    of these is Anthropic's, 804 tokens (`ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool`), taken whatever the
+ *    tool_choice, since a gateway may not pass it through as Anthropic reads it;
+ *  - images: OpenAI's per-image maximum, which is above Anthropic's, so a gateway routing to either is covered.
  */
-export const INPUT_OVERHEAD_APIS: readonly string[] = Object.freeze(["anthropic-messages", "openai-responses", "azure-openai-responses", "openai-codex-responses", "openai-completions"]);
+const CHAT_COMPLETIONS = "openai-completions";
+
+/**
+ * The tool prompt assumed for an API whose provider documents none: 2,048 tokens a request with tools. It is an
+ * assumption, not a documented figure, and it is above the largest documented one (Anthropic's 804), so a provider that
+ * adds a prompt of its own for tools, as Anthropic and OpenAI do, is not undercounted where its figure is unknown.
+ */
+export const ASSUMED_TOOL_PROMPT_TOKENS = 2_048;
+
+/**
+ * The API kinds whose figures are documented, as pi names them. Azure's and Codex's Responses are billed as OpenAI's.
+ * Every other kind (pi's "mistral-conversations", "bedrock-converse-stream", "google-generative-ai", "google-vertex",
+ * "pi-messages", a faux "faux:<id>", or any other) gets the general figure: nothing for its text, which the byte bound
+ * covers, `ASSUMED_TOOL_PROMPT_TOKENS` when it has tools, and OpenAI's per-image maximum, the largest documented, for each
+ * image.
+ */
+export const INPUT_OVERHEAD_APIS: readonly string[] = Object.freeze(["anthropic-messages", "openai-responses", "azure-openai-responses", "openai-codex-responses", CHAT_COMPLETIONS]);
+
+/** The tool-use prompt Anthropic adds for a request of `shape`: none without tools. */
+const anthropicToolPrompt = (shape: InputShape): number => (!shape.tools ? 0 : shape.toolChoice === "any" || shape.toolChoice === "tool" ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.autoOrNone);
 
 /**
  * The input tokens a provider bills for a request of `shape` beyond its body's bytes, on the API `api` (pi's names:
- * "anthropic-messages", "openai-responses", ...). Undefined for an API whose figures are not known here: a caller then
- * treats the request's input as unmeasured, never as adding nothing.
+ * "anthropic-messages", "openai-responses", ...). A documented API gets its documented figures; any other gets the
+ * general figure (`INPUT_OVERHEAD_APIS`). Never undefined: an input that cannot be measured is the body's, not the API's.
  */
-export function providerInputOverhead(api: string, shape: InputShape): number | undefined {
+export function providerInputOverhead(api: string, shape: InputShape): number {
   if (!Number.isSafeInteger(shape.images) || shape.images < 0) throw new Error(`not an image count: ${String(shape.images).slice(0, 40)}`);
-  if (api === "anthropic-messages") {
-    const prompt = !shape.tools ? 0 : shape.toolChoice === "any" || shape.toolChoice === "tool" ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.autoOrNone;
-    return prompt + shape.images * ANTHROPIC_IMAGE_TOKENS_MAX;
-  }
+  if (api === "anthropic-messages") return anthropicToolPrompt(shape) + shape.images * ANTHROPIC_IMAGE_TOKENS_MAX;
+  if (api === CHAT_COMPLETIONS) return (shape.tools ? ANTHROPIC_TOOL_USE_SYSTEM_PROMPT_TOKENS.anyOrTool : 0) + shape.images * OPENAI_IMAGE_TOKENS_MAX;
   if (INPUT_OVERHEAD_APIS.includes(api)) return shape.images * OPENAI_IMAGE_TOKENS_MAX;
-  return undefined;
+  return (shape.tools ? ASSUMED_TOOL_PROMPT_TOKENS : 0) + shape.images * OPENAI_IMAGE_TOKENS_MAX;
 }

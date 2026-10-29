@@ -98,7 +98,7 @@ test("a policy whose server-side input cannot be read leaves inputTokensMax unde
   assert.equal(host.inputTokensMaxOf?.(policyWith(), {}, '{"a":"é"}'), 10, 'inputTokensMaxOf measures UTF-8 bytes');
 });
 
-test("providerInputOverhead holds each provider's figures in one place: Anthropic's tool-use prompt and per-image maximum, OpenAI's per-image maximum, and nothing claimed for an API it does not know", () => {
+test("providerInputOverhead holds each provider's figures in one place: Anthropic's tool-use prompt and per-image maximum, and OpenAI's per-image maximum", () => {
   assert.equal(typeof host.providerInputOverhead, 'function', 'exported from the host module');
   const of = host.providerInputOverhead;
   assert.deepEqual([
@@ -112,13 +112,30 @@ test("providerInputOverhead holds each provider's figures in one place: Anthropi
     of('openai-responses', { tools: false, images: 2 }),
     of('azure-openai-responses', { tools: false, images: 1 }),
     of('openai-codex-responses', { tools: false, images: 1 }),
-    of('openai-completions', { tools: true, images: 0 }),
-    of('openai-completions', { tools: true, toolChoice: 'any', images: 2 }),
-  ], [0, 675, 675, 804, 804 + 2 * 4784, 4784, 0, 2 * 73_800, 73_800, 73_800, 0, 2 * 73_800]);
-  // The rest of pi's API union, and anything else: no figure, so unmeasured, never 0.
-  for (const api of ['mistral-conversations', 'bedrock-converse-stream', 'google-generative-ai', 'google-vertex', 'pi-messages', 'unknown']) assert.equal(of(api, { tools: false, images: 0 }), undefined, `${api}: unknown, never 0`);
+  ], [0, 675, 675, 804, 804 + 2 * 4784, 4784, 0, 2 * 73_800, 73_800, 73_800]);
   assert.deepEqual([...host.INPUT_OVERHEAD_APIS].sort(), ['anthropic-messages', 'azure-openai-responses', 'openai-codex-responses', 'openai-completions', 'openai-responses']);
   assert.throws(() => of('anthropic-messages', { tools: false, images: -1 }), /not an image count/);
+});
+
+test("every other API, pi's other kinds and a faux one included, gets the general figure: nothing for text, an assumed 2,048 tokens with tools, and the largest per-image maximum; never undefined", () => {
+  const of = host.providerInputOverhead;
+  assert.equal(host.ASSUMED_TOOL_PROMPT_TOKENS, 2048);
+  for (const api of ['mistral-conversations', 'bedrock-converse-stream', 'google-generative-ai', 'google-vertex', 'pi-messages', 'faux:stand-in', 'something-new']) {
+    assert.deepEqual([of(api, { tools: false, images: 0 }), of(api, { tools: true, images: 0 }), of(api, { tools: true, toolChoice: 'any', images: 2 })], [0, 2048, 2048 + 2 * 73_800], api);
+  }
+});
+
+test("Chat Completions, which gateways to other providers speak, counts the largest tool prompt it may be billed, a flat 804 with tools whatever the tool_choice; nothing for messages; and OpenAI's per-image maximum, above Anthropic's", () => {
+  const of = host.providerInputOverhead;
+  assert.deepEqual([
+    of('openai-completions', { tools: false, images: 0 }),
+    of('openai-completions', { tools: true, images: 0 }),
+    of('openai-completions', { tools: true, toolChoice: 'none', images: 0 }),
+    of('openai-completions', { tools: true, toolChoice: 'any', images: 0 }),
+    of('openai-completions', { tools: true, toolChoice: 'tool', images: 2 }),
+    of('openai-completions', { tools: false, images: 1 }),
+  ], [0, 804, 804, 804, 804 + 2 * 73_800, 73_800]);
+  assert.ok(of('openai-completions', { tools: true, images: 1 }) >= of('anthropic-messages', { tools: true, images: 1 }), 'never under what Anthropic bills for the same request');
 });
 
 test("the faux adapter measures its prompt as a real adapter's proxy measures its body: every request it makes carries a positive inputTokensMax", async () => {
