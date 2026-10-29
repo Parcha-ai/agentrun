@@ -329,7 +329,8 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   while (alive().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
   const survivors: ProcessMark[] = [];
   const after = pending.length === 0 ? before : table.snapshot();
-  for (const record of pending) {
+  // Records first, then marks: a mark's survivors may be written into a record this reap just rewrote.
+  for (const record of [...pending.filter((p) => !p.mark), ...pending.filter((p) => p.mark)]) {
     const leader = record.leader !== null && same(after, record.leader) ? record.leader : null;
     const members = record.members.filter((member) => same(after, member));
     if (leader === null && members.length === 0) {
@@ -337,7 +338,22 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
       continue;
     }
     survivors.push(...(leader ? [leader] : []), ...members);
-    if (record.mark) continue; // kept as it is: the next open looks for the mark again
+    if (record.mark) {
+      // The mark is kept as it is, so the next open looks for its token again. Its survivors are also recorded by pid
+      // and start: one that cleared its environment carries no mark, so once the marked leader is gone nothing else
+      // would name it.
+      const file = join(dir, `${members[0]!.pid}-${members[0]!.start}.json`);
+      let known: readonly ProcessMark[] = [];
+      try {
+        known = (JSON.parse(readFileSync(file, "utf8")) as CommandRecord).members ?? [];
+      } catch {
+        // no record of that name yet
+      }
+      const all = [...known, ...members.filter((m) => !known.some((k) => k.pid === m.pid && k.start === m.start))];
+      writeFileSync(`${file}.tmp`, JSON.stringify({ boot: record.boot, leader: null, members: all } satisfies CommandRecord));
+      renameSync(`${file}.tmp`, file);
+      continue;
+    }
     writeFileSync(`${record.file}.tmp`, JSON.stringify({ boot: record.boot, leader, members } satisfies CommandRecord));
     renameSync(`${record.file}.tmp`, record.file);
   }

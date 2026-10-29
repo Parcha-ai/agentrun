@@ -25,7 +25,8 @@ export interface ProcessSnapshot {
   /** Whether `pid` was started with `name=value` in its environment (false when it cannot be read). */
   marked(pid: number, name: string, value: string): boolean;
   /** Every live process started with `name=value` in its environment, one look at all of them (none whose environment
-   *  cannot be read: another user's). */
+   *  cannot be read: another user's). Throws when the processes cannot be listed: none is ever taken for gone on a
+   *  failed read. */
   withMark(name: string, value: string): number[];
   /** Its command line, for a message; `?` when it cannot be read. */
   commandLine(pid: number): string;
@@ -89,12 +90,7 @@ export function procTable(proc = "/proc"): ProcessTable {
       }
     },
     withMark(name, value) {
-      let pids: string[];
-      try {
-        pids = readdirSync(proc).filter((entry) => /^\d+$/.test(entry));
-      } catch {
-        return [];
-      }
+      const pids = readdirSync(proc).filter((entry) => /^\d+$/.test(entry));
       return pids.map(Number).filter((pid) => snapshot.info(pid) !== undefined && snapshot.marked(pid, name, value));
     },
     commandLine(pid) {
@@ -169,14 +165,10 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         },
         // One listing of every process with its environment: a mark is one word in it (see `marked`).
         withMark(name, value) {
-          try {
-            return run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]).split("\n").flatMap((line) => {
-              const [pid, ...words] = line.trim().split(/\s+/);
-              return rows.has(Number(pid)) && words.includes(`${name}=${value}`) ? [Number(pid)] : [];
-            });
-          } catch {
-            return [];
-          }
+          return run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]).split("\n").flatMap((line) => {
+            const [pid, ...words] = line.trim().split(/\s+/);
+            return rows.has(Number(pid)) && words.includes(`${name}=${value}`) ? [Number(pid)] : [];
+          });
         },
         commandLine(pid) {
           try {
