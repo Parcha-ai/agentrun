@@ -15,14 +15,30 @@ const scratch = await mkdtemp(join(tmpdir(), 'agentrun-provenance-'));
 after(() => rm(scratch, { recursive: true, force: true }));
 
 test('every copied or matched file in this tree matches its recorded upstream blob and carries its header', async () => {
-  assert.deepEqual(await provenanceProblems(packageDir), []);
-  const upstream = JSON.parse(await readFile(join(packageDir, UPSTREAM_FILE), 'utf8'));
-  assert.ok(Object.keys(upstream.files).length >= 7);
-  const lines = await changedLines(packageDir);
-  // A copy's change against upstream stays small enough to review by eye (the largest is inbox.ts, which drops a function).
-  // A matched-interface file is not a copy, so it has no such count.
-  assert.deepEqual(Object.entries(upstream.files).filter(([, r]) => r.kind === 'interfaces matched').map(([p]) => p).sort(), ['src/kernel/errors.ts', 'src/kernel/types.ts']);
-  assert.ok(Object.values(lines).every((n) => n < 60), `each copy changes few lines against upstream: ${JSON.stringify(lines)}`);
+  for (const [name, least] of [['run-adapters', 7], ['run-adapters-codex', 6]]) {
+    const dir = join(root, 'packages', name);
+    assert.deepEqual(await provenanceProblems(dir), [], name);
+    const upstream = JSON.parse(await readFile(join(dir, UPSTREAM_FILE), 'utf8'));
+    assert.ok(Object.keys(upstream.files).length >= least, name);
+    const lines = await changedLines(dir);
+    // A copy's change against upstream stays small enough to review by eye (the largest are inbox.ts, which drops a
+    // function, and the Codex harness.ts, whose imports and messages name AgentRun's host layer). A matched-interface
+    // file is not a copy, so it has no such count.
+    assert.deepEqual(Object.entries(upstream.files).filter(([, r]) => r.kind === 'interfaces matched').map(([p]) => p).sort(), name === 'run-adapters' ? ['src/kernel/errors.ts', 'src/kernel/types.ts'] : [], name);
+    assert.ok(Object.values(lines).every((n) => n < 60), `each copy in ${name} changes few lines against upstream: ${JSON.stringify(lines)}`);
+  }
+});
+
+test('an executable copy keeps its #! line first and its header after it', async () => {
+  const dir = join(scratch, 'shebang');
+  await cp(join(root, 'packages', 'run-adapters-codex'), dir, { recursive: true, filter: (path) => !/\/(?:node_modules|dist)(?:\/|$)/.test(path) });
+  const fake = join(dir, 'test/fake-app-server.mjs');
+  const text = await readFile(fake, 'utf8');
+  assert.ok(text.startsWith('#!/usr/bin/env node\n// Copyright 2026 Vercel Inc.'));
+  assert.deepEqual(await provenanceProblems(dir), []);
+  // The header must still come right after the #! line, not anywhere below it.
+  await writeFile(fake, text.replace('#!/usr/bin/env node\n', '#!/usr/bin/env node\n// a line before the header\n'));
+  assert.ok((await provenanceProblems(dir)).some((p) => p.includes('fake-app-server.mjs')));
 });
 
 test('the git blob is git\'s own', async () => {

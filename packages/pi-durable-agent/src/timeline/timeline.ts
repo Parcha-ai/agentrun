@@ -56,6 +56,12 @@ export const REQUEST_COST = "agentrun.request_cost";
 /** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
  *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
 export const REQUEST_REFUSED = "agentrun.request_refused";
+/** Written right after an answer whose cost was not in when it was written (a harness's proxy books a response after
+ *  answering it): that answer's cost is still to come, as a REQUEST_COST_LATE. Until it comes the cost is unknown. */
+export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
+/** The cost (`usd`, or null when unknown) of an answer written earlier with its cost pending: it closes one pending cost
+ *  and adds to the run's cost. It is not a request of its own: the answer already counted that. */
+export const REQUEST_COST_LATE = "agentrun.request_cost_late";
 const COMPACTION = "compaction";
 const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
 const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
@@ -102,7 +108,11 @@ function createProjector(options: TimelineOptions) {
   let root: number | undefined;
   let current = options.conversationId ?? 0;
   let requests = 0;
-  let usd: number | null = 0;
+  // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come.
+  let known = 0;
+  let unknown = 0;
+  let pending = 0;
+  const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
   let marked = 0;
   let inFlight = false;
   let refused = 0;
@@ -188,8 +198,13 @@ function createProjector(options: TimelineOptions) {
     } else if (entry.kind === REQUEST_COST) {
       compactions += 1;
       compactionOpen = false;
-      const cost = obj(entry.data)?.usd;
-      usd = typeof cost === "number" && usd !== null ? usd + cost : null;
+      addCost(obj(entry.data)?.usd);
+    } else if (entry.kind === REQUEST_COST_PENDING) {
+      // The answer just before it was counted as a cost unknown: it is one still to come.
+      if (unknown > 0) (unknown -= 1), (pending += 1);
+    } else if (entry.kind === REQUEST_COST_LATE) {
+      if (pending > 0) pending -= 1;
+      addCost(obj(entry.data)?.usd);
     } else if (entry.kind === REQUEST_STARTED) {
       marked += 1;
       inFlight = true;
@@ -201,8 +216,7 @@ function createProjector(options: TimelineOptions) {
       if (marked > 0) answered += 1;
       // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
       // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
-      const cost = message.stopReason === "aborted" ? undefined : obj(obj(message.usage)?.cost)?.total;
-      usd = typeof cost === "number" && usd !== null ? usd + cost : null;
+      addCost(message.stopReason === "aborted" ? undefined : obj(obj(message.usage)?.cost)?.total);
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
@@ -330,7 +344,7 @@ function createProjector(options: TimelineOptions) {
     const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
     if ((!requests && !compactions && !cut) || root === undefined) return undefined;
     const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
-    const total = usd === null || cut ? null : Math.round(usd * 1e6) / 1e6;
+    const total = unknown > 0 || pending > 0 || cut ? null : Math.round(known * 1e6) / 1e6;
     return make("usage", root, `${root}:usage`, {
       summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
       usage: { usd: total, requests: count },

@@ -14,7 +14,7 @@ import { DECISION_ADAPTER, decisionsOf, jevRoute } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
-import { harnessesOf } from "./harness.js";
+import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
@@ -73,6 +73,8 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch Jev's runner sends through (the tests' fake), in place
    *  of TypeSafe's API. */
   fauxJev?: string;
+  /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
+  fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
@@ -150,7 +152,7 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env)) {
+export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -158,7 +160,7 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses: harnessesOf(env),
+    harnesses,
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
@@ -252,15 +254,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
+  const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
-  const caps = capabilities(env, maxRuns);
+  const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
