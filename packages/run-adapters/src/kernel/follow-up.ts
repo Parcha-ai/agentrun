@@ -33,8 +33,9 @@ export interface FollowUpOptions {
   prompt: string;
   /** The most its paid requests may cost, in dollars, counted from its first request. */
   reserveUsd: number;
-  /** A request's worst case, held for each request in flight and the one asked for (default 0: refused once spent). */
-  worstUsd?: number;
+  /** A request's worst case, held for each request in flight and the one asked for. Required: a host with no worst case
+   *  passes 0, and the reserve may then be passed by the one request admitted last. */
+  worstUsd: number;
 }
 
 export type FollowUpResult = { status: "done" } | { status: "interrupted" } | { status: "failed"; error: string };
@@ -61,12 +62,15 @@ export function followUpState(records: Parameters<typeof foldSession>[1]): Follo
 
 export function followUpOnce(options: FollowUpOptions): FollowUp {
   const { store, prompt, reserveUsd } = options;
-  const worstUsd = options.worstUsd ?? 0;
+  const { worstUsd } = options;
   if (typeof reserveUsd !== "number" || !Number.isFinite(reserveUsd) || reserveUsd <= 0) throw new Error("reserveUsd must be a number of dollars above 0");
-  if (typeof worstUsd !== "number" || !Number.isFinite(worstUsd) || worstUsd < 0) throw new Error("worstUsd must be a number of dollars, 0 or more");
+  if (typeof worstUsd !== "number" || !Number.isFinite(worstUsd) || worstUsd < 0) throw new Error("worstUsd must be given, a number of dollars, 0 or more");
   const key = followUpKey(options.session, options.name);
   let active = false;
-  // What the session had spent when the follow-up's first request asked: the reserve counts from there.
+  // The session's spentUsd when the follow-up's first request asks: the reserve counts from there. Whatever the session
+  // books after that counts against the reserve too: a task request whose cost was booked late (REQUEST_COST_LATE), and
+  // a harness's own background requests during the follow-up's turn (a CLI's small-model calls). Both refuse the
+  // follow-up sooner, never let it spend more.
   let start: number | undefined;
   const refuse = (why: string) => ({ refuse: `${FOLLOW_UP_BUDGET_REACHED}: ${why}` });
 
