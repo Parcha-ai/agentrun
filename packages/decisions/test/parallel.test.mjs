@@ -171,6 +171,20 @@ test('a request in flight past its own timeout or the host\'s deadline is outcom
   await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx({ signal: controller.signal })), code('aborted'));
 });
 
+test('a response whose body stalls past the timeout after its 200 headers is outcome_unknown, sent once, booked at list price', async (t) => {
+  // The headers arrived, so Parallel answered: a body cut off by the deadline is a lost outcome, not a plain timeout.
+  const stalled = (init) => new Response(new ReadableStream({ start(controller) { init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true }); } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const hold = setInterval(() => {}, 1_000);
+  t.after(() => clearInterval(hold));
+  const { fetch, seen } = fakeFetch([stalled]);
+  await assert.rejects(parallelProvider({ ...settings, fetch, timeoutMs: 50 }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx({ deadlineMs: 10_000 })), (error) => {
+    code('outcome_unknown')(error);
+    assert.deepEqual([error.costUsd, error.costBasis], [PARALLEL_LIST_PRICE_USD, 'estimate']);
+    return true;
+  });
+  assert.equal(seen.length, 1);
+});
+
 test('a request that provably never reached Parallel is retried, and only the answered attempt is booked', async () => {
   const refused = () => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }));
   const { fetch, seen } = fakeFetch([refused, () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
