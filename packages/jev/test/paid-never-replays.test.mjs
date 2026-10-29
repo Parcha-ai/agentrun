@@ -69,3 +69,12 @@ test('retryAfterSend: true restores the retries after sending, which can re-send
     return true;
   });
 });
+
+test('a request that never reached Jev was not billed: after one, a give-up on 429s reports the 429', async () => {
+  const t = scripted([() => Promise.reject(failedConnection('ECONNREFUSED')), () => response({}, 429, { 'retry-after': '0' }), () => response({}, 429, { 'retry-after': '0' })]);
+  await assert.rejects(createJevRunner({ ...settings, fetch: t.fetch })(params), (error) => {
+    assert.deepEqual([error.code, error.status, error.attempts], ['http', 429, 3], 'every attempt was refused or never sent: none may have been billed');
+    return true;
+  });
+  assert.equal(t.calls(), 3);
+});
