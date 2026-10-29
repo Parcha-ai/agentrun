@@ -180,10 +180,24 @@ function argsOf(argv) {
   return args;
 }
 
+/** A command's exit status and how long it took, in whole milliseconds. */
 function run(command, args, options) {
   const [bin, ...pre] = command.split(/\s+/).filter(Boolean);
   console.log(`$ ${[bin, ...pre, ...args].join(' ')}`);
-  return spawnSync(bin, [...pre, ...args], { stdio: 'inherit', ...options }).status ?? 1;
+  const started = performance.now();
+  const rc = spawnSync(bin, [...pre, ...args], { stdio: 'inherit', ...options }).status ?? 1;
+  return { rc, ms: Math.round(performance.now() - started) };
+}
+
+/** The leg's steps by how long each took, slowest first, and their total: what a slower leg spent its time on. */
+export function timeSummary(steps) {
+  const timed = steps.filter((s) => typeof s.ms === 'number');
+  const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`;
+  const total = timed.reduce((sum, s) => sum + s.ms, 0);
+  return [
+    ...[...timed].sort((a, b) => b.ms - a.ms).map((s) => `${seconds(s.ms).padStart(8)}  ${s.workspace ? `${s.workspace} ${s.step}` : s.step}`),
+    `${seconds(total).padStart(8)}  total of ${timed.length} step(s)`,
+  ];
 }
 
 function main() {
@@ -208,8 +222,8 @@ function main() {
   // workspace's pins make it load that copy instead of its locked one.
   const pins = ['install', '--save-dev', '--save-exact', '--ignore-scripts', '--no-audit', '--no-fund'];
   const install = (arguments_) => {
-    const rc = run(args.npm, arguments_, { cwd: args.root });
-    report.steps.push({ step: arguments_.join(' '), rc });
+    const { rc, ms } = run(args.npm, arguments_, { cwd: args.root });
+    report.steps.push({ step: arguments_.join(' '), rc, ms });
     if (rc !== 0) { write(); process.exit(1); }
   };
   install([...pins, ...packages.map((name) => `${name}@${args.pi}`)]);
@@ -234,18 +248,20 @@ function main() {
   const env = { ...process.env, PI_EXPECT_VERSION: args.pi };
   report.built = buildOf(workspaces, plan.leg);
   const build = run('npm', ['run', 'build', '--if-present', ...report.built.flatMap((name) => ['-w', name])], { cwd: args.root, env });
-  report.steps.push({ step: 'build', rc: build });
-  if (build !== 0) { write(); process.exit(1); }
+  report.steps.push({ step: 'build', rc: build.rc, ms: build.ms });
+  if (build.rc !== 0) { write(); process.exit(1); }
   for (const workspace of leg) {
     for (const step of ['typecheck', 'test']) {
       if (!workspace.manifest.scripts?.[step]) continue;
-      const rc = run('npm', ['run', step, '-w', workspace.name], { cwd: args.root, env });
-      report.steps.push({ workspace: workspace.name, step, rc });
+      const { rc, ms } = run('npm', ['run', step, '-w', workspace.name], { cwd: args.root, env });
+      report.steps.push({ workspace: workspace.name, step, rc, ms });
       if (rc !== 0) failed = true;
     }
   }
   for (const { workspace, step, rc } of report.steps) if (workspace) console.log(`pi ${args.pi}: ${workspace} ${step} ${rc === 0 ? 'passed' : `FAILED (exit ${rc})`}`);
   console.log(`pi ${args.pi}: ran ${plan.leg.length} of ${plan.pi.length} pi workspaces: ${plan.leg.join(', ')}`);
+  console.log(`pi ${args.pi}: time, slowest first:`);
+  for (const line of timeSummary(report.steps)) console.log(`pi ${args.pi}: ${line}`);
   write();
   process.exit(failed ? 1 : 0);
 }

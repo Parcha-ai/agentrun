@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { accepts, buildOf, checkResolved, companionDependencies, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom } from './pi-leg.mjs';
+import { accepts, buildOf, checkResolved, companionDependencies, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom, timeSummary } from './pi-leg.mjs';
 
 const script = fileURLToPath(new URL('./pi-leg.mjs', import.meta.url));
 const repo = dirname(dirname(script));
@@ -290,4 +290,24 @@ test('a companion that stays at the lockfile\'s version fails the leg before it 
   assert.equal(out.status, 1, out.stderr);
   assert.match(out.stdout, /FAILED: @parcha\/agentrun-pi resolves .*@earendil-works\/pi-codemode 1\.2\.0 \(from @parcha\/agentrun-pi's pi-coding-agent\)/);
   assert.doesNotMatch(out.stdout, /\$ npm run build/);
+});
+
+test("the leg's time summary: each timed step, slowest first, with its workspace, then the total; a step with no time is left out", () => {
+  const steps = [
+    { step: 'install --save-dev', rc: 0, ms: 41_250 },
+    { step: 'build', rc: 0, ms: 95_000 },
+    { workspace: '@parcha/agentrun-serve', step: 'test', rc: 0, ms: 610_400 },
+    { workspace: '@parcha/agentrun-serve', step: 'typecheck', rc: 0, ms: 12_049 },
+    { workspace: '@parcha/pi-durable-disk', step: 'test', rc: 1, ms: 300_000 },
+    { step: 'untimed', rc: 0 },
+  ];
+  assert.deepEqual(timeSummary(steps), [
+    '  610.4s  @parcha/agentrun-serve test',
+    '  300.0s  @parcha/pi-durable-disk test',
+    '   95.0s  build',
+    '   41.3s  install --save-dev',
+    '   12.0s  @parcha/agentrun-serve typecheck',
+    ' 1058.7s  total of 5 step(s)',
+  ]);
+  assert.deepEqual(timeSummary([]), ['    0.0s  total of 0 step(s)']);
 });
