@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { DecisionProviderError, judgeFromProvider, validateAnswers } from '@parcha/agentrun-dsl';
+import { DecisionProviderError, judgeFromProvider, runWorkflow, validateAnswers } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import { parallelProvider, PARALLEL_LIST_PRICE_USD } from '../dist/index.js';
 
@@ -134,6 +134,20 @@ test('a 5xx, a 408 or a connection lost after sending is sent once, booked at li
     });
     assert.equal(seen.length, 1, `${what} was sent ${seen.length} times`);
   }
+});
+
+test('a workflow whose Parallel decision meets a 503 after sending escalates as interrupted, sent once and booked once at list price', async () => {
+  const { fetch, seen } = fakeFetch([json({ type: 'error', error: {} }, 503), () => json(wire({ legit: { type: 'noul', noul: 0.9 } }))]);
+  const receipts = [];
+  const flow = {
+    v: 2, name: 'checked', schemas: { Verdict: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is the filing legitimate?' } } } },
+    output: { schemaId: 'Verdict', path: 'verdict' },
+    root: { node: 'judge', label: 'check', state: { doc: 'text' }, out: 'Verdict', as: 'verdict' },
+  };
+  const result = await runWorkflow(flow, {}, { runJudge: judgeFromProvider(parallelProvider({ ...settings, fetch })), recordDecision: async (receipt) => { receipts.push(receipt); } });
+  assert.deepEqual([result.status, result.escalation.kind, result.escalation.stage], ['escalated', 'decision_interrupted', 'decision']);
+  assert.equal(seen.length, 1, 'a paid request is never sent twice');
+  assert.deepEqual([receipts.length, receipts[0].status, receipts[0].cost_usd], [1, 'failed', PARALLEL_LIST_PRICE_USD]);
 });
 
 test('a request that provably never reached Parallel is retried, and only the answered attempt is booked', async () => {
