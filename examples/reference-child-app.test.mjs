@@ -53,7 +53,7 @@ test('the reference job runs to the end under pi-durable-disk run --app: exit 0,
 
 test('kill -9 at a crossing and the same command again resumes the run, on the disk package\'s own claim: generation 2, the record the uninterrupted run\'s', { timeout: 240_000 }, async (t) => {
   const { dir, start } = await instance(t, {});
-  const plan = { tools: [], run: { point: 'judge.asked verdict', kind: 'process', target: 'run', why: 'kill -9', n: 1 } };
+  const plan = { tools: [], run: { point: 'event workflow.judge.answered', kind: 'process', target: 'run', why: 'kill -9', n: 1 } };
   const killed = await start({ PLAN: JSON.stringify(plan), CROSS_LOG: join(dir, '..', 'crossings.jsonl') });
   assert.equal(killed.signal, 'SIGKILL', 'the crossing ended the process');
   const resumed = await start();
