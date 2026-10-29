@@ -340,7 +340,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
           const retryable = retryAfterSend
             ? status === 408 || status === 429 || (status !== undefined && status >= 500 && status <= 599) || error instanceof APIConnectionError
             : before || toldWhen;
-          if (retryable && status !== 429 && billable === undefined) billable = status === undefined ? {} : { status };
+          // A request that never reached Jev was not billed, and a 429 was refused unanswered: neither is the billable attempt.
+          if (retryable && status !== 429 && !before && billable === undefined) billable = status === undefined ? {} : { status };
           if (retryable && attempt < maxAttempts) {
             const backoff = Math.min(retryMaxMs, retryBaseMs * 2 ** (attempt - 1));
             const asked = error instanceof APIError && (status === 429 || status === 503) ? retryAfterMs(error.headers) : undefined;
