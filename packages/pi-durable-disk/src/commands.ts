@@ -239,19 +239,18 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
       continue;
     }
     // The group as it is before the kill, while its leader is still the recorded process: a group's id is its leader's
-    // pid, which no other process holds while the leader lives, so each process listed then is this group's, never
-    // another's. Kept only if the leader is still the same once the listing is read. SIGKILL to the group reaches all of
-    // them, a child no walk recorded yet included, but each dies when it next runs, and one can outlive its leader for a
-    // moment, or for long in an uninterruptible wait: so each is waited for by pid and start, and kept for the next open
-    // if it outlives the deadline.
-    let listed: ProcessMark[] = [];
-    if (record.leader !== null && same(before, record.leader)) {
-      const group = before.group(record.leader.pid).flatMap((pid) => {
-        const info = pid === record.leader!.pid ? undefined : before.info(pid);
-        return info ? [{ pid, start: info.start }] : [];
-      });
-      if (same(before, record.leader)) listed = group;
-    }
+    // pid, which no other process holds while the leader lives. The group is killed, and what was listed kept, only if
+    // the leader is still that process once the listing is read, so each process kept was this group's, never another's.
+    // SIGKILL to the group reaches all of them, a child no walk recorded yet included, but each dies when it next runs,
+    // and one can outlive its leader for a moment, or for long in an uninterruptible wait: so each is waited for by pid
+    // and start, and kept for the next open if it outlives the deadline.
+    const listed: ProcessMark[] =
+      record.leader !== null && same(before, record.leader)
+        ? before.group(record.leader.pid).flatMap((pid) => {
+            const info = pid === record.leader!.pid ? undefined : before.info(pid);
+            return info ? [{ pid, start: info.start }] : [];
+          })
+        : [];
     const leader = record.leader !== null && same(before, record.leader) && kill(-record.leader.pid, record.leader) ? record.leader : null;
     // A member that is the leader went with its group.
     const members = (record.members ?? []).filter((member) => member.pid !== record.leader?.pid && same(before, member) && kill(member.pid, member));

@@ -343,6 +343,34 @@ describe("command records, from a scripted /proc", () => {
     }
   });
 
+  it("a leader that stops being the recorded process while its group is read is not killed, and nothing listed is kept", async () => {
+    // Between the first look at 4242 and the look before its kill, its pid is handed to another process (its start
+    // changes): the group read in between may hold that process's group, so the group is neither killed nor kept.
+    let leaderLooks = 0;
+    const table: ProcessTable = {
+      walkMs: 100,
+      bootId: () => "fake-boot",
+      snapshot: () => ({
+        info: (pid) => (pid === 4242 ? { ppid: 1, pgrp: 4242, start: ++leaderLooks === 1 ? 77 : 300 } : pid === 4270 ? { ppid: 4242, pgrp: 4242, start: 301 } : undefined),
+        children: () => [],
+        group: (pgrp) => (pgrp === 4242 ? [4242, 4270] : []),
+        marked: () => false,
+        commandLine: () => "?",
+      }),
+    };
+    const dir = scratchRoot("commands-leader-changed");
+    const records = join(dir.root, "commands");
+    try {
+      mkdirSync(records);
+      writeFileSync(join(records, "4242-77.json"), JSON.stringify({ boot: "fake-boot", leader: { pid: 4242, start: 77 }, members: [] }));
+      const signals: number[] = [];
+      assert.deepEqual(await reapCommands(records, { table, kill: (target) => void signals.push(target), timeoutMs: 100 }), { signalled: 0, survivors: [] });
+      assert.deepEqual(signals, [], "no SIGKILL to a group its leader no longer holds");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("an open refuses the run while a process a killed incarnation left is still alive, and keeps its record", async () => {
     const dir = scratchRoot("commands-refuse");
     const proc = join(dir.root, "proc");
