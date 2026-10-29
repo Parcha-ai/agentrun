@@ -370,8 +370,9 @@ test("a workflow that escalates ends completed and waits for review: no error, n
   assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, null), [], "and so does no review");
   const listed = (await api("GET", "/runs")).body.runs.find((row) => row.run_id === runId);
   assert.deepEqual([listed.status, listed.error, listed.review], ["completed", null, run.review], "the list says the same");
+  // A workflow run takes no messages here, escalated or not: the refusal it always had.
   const message = await api("POST", `/runs/${runId}/messages`, { content: "approved" });
-  assert.deepEqual([message.status, message.body.error?.code], [409, "not_continuable"]);
+  assert.deepEqual([message.status, message.body.error?.code], [501, "unsupported_here"]);
   // A run that did not escalate has no review.
   assert.equal((await api("POST", "/agents", flowAgent("plain", flow([judge, probe()])))).status, 201);
   const plain = (await api("POST", "/agents/plain/runs", { input: { question: QUESTION } })).body.run_id;
