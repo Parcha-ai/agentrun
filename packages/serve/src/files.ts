@@ -4,6 +4,9 @@ import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
 export const RUN_META = "serve.json";
+/** A cancelled run's mark in its directory, written before its process is told: the run's process sends no model
+ *  request once it is there, however the cancel and the process's start interleave. */
+export const RUN_CANCELLED = "cancelled";
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>

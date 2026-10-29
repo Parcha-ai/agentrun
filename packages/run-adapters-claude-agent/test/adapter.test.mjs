@@ -127,6 +127,13 @@ test("the Skill gate: a session skill by its qualified name is allowed as asked,
   }
 });
 
+test("a host header the proxy would refuse is refused when the adapter is made, by the adapter, naming the header", () => {
+  const make = (headers) => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k', headers }, sdk: fakeSdk(), standIn: { command: process.execPath } });
+  assert.throws(() => make({ Authorization: 'x' }), /^Error: agentrun-claude-agent: provider\.headers: .*authorization/i);
+  assert.throws(() => make({ 'x-tags': 'a\r\nb' }), /agentrun-claude-agent: provider\.headers: /);
+  assert.doesNotThrow(() => make({ 'x-litellm-tags': 'job:1' }));
+});
+
 test("the PreToolUse gate leaves the session's own tools to the tool, and a failure inside it is a deny, while the turn runs", async (t) => {
   const seen = [];
   const decisions = {};
