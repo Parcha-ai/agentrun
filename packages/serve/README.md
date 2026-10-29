@@ -206,8 +206,9 @@ it starts:
   field per need).
 - What a setting of this host fixes saves, and the `201` or `200` carries it in `warnings` (`[{field, reason:
   "not_set_up_here", message}]`, empty when there is none): no key for the model's provider, no default model for a
-  revision that names none, no model for a tier a workflow's nodes name, no Jev key for a workflow's typed questions
-  ([decision workflows](#decision-workflows)). The page shows them before it leaves the form.
+  revision that names none, no model for a tier a workflow's nodes name, no key for the decision provider a workflow's
+  typed questions name ([decision workflows](#decision-workflows)). A decision provider this server does not have
+  refuses the save. The page shows them before it leaves the form.
 
 A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
@@ -297,25 +298,32 @@ harness this server does not run yet saves with a warning on `definition.harness
 
 ## Decision workflows
 
-A workflow's typed questions (its `judge`, `pick`, `sift`, `route` and `ask` nodes) run on Jev, TypeSafe's System One,
-through `@parcha/agentrun-jev`, when this server's environment sets Jev's key. Set `TYPESAFE_API_KEY`: it is the route
-whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works, for Jev through OpenRouter. They are fast decisions, not agent turns: one System One request per
-node, with typed answers and their probabilities.
+A workflow's typed questions (its `judge`, `pick`, `sift`, `route` and `ask` nodes) run on a decision provider when
+this server's environment sets the provider's key. They are fast decisions, not agent turns: one request per node, with
+typed answers and their probabilities.
 
-- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev", available, reason?, note?}]`),
-  and `runJudge` is among `workflows.adapters` once Jev runs here. On the OpenRouter route, jev's `note` says that its
-  key is the model gateway's.
-- With no key, a workflow with typed questions saves with a `not_set_up_here` warning on `definition.workflow` naming
-  the variable, and a run of it is `409 agent_not_runnable`, with `details.adapters: ["runJudge"]` and
-  `details.decisions: {jev: {reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"]}}`.
+- Jev, TypeSafe's System One, through `@parcha/agentrun-jev`, answers a node that names no provider. Set
+  `TYPESAFE_API_KEY`: it is the route whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works,
+  for Jev through OpenRouter.
+- Parallel Decisions, through `@parcha/agentrun-decisions`, answers a node that says `provider: "parallel"`, with web
+  citations as its evidence. Set `PARALLEL_API_KEY`. Each request is booked at Parallel's list price as an estimate,
+  and one whose outcome was lost after sending is never sent again: the run escalates it as interrupted.
+- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel", available,
+  reason?, note?}]`), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
+  jev's `note` says that its key is the model gateway's.
+- With no key for a provider a workflow's nodes name, the workflow saves with a `not_set_up_here` warning on
+  `definition.workflow` naming the variable, and a run of it is `409 agent_not_runnable`, with `details.adapters:
+  ["runJudge"]` and `details.decisions` naming each missing provider, for example `{parallel: {reason:
+  "not_set_up_here", needs: ["PARALLEL_API_KEY"]}}`. A provider this server does not have refuses the save, `422`.
 - Each question's receipt is a row of the run's store (`agentrun.decisions`) before its answer acts, and a resumed run
   takes an answered one instead of asking again.
 - Jev's API reports no cost. A receipt keeps its cost unknown (`null`), and so does the run: its `cost.usd` reads
   `null`, never `0`, while any of its decisions' costs is unknown.
-- The TypeSafe key never enters a run's environment, which its tools and its model's provider read. The server drops
-  `TYPESAFE_API_KEY` from every run's process. It hands the value to a workflow run's process once, on an inherited pipe
-  (descriptor 63), at each launch, a resume after a restart included. The process reads it into the judge's runner,
-  closes the descriptor before anything else runs, and keeps the key nowhere else. It is never in an environment, an
+- The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
+  server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
+  run's process once, by name, on an inherited pipe (descriptor 63), at each launch, a resume after a restart included.
+  The process reads them into its decision providers, closes the descriptor before anything else runs, and keeps the
+  keys nowhere else. It is never in an environment, an
   argument list or a file, and no program the run starts inherits it. With no key, no descriptor is opened. On the OpenRouter route the key is also the model gateway's key, which a run's
   process already holds in its environment for its model nodes, and it stays there.
 
@@ -406,7 +414,7 @@ cookie to every server on the same host name, whatever its port, so another app 
      (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
    - A workflow revision runs on agentrun-pi's durable workflow task, started by `startWorkflowRevision` of
      `@parcha/pi-durable-agent/workflow` (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`,
-     `report`) on the run's model, with the file tools each node names, and its typed questions on Jev
+     `report`) on the run's model, with the file tools each node names, and its typed questions on Jev or Parallel
      ([decision workflows](#decision-workflows)). A workflow that needs code or a tool call this host does not run is
      not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
      ends, the app writes the run's final status with the outcome and releases it. Nothing is carried back from inside
