@@ -1,7 +1,6 @@
 {
-  "name": "@parcha/agentrun-adapters",
+  "name": "@parcha/agentrun-kernel",
   "version": "0.1.0-beta.28",
-  "private": true,
   "description": "Agent harnesses other than Pi, starting with Codex, behind one seam: a DSL node's runNode and an AgentRun run on a harness adapter, durable in AgentRun's own store.",
   "keywords": [
     "agentrun",

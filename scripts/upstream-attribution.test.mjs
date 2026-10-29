@@ -24,7 +24,7 @@ async function packed(plant = async () => {}) {
     await cp(join(packageDir, name), join(dir, name));
   }
   await writeFile(join(dir, 'dist', 'index.js'), "import { submitParameters } from '@parcha/agentrun-dsl';\nexport const x = 1;\n");
-  await writeFile(join(dir, 'README.md'), '# @parcha/agentrun-adapters\n');
+  await writeFile(join(dir, 'README.md'), '# @parcha/agentrun-kernel\n');
   await plant(dir);
   return dir;
 }

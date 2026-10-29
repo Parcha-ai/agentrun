@@ -1,4 +1,4 @@
-// What the Claude Agent CLI's model requests may carry through the session's model proxy (@parcha/agentrun-adapters/host),
+// What the Claude Agent CLI's model requests may carry through the session's model proxy (@parcha/agentrun-kernel/host),
 // written for AgentRun. The routes are the ones the pinned CLI calls:
 //  - `HEAD /api/hello`, its connectivity check, answered by the proxy;
 //  - `POST /v1/messages?beta=true`, a paid request;
@@ -17,7 +17,7 @@
 // passes. A tool of the session's own that is not one of its names (`mcp__hands__<name>`)
 // is dropped, so the model is offered exactly the host's tools. Usage is read from the stream's `message_start` (input
 // and cache tokens) and its last `message_delta` (output).
-import { ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
+import { ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-kernel/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";

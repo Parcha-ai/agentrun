@@ -183,14 +183,14 @@ export const RESERVED_CONFIG_SUFFIXES: readonly string[] = Object.freeze(['_exe'
 /** Throw a `TypeError` naming the first key of `config` the harness reserves (a dotted key is a nested table's: `tools.web_search`). */
 export function checkConfig(config: Record<string, TomlValue> | undefined): void {
   if (config === undefined) return;
-  if (!isTable(config)) throw new TypeError('agentrun-codex: config must be an object of config.toml settings');
+  if (!isTable(config)) throw new TypeError('agentrun-harness-codex: config must be an object of config.toml settings');
   const check = (table: Record<string, TomlValue>, prefix: string) => {
     for (const [k, v] of Object.entries(table)) {
       const path = `${prefix}${k}`;
       // A dotted key in one string (`"tools.web_search"`) is the same setting as the nested one.
       const last = path.slice(path.lastIndexOf('.') + 1);
       if (RESERVED_CONFIG_KEYS.includes(path) || RESERVED_CONFIG_KEYS.some((r) => path.startsWith(`${r}.`)) || RESERVED_CONFIG_SUFFIXES.some((x) => last.endsWith(x))) {
-        throw new TypeError(`agentrun-codex: config.${path} is set by the harness (docs/workspaces.md §3.3: ${RESERVED_CONFIG_KEYS.join(', ')} and any key ending ${RESERVED_CONFIG_SUFFIXES.join(', ')} are reserved)`);
+        throw new TypeError(`agentrun-harness-codex: config.${path} is set by the harness (docs/workspaces.md §3.3: ${RESERVED_CONFIG_KEYS.join(', ')} and any key ending ${RESERVED_CONFIG_SUFFIXES.join(', ')} are reserved)`);
       }
       if (isTable(v)) check(v, `${path}.`);
     }
@@ -226,7 +226,7 @@ const key = (k: string) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k));
 function value(v: TomlValue): string {
   if (typeof v === 'string') return JSON.stringify(v);
   if (typeof v === 'number') {
-    if (!Number.isFinite(v)) throw new TypeError(`agentrun-codex: not a TOML number: ${v}`);
+    if (!Number.isFinite(v)) throw new TypeError(`agentrun-harness-codex: not a TOML number: ${v}`);
     return String(v);
   }
   if (typeof v === 'boolean') return String(v);

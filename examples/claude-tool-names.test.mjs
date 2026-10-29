@@ -11,10 +11,10 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createPiRunner } from '@parcha/agentrun-pi';
-import { createHarnessRunner } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { claudeAgentAdapter } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
+import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { claudeAgentAdapter } from '@parcha/agentrun-harness-claude';
+import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
 const ROOT = mkdtempSync(join(tmpdir(), 'harness-names-'));

@@ -1,4 +1,4 @@
-// Which workspace packages a package may not reach. The harness seam (@parcha/agentrun-adapters and each harness package
+// Which workspace packages a package may not reach. The harness seam (@parcha/agentrun-kernel and each harness package
 // beside it) is host-neutral: a DSL host imports it without serve, so it may not depend on or import a host (serve, the
 // reference harness) or the Pi runtime. Read from each package's manifest and from every module specifier in its source.
 // `node scripts/check-package-imports.mjs` exits non-zero with the problems; the tests run it on this tree and on planted

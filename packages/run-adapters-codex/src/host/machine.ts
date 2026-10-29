@@ -6,16 +6,16 @@
 //  - A child's git stops at the session's directory (GIT_CEILING_DIRECTORIES), and the host may start every child under its
 //    own confinement, in front of the command.
 //  - Each child runs in its own process group, which kill() and close() end whole.
-//  - The model proxy (@parcha/agentrun-adapters/host, with the Codex policy) starts with the machine and stops with it.
+//  - The model proxy (@parcha/agentrun-kernel/host, with the Codex policy) starts with the machine and stops with it.
 import { spawn as spawnChild } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
-import { FileTail } from "@parcha/agentrun-adapters/process";
+import { FileTail } from "@parcha/agentrun-kernel/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
-import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
+import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { codexPolicy } from "./policy.js";
 
 /** The variables a child takes from this process, when they are set. */
@@ -60,7 +60,7 @@ export function confined(child: ChildCommand, confine: ConfineChild | undefined)
   const argv = [out?.command, ...(Array.isArray(out?.args) ? out.args : [])];
   const tail = argv.slice(argv.length - child.args.length - 1);
   const kept = argv.length > child.args.length + 1 && tail.length === child.args.length + 1 && tail.every((a, i) => a === (i === 0 ? child.command : child.args[i - 1]));
-  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-codex: the host's confinement must start the child's own command and arguments, after its own");
+  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-harness-codex: the host's confinement must start the child's own command and arguments, after its own");
   return { command: out.command, args: out.args };
 }
 
@@ -76,9 +76,9 @@ export function childEnv(from: Readonly<Record<string, string | undefined>>, ext
 
 /** A path inside `base`, from a relative one; anything that would leave it throws. */
 function inside(base: string, rel: string): string {
-  if (typeof rel !== "string" || !rel || isAbsolute(rel) || rel.includes("\0")) throw new Error(`agentrun-codex: ${JSON.stringify(String(rel).slice(0, 80))} is not a relative path`);
+  if (typeof rel !== "string" || !rel || isAbsolute(rel) || rel.includes("\0")) throw new Error(`agentrun-harness-codex: ${JSON.stringify(String(rel).slice(0, 80))} is not a relative path`);
   const path = normalize(join(base, rel));
-  if (!path.startsWith(base + sep)) throw new Error(`agentrun-codex: ${JSON.stringify(rel.slice(0, 80))} leaves the session's directory`);
+  if (!path.startsWith(base + sep)) throw new Error(`agentrun-harness-codex: ${JSON.stringify(rel.slice(0, 80))} leaves the session's directory`);
   return path;
 }
 
@@ -141,9 +141,9 @@ function start(options: MachineSpawn, from: Readonly<Record<string, string | und
 export function localMachine(options: LocalMachineOptions): AcquireMachine {
   const from = options.env ?? process.env;
   return async ({ ctx, model }) => {
-    if (!model) throw new Error("agentrun-codex: the harness gave the machine no model route");
+    if (!model) throw new Error("agentrun-harness-codex: the harness gave the machine no model route");
     const base = normalize(options.dir);
-    if (!isAbsolute(base)) throw new Error("agentrun-codex: the session directory must be an absolute path");
+    if (!isAbsolute(base)) throw new Error("agentrun-harness-codex: the session directory must be an absolute path");
     mkdirSync(base, { recursive: true, mode: 0o700 });
     const dirs = Object.fromEntries(DIRS.map((d) => [d, join(base, d)])) as Record<CacheDir, string>;
     const root = join(base, "work");
@@ -174,7 +174,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelKey: key,
       notes: [],
       spawn: async (spawnOptions) => {
-        if (closed) throw new Error("agentrun-codex: the session machine is closed");
+        if (closed) throw new Error("agentrun-harness-codex: the session machine is closed");
         const proc = start(spawnOptions, from, root, base, options.confine);
         children.add(proc);
         void proc.exited.then(() => children.delete(proc));
@@ -203,7 +203,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
           read: () => {
             // Only the file Codex wrote: a link put in its place is not followed.
             try {
-              if (lstatSync(file).isSymbolicLink()) throw new Error(`agentrun-codex: ${path} is a link`);
+              if (lstatSync(file).isSymbolicLink()) throw new Error(`agentrun-harness-codex: ${path} is a link`);
             } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             }

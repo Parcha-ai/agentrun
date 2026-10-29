@@ -335,12 +335,12 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
   if (builtins === undefined || builtins === false) return [];
   if (builtins === true) return [...CLAUDE_BUILTINS];
   if (Array.isArray(builtins)) {
-    if (!builtins.every((b) => typeof b === 'string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(b))) throw new TypeError('agentrun-claude-agent: builtins takes tool names (Bash, Read, ...)');
+    if (!builtins.every((b) => typeof b === 'string' && /^[A-Za-z][A-Za-z0-9_]*$/.test(b))) throw new TypeError('agentrun-harness-claude: builtins takes tool names (Bash, Read, ...)');
     return [...builtins];
   }
   const preset = builtins as { type?: unknown; preset?: unknown };
   if (preset.type === 'preset' && preset.preset === 'claude_code') return undefined;
-  throw new TypeError("agentrun-claude-agent: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
+  throw new TypeError("agentrun-harness-claude: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
 }
 
 /** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16). */
@@ -906,7 +906,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
 
 /** The refusal by provenance (docs/workspaces.md §6 rule 1). */
 function sandboxRequired(): Unavailable {
-  return new Unavailable('agentrun-claude-agent: the Claude Agent CLI runs only on the session machine its adapter makes', {
+  return new Unavailable('agentrun-harness-claude: the Claude Agent CLI runs only on the session machine its adapter makes', {
     code: 'sandbox_required',
     hint: "claudeAgentAdapter() makes it; a hand-built harness needs the adapter's machine.",
   });
@@ -914,7 +914,7 @@ function sandboxRequired(): Unavailable {
 
 /** Claude Code's sandbox can't start in the VM (with the built-ins on, and no `unsandboxedCommands`). */
 function noCommandSandbox(): Unavailable {
-  return new Unavailable("agentrun-claude-agent: the CLI's own command sandbox (bubblewrap) doesn't start on this machine, so its commands would run beside the CLI, where they can read its model key: this turn ends", {
+  return new Unavailable("agentrun-harness-claude: the CLI's own command sandbox (bubblewrap) doesn't start on this machine, so its commands would run beside the CLI, where they can read its model key: this turn ends", {
     hint: 'Boot from the base (prepareSandboxBase) or an image built by the same recipe (bubblewrap, socat, a mountable /proc); the next turn tries again.',
   });
 }
@@ -942,7 +942,7 @@ function spendCapped(cap: Exclude<GatewayCap, 'concurrency'>): Unavailable {
 
 /** The mirror guard (§5.6 "Mirror"): the turn ends, the session is kept. */
 function mirrorUnmapped(why: string): Unavailable {
-  return new Unavailable(`agentrun-claude-agent: mirror_unmapped: the CLI's transcript mirror sent ${why}, so the transcript can't be kept in the log; this turn ends and the session is kept`, {
+  return new Unavailable(`agentrun-harness-claude: mirror_unmapped: the CLI's transcript mirror sent ${why}, so the transcript can't be kept in the log; this turn ends and the session is kept`, {
     hint: 'This is a VM or CLI fault, not a model one: check the deployment pins the CLI the image carries; the next turn tries again.',
   });
 }

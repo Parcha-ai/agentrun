@@ -4,8 +4,8 @@
 //   tool:    the model asked for a host tool, which is running and does not return;
 //   idle:    the turn ended, and the session waits for the next.
 // Prints "ready" once it is at that point.
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { codexAdapter } from '@parcha/agentrun-codex';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { codexAdapter } from '@parcha/agentrun-harness-codex';
 
 const [dir, mode] = process.argv.slice(2);
 const usage = { input_tokens: 10, input_tokens_details: null, output_tokens: 2, output_tokens_details: null, total_tokens: 12 };

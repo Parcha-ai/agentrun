@@ -64,7 +64,7 @@ export function installedVersion(name: string, from = import.meta.url): string |
 export function checkAgentSdkVersion(versionOf: (name: string) => string | undefined = installedVersion): Unavailable | undefined {
   const installed = versionOf(SDK);
   if (installed === undefined || installed === CLAUDE_AGENT_SDK_VERSION) return undefined;
-  return new Unavailable(`agentrun-claude-agent: installed ${SDK} ${installed} (expected ${CLAUDE_AGENT_SDK_VERSION}): the Claude Agent harness runs only with the Agent SDK it is built with`, {
+  return new Unavailable(`agentrun-harness-claude: installed ${SDK} ${installed} (expected ${CLAUDE_AGENT_SDK_VERSION}): the Claude Agent harness runs only with the Agent SDK it is built with`, {
     code: 'unavailable',
     hint: `Install the pinned version: ${CLAUDE_AGENT_SDK_INSTALL}`,
   });

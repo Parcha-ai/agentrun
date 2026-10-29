@@ -6,10 +6,10 @@ import { connect } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { hostHeaderProblems, matchRoute, parseStrict, ProxyRefusal, reportedCostOf, startModelProxy } from '@parcha/agentrun-adapters/host';
-import { openDrive } from '@parcha/agentrun-adapters/kernel';
-import { waitForSubmissions, zodShapeFromJsonSchema } from '@parcha/agentrun-adapters/process';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { hostHeaderProblems, matchRoute, parseStrict, ProxyRefusal, reportedCostOf, startModelProxy } from '@parcha/agentrun-kernel/host';
+import { openDrive } from '@parcha/agentrun-kernel/kernel';
+import { waitForSubmissions, zodShapeFromJsonSchema } from '@parcha/agentrun-kernel/process';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const KEY = 'session-key-for-tests';
 /** A provider's rules, for the tests: one route, a bearer key, the model fixed, a `hosted` tool refused. */
@@ -475,8 +475,8 @@ test("a request for the session's smaller model is asked about and priced as tha
 });
 
 test('two paid requests in flight through the proxy, answered in reverse: each is booked under its own turn, once', async (t) => {
-  const { createHarnessRunner, modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
-  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const { createHarnessRunner, modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-kernel');
+  const { memorySessionStore } = await import('@parcha/agentrun-kernel/testing');
   const store = memorySessionStore();
   const ends = [];
   // The order is forced, never timed: the slow request is with the provider (admitted, turn 1) before the fast one is
@@ -504,8 +504,8 @@ test('two paid requests in flight through the proxy, answered in reverse: each i
 });
 
 test("close() while one request is in flight and another waits on the runner: each is booked once, under its own turn", async () => {
-  const { modelPortFor } = await import('@parcha/agentrun-adapters');
-  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const { modelPortFor } = await import('@parcha/agentrun-kernel');
+  const { memorySessionStore } = await import('@parcha/agentrun-kernel/testing');
   const ends = [];
   const booking = await modelPortFor(await memorySessionStore().open('chat:close'), { key: 'chat:close', onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.usd]); } });
   let admitSecond;
@@ -532,8 +532,8 @@ test("close() while one request is in flight and another waits on the runner: ea
 });
 
 test("each booked request carries the ids its response headers gave (a gateway's call id, the provider's request id), recorded when the headers arrive: a request a crash cut after them keeps them, one cut before them has none, and nothing else of the response is kept", async (t) => {
-  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
-  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-kernel');
+  const { memorySessionStore } = await import('@parcha/agentrun-kernel/testing');
   const store = memorySessionStore();
   const key = 'chat:ids';
   const ends = [];
@@ -574,8 +574,8 @@ test("each booked request carries the ids its response headers gave (a gateway's
 });
 
 test("two requests in flight, answered in reverse: each is booked with its own response's ids, under its own turn, never another's", async (t) => {
-  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
-  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-kernel');
+  const { memorySessionStore } = await import('@parcha/agentrun-kernel/testing');
   const store = memorySessionStore();
   const key = 'chat:ids-overlap';
   // The provider's own id for each request, from its response. The order is forced, never timed: the slow request is
@@ -640,8 +640,8 @@ test("a provider's error answer costs nothing, whatever cost its headers name", 
 });
 
 test("the run's books keep each turn's figure and where it came from: the gateway's, with the table's beside it, or the table's, estimated", async (t) => {
-  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
-  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-kernel');
+  const { memorySessionStore } = await import('@parcha/agentrun-kernel/testing');
   const store = memorySessionStore();
   const key = 'chat:reported-cost';
   const booking = await modelPortFor(await store.open(key), { key });

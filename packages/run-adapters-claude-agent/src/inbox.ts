@@ -12,7 +12,7 @@ export class MessageQueue<T> implements AsyncIterable<T> {
   private wake: (() => void) | undefined;
 
   push(item: T): void {
-    if (this.ended) throw new Error('agentrun-claude-agent: the input is closed');
+    if (this.ended) throw new Error('agentrun-harness-claude: the input is closed');
     this.items.push(item);
     this.wake?.();
   }

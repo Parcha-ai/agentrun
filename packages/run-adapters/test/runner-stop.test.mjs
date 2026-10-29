@@ -4,8 +4,8 @@
 // fails at once.
 import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
-import { createHarnessRunner, HarnessRunError } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
+import { createHarnessRunner, HarnessRunError } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const test = (name, fn) => nodeTest(name, { timeout: 30_000 }, fn);
 const SCHEMA = { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } };
@@ -234,7 +234,7 @@ test('a submit that comes inside the drain is accepted and delivered: the paid a
 });
 
 test('when a stop and a pause both come while the host checks a paid request, the refusal is the stop: a stop outranks a pause', async () => {
-  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const { modelPortFor } = await import('@parcha/agentrun-kernel');
   const store = memorySessionStore();
   let release;
   const held = new Promise((resolve) => { release = resolve; });

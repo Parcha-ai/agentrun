@@ -95,7 +95,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
   const live = options.live ?? true;
   const bridged = tools.map((tool): BridgedTool => {
     const run = async (args: unknown, callId: string, signal?: AbortSignal): Promise<ToolResult> => {
-      if (!callId) throw new TypeError(`agentrun-adapters: a call to ${tool.name} has no call id; derive a stable one`);
+      if (!callId) throw new TypeError(`agentrun-kernel: a call to ${tool.name} has no call id; derive a stable one`);
       const key = toolKey(callId);
       const fresh = !ctx.isMemoized(key);
       if (fresh && tool.replay === 'never') await options.beforeNever?.({ name: tool.name, callId, args });

@@ -224,5 +224,5 @@ export function rolloutPathIn(homes: readonly string[], absolute: string, thread
     const rel = absolute.slice(prefix.length);
     if (isRolloutPath(rel, threadId)) return rel;
   }
-  throw new Error('agentrun-codex: app-server named a rollout file the driver would not derive for the thread (outside CODEX_HOME, or not sessions/…/rollout-<ts>-<threadId>.jsonl)');
+  throw new Error('agentrun-harness-codex: app-server named a rollout file the driver would not derive for the thread (outside CODEX_HOME, or not sessions/…/rollout-<ts>-<threadId>.jsonl)');
 }

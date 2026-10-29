@@ -31,7 +31,7 @@ export class FileTail {
     }
     try {
       const size = fstatSync(fd).size;
-      if (size < this.offset) throw new Error(`agentrun-adapters: ${this.path} shrank from ${this.offset} to ${size} bytes`);
+      if (size < this.offset) throw new Error(`agentrun-kernel: ${this.path} shrank from ${this.offset} to ${size} bytes`);
       if (size === this.offset) return [];
       const buf = Buffer.alloc(size - this.offset);
       readSync(fd, buf, 0, buf.length, this.offset);

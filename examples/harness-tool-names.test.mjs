@@ -10,9 +10,9 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createPiRunner } from '@parcha/agentrun-pi';
-import { createHarnessRunner } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { codexAdapter } from '@parcha/agentrun-codex';
+import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { codexAdapter } from '@parcha/agentrun-harness-codex';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
 const STAND_IN = fileURLToPath(new URL('../packages/run-adapters-codex/test/fake-app-server.mjs', import.meta.url));

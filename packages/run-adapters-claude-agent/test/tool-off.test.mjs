@@ -11,11 +11,11 @@ import { Server, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { createHarnessRunner } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
+import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { CLAUDE_AGENT_ALSO_OFF, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
 import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
-import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
+import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 import { CLAUDE_BETAS, CLAUDE_BLOCKS, CLAUDE_MESSAGES_ROUTES } from '../dist/host/policy.js';
 
 /** The pinned CLI's user-agent (`claude-cli/<version> (...)`), on every call it makes to the session's proxy. */
