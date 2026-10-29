@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
+import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { jevProvider } from '../dist/index.js';
 
 const KEY = 'jev-canary-key-0123456789';
@@ -23,6 +24,15 @@ function build(replies) {
 }
 
 registerDecisionProviderConformance('jev', { canary: KEY, refuses: false, build });
+
+test('a question named __proto__ round-trips through Jev and the seam, and is accepted', async () => {
+  const questions = JSON.parse('{"__proto__": {"type": "noul", "instructions": "Does it hold?"}}');
+  const answers = JSON.parse('{"__proto__": {"type": "noul", "noul": 0.8}}');
+  const provider = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: async () => json({ model: 'jev-test', answers, usage: { input_tokens: 1, output_tokens: 1 } }) });
+  const result = await judgeFromProvider(provider)({ label: 'x', kind: 'judge', state: {}, questions });
+  assert.ok(Object.hasOwn(result.answers, '__proto__'));
+  assert.equal(result.answers.__proto__.noul, 0.8);
+});
 
 test('jevProvider declares what Jev answers, and the key it reads by name', () => {
   const provider = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway' });

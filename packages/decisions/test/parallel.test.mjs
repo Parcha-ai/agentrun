@@ -59,6 +59,34 @@ test('every recorded response replays through the seam: valid answers, every cit
   }
 });
 
+test('a question named __proto__ round-trips through Parallel and the seam, and is accepted', async () => {
+  const questions = JSON.parse('{"__proto__": {"type": "choice", "instructions": "Which?", "criteria": {"a": "first", "b": "second"}}}');
+  const answers = JSON.parse('{"__proto__": {"type": "choice", "choice": "b", "probabilities": {"a": 0.2, "b": 0.8}}}');
+  const { fetch, seen } = fakeFetch([json(wire(answers))]);
+  const result = await judgeFromProvider(parallelProvider({ ...settings, fetch }))({ label: 'x', kind: 'judge', state: {}, questions });
+  assert.ok(Object.hasOwn(JSON.parse(seen[0].init.body).questions, '__proto__'), 'the question was sent under its own name');
+  assert.ok(Object.hasOwn(result.answers, '__proto__'));
+  assert.equal(result.answers.__proto__.choice, 'b');
+  validateAnswers(questions, result.answers);
+});
+
+test('a connection that drops after the 200 headers, before the body ends, is outcome_unknown at list price; a whole body that does not parse is invalid_response', async () => {
+  const questions = { holds: { type: 'noul', instructions: 'Q?' } };
+  const dropped = () => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('{"mode": "fast", "answers": {"hol'));
+    controller.error(Object.assign(new TypeError('terminated'), { cause: Object.assign(new Error('other side closed'), { code: 'ECONNRESET' }) }));
+  } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  const lost = fakeFetch([dropped]);
+  await assert.rejects(parallelProvider({ ...settings, fetch: lost.fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx()), (error) => {
+    code('outcome_unknown')(error);
+    assert.deepEqual([error.costUsd, error.costBasis], [PARALLEL_LIST_PRICE_USD, 'estimate']);
+    return true;
+  });
+  assert.equal(lost.seen.length, 1);
+  const malformed = fakeFetch([json('{"mode": "fast", "answers": [not json')]);
+  await assert.rejects(parallelProvider({ ...settings, fetch: malformed.fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx()), code('invalid_response'));
+});
+
 test('a choice with no confidence gets one derived, and its source says so', async () => {
   const { questions, response } = responses.find((r) => Object.values(r.response.answers).some((a) => a.type === 'choice'));
   const stripped = structuredClone(response);
