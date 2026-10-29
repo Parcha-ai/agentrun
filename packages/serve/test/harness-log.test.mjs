@@ -46,3 +46,13 @@ test("a failed run's message, read from its process.log, is in words of the proc
   await writeFile(join(dir, "process.log"), `${own}\n${harness}\n`);
   assert.equal(await lastLogLine({ dir }), "fenced: the lease lapsed");
 });
+
+test("a key-shaped variable the environment holds as a non-enumerable property is cut out of the line too", () => {
+  const lines = [];
+  const env = { PATH: "/usr/bin" };
+  const hidden = `not-a-secret-${"hidden-value"}`;
+  Object.defineProperty(env, "AGENT_MODEL_API_KEY", { value: hidden, enumerable: false });
+  harnessLog("claude-agent", env, (line) => lines.push(line))("model proxy (anthropic): responded threw", { error: `the store said ${hidden}` });
+  assert.equal(JSON.parse(lines[0]).error, "the store said [redacted]");
+  assert.ok(!lines.join("").includes(hidden));
+});

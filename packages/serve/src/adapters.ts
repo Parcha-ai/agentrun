@@ -32,7 +32,9 @@ const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
  * place, or one serve holds, never reaches the log.
  */
 export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line: string) => void = (line) => void process.stderr.write(line)) {
-  const secrets = Object.entries(env)
+  // Every own name, enumerable or not: an environment object may hold a key it does not list.
+  const secrets = Object.getOwnPropertyNames(env)
+    .map((name) => [name, env[name]] as const)
     .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
     .map(([, value]) => value as string);
   return (message: string, fields: Record<string, unknown> = {}): void => {
