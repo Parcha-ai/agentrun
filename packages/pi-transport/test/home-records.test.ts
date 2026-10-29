@@ -475,22 +475,28 @@ describe("the record stream", () => {
 			const runner = createRunner(made.options);
 			(await hold(made, runner, 1, kept.sink, server)).close("gone");
 			// A host that does not take the stream: no commit of this runner is acknowledged.
-			const blind = await hold(made, runner, 1, undefined, server);
-			getOrThrow(await blind.resume({ epoch: 1 }, context));
-			getOrThrow(await blind.submit("go", undefined, context));
-			// The runner waits 1.5 s from the admitting commit, which a busy machine makes late: wait for the stop itself.
-			const stopped = await stoppedBy(runner, () => made.starts.length > 0);
-			expect(made.starts).toEqual([]);
-			expect(String(stopped)).toContain("the host did not acknowledge commit");
-			expect(made.effects()).toEqual([]);
-			blind.close("gone");
-			// A host that takes the stream gets the admission, late: the call still does not run.
-			const back = await hold(made, runner, 1, kept.sink, server);
-			while (!kept.log.some((one) => admitsTool(one.writes))) await sleep(10);
-			await sleep(300);
-			expect(made.starts).toEqual([]);
-			back.close("done");
-			await runner.home?.close(context).catch(() => {});
+			try {
+				const blind = await hold(made, runner, 1, undefined, server);
+				getOrThrow(await blind.resume({ epoch: 1 }, context));
+				getOrThrow(await blind.submit("go", undefined, context));
+				// The runner waits 1.5 s from the admitting commit, which a busy machine makes late: wait for the stop itself.
+				const stopped = await stoppedBy(runner, () => made.starts.length > 0);
+				expect(made.starts).toEqual([]);
+				expect(String(stopped)).toContain("the host did not acknowledge commit");
+				expect(made.effects()).toEqual([]);
+				blind.close("gone");
+				// A host that takes the stream gets the admission, late: the call still does not run.
+				const back = await hold(made, runner, 1, kept.sink, server);
+				try {
+					await expect.poll(() => kept.log.some((one) => admitsTool(one.writes)), { timeout: 10_000 }).toBe(true);
+					await sleep(300);
+					expect(made.starts).toEqual([]);
+				} finally {
+					back.close("done");
+				}
+			} finally {
+				await runner.home?.close(context).catch(() => {});
+			}
 		});
 	}, 30_000);
 
