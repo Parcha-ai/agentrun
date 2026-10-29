@@ -759,19 +759,20 @@ test("the credential's header replaces a host's header of the same name in any c
 const carriedIds = (n) => ({ 'x-litellm-call-id': `call-carry-${n}`, 'request-id': `req_carry${n}` });
 /** A booking whose writes of runner.response can be held (`hold`) or refused (`refuse` returns true), the proxy over it
  *  with its log kept, and `reopen()`: the next process on the same store, which books what a crash cut off. */
-async function carrySetup(t, key, { fetch, hold, refuse }) {
+async function carrySetup(t, key, { fetch, hold, refuse, holdRequest, stopped }) {
   const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
   const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
   const store = memorySessionStore();
   const writer = await store.open(key);
   const append = async (records) => {
+    if (holdRequest && records.some((r) => r.kind === RUNNER_RECORDS.request)) await holdRequest(records);
     if (records.some((r) => r.kind === RUNNER_RECORDS.response)) {
       if (hold) await hold();
       if (refuse?.(records)) throw new Error('commit timed out');
     }
     return writer.append(records);
   };
-  const booking = await modelPortFor(writer, { key, append });
+  const booking = await modelPortFor(writer, { key, append, ...(stopped ? { stopped } : {}) });
   const logged = [];
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch, log: (message, detail) => logged.push({ message, ...detail }) }, KEY);
   const read = () => store.read(key);
@@ -872,4 +873,41 @@ test("a carried response record whose own next write is refused stays carried: t
   assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }, { turn: 2, providerIds: carriedIds(3) }], "turn 1's ids, carried past the refused write");
   await reopen();
   assert.deepEqual((await of(RUNNER_RECORDS.turn)).filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
+});
+
+test("a response's ids refused while the next request's record is written, then a stop: the withdrawal of that request carries them, and a later crash's cut keeps them", async (t) => {
+  // The order is forced: request 2's record is being written (held) when request 1's headers arrive and their write is
+  // refused; the stop comes before request 2's record resolves, so request 2 is withdrawn, never sent.
+  const turn1Headers = signal();
+  let releaseHeaders;
+  const headersHeld = new Promise((resolve) => { releaseHeaders = resolve; });
+  const request2Writing = signal();
+  let releaseRequest2;
+  const request2Held = new Promise((resolve) => { releaseRequest2 = resolve; });
+  let stop;
+  const { p, logged, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-withdrawn', {
+    fetch: async (_url, init) => { if (JSON.parse(init.body).input === 'first') { turn1Headers.fire(); await headersHeld; return neverEnds(1); } return answered(2); },
+    holdRequest: async (records) => { if (records.some((r) => r.kind === RUNNER_RECORDS.request && r.data.turn === 2)) { request2Writing.fire(); await request2Held; } },
+    // Only turn 1's own write of its ids is refused; the write that carries them is not.
+    refuse: (records) => records.some((r) => r.kind === RUNNER_RECORDS.response && r.data.turn === 1 && !r.data.late),
+    stopped: () => stop,
+  });
+  t.after(async () => { releaseHeaders(); releaseRequest2(); await p.close(); });
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'first' } }).catch(() => {});
+  await turn1Headers.wait('request 1 with the provider');
+  const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'second' } }).catch((e) => e);
+  await request2Writing.wait("request 2's record being written");
+  releaseHeaders();
+  await until(() => logged.some((l) => /responded threw/.test(l.message)), "turn 1's ids refused");
+  stop = new Error('the session has stopped');
+  releaseRequest2();
+  const refused = await second;
+  assert.ok(refused instanceof Error || refused.status !== 200, 'request 2 is withdrawn, never answered');
+  await until(async () => (await of(RUNNER_RECORDS.turn)).some((d) => d.unsent), 'request 2 withdrawn');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }], "turn 1's ids, carried by the withdrawal's write");
+  // The process dies with turn 1 open: the next one books it once, cut, with the ids the withdrawal carried.
+  await reopen();
+  const turns = await of(RUNNER_RECORDS.turn);
+  assert.deepEqual(turns.filter((d) => d.turn === 2), [{ turn: 2, usd: 0, unsent: true }], 'request 2 withdrawn at $0');
+  assert.deepEqual(turns.filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
 });
