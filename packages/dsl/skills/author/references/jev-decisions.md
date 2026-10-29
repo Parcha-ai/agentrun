@@ -107,8 +107,8 @@ construct new state. Inspect the assembled state and questions, not just node na
 A decision node (`judge`, `pick`, `sift`, a `route` Jev chooses, or an `ask`
 predicate) may say four things about the provider that answers it. Each is optional:
 
-- `provider`: the id of one of the host's decision providers (`jev`, `parallel`, an
-  `http:` provider the host registered). Absent, the host's default answers.
+- `provider`: the id of one of the host's decision providers, such as `jev` or
+  `parallel`. Absent, the host's default answers.
 - `model`: a model or version to pin, so a run asks the same model next month. A
   changed pin is a different decision: its answer is never replayed from another
   model's receipt.
