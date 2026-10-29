@@ -3,7 +3,7 @@ import type { ClientError } from "./client";
 export type HarnessId = "pi" | "claude-agent" | "codex";
 export type Definition = { version: number; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; skills: string[]; tools: string[]; [field: string]: unknown };
 export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; archived_at: string | null; runs?: { count: number; live: number } };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools">>;
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools">> & { workflowText?: string };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
  *  description stay as the agent was created. Every field the
@@ -42,6 +42,16 @@ export function createBody(f: { name: string; description: string; instructions:
       ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), skills: [], tools: f.tools,
     },
   };
+}
+
+/** The body that creates a workflow agent from the workflow's JSON as pasted: its first revision, with no instructions,
+ *  model, thinking or harness (a workflow revision keeps none of them). Text that is not a JSON object makes no body: the
+ *  error says why, and nothing is sent. Whether the workflow itself is valid is the server's to say, as on any save. */
+export function workflowCreateBody(f: { name: string; description: string; text: string }): { body?: { definition: Definition }; error?: string } {
+  let workflow: unknown;
+  try { workflow = JSON.parse(f.text); } catch (e) { return { error: `The workflow is not a JSON object: ${(e as Error).message}` }; }
+  if (typeof workflow !== "object" || workflow === null || Array.isArray(workflow)) return { error: "The workflow is not a JSON object: paste the workflow's body, starting with {." };
+  return { body: { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow, skills: [], tools: [] } } };
 }
 
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
