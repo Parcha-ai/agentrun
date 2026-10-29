@@ -23,11 +23,13 @@ import { type ConfineChild, confineOf } from "./adapters.js";
 import { fileTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
+import { REQUEST_COST_LATE, REQUEST_COST_PENDING } from "@parcha/pi-durable-agent/timeline";
 
 /** The root's marker of a paid request already written as a pi.assistant entry. */
 export const BOOKED = "adapter.request";
-/** The cost of a request whose answer was written at unknown cost, written once it came in: the run's spend counts it. */
-export const PRICED_LATE = "adapter.request_cost";
+/** The cost of a request whose answer was written at unknown cost, written once it came in: the timeline adds it to the
+ *  run's cost without counting a request, and a later open reads it as that request's cost being in. */
+export const PRICED_LATE = REQUEST_COST_LATE;
 /** How long a turn's end waits for its requests' costs, booked once the proxy has answered the harness. */
 export const BOOKING_WAIT_MS = 2_000;
 /** The root's record of a message the door accepted, and of its end: `sent` to the session, or dropped by a stop. */
@@ -148,8 +150,7 @@ export function adapterRun(
         const late = costed.shift()!;
         if (!unpriced.has(late.request) || priced.has(late.request)) continue;
         await commit(async (tx) => {
-          await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, late, "", []) as never] });
-          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request } });
+          await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: PRICED_LATE, data: { key: spec.key, request: late.request, usd: late.usage.usd ?? null } });
         });
         priced.add(late.request);
       }
@@ -166,6 +167,8 @@ export function adapterRun(
       const marked = request?.request ?? unbooked;
       await commit(async (tx) => {
         await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [assistantMessage(harness, request, content.text, content.calls) as never] });
+        // Its cost still to come: the timeline reads it pending, not a cost no one will ever know.
+        if (unbooked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: REQUEST_COST_PENDING, data: { key: spec.key, request: unbooked } });
         if (marked !== undefined) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BOOKED, data: { key: spec.key, request: marked, ...(request ? {} : { unpriced: true }) } });
       });
       if (marked !== undefined) written.add(marked);
