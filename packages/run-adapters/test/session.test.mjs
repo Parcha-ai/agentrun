@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CallsInFlight, openAdapterSession } from '@parcha/agentrun-kernel';
 import { Restart } from '@parcha/agentrun-kernel/kernel';
-import { NativeJournal } from '@parcha/agentrun-kernel/process';
-import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { NativeJournal, placeSubmissions } from '@parcha/agentrun-kernel/process';
+import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 /** A harness whose drive throws `Restart` for its first `restarts` drives, then records the turn as completed. */
 function restarting(restarts) {
@@ -118,4 +118,104 @@ test('drainMs is checked, and a closed session refuses a new turn', async () => 
   await assert.rejects(session.turnEnd(), /^Error: agentrun-test: no turn is in flight$/);
   await session.close();
   await assert.rejects(session.send('go'), /^Error: agentrun-test: the session is closed$/);
+});
+
+/** One process's session on `store`: the next open of the key fences this one, as a later process's does. */
+async function openOn(store, drive) {
+  const events = [];
+  const controller = new AbortController();
+  const io = { writer: await store.open('step:s'), models: {}, signal: controller.signal, onEvent: (e) => events.push(e) };
+  const session = await openAdapterSession({ name: 'agentrun-test', io, drive, live: () => {}, calls: new CallsInFlight() });
+  return { session, events, kill: () => controller.abort(new Error('killed')) };
+}
+/** A harness that records each turn it runs, and the text of what it was given to place. */
+function counting() {
+  const harness = { drives: 0, given: [] };
+  harness.drive = async (drive) => {
+    harness.drives += 1;
+    const pending = drive.pending();
+    harness.given.push(...pending.map((s) => s.text));
+    await placeSubmissions(drive, pending);
+    const journal = new NativeJournal(drive);
+    journal.message({ type: 'turn', status: 'completed' });
+    await journal.flush();
+  };
+  return harness;
+}
+const turnSoon = () => new Promise((resolve) => setImmediate(resolve));
+
+test('a turn a crash cut off is settled: recorded ended interrupted, nothing is sent, and no later open resumes it', async () => {
+  const store = memorySessionStore();
+  // The first process places its input, starts a call that is not safe to repeat, and dies inside it.
+  const first = await openOn(store, async (drive) => {
+    await placeSubmissions(drive, drive.pending());
+    await drive.effect('tool:c1', { name: 'tool.commit', replay: 'never', input: {} }, () => new Promise(() => {}));
+  });
+  await first.session.send('go');
+  await turnSoon();
+  first.kill();
+
+  const harness = counting();
+  const second = await openOn(store, harness.drive);
+  assert.equal(second.session.state, 'open_turn');
+  await second.session.settleOpenTurn();
+  assert.equal(second.session.state, 'idle');
+  assert.equal(harness.drives, 0, 'settling runs no turn of the harness');
+  assert.deepEqual(second.events, [{ type: 'turn_end', status: 'interrupted' }]);
+  await assert.rejects(second.session.recover(), /^Error: agentrun-test: there is no turn to recover$/);
+
+  const third = await openOn(store, harness.drive);
+  assert.equal(third.session.state, 'idle', 'the settled turn is over in the records');
+  await third.session.send('next');
+  assert.deepEqual(await third.session.turnEnd(), { status: 'completed' });
+  assert.deepEqual([harness.drives, harness.given], [1, ['next']]);
+});
+
+test('input sent and not yet placed when the crash came is withdrawn by the settle: it never reaches the harness', async () => {
+  const store = memorySessionStore();
+  const first = await openOn(store, () => new Promise(() => {}));
+  await first.session.send('the cut turn\'s prompt');
+  await turnSoon();
+  first.kill();
+
+  const harness = counting();
+  const second = await openOn(store, harness.drive);
+  assert.equal(second.session.state, 'open_turn');
+  await second.session.settleOpenTurn();
+  const third = await openOn(store, harness.drive);
+  assert.equal(third.session.state, 'idle');
+  await third.session.send('next');
+  await third.session.turnEnd();
+  assert.deepEqual(harness.given, ['next']);
+});
+
+test('only an open turn is settled: a new or idle session refuses, and writes nothing', async () => {
+  const store = memorySessionStore();
+  const harness = counting();
+  const fresh = await openOn(store, harness.drive);
+  await assert.rejects(fresh.session.settleOpenTurn(), /^Error: agentrun-test: there is no turn to settle$/);
+  await fresh.session.send('go');
+  await fresh.session.turnEnd();
+  const before = (await store.read('step:s')).length;
+  await assert.rejects(fresh.session.settleOpenTurn(), /^Error: agentrun-test: there is no turn to settle$/);
+  assert.equal((await store.read('step:s')).length, before);
+});
+
+test('the faux harness settles a turn a crash cut off: its end is recorded, and no request is made again', async () => {
+  const store = memorySessionStore();
+  const adapter = fauxAdapter({ script: () => [{ say: 'working' }, { hang: true }, { say: 'never sent' }] });
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const spec = { key: 'step:f', label: 'f', system: [], tools: [], context: 'fresh' };
+  const dying = new AbortController();
+  const first = await adapter.open(spec, { writer: await store.open('step:f'), models, signal: dying.signal, onEvent: () => {} });
+  await first.send('go');
+  await turnSoon();
+  dying.abort(new Error('killed'));
+
+  const second = await adapter.open(spec, { writer: await store.open('step:f'), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(second.state, 'open_turn');
+  await second.settleOpenTurn();
+  const third = await adapter.open(spec, { writer: await store.open('step:f'), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(third.state, 'idle');
+  assert.equal(adapter.requests, 1);
 });
