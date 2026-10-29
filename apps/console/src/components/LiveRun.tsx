@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { RunDetail } from "@/components/RunDetail";
 import { RunError } from "@/components/RunError";
 import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
-import { type HarnessRead, messageOffer } from "@/lib/liveRun";
+import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
 import type { ApiError, Run, RunFile, TimelineRow } from "@/lib/v2";
 
 const asApiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: true });
@@ -21,7 +21,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   // The run's harness decides whether a message to a working run is a steer: until it is known, no message is offered.
   const [harness, setHarness] = useState<HarnessRead>({ state: "loading" });
   useEffect(() => {
-    if (run && harness.state === "loading") v2.agentHarness(run.agent_id).then((id) => setHarness({ state: "read", id }), () => setHarness({ state: "failed" }));
+    if (run && harness.state === "loading") void readHarness(v2, run.agent_id).then(setHarness);
   }, [run?.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
   const offer = messageOffer(harness, caps);
 
