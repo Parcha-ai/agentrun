@@ -1,0 +1,68 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-fb34-7e15-b661-ccce2e884118/timeline"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-fb34-7e15-b661-ccce2e884118",
+    "status": "queued",
+    "state": "working",
+    "reset": true,
+    "rows": [
+      {
+        "id": "11:18",
+        "timestamp": "2026-10-28T19:33:41.189Z",
+        "created_at": "2026-10-28T19:33:41.189Z",
+        "kind": "user_message",
+        "summary": "You: {\"subject\":\"Bulk import takes a while\",\"body\":\"Importing 40,000 rows; it takes a while, just checking it is still going.\"}",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "{\"subject\":\"Bulk import takes a while\",\"body\":\"Importing 40,000 rows; it takes a while, just checking it is still going.\"}\nWhen you are done, call the `submit` tool ONCE with the classify record as its arguments. The arguments are validated against the required schema; if validation fails you get the problems back and may fix and resubmit.\nRequired JSON Schema (authoritative): {\"type\":\"object\",\"required\":[\"category\",\"urgency\",\"summary\"],\"properties\":{\"category\":{\"type\":\"string\",\"enum\":[\"billing\",\"bug\",\"account\",\"question\"]},\"urgency\":{\"type\":\"number\"},\"summary\":{\"type\":\"string\"}}}\nOnly a successful `submit` call counts as delivering. Do not answer in plain text.",
+        "conversation_id": 11,
+        "seq": 0
+      },
+      {
+        "id": "11:usage",
+        "timestamp": "2026-10-28T19:33:41.284Z",
+        "created_at": "2026-10-28T19:33:41.284Z",
+        "kind": "usage",
+        "summary": "Cost so far: unknown over 3 model requests",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 11,
+        "usage": {
+          "usd": null,
+          "requests": 3
+        },
+        "seq": 1
+      }
+    ],
+    "drop": [],
+    "next_after": 1793222040969003,
+    "unchanged": false,
+    "has_more": false,
+    "final": false,
+    "cost": {
+      "usd": null,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "poll_after_ms": 1000
+  }
+}
