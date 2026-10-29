@@ -358,7 +358,8 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
   const judge = createJevRunner({ ...options, maxAttempts: 1 });
   const provider = options.provider ?? "typesafe";
   const capabilities: DecisionProvider["capabilities"] = {
-    types: ["noul", "choice", "score", "box"], inputs: ["text", "json", "image"], evidence: "none", probability: "model", grounding: false,
+    // No box question and no image input: a DecisionRequest carries no image, so the seam cannot send one.
+    types: ["noul", "choice", "score"], inputs: ["text", "json"], evidence: "none", probability: "model", grounding: false,
     replay: "never", maxQuestions: null, maxStateBytes: options.maxStateBytes ?? null,
   };
   return {
