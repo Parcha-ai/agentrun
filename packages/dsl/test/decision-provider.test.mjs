@@ -71,3 +71,21 @@ test('a workflow runs on a provider through runJudge, and the receipt holds the 
   assert.deepEqual([receipts[0].receipt.cost_usd, receipts[0].exchange.result.cost_basis], [0.001, 'estimate']);
   assert.deepEqual(receipts[0].exchange.result.evidence, outcome.evidence);
 });
+
+test('a decision whose outcome is unknown after it was sent escalates as interrupted, booked at the cost the provider estimates', async () => {
+  const receipts = [];
+  const flow = {
+    v: 2, name: 'judged', schemas: { Verdict: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } },
+    output: { schemaId: 'Verdict', path: 'verdict' },
+    root: { node: 'judge', label: 'check', state: { doc: 'x' }, out: 'Verdict', as: 'verdict' },
+  };
+  let asked = 0;
+  const provider = providerOf(async () => { asked++; throw new DecisionProviderError('outcome_unknown', 'HTTP 503 after the request was sent.', { status: 503, attempts: 1, costUsd: 0.001, costBasis: 'estimate' }); });
+  const result = await runWorkflow(flow, { filing: 'case-9' }, { runJudge: judgeFromProvider(provider), recordDecision: async (receipt) => { receipts.push(receipt); } });
+  assert.equal(result.status, 'escalated', 'an outcome the run cannot know goes to a person, not to a failed run');
+  assert.deepEqual([result.escalation.kind, result.escalation.stage, result.escalation.label], ['decision_interrupted', 'decision', 'check']);
+  assert.match(result.escalation.summary, /"check"/);
+  assert.equal(result.escalation.state.filing, 'case-9');
+  assert.equal(asked, 1, 'it is not asked again');
+  assert.deepEqual([receipts.length, receipts[0].status, receipts[0].cost_usd], [1, 'failed', 0.001]);
+});

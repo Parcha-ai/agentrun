@@ -16,6 +16,7 @@ function build(replies) {
     if (reply.kind === 'hang') return new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal.reason ?? new DOMException('aborted', 'AbortError')), { once: true }));
     if (reply.kind === 'status') return json({ error: { message: 'refused' } }, reply.status);
     if (reply.kind === 'malformed') return json('{"answers": [not json');
+    if (reply.kind === 'lost') throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
     return json({ model: 'jev-test', answers: reply.answers, usage: { input_tokens: 12, output_tokens: 3 } });
   };
   return { provider: jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch, retryBaseMs: 1, retryMaxMs: 2, maxAttempts: 3, maxStateBytes: 4096 }), calls: () => calls };

@@ -14,7 +14,7 @@ function failures(mutant) {
   const run = spawnSync(process.execPath, ['--test', '--test-reporter=tap', runner], { env, encoding: 'utf8' });
   const failed = [...run.stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map(([, title]) => title.replace(`${mutant}: `, ''));
   assert.equal(run.status === 0, failed.length === 0, `${mutant}: exit ${run.status}\n${run.stdout.slice(-2000)}`);
-  assert.match(run.stdout, /^# tests 15$/m, `${mutant}: the whole suite ran`);
+  assert.match(run.stdout, /^# tests 16$/m, `${mutant}: the whole suite ran`);
   return failed;
 }
 
@@ -22,7 +22,7 @@ const EXPECTED = {
   none: [],
   'extra-answers': [/^an answer to a question not asked, or none for one asked, is invalid_response/],
   'unknown-cost-as-zero': [/^a cost it does not know is null, never 0/],
-  'untyped-errors': [/^401 and 403 are auth errors/, /^422 is invalid_request/, /^429 is rate_limited/, /^a 5xx is an http error/],
+  'untyped-errors': [/^401 and 403 are auth errors/, /^422 is invalid_request/, /^429 is rate_limited/, /^a 5xx is outcome_unknown/, /^a provider that cannot replay never retries/],
   'malformed-as-http': [/^a malformed body is invalid_response/],
   'ignores-abort': [/^an abort stops a request in flight as aborted/],
   'ignores-deadline': [/^a request past its deadline stops as timeout/],
@@ -32,6 +32,7 @@ const EXPECTED = {
   'evidence-as-text': [/^evidence is a list of sources/],
   'request-id-number': [/^evidence is a list of sources, and the request id a string or null/],
   'needs-a-value': [/^needs names environment variables, never their values/],
+  'retries-after-send': [/^a provider that cannot replay never retries a failure after the request was sent/],
 };
 
 test('every mutant has an expectation, and the provider that keeps every rule passes the suite', () => {

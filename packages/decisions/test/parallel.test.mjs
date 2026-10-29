@@ -35,6 +35,7 @@ registerDecisionProviderConformance('parallel', {
       if (reply.kind === 'hang') return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
       if (reply.kind === 'status') return json({ type: 'error', error: { ref_id: 'ref-1', message: 'refused' } }, reply.status);
       if (reply.kind === 'malformed') return json('{"answers": [not json');
+      if (reply.kind === 'lost') throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) });
       return json(wire(reply.answers, reply.evidence));
     };
     return { provider: parallelProvider({ ...settings, fetch }), calls: () => calls };
@@ -116,21 +117,37 @@ test('a 429 is retried after its Retry-After, and the answer that follows is the
   assert.equal(result.answers.holds.noul, 0.4);
 });
 
-test('every attempt that may have been billed is booked: a 503 or a lost connection before the answer books two, a 429 one', async () => {
+test('a 5xx, a 408 or a connection lost after sending is sent once, booked at list price as an estimate, and is outcome_unknown', async () => {
   const questions = { holds: { type: 'noul', instructions: 'Q?' } };
-  const answer = () => json(wire({ holds: { type: 'noul', noul: 0.4 } }));
-  const decideAfter = async (first) => {
-    const { fetch, seen } = fakeFetch([first, answer()]);
-    const result = await parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx());
-    assert.equal(seen.length, 2);
-    return result;
-  };
-  const after503 = await decideAfter(json({ type: 'error', error: {} }, 503));
-  assert.deepEqual([after503.cost_usd, after503.cost_basis], [2 * PARALLEL_LIST_PRICE_USD, 'estimate']);
-  const afterLost = await decideAfter(() => Promise.reject(new TypeError('fetch failed')));
-  assert.deepEqual([afterLost.cost_usd, afterLost.cost_basis], [2 * PARALLEL_LIST_PRICE_USD, 'estimate']);
-  const after429 = await decideAfter(json({ type: 'error', error: {} }, 429, { 'retry-after': '0' }));
-  assert.deepEqual([after429.cost_usd, after429.cost_basis], [PARALLEL_LIST_PRICE_USD, 'estimate']);
+  const afterSend = [
+    ['a 503', () => json({ type: 'error', error: {} }, 503)],
+    ['a 500', () => json({ type: 'error', error: {} }, 500)],
+    ['a 408', () => json({ type: 'error', error: {} }, 408)],
+    ['a lost connection', () => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) }))],
+  ];
+  for (const [what, reply] of afterSend) {
+    const { fetch, seen } = fakeFetch([reply, () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
+    await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx()), (error) => {
+      code('outcome_unknown')(error);
+      assert.deepEqual([error.costUsd, error.costBasis], [PARALLEL_LIST_PRICE_USD, 'estimate'], what);
+      return true;
+    });
+    assert.equal(seen.length, 1, `${what} was sent ${seen.length} times`);
+  }
+});
+
+test('a request that provably never reached Parallel is retried, and only the answered attempt is booked', async () => {
+  const refused = () => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }));
+  const { fetch, seen } = fakeFetch([refused, () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
+  const result = await parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx());
+  assert.equal(seen.length, 2);
+  assert.deepEqual([result.cost_usd, result.cost_basis], [PARALLEL_LIST_PRICE_USD, 'estimate']);
+});
+
+test('a 429 is retried only when it says when: without Retry-After it is rate_limited at once', async () => {
+  const { fetch, seen } = fakeFetch([json({ type: 'error', error: {} }, 429), () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);
+  await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx()), code('rate_limited'));
+  assert.equal(seen.length, 1);
 });
 
 test('with no key, the request is refused naming the variable, and nothing is sent', async () => {

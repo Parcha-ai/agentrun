@@ -6,11 +6,13 @@ import { DecisionProviderError, type DecisionEvidence, type DecisionOutcome, typ
 import { completeConfidence, validateAnswers, type SystemOneQuestion } from "../system-one.js";
 
 /** What the kit's fake transport answers one call with. An `answer` carries answers in the DSL's shape (and, for a
- *  provider with evidence, sources), which the kit sends in the provider's own wire format. */
+ *  provider with evidence, sources), which the kit sends in the provider's own wire format. `lost` is a connection that
+ *  drops after the request was sent: whether it was served is not known. */
 export type KitReply =
   | { kind: "answer"; answers: Record<string, unknown>; evidence?: DecisionEvidence[] }
   | { kind: "status"; status: number }
   | { kind: "malformed" }
+  | { kind: "lost" }
   | { kind: "hang" };
 
 export interface DecisionProviderKit {
@@ -102,8 +104,18 @@ export function registerDecisionProviderConformance(name: string, kit: DecisionP
     await assert.rejects(decideOn([{ kind: "status", status: 429 }]), failsWith("rate_limited"));
   });
 
-  it("a 5xx is an http error", async () => {
-    await assert.rejects(decideOn([{ kind: "status", status: 500 }]), failsWith("http"));
+  it("a 5xx is outcome_unknown for a provider that cannot replay, and an http error for one that dedupes", async () => {
+    const code = probe().capabilities.replay === "never" ? "outcome_unknown" : "http";
+    for (const status of [500, 503]) await assert.rejects(decideOn([{ kind: "status", status }]), failsWith(code));
+  });
+
+  it("a provider that cannot replay never retries a failure after the request was sent", async () => {
+    if (probe().capabilities.replay !== "never") return;
+    for (const reply of [{ kind: "status", status: 500 }, { kind: "status", status: 503 }, { kind: "status", status: 408 }, { kind: "lost" }] as KitReply[]) {
+      const { provider, calls } = kit.build([reply, answerReply(probe())]);
+      await assert.rejects(provider.decide(request(asked(provider).questions), ctx()), failsWith("outcome_unknown"));
+      assert.equal(calls(), 1, `${JSON.stringify(reply)} was sent ${calls()} times`);
+    }
   });
 
   it("a malformed body is invalid_response", async () => {

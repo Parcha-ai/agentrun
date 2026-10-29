@@ -14,6 +14,7 @@ function scripted(replies, breaks = {}) {
   const send = async (signal, deadline) => {
     const reply = replies[Math.min(calls, replies.length - 1)];
     calls++;
+    if (reply.kind === 'lost') return reply;
     if (reply.kind === 'hang') {
       await new Promise((resolve) => {
         if (!breaks.ignoresAbort) signal.addEventListener('abort', resolve, { once: true });
@@ -33,10 +34,14 @@ function scripted(replies, breaks = {}) {
       for (let attempt = 1; ; attempt++) {
         reply = await send(ctx.signal, ctx.deadlineMs ?? 30_000);
         if (reply.kind === 'status' && reply.status === 429 && attempt < 3) continue;
+        const afterSend = reply.kind === 'lost' || (reply.kind === 'status' && (reply.status === 408 || reply.status >= 500));
+        if (breaks.retriesAfterSend && afterSend && attempt < 3) continue;
         break;
       }
+      if (reply.kind === 'lost') throw fail('outcome_unknown', 'The connection was lost after the request was sent.');
       if (reply.kind === 'status') {
         if (breaks.untypedErrors) throw new Error(`HTTP ${reply.status}`);
+        if (reply.status === 408 || reply.status >= 500) throw fail('outcome_unknown', `HTTP ${reply.status} after the request was sent.`, reply.status);
         throw fail(statusCode(reply.status), breaks.leaksKey ? `HTTP ${reply.status} with key ${KEY}` : `HTTP ${reply.status}`, reply.status);
       }
       if (reply.kind === 'malformed') throw breaks.malformedAsHttp ? fail('http', 'Bad body.') : fail('invalid_response', 'The response is not JSON.');
@@ -70,6 +75,7 @@ export const MUTANTS = {
   'evidence-as-text': { evidenceAsText: true },
   'request-id-number': { requestIdNumber: true },
   'needs-a-value': { needsValue: true },
+  'retries-after-send': { retriesAfterSend: true },
 };
 
 const mutant = process.env.DECISION_MUTANT;
