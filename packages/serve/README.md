@@ -202,10 +202,12 @@ it starts:
 - What no setting of this host fixes refuses the save, `422 input_invalid` by field, and nothing is written: a tool
   this host does not bind (`definition.tools[i]`, `bash` among them), a model pi-ai does not know when no gateway is
   set (`definition.model`, saying why), empty instructions (`definition.instructions`), and a workflow that needs a tool
-  call, a judge, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one field per need).
+  call this host does not run, code, or a node tool other than `read`, `write` and `edit` (`definition.workflow`, one
+  field per need).
 - What a setting of this host fixes saves, and the `201` or `200` carries it in `warnings` (`[{field, reason:
   "not_set_up_here", message}]`, empty when there is none): no key for the model's provider, no default model for a
-  revision that names none, no model for a tier a workflow's nodes name. The page shows them before it leaves the form.
+  revision that names none, no model for a tier a workflow's nodes name, no Jev key for a workflow's typed questions
+  ([decision workflows](#decision-workflows)). The page shows them before it leaves the form.
 
 A run is refused before it starts, `409 agent_not_runnable`, saying which, for any of these: a warning the host has not
 fixed yet, or a revision saved before these checks. A run needs only the tiers it uses: an agentic one its model or the default, a workflow the tiers its nodes name, so a
@@ -258,7 +260,7 @@ the sessions it still holds are released at Browserbase.
 | --- | --- |
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve` and the operations it answers `501` marked `x-agentrun-serve-unsupported`; `links.openapi` in capabilities points at it. |
-| `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get; `models`, where models come from and the model of each tier. |
+| `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `tools`, `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets. A field the store does not keep (`input_schema`, `output_schema`, `max_cost_usd`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. |
 | `PUT /agents/{id}/definition` | The same body, checked [the same way](#models): a new revision, its parent the current one, made current. Without `skills` the current revision's skill files carry over. A definition that is the current revision already writes nothing, so a PUT sent twice makes one revision. An agent's id, name and description stay those it was made with. `If-Match` that is not the current ETag is `412 precondition_failed`; the store compares it again inside the commit, so of two edits that read the same revision exactly one lands. |
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
@@ -292,6 +294,30 @@ harness this server does not run yet saves with a warning on `definition.harness
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
+
+## Decision workflows
+
+A workflow's typed questions (its `judge`, `pick`, `sift`, `route` and `ask` nodes) run on Jev, TypeSafe's System One,
+through `@parcha/agentrun-jev`, when this server's environment sets Jev's key. Set `TYPESAFE_API_KEY`: it is the route
+whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works, for Jev through OpenRouter. They are fast decisions, not agent turns: one System One request per
+node, with typed answers and their probabilities.
+
+- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev", available, reason?, note?}]`),
+  and `runJudge` is among `workflows.adapters` once Jev runs here. On the OpenRouter route, jev's `note` says that its
+  key is the model gateway's.
+- With no key, a workflow with typed questions saves with a `not_set_up_here` warning on `definition.workflow` naming
+  the variable, and a run of it is `409 agent_not_runnable`, with `details.adapters: ["runJudge"]` and
+  `details.decisions: {jev: {reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"]}}`.
+- Each question's receipt is a row of the run's store (`agentrun.decisions`) before its answer acts, and a resumed run
+  takes an answered one instead of asking again.
+- Jev's API reports no cost. A receipt keeps its cost unknown (`null`), and so does the run: its `cost.usd` reads
+  `null`, never `0`, while any of its decisions' costs is unknown.
+- The TypeSafe key never enters a run's environment, which its tools and its model's provider read. The server drops
+  `TYPESAFE_API_KEY` from every run's process. It hands the value to a workflow run's process once, on an inherited pipe
+  (descriptor 63), at each launch, a resume after a restart included. The process reads it into the judge's runner,
+  closes the descriptor before anything else runs, and keeps the key nowhere else. It is never in an environment, an
+  argument list or a file, and no program the run starts inherits it. With no key, no descriptor is opened. On the OpenRouter route the key is also the model gateway's key, which a run's
+  process already holds in its environment for its model nodes, and it stays there.
 
 ## Archiving
 
@@ -380,8 +406,9 @@ cookie to every server on the same host name, whatever its port, so another app 
      (`run_failed`), and a run its `max_cost_usd` stops ends `failed` (`spend_cap_reached`, [below](#spend-cap)).
    - A workflow revision runs on agentrun-pi's durable workflow task, started by `startWorkflowRevision` of
      `@parcha/pi-durable-agent/workflow` (keyed by the run's id): its model nodes (`agent`, `decide`, `extract`,
-     `report`) on the run's model, with the file tools each node names. A workflow that needs a tool call, a judge or
-     code is not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
+     `report`) on the run's model, with the file tools each node names, and its typed questions on Jev
+     ([decision workflows](#decision-workflows)). A workflow that needs code or a tool call this host does not run is
+     not saved here (`422`). The run is `queued` until its process serves, then `working`; when the workflow
      ends, the app writes the run's final status with the outcome and releases it. Nothing is carried back from inside
      the process, which holds the run's store until it exits.
 3. When the process has exited, the run's rows are read from its released store (an agentic run's conversation, a
@@ -452,6 +479,8 @@ carries no cost at all, as from a provider that does not price the model. The te
 
 ## Safety
 
+- The decision key (`TYPESAFE_API_KEY`) is never in a run's environment or files: a workflow run's process gets it on a
+  pipe, for its judge's runner alone ([decision workflows](#decision-workflows)).
 - `fetch_page` dials public addresses only, each hop checked and pinned (see [Tools](#tools)): a run cannot reach this
   machine, its network or a cloud's metadata address through it.
 - A `browser` session runs at Browserbase, not on this machine: a page the model opens is reached from Browserbase's
