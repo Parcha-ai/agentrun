@@ -2092,10 +2092,11 @@ async function decide<T>(
   let result: JudgeResult;
   try { result = await runJudge(request); }
   catch (error) {
-    // A request sent whose outcome was lost may have been answered and billed: it is booked at the provider's
-    // estimate, never asked again, and a person decides the case.
+    // A request sent whose outcome was lost may have been answered and billed: it is booked at the cost its provider
+    // gives, with how that was reached, never asked again, and a person decides the case.
     const lost = error instanceof DecisionProviderError && error.code === "outcome_unknown";
-    const spent: JudgeResult | undefined = lost ? { answers: {}, cost_usd: (error as DecisionProviderError).costUsd ?? null } : undefined;
+    const spent: JudgeResult | undefined = lost ? { answers: {}, cost_usd: (error as DecisionProviderError).costUsd ?? null,
+      ...((error as DecisionProviderError).costBasis !== undefined ? { cost_basis: (error as DecisionProviderError).costBasis } : {}) } : undefined;
     // The status is read before the caller reacts: a request that fails on its own is `failed`, even when
     // its failure is what cancels the others.
     const failed = receipt(spent, { status: signal?.aborted && !lost ? "cancelled" : "failed", rule: null, action: null, error });
