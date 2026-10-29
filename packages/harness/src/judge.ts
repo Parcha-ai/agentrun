@@ -13,11 +13,12 @@ export const JEV_LIST_PRICE = { inputUsdPerMillionTokens: 0.042, outputUsdPerMil
 /** The dollars a judge request cost at Jev's list price. */
 export const jevCost = (usage: { input_tokens: number; output_tokens: number }) => (usage.input_tokens * JEV_LIST_PRICE.inputUsdPerMillionTokens + usage.output_tokens * JEV_LIST_PRICE.outputUsdPerMillionTokens) / 1_000_000;
 
-/** `runJudge` priced at the list price when its answer reports usage but no price of its own. */
+/** `runJudge` priced at the list price when its answer reports usage but no price of its own. An answer that reports
+ *  neither keeps no price: its cost is not known, and the run's cost reads it so, never as $0. */
 export function priceJudge(runJudge: RunJudge): RunJudge {
   return async (request) => {
     const answer = await runJudge(request);
-    const usage = answer.usage ?? { input_tokens: 0, output_tokens: 0 };
-    return typeof answer.cost_usd === 'number' ? answer : { ...answer, cost_usd: jevCost(usage) };
+    if (typeof answer.cost_usd === 'number') return answer;
+    return answer.usage ? { ...answer, cost_usd: jevCost(answer.usage) } : answer;
   };
 }

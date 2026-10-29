@@ -1,0 +1,2912 @@
+{
+ "recordedWith": "codex-cli 0.164.0 through a model gateway; the public schema corpus (examples and synthetic shapes) only; each schema as a host tool's verbatim inputSchema",
+ "rows": [
+  {
+   "hash": "f592fb93da2b759e2ccd31110ec456cdbd88dd05cecd5c82896500199f31b5ec",
+   "source": "pydantic 2.13.5 model_json_schema: SearchInput",
+   "schema": {
+    "$defs": {
+     "Address": {
+      "properties": {
+       "street": {
+        "description": "Street and number.",
+        "title": "Street",
+        "type": "string"
+       },
+       "country": {
+        "maxLength": 2,
+        "minLength": 2,
+        "pattern": "^[A-Z]{2}$",
+        "title": "Country",
+        "type": "string"
+       },
+       "postcode": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Postcode"
+       }
+      },
+      "required": [
+       "street",
+       "country"
+      ],
+      "title": "Address",
+      "type": "object"
+     },
+     "Depth": {
+      "enum": [
+       "quick",
+       "deep"
+      ],
+      "title": "Depth",
+      "type": "string"
+     },
+     "Person": {
+      "properties": {
+       "name": {
+        "maxLength": 200,
+        "minLength": 1,
+        "title": "Full name",
+        "type": "string"
+       },
+       "born": {
+        "anyOf": [
+         {
+          "format": "date",
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Born"
+       },
+       "address": {
+        "anyOf": [
+         {
+          "$ref": "#/$defs/Address"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null
+       },
+       "aliases": {
+        "items": {
+         "type": "string"
+        },
+        "maxItems": 10,
+        "title": "Aliases",
+        "type": "array"
+       }
+      },
+      "required": [
+       "name"
+      ],
+      "title": "Person",
+      "type": "object"
+     }
+    },
+    "description": "Search the web for a subject.",
+    "properties": {
+     "query": {
+      "description": "What to look for.",
+      "examples": [
+       "acme corp"
+      ],
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+     },
+     "depth": {
+      "$ref": "#/$defs/Depth",
+      "default": "quick"
+     },
+     "limit": {
+      "default": 10,
+      "maximum": 50,
+      "minimum": 1,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "score_floor": {
+      "default": 0,
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Score Floor",
+      "type": "number"
+     },
+     "site": {
+      "anyOf": [
+       {
+        "format": "uri",
+        "maxLength": 2083,
+        "minLength": 1,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Site"
+     },
+     "kind": {
+      "default": "web",
+      "enum": [
+       "web",
+       "news"
+      ],
+      "title": "Kind",
+      "type": "string"
+     },
+     "subject": {
+      "$ref": "#/$defs/Person"
+     },
+     "others": {
+      "default": [],
+      "items": {
+       "$ref": "#/$defs/Person"
+      },
+      "title": "Others",
+      "type": "array"
+     },
+     "tags": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "default": {},
+      "title": "Tags",
+      "type": "object"
+     }
+    },
+    "required": [
+     "query",
+     "subject"
+    ],
+    "title": "SearchInput",
+    "type": "object"
+   },
+   "forwarded": {
+    "type": "object",
+    "description": "Search the web for a subject.",
+    "properties": {
+     "depth": {
+      "$ref": "#/$defs/Depth"
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "web",
+       "news"
+      ]
+     },
+     "limit": {
+      "type": "integer"
+     },
+     "others": {
+      "type": "array",
+      "items": {
+       "$ref": "#/$defs/Person"
+      }
+     },
+     "query": {
+      "type": "string",
+      "description": "What to look for."
+     },
+     "score_floor": {
+      "type": "number"
+     },
+     "site": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "subject": {
+      "$ref": "#/$defs/Person"
+     },
+     "tags": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "query",
+     "subject"
+    ],
+    "$defs": {
+     "Address": {
+      "type": "object",
+      "properties": {
+       "country": {
+        "type": "string"
+       },
+       "postcode": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "street": {
+        "type": "string",
+        "description": "Street and number."
+       }
+      },
+      "required": [
+       "street",
+       "country"
+      ]
+     },
+     "Depth": {
+      "type": "string",
+      "enum": [
+       "quick",
+       "deep"
+      ]
+     },
+     "Person": {
+      "type": "object",
+      "properties": {
+       "address": {
+        "anyOf": [
+         {
+          "$ref": "#/$defs/Address"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "aliases": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "born": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "name": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "10e90813da2c410fe633125d7930b6e5e28d2bb5850a87cc61e1754697583435",
+   "source": "pydantic 2.13.5 model_json_schema: FetchInput",
+   "schema": {
+    "properties": {
+     "url": {
+      "format": "uri",
+      "maxLength": 2083,
+      "minLength": 1,
+      "title": "Url",
+      "type": "string"
+     },
+     "timeout_s": {
+      "anyOf": [
+       {
+        "exclusiveMinimum": 0,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Timeout S"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "FetchInput",
+    "type": "object"
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "timeout_s": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "url": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ]
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "a8d79ea341d9374bc5f0a89824ccd7eeba2ff62a50bf6d6a5384c5d9ac005ded",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Input (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "repo": {
+        "type": "string",
+        "minLength": 1,
+        "description": "owner/name of the public repository"
+       },
+       "numbers": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "integer",
+         "minimum": 1
+        },
+        "description": "issue numbers to triage"
+       },
+       "sha": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{40}$",
+        "description": "the commit the code is read at: the repository's default branch when the run was picked, fixed for the whole run"
+       },
+       "label_map": {
+        "type": "object",
+        "description": "the maintainers' type labels mapped onto the four: bug, feature, docs, question",
+        "additionalProperties": {
+         "type": "string",
+         "enum": [
+          "bug",
+          "feature",
+          "docs",
+          "question"
+         ]
+        }
+       }
+      },
+      "required": [
+       "repo",
+       "numbers",
+       "sha",
+       "label_map"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "label_map": {
+        "type": "object",
+        "description": "the maintainers' type labels mapped onto the four: bug, feature, docs, question",
+        "properties": {},
+        "additionalProperties": {
+         "type": "string",
+         "enum": [
+          "bug",
+          "feature",
+          "docs",
+          "question"
+         ]
+        }
+       },
+       "numbers": {
+        "type": "array",
+        "description": "issue numbers to triage",
+        "items": {
+         "type": "integer"
+        },
+        "minItems": 1
+       },
+       "repo": {
+        "type": "string",
+        "description": "owner/name of the public repository"
+       },
+       "sha": {
+        "type": "string",
+        "description": "the commit the code is read at: the repository's default branch when the run was picked, fixed for the whole run"
+       }
+      },
+      "required": [
+       "repo",
+       "numbers",
+       "sha",
+       "label_map"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "a6d2cdc3e3b36b4134ee9d5f54b7a54bb9fd26b3b70120e54ce52f3af22fd293",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is IssueRecord (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "number": {
+        "type": "integer"
+       },
+       "title": {
+        "type": "string"
+       },
+       "body": {
+        "type": "string"
+       },
+       "url": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "number",
+       "title",
+       "body",
+       "url"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "number": {
+        "type": "integer"
+       },
+       "title": {
+        "type": "string"
+       },
+       "body": {
+        "type": "string"
+       },
+       "url": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "number",
+       "title",
+       "body",
+       "url"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "key order only",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "c389a4b89945bb0659a7f5ef56fff8892d4ea026e44420236682c6099ed5d7f7",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is LinkedPrs (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "prs": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "number": {
+           "type": "integer"
+          },
+          "title": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "paths": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          }
+         },
+         "required": [
+          "number",
+          "title",
+          "state",
+          "paths"
+         ]
+        }
+       }
+      },
+      "required": [
+       "prs"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "prs": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "number": {
+           "type": "integer"
+          },
+          "title": {
+           "type": "string"
+          },
+          "state": {
+           "type": "string"
+          },
+          "paths": {
+           "type": "array",
+           "items": {
+            "type": "string"
+           }
+          }
+         },
+         "required": [
+          "number",
+          "title",
+          "state",
+          "paths"
+         ]
+        }
+       }
+      },
+      "required": [
+       "prs"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "key order only",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "dcd8f874d9910a73fae510472165ac2a53dbf5d0625d2908977c1215efba0538",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Research (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "summary": {
+        "type": "string",
+        "description": "What the issue asks, in two or three sentences, from what the tools returned."
+       },
+       "reproduces": {
+        "type": "string",
+        "enum": [
+         "yes",
+         "no",
+         "not stated"
+        ],
+        "description": "Whether the issue gives a way to reproduce what it reports."
+       },
+       "code_paths": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Repository paths the issue or its pull requests name, that you read."
+       },
+       "evidence": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+         "type": "object",
+         "properties": {
+          "source": {
+           "type": "string",
+           "description": "issue, pr <number>, or a file path you read"
+          },
+          "quote": {
+           "type": "string",
+           "description": "A short quotation, at most 200 characters, copied from that source.",
+           "maxLength": 200
+          }
+         },
+         "required": [
+          "source",
+          "quote"
+         ],
+         "additionalProperties": false
+        }
+       }
+      },
+      "required": [
+       "summary",
+       "reproduces",
+       "code_paths",
+       "evidence"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "code_paths": {
+        "type": "array",
+        "description": "Repository paths the issue or its pull requests name, that you read.",
+        "items": {
+         "type": "string"
+        }
+       },
+       "evidence": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "quote": {
+           "type": "string",
+           "description": "A short quotation, at most 200 characters, copied from that source."
+          },
+          "source": {
+           "type": "string",
+           "description": "issue, pr <number>, or a file path you read"
+          }
+         },
+         "required": [
+          "source",
+          "quote"
+         ],
+         "additionalProperties": false
+        },
+        "minItems": 1
+       },
+       "reproduces": {
+        "type": "string",
+        "description": "Whether the issue gives a way to reproduce what it reports.",
+        "enum": [
+         "yes",
+         "no",
+         "not stated"
+        ]
+       },
+       "summary": {
+        "type": "string",
+        "description": "What the issue asks, in two or three sentences, from what the tools returned."
+       }
+      },
+      "required": [
+       "summary",
+       "reproduces",
+       "code_paths",
+       "evidence"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "5f13f457d9d9c9cfff97e12ba6b82e73327f999e6466250c5fd238edabbaa634",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Row (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "number": {
+        "type": "integer"
+       },
+       "title": {
+        "type": "string"
+       },
+       "url": {
+        "type": "string"
+       },
+       "label": {
+        "type": "string",
+        "enum": [
+         "bug",
+         "feature",
+         "docs",
+         "question"
+        ]
+       },
+       "label_confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       },
+       "good_first_issue": {
+        "type": "boolean"
+       },
+       "good_first_confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       },
+       "evidence": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "source": {
+           "type": "string"
+          },
+          "quote": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "source",
+          "quote"
+         ]
+        }
+       },
+       "maintainer_label": {
+        "type": [
+         "string",
+         "null"
+        ],
+        "enum": [
+         null,
+         "bug",
+         "feature",
+         "docs",
+         "question"
+        ]
+       },
+       "agrees": {
+        "type": [
+         "boolean",
+         "null"
+        ]
+       },
+       "actionable": {
+        "type": "boolean"
+       },
+       "actionable_confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       }
+      },
+      "required": [
+       "number",
+       "title",
+       "url",
+       "label",
+       "label_confidence",
+       "good_first_issue",
+       "good_first_confidence",
+       "evidence",
+       "maintainer_label",
+       "agrees",
+       "actionable",
+       "actionable_confidence"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "actionable": {
+        "type": "boolean"
+       },
+       "actionable_confidence": {
+        "type": "number"
+       },
+       "agrees": {
+        "type": [
+         "boolean",
+         "null"
+        ]
+       },
+       "evidence": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "quote": {
+           "type": "string"
+          },
+          "source": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "source",
+          "quote"
+         ]
+        }
+       },
+       "good_first_confidence": {
+        "type": "number"
+       },
+       "good_first_issue": {
+        "type": "boolean"
+       },
+       "label": {
+        "type": "string",
+        "enum": [
+         "bug",
+         "feature",
+         "docs",
+         "question"
+        ]
+       },
+       "label_confidence": {
+        "type": "number"
+       },
+       "maintainer_label": {
+        "type": [
+         "string",
+         "null"
+        ],
+        "enum": [
+         null,
+         "bug",
+         "feature",
+         "docs",
+         "question"
+        ]
+       },
+       "number": {
+        "type": "integer"
+       },
+       "title": {
+        "type": "string"
+       },
+       "url": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "number",
+       "title",
+       "url",
+       "label",
+       "label_confidence",
+       "good_first_issue",
+       "good_first_confidence",
+       "evidence",
+       "maintainer_label",
+       "agrees",
+       "actionable",
+       "actionable_confidence"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "d8ec950f97c7374f4697051ce987b8c24332b0454b0e4fd3f7cb26af468ea7aa",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Result (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "repo": {
+        "type": "string"
+       },
+       "rows": {
+        "type": "array",
+        "items": {
+         "$ref": "#/properties/value/definitions/Row"
+        }
+       },
+       "agreement": {
+        "type": "object",
+        "properties": {
+         "agreed": {
+          "type": "integer"
+         },
+         "compared": {
+          "type": "integer"
+         },
+         "total": {
+          "type": "integer"
+         },
+         "summary": {
+          "type": "string"
+         },
+         "note": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "agreed",
+         "compared",
+         "total",
+         "summary",
+         "note"
+        ],
+        "additionalProperties": false
+       }
+      },
+      "required": [
+       "repo",
+       "rows",
+       "agreement"
+      ],
+      "additionalProperties": false,
+      "definitions": {
+       "Row": {
+        "type": "object",
+        "properties": {
+         "number": {
+          "type": "integer"
+         },
+         "title": {
+          "type": "string"
+         },
+         "url": {
+          "type": "string"
+         },
+         "label": {
+          "type": "string",
+          "enum": [
+           "bug",
+           "feature",
+           "docs",
+           "question"
+          ]
+         },
+         "label_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+         },
+         "good_first_issue": {
+          "type": "boolean"
+         },
+         "good_first_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+         },
+         "evidence": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "source": {
+             "type": "string"
+            },
+            "quote": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "source",
+            "quote"
+           ]
+          }
+         },
+         "maintainer_label": {
+          "type": [
+           "string",
+           "null"
+          ],
+          "enum": [
+           null,
+           "bug",
+           "feature",
+           "docs",
+           "question"
+          ]
+         },
+         "agrees": {
+          "type": [
+           "boolean",
+           "null"
+          ]
+         },
+         "actionable": {
+          "type": "boolean"
+         },
+         "actionable_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+         }
+        },
+        "required": [
+         "number",
+         "title",
+         "url",
+         "label",
+         "label_confidence",
+         "good_first_issue",
+         "good_first_confidence",
+         "evidence",
+         "maintainer_label",
+         "agrees",
+         "actionable",
+         "actionable_confidence"
+        ],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "agreement": {
+        "type": "object",
+        "properties": {
+         "agreed": {
+          "type": "integer"
+         },
+         "compared": {
+          "type": "integer"
+         },
+         "note": {
+          "type": "string"
+         },
+         "summary": {
+          "type": "string"
+         },
+         "total": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "agreed",
+         "compared",
+         "total",
+         "summary",
+         "note"
+        ],
+        "additionalProperties": false
+       },
+       "repo": {
+        "type": "string"
+       },
+       "rows": {
+        "type": "array",
+        "items": {
+         "$ref": "#/properties/value/definitions/Row"
+        }
+       }
+      },
+      "required": [
+       "repo",
+       "rows",
+       "agreement"
+      ],
+      "additionalProperties": false,
+      "definitions": {
+       "Row": {
+        "type": "object",
+        "properties": {
+         "actionable": {
+          "type": "boolean"
+         },
+         "actionable_confidence": {
+          "type": "number"
+         },
+         "agrees": {
+          "type": [
+           "boolean",
+           "null"
+          ]
+         },
+         "evidence": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "quote": {
+             "type": "string"
+            },
+            "source": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "source",
+            "quote"
+           ]
+          }
+         },
+         "good_first_confidence": {
+          "type": "number"
+         },
+         "good_first_issue": {
+          "type": "boolean"
+         },
+         "label": {
+          "type": "string",
+          "enum": [
+           "bug",
+           "feature",
+           "docs",
+           "question"
+          ]
+         },
+         "label_confidence": {
+          "type": "number"
+         },
+         "maintainer_label": {
+          "type": [
+           "string",
+           "null"
+          ],
+          "enum": [
+           null,
+           "bug",
+           "feature",
+           "docs",
+           "question"
+          ]
+         },
+         "number": {
+          "type": "integer"
+         },
+         "title": {
+          "type": "string"
+         },
+         "url": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "number",
+         "title",
+         "url",
+         "label",
+         "label_confidence",
+         "good_first_issue",
+         "good_first_confidence",
+         "evidence",
+         "maintainer_label",
+         "agrees",
+         "actionable",
+         "actionable_confidence"
+        ],
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "35c47614e94804ad2ea3f89f3e048061d90ff49269ac90dda949d4b586671e9a",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is MaintainerLabels (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "labels": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "labels"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "labels": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "labels"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "unchanged",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "4577794bdca1bfee0757fd3da2015863d62f8eca1eae427189a5297256b7945a",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is CodeFetched (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "paths": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Repository paths now readable under repo/ in the workspace."
+       }
+      },
+      "required": [
+       "paths"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "paths": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Repository paths now readable under repo/ in the workspace."
+       }
+      },
+      "required": [
+       "paths"
+      ]
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "key order only",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "7a96b530ba32f5441ae759a03338ed6a2c12cb30c42a4f40fc2d72353eadbf1f",
+   "source": "examples/issue-triage/workflow.json: the submit tool of an agent node whose output is Judgment (submitParameters of the resolved schema)",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "label": {
+        "type": "string",
+        "enum": [
+         "bug",
+         "feature",
+         "docs",
+         "question"
+        ],
+        "description": "Which one type fits this issue best, going by what the issue asks for and the evidence read for it, not by who wrote it or how it is worded?",
+        "criteria": {
+         "bug": "The issue reports behaviour that contradicts the repository's own documentation or an earlier release, with a way to see it fail.",
+         "feature": "The issue asks for behaviour the project does not have, or a change to an API on purpose; nothing is broken today.",
+         "docs": "The issue is about wrong, missing or unclear documentation, a README or a guide; the code behaves as designed.",
+         "question": "The reporter asks how to use the project, or why it works as it does; no change is asked for."
+        }
+       },
+       "good_first_issue": {
+        "type": "boolean",
+        "description": "Is this a good first issue: could a newcomer to the project take it and finish it without a maintainer's design decision?",
+        "criteria": {
+         "true": "The change is small and local (one file or one function), the issue names where it is, the expected result is stated or checkable by a test, and a newcomer can do it without knowing the project's design.",
+         "false": "The change spans several modules, needs a design decision from a maintainer, depends on an unreleased change or an unclear ask, or needs knowledge of the project's internals."
+        }
+       },
+       "actionable": {
+        "type": "boolean",
+        "description": "Can a maintainer act on this report as written: does it give enough to start work without asking the reporter anything first?",
+        "criteria": {
+         "true": "The report states what is wrong or what is wanted and gives enough to start: a version or setup, a way to reproduce, or a clear ask.",
+         "false": "The report is missing something a maintainer must ask for before starting: a version or setup, a way to reproduce, or what is wanted."
+        }
+       }
+      },
+      "required": [
+       "label",
+       "good_first_issue",
+       "actionable"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "value": {
+      "type": "object",
+      "properties": {
+       "actionable": {
+        "type": "boolean",
+        "description": "Can a maintainer act on this report as written: does it give enough to start work without asking the reporter anything first?"
+       },
+       "good_first_issue": {
+        "type": "boolean",
+        "description": "Is this a good first issue: could a newcomer to the project take it and finish it without a maintainer's design decision?"
+       },
+       "label": {
+        "type": "string",
+        "description": "Which one type fits this issue best, going by what the issue asks for and the evidence read for it, not by who wrote it or how it is worded?",
+        "enum": [
+         "bug",
+         "feature",
+         "docs",
+         "question"
+        ]
+       }
+      },
+      "required": [
+       "label",
+       "good_first_issue",
+       "actionable"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "required": [
+     "value"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "77ac9ebb95061aa5066394d14b5b5ee4830f10676d9ad4aa74ba02d77a667292",
+   "source": "edge: everything the Claude bridge carries",
+   "schema": {
+    "type": "object",
+    "title": "Search",
+    "description": "Search the web.",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "What to look for.",
+      "minLength": 1,
+      "maxLength": 200
+     },
+     "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 50
+     },
+     "score": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "multipleOf": 0.25
+     },
+     "code": {
+      "type": "string",
+      "pattern": "^[A-Z]{2}$"
+     },
+     "email": {
+      "type": "string",
+      "format": "email"
+     },
+     "page": {
+      "type": "string",
+      "format": "uri"
+     },
+     "at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "day": {
+      "type": "string",
+      "format": "date"
+     },
+     "depth": {
+      "enum": [
+       "quick",
+       "deep"
+      ]
+     },
+     "kind": {
+      "const": "web"
+     },
+     "since": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "region": {
+      "type": "string",
+      "nullable": true
+     },
+     "sites": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1,
+      "maxItems": 3
+     },
+     "filter": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "object",
+        "properties": {
+         "domain": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "domain"
+        ],
+        "additionalProperties": false
+       }
+      ]
+     },
+     "extra": {
+      "type": "object",
+      "additionalProperties": {
+       "type": "number"
+      }
+     },
+     "anything": {}
+    },
+    "required": [
+     "query",
+     "depth"
+    ],
+    "additionalProperties": false
+   },
+   "forwarded": {
+    "type": "object",
+    "description": "Search the web.",
+    "properties": {
+     "anything": {},
+     "at": {
+      "type": "string"
+     },
+     "code": {
+      "type": "string"
+     },
+     "day": {
+      "type": "string"
+     },
+     "depth": {
+      "type": "string",
+      "enum": [
+       "quick",
+       "deep"
+      ]
+     },
+     "email": {
+      "type": "string"
+     },
+     "extra": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": {
+       "type": "number"
+      }
+     },
+     "filter": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "object",
+        "properties": {
+         "domain": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "domain"
+        ],
+        "additionalProperties": false
+       }
+      ]
+     },
+     "kind": {
+      "type": "string",
+      "enum": [
+       "web"
+      ]
+     },
+     "limit": {
+      "type": "integer"
+     },
+     "page": {
+      "type": "string"
+     },
+     "query": {
+      "type": "string",
+      "description": "What to look for."
+     },
+     "region": {
+      "type": "string"
+     },
+     "score": {
+      "type": "number"
+     },
+     "since": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "sites": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1
+     }
+    },
+    "required": [
+     "query",
+     "depth"
+    ],
+    "additionalProperties": false
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "cbd40f8cd4337a806cac9886db08a451f3b81d6f89e2c040dcb4c83258448d24",
+   "source": "edge: format hostname",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "format": "hostname"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "71e25d1d1d2ec7cb46edb20f4aafdd33c287417fd3785909f934b98e913b6a64",
+   "source": "edge: format time",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "format": "time"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "8edfffc53bfc287672f0edca8fb6592ca026ecdc9fa066fea466966e2c5e6b57",
+   "source": "edge: format with no type",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "format": "email"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "7205acccd360a462d15a42b3004d6a059364539600329dbee29b8cab837046a3",
+   "source": "edge: minLength on a number",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "number",
+      "minLength": 1
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "number"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "4a930503cde2e27f8188c929795b4ad564ae2fc8fc1d2044e76e516539e9946f",
+   "source": "edge: uniqueItems",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "uniqueItems": true
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "4563f65f840b66fbb2bdb2a757eae98208ec7ca517cbf80dd09d50950b177195",
+   "source": "edge: remote $ref",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "$ref": "https://example.com/schema.json"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "$ref": "https://example.com/schema.json"
+     }
+    }
+   },
+   "codex": "unchanged",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "c31b002001a9184bb2eb39d13af1f6c077a3642820580aad18e0be79c4499ba3",
+   "source": "edge: recursive $ref",
+   "schema": {
+    "$defs": {
+     "Node": {
+      "type": "object",
+      "properties": {
+       "child": {
+        "$ref": "#/$defs/Node"
+       }
+      }
+     }
+    },
+    "type": "object",
+    "properties": {
+     "p": {
+      "$ref": "#/$defs/Node"
+     }
+    }
+   },
+   "forwarded": {
+    "$defs": {
+     "Node": {
+      "type": "object",
+      "properties": {
+       "child": {
+        "$ref": "#/$defs/Node"
+       }
+      }
+     }
+    },
+    "type": "object",
+    "properties": {
+     "p": {
+      "$ref": "#/$defs/Node"
+     }
+    }
+   },
+   "codex": "key order only",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "3dfe46f044dee8290e323acaf4072d1c949cce9dc13ef6ee3f2949d4c0fa61bf",
+   "source": "edge: allOf",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "allOf": [
+       {
+        "type": "string"
+       },
+       {
+        "minLength": 1
+       }
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "allOf": [
+       {
+        "type": "string"
+       },
+       {}
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "88253003ef2aeca461b60840fca9cb8997256366d258579f897f6a70315a8970",
+   "source": "edge: not",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "not": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {}
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "12d9a5a832daab19b412f6d39bbe71642e470806e2acba5d676fdc41df099dd1",
+   "source": "edge: oneOf between real alternatives",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     }
+    }
+   },
+   "codex": "unchanged",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "1e2716771bd4331404e626cc6da2837def1ecf5cddace59f6bdd588542d24119",
+   "source": "edge: oneOf of one schema or null",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "oneOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   },
+   "codex": "unchanged",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "46e2de6a6bd9296c1b6b29919025149a73e63ef377f9a29b241f9177cdbec33a",
+   "source": "edge: tuple items",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "number"
+       }
+      ]
+     }
+    }
+   },
+   "forwarded": null,
+   "codex": "no tool in request",
+   "providerStatus": null,
+   "argsIntact": "not called"
+  },
+  {
+   "hash": "2fda817e6a818927d147a97e80bf02307ab26a53fdb13822383886f9d612aa06",
+   "source": "edge: prefixItems",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "prefixItems": [
+       {
+        "type": "string"
+       }
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "e910f2f93d93c83a0d43c6593c5a69436d628f6f481e7b517b45ac7cb4da4f2b",
+   "source": "edge: two non-null types",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": [
+       "string",
+       "number"
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": [
+       "string",
+       "number"
+      ]
+     }
+    }
+   },
+   "codex": "unchanged",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "c52896e847e2e88d0b9342bbad5ab7c34542d20f374932d3cfef0c41e4e4a072",
+   "source": "edge: an object in enum",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "enum": [
+       {
+        "a": 1
+       }
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "enum": [
+       {
+        "a": 1
+       }
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 400,
+   "argsIntact": true
+  },
+  {
+   "hash": "069fe078769440a987c5bf2888f6fba5f73c21ac1c96951aed11344c309a11be",
+   "source": "edge: patternProperties",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "patternProperties": {
+       "^x": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "893cf697ddfadafd6e36e78544fda22abb8cf6a3b673cfd40c97358decd2bbe0",
+   "source": "edge: if/then",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "if": {
+       "properties": {
+        "a": {
+         "const": 1
+        }
+       }
+      },
+      "then": {
+       "required": [
+        "b"
+       ]
+      }
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "372530a76edbc78ff06182cb4633cdd1f2b65dddecb4832f5adfeae7b4ab7f15",
+   "source": "codex-probe: minItems 3 and maxItems 5",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 3,
+      "maxItems": 5
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "minItems": 3
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "8fb81a84a1d173ecea9f9356fda8d557ddd04ff2c508bf4127371d7d7accafdf",
+   "source": "codex-probe: minProperties and maxProperties",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "properties": {
+       "a": {
+        "type": "string"
+       }
+      },
+      "minProperties": 1,
+      "maxProperties": 2
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "properties": {
+       "a": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "d7114aeeb6845ecd3055f6eaaee1ad7d2edd8ca73e028a72a5770d759ad1ee35",
+   "source": "codex-probe: const object",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "const": {
+       "a": 1
+      }
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "enum": [
+       {
+        "a": 1
+       }
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 400,
+   "argsIntact": true
+  },
+  {
+   "hash": "90c3501deed701d4433d8770be4caa003d030f4364d73f78ed3ca67a09e2ea6e",
+   "source": "codex-probe: const number",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "const": 5
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "enum": [
+       5
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "51c24649c802cbf7e5bbd4a0a6bed0802e388e6f7784ae9e1970a4f41e8004d5",
+   "source": "codex-probe: const boolean",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "const": true
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "enum": [
+       true
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "da885a8691c235624e74382b8cc60ff477868bb75c032e4c5781cd228d73427c",
+   "source": "codex-probe: nullable string",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "nullable": true
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "708b0ccb64af310e79379918de1751fc7a7b743e4be97ef874b89fa7dba6981f",
+   "source": "codex-probe: type array with null",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    }
+   },
+   "codex": "unchanged",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "606ac2bf03c47fae35c34458db8bba780eb8c19a8b3089f2dc222e55d455b92d",
+   "source": "codex-probe: annotations",
+   "schema": {
+    "type": "object",
+    "$comment": "c",
+    "deprecated": true,
+    "readOnly": true,
+    "properties": {
+     "p": {
+      "type": "string",
+      "writeOnly": true,
+      "deprecated": true
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "77676b5d3145baaac4de92c5a06a01c842baaf3146928904065b6fc7c6b0a9ac",
+   "source": "codex-probe: contains",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "contains": {
+       "const": "a"
+      }
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "7d73b1fd4c2428806b403419962bde790204b2e8eb04fc274706a1c30b5d7a2c",
+   "source": "codex-probe: dependentRequired",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     },
+     "b": {
+      "type": "string"
+     }
+    },
+    "dependentRequired": {
+     "a": [
+      "b"
+     ]
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     },
+     "b": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "3437f66bf6ccbda37637729e515d1401d50fbb298ecb735946888d8663f5312b",
+   "source": "codex-probe: propertyNames",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "propertyNames": {
+       "pattern": "^a"
+      }
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "a6bf48c37d02c971cfb054b3f4435d2af9bc5c19bfc96db78310a785765a98c0",
+   "source": "codex-probe: enum of integers",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "enum": [
+       1,
+       2,
+       3
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "enum": [
+       1,
+       2,
+       3
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "42ffe18a595cbc4200cca2ca0b27bf428d09d80eb618d388719a568ef98673a0",
+   "source": "codex-probe: enum of booleans",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "enum": [
+       true,
+       false
+      ]
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "enum": [
+       true,
+       false
+      ]
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "9b2729a92535dd7660fb7bb7b6632d86dab72ef2b0ca80410f33210c8548c7c0",
+   "source": "codex-probe: format on an integer",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "integer",
+      "format": "int32"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "integer"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "320099d75e46d3f1acdab810aec213436a1daca25285021806646d8d072129fe",
+   "source": "codex-probe: additionalProperties false",
+   "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "key order only",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "0597c44e27b5a219e23c573731405cc4958d29ea702ed35e4411e4669b0532d5",
+   "source": "codex-probe: items true",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": true
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "fac2e104e10afee60a9e3937b258ed91741a610bf0c29abf8b5554450eda923d",
+   "source": "codex-probe: empty schema property",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {}
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {}
+    }
+   },
+   "codex": "unchanged",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "2d5a5f73b3d5e15e535f6468a8a2f86c9ba3c522d6fb24955c0e57a02b5e815e",
+   "source": "codex-probe: minimum on a string",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string",
+      "minimum": 1
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "p": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "2c4b977e42c642a56d6b384652a69677a02b2c805de633a4f044d8fe7c41901d",
+   "source": "codex-probe: $schema 2020-12",
+   "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "fcaf614f202bb0b2c54387b7b96c995dfcdae9183c073aa5f1442cf47f82a389",
+   "source": "codex-probe: $schema 2019-09",
+   "schema": {
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "8fabbae4b6bd3fb9090de3b22400c6c3e1abebb92c2fb5989028606d2956ff23",
+   "source": "codex-probe: $schema draft-07",
+   "schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "4223bf7c9279b396b7a4f7cb4b0b0524065133b7125adeb66981ff59f047d419",
+   "source": "codex-probe: $schema draft-06",
+   "schema": {
+    "$schema": "http://json-schema.org/draft-06/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "cc45bc467eeb9ba64ef5c3728c353504d53e9bc9944539daddfbd81d5fab75a2",
+   "source": "codex-probe: $schema draft-04",
+   "schema": {
+    "$schema": "http://json-schema.org/draft-04/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "7cf89d76a6a2de87f58dbdfe31635c419a9d1603a56cb3f066bbd8ea095199b2",
+   "source": "codex-probe: $schema the number 42",
+   "schema": {
+    "$schema": 42,
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "1da03c9b06ecf708c9a9ca8bd5d0ac81b062a97ee10bce5b37ee018fedd05e6f",
+   "source": "codex-probe: $schema an unknown URL",
+   "schema": {
+    "$schema": "https://example.com/my-dialect",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  },
+  {
+   "hash": "508112a748d20036ff7f7f28d8e9381c991ee48db9c90b6aa624e0f7fd37e418",
+   "source": "codex-probe: $schema http://json-schema.org/schema#",
+   "schema": {
+    "$schema": "http://json-schema.org/schema#",
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "forwarded": {
+    "type": "object",
+    "properties": {
+     "a": {
+      "type": "string"
+     }
+    }
+   },
+   "codex": "CHANGED",
+   "providerStatus": 200,
+   "argsIntact": true
+  }
+ ]
+}

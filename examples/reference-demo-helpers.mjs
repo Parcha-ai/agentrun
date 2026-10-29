@@ -119,7 +119,7 @@ export const killSpec = async (t, extra = {}) => {
   const tmp = await mkdtemp(join(tmpdir(), 'reference-nonce-'));
   t.after(() => rm(tmp, { recursive: true, force: true }));
   const file = join(tmp, 'spec.json');
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'asked through the place' }], ...extra }));
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [], ...extra }));
   Object.assign(process.env, { DEMO_SPEC: file });
   t.after(() => { for (const name of Object.keys(process.env)) if (!(name in ORIGINAL)) delete process.env[name]; Object.assign(process.env, ORIGINAL); });
   const { options } = await import(`${FIXTURE}?options=${Date.now()}`);

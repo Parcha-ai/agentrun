@@ -8,6 +8,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	statSync,
@@ -42,35 +43,27 @@ function ownDir(path: string, searchPath = env.PATH): { status: number | null; o
 	return { status: ran.status, out: ran.stdout.trim() };
 }
 
-/** A PATH whose `ls` answers nothing for its first `failures` calls (an exit 2, as for a path that is gone), then is the real one. */
+/**
+ * A PATH whose `ls` answers nothing for its first `failures` calls (an exit 2, as for a path that is gone), then is the real one.
+ * Each call adds the time it was made, in nanoseconds, as a line of `times` in the PATH's first directory.
+ */
 function lsMissing(failures: number): string {
 	const real = spawnSync("sh", ["-c", "command -v ls"], { env, encoding: "utf8" }).stdout.trim();
 	const bin = mkdtempSync(join(root, "ls-"));
 	writeFileSync(
 		join(bin, "ls"),
-		`#!/bin/sh\nn=$(cat "${bin}/calls" 2>/dev/null || echo 0); echo $((n + 1)) > "${bin}/calls"\n[ "$n" -ge ${failures} ] || exit 2\nexec ${real} "$@"\n`,
+		`#!/bin/sh\nn=$(cat "${bin}/times" 2>/dev/null | wc -l); date +%s%N >> "${bin}/times"\n[ "$n" -ge ${failures} ] || exit 2\nexec ${real} "$@"\n`,
 	);
 	chmodSync(join(bin, "ls"), 0o755);
 	return `${bin}:${env.PATH}`;
 }
 
-/**
- * A PATH whose `ls` answers nothing (an exit 2) until 150 ms after its first call, then is the real one: its first call starts the
- * clock in the background. The background job's output goes to /dev/null, or the caller's `$(ls ...)` would wait for it.
- */
-function lsReadyAfterFirstCall(): string {
-	const real = spawnSync("sh", ["-c", "command -v ls"], { env, encoding: "utf8" }).stdout.trim();
-	const bin = mkdtempSync(join(root, "ls-"));
-	writeFileSync(
-		join(bin, "ls"),
-		`#!/bin/sh
-if [ ! -e "${bin}/started" ]; then : > "${bin}/started"; (sleep 0.15; touch "${bin}/ready") >/dev/null 2>&1 & fi
-[ -e "${bin}/ready" ] || exit 2
-exec ${real} "$@"
-`,
-	);
-	chmodSync(join(bin, "ls"), 0o755);
-	return `${bin}:${env.PATH}`;
+/** The times, in nanoseconds, of the calls to the `ls` of a PATH from lsMissing; empty where `date` has no nanoseconds. */
+function listingTimes(searchPath: string): bigint[] {
+	const lines = readFileSync(join(searchPath.split(":")[0] ?? "", "times"), "utf8")
+		.trim()
+		.split("\n");
+	return lines.every((line) => /^\d+$/.test(line)) ? lines.map(BigInt) : [];
 }
 
 describe("the launcher's directory check", () => {
@@ -97,11 +90,17 @@ describe("the launcher's directory check", () => {
 		expect(ownDir(dir, lsMissing(1)).status).toBe(13);
 	});
 
-	it("waits between its listings: a directory that lists only 150 ms after the first try is read on a later one, not refused", () => {
+	it("waits between its listings: a directory that lists only on the third try is read then, not refused", (test) => {
 		const dir = join(root, "slow-to-list");
 		mkdirSync(dir);
 		chmodSync(dir, 0o700);
-		expect(ownDir(dir, lsReadyAfterFirstCall())).toEqual({ status: 0, out: "" });
+		const searchPath = lsMissing(2);
+		expect(ownDir(dir, searchPath)).toEqual({ status: 0, out: "" });
+		const times = listingTimes(searchPath);
+		test.skip(times.length === 0, "date prints no nanoseconds here");
+		expect(times).toHaveLength(3);
+		// The launcher sleeps 0.1 s before each retry. A sleep is never cut short, and a busy machine only makes the pause longer.
+		for (let at = 1; at < times.length; at++) expect(times[at] - times[at - 1]).toBeGreaterThanOrEqual(90_000_000n);
 	});
 
 	it("fails closed where a path is there and never lists: unsafe, never nothing there", () => {
