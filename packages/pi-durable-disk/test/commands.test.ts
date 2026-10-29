@@ -17,6 +17,8 @@ import { alive, scratchRoot, waitGone } from "./_run-support.ts";
 const COMMANDS = fileURLToPath(new URL("../src/commands.ts", import.meta.url));
 const PROCESS_TABLE = fileURLToPath(new URL("../src/process-table.ts", import.meta.url));
 const MACOS = fileURLToPath(new URL("./_macos.ts", import.meta.url));
+/** A command record's file (`<pid>-<start>.json`), not the recorder's mark (`mark-<token>.json`). */
+const isRecord = (name: string) => /^\d+-\d+\.json$/.test(name);
 
 /** A command the way a recorded environment starts one: the leader of its own group, carrying `token` as its mark, here with a member that is its own child. */
 function command(token?: string): ChildProcess {
@@ -57,7 +59,7 @@ for (const { name: tableName, kind, table } of tables) describe(`command records
     const leader = child.pid ?? 0;
     try {
       recorder.started();
-      const read = () => (existsSync(records) ? readdirSync(records).filter((name) => name.endsWith(".json")) : []);
+      const read = () => (existsSync(records) ? readdirSync(records).filter(isRecord) : []);
       await until(() => read().length === 1 && (JSON.parse(readFileSync(join(records, read()[0]!), "utf8")) as CommandRecord).members.length > 0);
       const record = JSON.parse(readFileSync(join(records, read()[0]!), "utf8")) as CommandRecord;
       assert.deepEqual([record.boot, record.leader], [boot, { pid: leader, start: startOf(leader) }]);
@@ -146,7 +148,7 @@ process.stdout.write("still here, " + JSON.stringify(reaped));`;
     try {
       recorderA.started();
       recorderB.started();
-      const leaders = (records: string) => (existsSync(records) ? readdirSync(records).map((name) => Number(name.split("-")[0])) : []);
+      const leaders = (records: string) => (existsSync(records) ? readdirSync(records).filter(isRecord).map((name) => Number(name.split("-")[0])) : []);
       await until(() => leaders(a).length === 1 && leaders(b).length === 1);
       await new Promise((resolve) => setTimeout(resolve, 100)); // more walks: none records another's command
       recorderA.close();
@@ -199,7 +201,7 @@ process.stdout.write("still here, " + JSON.stringify(reaped));`;
       latePid = Number(readFileSync(late, "utf8"));
       assert.equal(alive(group), false, "the leader has exited");
       const recorded = () =>
-        (existsSync(records) ? readdirSync(records).filter((name) => name.endsWith(".json")) : []).map((name) => JSON.parse(readFileSync(join(records, name), "utf8")) as CommandRecord);
+        (existsSync(records) ? readdirSync(records).filter(isRecord) : []).map((name) => JSON.parse(readFileSync(join(records, name), "utf8")) as CommandRecord);
       await until(() => recorded()[0]?.members.some((m) => m.pid === latePid) === true); // a walk after the late child started
       recorder.close();
       const [record] = recorded();
@@ -355,6 +357,7 @@ describe("command records, from a scripted /proc", () => {
         children: () => [],
         group: (pgrp) => (pgrp === 4242 ? [4242, 4270] : []),
         marked: () => false,
+        withMark: () => [],
         commandLine: () => "?",
       }),
     };

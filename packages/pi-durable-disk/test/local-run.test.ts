@@ -18,6 +18,7 @@ const ref = { disk: "dsk-local", region: "local", id: "run-1" };
 const LOCAL_COMMAND = fileURLToPath(new URL("./fixtures/local-command.ts", import.meta.url));
 const HELD_FORK = fileURLToPath(new URL("./fixtures/held-fork-command.ts", import.meta.url));
 const BESIDE = fileURLToPath(new URL("./fixtures/beside-program.ts", import.meta.url));
+const UNRECORDED = fileURLToPath(new URL("./fixtures/unrecorded-command.ts", import.meta.url));
 
 /** Root's processes but pid 1 and kernel threads, from /proc on Linux and ps elsewhere (macOS). */
 function rootPids(): number[] {
@@ -183,6 +184,30 @@ describe("localRun", () => {
       instance.kill("SIGKILL");
       killQuietly(child);
       killQuietly(leader);
+      dir.remove();
+    }
+  });
+
+  it("ends a command whose instance was killed before any walk recorded it: the recorder's mark, written before the command started, names it", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("unrecorded");
+    const commands = join(dir.root, "commands");
+    const pidFile = join(dir.root, "command.pid");
+    let command = 0;
+    try {
+      const instance = spawn(process.execPath, [UNRECORDED, commands, pidFile], { stdio: "ignore" });
+      const signal = await new Promise((resolve) => instance.once("close", (_code, signal) => resolve(signal)));
+      assert.equal(signal, "SIGKILL", "the instance killed itself in the turn that started the command");
+      command = Number(readFileSync(pidFile, "utf8"));
+      assert.ok(command > 0 && alive(command), "the command outlives its instance");
+      assert.deepEqual((existsSync(commands) ? readdirSync(commands) : []).filter((name) => /^\d+-\d+\.json$/.test(name)), [], "no walk ran, so nothing recorded the command");
+      // The open's commands step (run.ts), on what the killed instance left.
+      const reaped = await reapOrRefuse(commands);
+      assert.ok(reaped.signalled >= 1, `the reap signalled the command: ${JSON.stringify(reaped)}`);
+      assert.deepEqual(reaped.survivors, []);
+      assert.equal(alive(command), false, "the command is gone");
+      assert.equal(existsSync(commands), false, "the mark is cleared");
+    } finally {
+      killQuietly(command);
       dir.remove();
     }
   });
