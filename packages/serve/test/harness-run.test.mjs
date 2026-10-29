@@ -159,6 +159,26 @@ test("a request admitted and cut by a crash is booked once, unknown: on resume t
   assert.equal(storeCount(data, runId, "adapter.request"), 3);
 });
 
+test("a run cancelled while its harness's request is out, and never opened again, carries back a cost that is not a plain number", { timeout: 90_000 }, async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const go = join(await scratch(t), "go");
+  const runId = await started(api, "cut-cancel", `Cut until ${go}.`, "codex");
+  // The first request is answered at its tool's end; the second is then admitted and cut, and the cancel lands.
+  for (let i = 0; !(await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
+    assert.ok(i < 300, "the first request's row");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  // The second request's mark is on the root once it is admitted: the live usage counts it, in flight, as a second.
+  for (let i = 0; usageOf((await api("GET", `/runs/${runId}/timeline`)).body.rows)?.requests !== 2; i++) {
+    assert.ok(i < 300, "the second request is admitted and marked");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal((await api("POST", `/runs/${runId}/cancel`)).status, 202);
+  const { rows } = await follow(api, runId, ["cancelled"], { deadlineMs: 55_000 });
+  assert.deepEqual(usageOf(rows), { usd: null, requests: 2 }, "the first at its cost, and the cut one, its cost unknown");
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, null, "the carried-back cost is unknown, never the first request's alone");
+});
+
 test("a request booked in the session whose root entry was never written (the process died first) is written on resume, once", { timeout: 120_000 }, async (t) => {
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const go = join(await scratch(t), "go");

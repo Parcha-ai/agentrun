@@ -1,0 +1,68 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-df8e-7a80-bf2a-a38bdc9bbb84/timeline"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-df8e-7a80-bf2a-a38bdc9bbb84",
+    "status": "input_required",
+    "state": "idle",
+    "reset": true,
+    "rows": [
+      {
+        "id": "1:7",
+        "timestamp": "2026-10-28T19:33:34.831Z",
+        "created_at": "2026-10-28T19:33:34.831Z",
+        "kind": "user_message",
+        "summary": "You: Summarize the design workshop notes from the offsite.",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "Summarize the design workshop notes from the offsite.",
+        "conversation_id": 1,
+        "seq": 0
+      },
+      {
+        "id": "1:usage",
+        "timestamp": "2026-10-28T19:33:34.929Z",
+        "created_at": "2026-10-28T19:33:34.929Z",
+        "kind": "usage",
+        "summary": "Cost so far: unknown over 1 model request",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 1,
+        "usage": {
+          "usd": null,
+          "requests": 1
+        },
+        "seq": 1
+      }
+    ],
+    "drop": [],
+    "next_after": 1793222378904006,
+    "unchanged": false,
+    "has_more": false,
+    "final": false,
+    "cost": {
+      "usd": null,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "poll_after_ms": 1000
+  }
+}
