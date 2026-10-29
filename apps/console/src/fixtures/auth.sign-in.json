@@ -2,9 +2,9 @@
   "request": {
     "method": "POST",
     "path": "/v2/auth/sign-in",
-    "body": {
-      "password": "<the owner's password>"
-    }
+    "body_fields": [
+      "password"
+    ]
   },
   "status": 200,
   "headers": {

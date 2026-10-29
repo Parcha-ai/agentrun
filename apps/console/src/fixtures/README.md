@@ -36,4 +36,4 @@ archive and unarchive, an invalid harness (422 with its `fields`), and a run on 
 - signing out;
 - a wrong password (401), then the right one.
 
-The password and the session value are replaced by placeholders.
+No password is recorded: a request that sent one lists only its field names (`body_fields`), and the session value is a placeholder.

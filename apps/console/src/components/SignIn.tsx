@@ -12,6 +12,12 @@ export type SignInProps = {
   problem?: string | null;
 };
 
+// The password field for each mode: its label, and the autocomplete token a password manager reads.
+const FIELD = {
+  setup: { label: "New password", autocomplete: "new-password" },
+  sign_in: { label: "Password", autocomplete: "current-password" },
+} as const;
+
 const COPY = {
   sign_in: { title: "Sign in", body: "Sign in to make agents, start runs and follow them on this server." },
   setup: { title: "Start building", body: "This is the server's first visit: set the owner's password. You sign in with it from now on." },
@@ -47,11 +53,11 @@ export function SignIn({ mode, code = null, onSubmit, problem: initialProblem = 
                 <input value={setupCode} onChange={(e) => setSetupCode(e.target.value)} autoComplete="off" spellCheck={false} className={input} />
               </Field>
             )}
-            <Field label={setup ? "New password" : "Password"} note={setup ? "12 characters or more." : undefined}>
+            <Field label={FIELD[mode].label} note={setup ? "12 characters or more." : undefined}>
               <span className="flex items-center gap-3 border border-[#444] bg-black px-3 focus-within:border-[#f5f5f5]">
                 <KeyRound className="size-4 text-[#888]" aria-hidden />
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={setup ? "new-password" : "current-password"} autoFocus
-                  aria-label={setup ? "New password" : "Password"} className="h-10 min-w-0 flex-1 bg-transparent font-mono text-[14px] outline-none" />
+                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={FIELD[mode].autocomplete} autoFocus
+                  aria-label={FIELD[mode].label} className="h-10 min-w-0 flex-1 bg-transparent font-mono text-[14px] outline-none" />
               </span>
             </Field>
             {setup && (

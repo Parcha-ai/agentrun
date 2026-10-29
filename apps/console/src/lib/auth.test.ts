@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authMode, signInProblem } from "./auth";
+import { authMode, signInProblem, takeSetupCode } from "./auth";
 import { ClientError } from "./client";
 import fresh from "../fixtures/auth.session-new.json";
 import signedIn from "../fixtures/auth.session-signed-in.json";
@@ -19,6 +19,10 @@ describe("authMode", () => {
   });
   it("a server without accounts (no session route) is reached through the link it printed", () => {
     expect(authMode({ status: 404, body: null })).toBe("token_link");
+    expect(authMode({ status: 404, body: null }, 401)).toBe("token_link");
+  });
+  it("a server without accounts whose protected read already succeeds (a token is sent) is in", () => {
+    expect(authMode({ status: 404, body: null }, 200)).toBe("signed_in");
   });
 });
 
@@ -30,5 +34,16 @@ describe("signInProblem", () => {
   it("on setup: a password the server refuses names why, and an owner already set says to sign in", () => {
     expect(signInProblem(err(short as never))).toBe((short.body.error as { fields?: { message: string }[] }).fields?.[0]?.message ?? short.body.error.message);
     expect(signInProblem(err(again as never))).toBe("This server has its owner already: sign in.");
+  });
+});
+
+describe("takeSetupCode", () => {
+  it("takes the setup code from the fragment once and leaves the rest of it", () => {
+    expect(takeSetupCode("#code=abc-123")).toEqual({ code: "abc-123", rest: "" });
+    expect(takeSetupCode("#code=abc&x=1")).toEqual({ code: "abc", rest: "#x=1" });
+  });
+  it("is nothing when the fragment has no code (a console route)", () => {
+    expect(takeSetupCode("#/runs/r1")).toEqual({ code: null, rest: "#/runs/r1" });
+    expect(takeSetupCode("")).toEqual({ code: null, rest: "" });
   });
 });
