@@ -62,6 +62,8 @@ if (Array.isArray(caps.harnesses)) {
       if (h.id === "claude-agent" && !/not installed/i.test(reason) && !/does not run claude-agent yet/.test(reason)) fail(`claude-agent is unavailable, but neither as not installed nor as a harness this server does not run yet: ${reason}`);
       if (/not installed/i.test(reason) && !/npm install (?:--?[A-Za-z][A-Za-z-]* )*@/.test(reason)) fail(`${h.id} says it is not installed but gives no install line: ${reason}`);
       if (h.id === "codex" && /not installed|not the pinned build/i.test(reason)) fail(`codex is unavailable as not installed or not the pinned build, but the image carries the pinned Codex CLI (image-check.sh): ${reason}`);
+      // Reads the setting codex's reason names, which is serve's wording (codexProvider in src/adapters.ts, pinned by
+      // test/codex-offer.test.mjs): when that message changes, this check changes with it.
       if (h.id === "codex" && !/\b(?:OPENAI_API_KEY|AGENT_MODEL[A-Z_]*)\b/.test(reason)) fail(`codex is unavailable for a reason that names no setting to change: ${reason}`);
     } else if (h.id === "claude-agent") fail("claude-agent is available, but the image carries no Claude Agent SDK");
     lines.push(`${h.id}: ${h.available ? "available" : `unavailable (${h.reason})`}`);
