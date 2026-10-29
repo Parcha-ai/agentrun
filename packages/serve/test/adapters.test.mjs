@@ -82,6 +82,9 @@ test("a gateway base that could send a key somewhere else than it reads is refus
     "https://gw.example/./api",
     "https://gw.example/api/%2e%2e/other",
     "https://gw.example/%2E/api",
+    // A backslash is a path separator to the URL parser, so dot segments between backslashes resolve too.
+    "https://gw.example/api\\..\\other",
+    "https://gw.example/api\\%2e%2e\\other",
     "http://gw.example/api",
     "https://gw.example/ api",
     " https://gw.example/api",

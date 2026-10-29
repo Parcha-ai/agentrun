@@ -273,7 +273,8 @@ export const sameKey = (given: string, key: string): boolean => {
 /** `base` as the proxy joins a route's path to it: its origin and its path, without a trailing slash. */
 function baseOf(base: string): string {
   const url = new URL(base);
-  if (url.username || url.password || url.search || url.hash) throw new Error("agentrun-adapters: a model proxy's base is an origin and a path, with no userinfo, query or fragment");
+  // A backslash is a path separator to the URL parser, so it could move the base to a path the text does not read as.
+  if (url.username || url.password || url.search || url.hash || base.includes("\\")) throw new Error("agentrun-adapters: a model proxy's base is an origin and a path, with no userinfo, query, fragment or backslash");
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 

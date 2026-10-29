@@ -43,11 +43,13 @@ const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
  * every route the proxy sends to begins with `/v1/`. So `https://openrouter.ai/api` and `https://openrouter.ai/api/v1` both
  * send to `https://openrouter.ai/api/v1/...`. A provider's key goes wherever this points, so a value that could point
  * somewhere other than it reads is refused, by the setting's name: userinfo, a query or a fragment, a "." or ".." path
- * segment (raw or percent-encoded), whitespace, or plain http to anything but this machine.
+ * segment (raw or percent-encoded), a backslash, whitespace, or plain http to anything but this machine.
  */
 export function gatewayBase(setting: string, value: string): string {
   const wrong = (why: string) => new HarnessUnavailable(`${setting} must be an https URL of a gateway, with a path if it serves the API under one; it ${why}.`);
   if (/\s/.test(value)) throw wrong("holds whitespace");
+  // The URL parser reads a backslash as a path separator, so a ".." between backslashes would resolve where "/../" is refused.
+  if (value.includes("\\")) throw wrong("holds a backslash");
   let url: URL;
   try {
     url = new URL(value);
