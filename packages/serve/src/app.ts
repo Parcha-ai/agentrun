@@ -7,16 +7,20 @@
 //     table's node tools. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
-import { capModels, capOf, spentIn } from "./cap.js";
+import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { readJson, RUN_META } from "./files.js";
-import { nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
-import { CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
+import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
+import { adapterRun } from "./harness-app.js";
+import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
 
 /** The workflow adapters this host gives a run: model nodes, and calls `via: "tool"` to the table's tools. */
@@ -28,6 +32,14 @@ export async function promptOf(instructions: string, skillFiles: Iterable<string
     skillNames(skillFiles).map(async (name) => `<skill name="${name}">\n${(await readFile(join(work, ".agents", "skills", ...name.split("/"), "SKILL.md"), "utf8")).trim()}\n</skill>`),
   );
   return [instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
+}
+
+/** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
+async function claudeModels(ref: string | undefined) {
+  const choice = claudeModel(process.env, ref);
+  if ("why" in choice) throw new Error(choice.why);
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  return { models: builtinModels(), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]) };
 }
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
@@ -46,7 +58,7 @@ function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
 export default async function app(where: AppContext): Promise<AppOptions> {
   const { run, revision } = revisionOf(where);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  const chosen = revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(workflowNodeList));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !process.env[FAUX_HARNESS_ENV] ? await claudeModels(revision.body.model) : revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(workflowNodeList));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -56,6 +68,23 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const thinkingLevel = thinkingOf(process.env, revision.kind === "agentic" ? revision.body.thinking : undefined);
   const registry = createRegistry();
   registry.install(CodingTools);
+  if (revision.kind === "agentic" && revision.body.harness && revision.body.harness !== DEFAULT_HARNESS) {
+    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
+    const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(revision.body.harness, thinkingLevel) };
+    // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
+    const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
+    // The harness's own files (its homes, its working state) go in a private directory beside the workspace, never in it.
+    const dir = join(where.root, "harness");
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
+    const harness = revision.body.harness;
+    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
+    // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
+    const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never);
+    // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
+    const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard, cancelledIn(where.root));
+    return { models: {}, registry: createRegistry(), door, onOpen } as unknown as AppOptions;
+  }
   // Each tool the revision names is bound once, from the table: its extensions installed here, its documents written in
   // each conversation's creating commit, what it settles done before anything resumes, and what it lets go done before
   // the run is released.

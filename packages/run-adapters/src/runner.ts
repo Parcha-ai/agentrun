@@ -172,6 +172,15 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     const turn = turns + 1;
     await append([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
     turns = turn;
+    // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
+    // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
+    // Its record is written, so it costs a turn of the cap, never money.
+    const stoppedNow = options.stopped?.();
+    if (stoppedNow) {
+      answered.add(turn);
+      await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
+      throw stoppedNow;
+    }
     open.push({ turn, model });
     emit({ type: "request_start", turn, model });
     return { turn };

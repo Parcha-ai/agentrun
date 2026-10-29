@@ -240,9 +240,11 @@ test('when a stop and a pause both come while the host checks a paid request, th
   const held = new Promise((resolve) => { release = resolve; });
   let stopped;
   let pausing;
-  const booking = await modelPortFor(await store.open('chat:both'), { key: 'chat:both', beforeRequest: async () => { await held; }, stopped: () => stopped, draining: () => pausing });
+  let inside = false;
+  const booking = await modelPortFor(await store.open('chat:both'), { key: 'chat:both', beforeRequest: async () => { inside = true; await held; }, stopped: () => stopped, draining: () => pausing });
   const asked = booking.models.beforeRequest({ model: 'm' }).then(() => 'admitted', (error) => error);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  // Past the checks before the host's hook, and inside it: so the stop and the pause are seen by the check after it.
+  await until(() => inside, "the admission inside the host's beforeRequest");
   pausing = new Error('the session is pausing');
   stopped = new Error('the node timed out');
   release();

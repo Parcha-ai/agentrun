@@ -271,7 +271,7 @@ test('recording.carry.failed: a tick that fails is retried, a final failure refu
   await assert.rejects(() => demo({ ...options, argv: ['--json', '--record', refused], place: boxed(join(tmp, 'b2'), { failOn: ({ final }) => (final ? 'CARRY_FAILED' : undefined) }) }), /the recording is refused: the place could not bring home process 1's recording \(CARRY_FAILED\)/);
   assert.ok(!existsSync(join(refused, 'manifest.json')));
   // The same failure for an attempt whose box was lost: the recording stands, with lost: true.
-  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'judge.asked verdict', why: 'the box is taken away', kind: 'box' }] }));
+  writeFileSync(file, JSON.stringify({ name: 'reference', kills: [{ point: 'event workflow.judge.answered', why: 'the box is taken away', kind: 'box' }] }));
   const { options: boxKill } = await import(`${FIXTURE}?options=${Date.now()}`);
   const lost = join(tmp, 'lost');
   let firstFinal = true;
