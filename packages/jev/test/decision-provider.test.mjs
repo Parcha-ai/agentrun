@@ -94,6 +94,11 @@ test('a cost TypeSafe reports wins over the published price, and is booked as re
   assert.deepEqual([outcome.cost_usd, outcome.cost_basis], [0.002, 'reported']);
 });
 
+test('a configured price that charges output tokens prices them too', async () => {
+  const outcome = await askOnce(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', pricing: { inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 1 }, fetch: answered({ input_tokens: 1000, output_tokens: 50 }) }));
+  assert.deepEqual([outcome.cost_usd, outcome.cost_basis], [(1000 * 0.042 + 50 * 1) / 1_000_000, 'estimate']);
+});
+
 test('with no token counts, a failed call, or the OpenRouter route, the cost is unknown: null, never 0', async () => {
   const bare = await askOnce(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: answered(undefined) }));
   assert.deepEqual([bare.cost_usd, bare.cost_basis], [null, 'unknown'], 'no usage: nothing to price');
