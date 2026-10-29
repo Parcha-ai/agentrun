@@ -22,7 +22,7 @@ function scripted(replies, breaks = {}) {
       });
       if (signal.aborted && !breaks.ignoresAbort) throw fail('aborted', 'The request was cancelled.');
       if (breaks.ignoresDeadline) return { kind: 'answer', answers: {} };
-      throw fail('timeout', 'The request passed its deadline.');
+      throw fail('outcome_unknown', 'The request passed its deadline after it was sent.');
     }
     return reply;
   };

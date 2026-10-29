@@ -33,6 +33,19 @@ test('jevProvider declares what Jev answers, and the key it reads by name', () =
   assert.deepEqual(jevProvider({ provider: 'openrouter', apiKey: KEY }).needs, ['OPENROUTER_API_KEY']);
 });
 
+test('a Jev request in flight past the runner\'s own timeout is outcome_unknown at an unknown cost; the host\'s cancel stays aborted', async () => {
+  const hang = (_url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason ?? new DOMException('aborted', 'AbortError')), { once: true }));
+  const questions = { holds: { type: 'noul', instructions: 'Does it hold?' } };
+  const timed = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: hang, timeoutMs: 50 });
+  await assert.rejects(timed.decide({ label: 'x', kind: 'judge', state: {}, questions }, { decisionId: 'd', signal: new AbortController().signal, deadlineMs: null }), (error) => {
+    assert.deepEqual([error.code, error.costUsd, error.costBasis], ['outcome_unknown', null, 'unknown']);
+    return true;
+  });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: hang }).decide({ label: 'x', kind: 'judge', state: {}, questions }, { decisionId: 'd', signal: controller.signal, deadlineMs: 10_000 }), (error) => error.code === 'aborted');
+});
+
 test('a cost Jev reports, or one priced from the configured estimate, is booked with its basis', async () => {
   const questions = { holds: { type: 'noul', instructions: 'Does it hold?' } };
   const answers = { holds: { type: 'noul', noul: 0.9 } };

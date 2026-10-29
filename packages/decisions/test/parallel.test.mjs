@@ -150,6 +150,27 @@ test('a workflow whose Parallel decision meets a 503 after sending escalates as 
   assert.deepEqual([receipts.length, receipts[0].status, receipts[0].cost_usd], [1, 'failed', PARALLEL_LIST_PRICE_USD]);
 });
 
+test('a request in flight past its own timeout or the host\'s deadline is outcome_unknown, sent once, booked at list price; the host\'s cancel stays aborted', async (t) => {
+  const questions = { holds: { type: 'noul', instructions: 'Q?' } };
+  const hang = (init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+  // A fake fetch holds no socket, and the deadline's timer does not keep the process up: this does.
+  const hold = setInterval(() => {}, 1_000);
+  t.after(() => clearInterval(hold));
+  for (const [what, provider, context] of [['its own timeoutMs', { timeoutMs: 50 }, ctx({ deadlineMs: 10_000 })], ['the host\'s deadline', {}, ctx({ deadlineMs: 50 })]]) {
+    const { fetch, seen } = fakeFetch([hang]);
+    await assert.rejects(parallelProvider({ ...settings, ...provider, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, context), (error) => {
+      code('outcome_unknown')(error);
+      assert.deepEqual([error.costUsd, error.costBasis], [PARALLEL_LIST_PRICE_USD, 'estimate'], what);
+      return true;
+    });
+    assert.equal(seen.length, 1, what);
+  }
+  const controller = new AbortController();
+  const { fetch } = fakeFetch([hang]);
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx({ signal: controller.signal })), code('aborted'));
+});
+
 test('a request that provably never reached Parallel is retried, and only the answered attempt is booked', async () => {
   const refused = () => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }));
   const { fetch, seen } = fakeFetch([refused, () => json(wire({ holds: { type: 'noul', noul: 0.4 } }))]);

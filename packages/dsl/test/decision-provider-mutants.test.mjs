@@ -25,7 +25,7 @@ const EXPECTED = {
   'untyped-errors': [/^401 and 403 are auth errors/, /^422 is invalid_request/, /^429 is rate_limited/, /^a 5xx is outcome_unknown/, /^a provider that cannot replay never retries/],
   'malformed-as-http': [/^a malformed body is invalid_response/],
   'ignores-abort': [/^an abort stops a request in flight as aborted/],
-  'ignores-deadline': [/^a request past its deadline stops as timeout/],
+  'ignores-deadline': [/^a request in flight past its deadline is outcome_unknown/],
   'leaks-key': [/^no key appears in a result or an error/],
   'sends-over-capacity': [/^a request beyond its declared capabilities is refused before anything is sent/],
   'refusal-as-false': [/^a refusal comes back as a refusal/],

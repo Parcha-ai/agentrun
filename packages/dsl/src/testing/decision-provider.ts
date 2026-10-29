@@ -128,8 +128,9 @@ export function registerDecisionProviderConformance(name: string, kit: DecisionP
     await assert.rejects(within(2_000, decideOn([{ kind: "hang" }], undefined, ctx({ signal: controller.signal, deadlineMs: 10_000 }))), failsWith("aborted"));
   });
 
-  it("a request past its deadline stops as timeout", async () => {
-    await assert.rejects(within(3_000, decideOn([{ kind: "hang" }], undefined, ctx({ deadlineMs: 50 }))), failsWith("timeout"));
+  it("a request in flight past its deadline is outcome_unknown for a provider that cannot replay, and timeout for one that dedupes", async () => {
+    const code = probe().capabilities.replay === "never" ? "outcome_unknown" : "timeout";
+    await assert.rejects(within(3_000, decideOn([{ kind: "hang" }], undefined, ctx({ deadlineMs: 50 }))), failsWith(code));
   });
 
   it("no key appears in a result or an error", async () => {
