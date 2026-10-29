@@ -282,8 +282,9 @@ export const sameKey = (given: string, key: string): boolean => {
  */
 export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, unknown>, sent: string, say: (message: string, detail?: Record<string, unknown>) => void = () => {}): number | undefined {
   try {
-    const overhead = policy.serverInputOverhead?.(body) ?? 0;
-    if (!Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
+    // Only a policy with no hook adds nothing. A hook's undefined or null is no figure, never 0: the input is unmeasured.
+    const overhead: unknown = policy.serverInputOverhead ? policy.serverInputOverhead(body) : 0;
+    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
     return Buffer.byteLength(sent, "utf8") + overhead;
   } catch (error) {
     say(`model proxy (${policy.id}): the policy could not say what the provider adds to the body's input; its input is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });

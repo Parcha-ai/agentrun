@@ -89,13 +89,15 @@ test("the policy's server-side input is added to the body's bytes", async (t) =>
 });
 
 test("a policy whose server-side input cannot be read leaves inputTokensMax undefined, never 0, and the host still decides", async (t) => {
-  for (const overhead of [() => { throw new Error('unreadable'); }, () => -1, () => 1.5, () => Number.NaN, () => '12']) {
+  for (const overhead of [() => { throw new Error('unreadable'); }, () => undefined, () => null, () => -1, () => 1.5, () => Number.NaN, () => Number.POSITIVE_INFINITY, () => '12']) {
     const { p, before } = await proxy(t, policyWith(overhead));
     await send(p.url, { model: 'other', input: 'hi' });
     assert.equal(before.length, 1, 'the host is still asked');
     assert.ok('inputTokensMax' in before[0] && before[0].inputTokensMax === undefined, `unmeasured for ${overhead}: ${JSON.stringify(before[0])}`);
   }
   assert.equal(host.inputTokensMaxOf?.(policyWith(), {}, '{"a":"é"}'), 10, 'inputTokensMaxOf measures UTF-8 bytes');
+  // Only a policy with no hook at all adds nothing; a hook that answers undefined or null has not measured.
+  assert.deepEqual([host.inputTokensMaxOf?.(policyWith(() => undefined), {}, '{}'), host.inputTokensMaxOf?.(policyWith(() => null), {}, '{}'), host.inputTokensMaxOf?.(policyWith(), {}, '{}')], [undefined, undefined, 2]);
 });
 
 test("providerInputOverhead holds each provider's figures in one place: Anthropic's tool-use prompt and per-image maximum, and OpenAI's per-image maximum", () => {
