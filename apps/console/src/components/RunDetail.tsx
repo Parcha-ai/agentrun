@@ -9,7 +9,8 @@ import { Timeline, Working } from "@/components/Timeline";
 import { type MessageFeatures, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { latest, pendingQuestion } from "@/lib/viewing";
-import type { Run, RunFile, TimelineRow } from "@/lib/v2";
+import type { Run, RunFile, RunReview, TimelineRow } from "@/lib/v2";
+import { when } from "@/lib/format";
 
 export type RunDetailProps = {
   run: Run;
@@ -64,6 +65,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {run.status === "failed" && run.error && <RunError error={run.error} />}
+          {run.status === "completed" && run.review && <ReviewNotice review={run.review} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-[11px] text-muted-foreground">Cancelled</p>
               <p className="mt-2 text-[14px] text-muted-foreground">This run was cancelled. It keeps what it did before; it takes no more messages.</p></section>
@@ -83,5 +85,17 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       )}
       {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} />}
     </div>
+  );
+}
+
+/** A decision workflow sent the run's case to a person: what review it needs, the node that sent it, and why. The run is
+ *  completed and takes no message; the review happens outside it. */
+export function ReviewNotice({ review }: { review: RunReview }) {
+  return (
+    <section className="border border-warning/60 p-4" role="status">
+      <p className="caps text-[11px] text-warning-text">Needs review · {review.kind}</p>
+      <p className="mt-2 text-[14px]">{review.reason}</p>
+      <p className="mt-2 font-mono text-[11px] text-muted-foreground">Sent for review at {review.node}, {when(review.at)}.</p>
+    </section>
   );
 }

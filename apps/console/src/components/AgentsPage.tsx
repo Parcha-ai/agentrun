@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AgentEditor, type EditorCaps, type Revision } from "@/components/AgentEditor";
 import { AgentsList } from "@/components/AgentsList";
-import { type Agent, createBody, editBody, saveError } from "@/lib/agentForm";
+import { type Agent, createBody, editBody, saveError, workflowCreateBody } from "@/lib/agentForm";
 import { allPages, type Client, ClientError } from "@/lib/client";
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? saveError(e) : { kind: "other" as const, message: e instanceof Error ? e.message : String(e) });
@@ -66,6 +66,13 @@ export function AgentEditPage({ v2, caps, agentId, go }: { v2: Client; caps: Edi
       onSave={async (fields, note) => {
         let saved;
         try {
+          if (!agent && fields.workflowText !== undefined) {
+            const made = workflowCreateBody({ name: fields.name ?? "", description: fields.description ?? "", text: fields.workflowText });
+            if (!made.body) return { kind: "invalid" as const, message: made.error!, fields: { "definition.workflow": made.error! } };
+            const created = await v2.createAgent(made.body);
+            go(`#/agents/${encodeURIComponent(created.agent_id)}`);
+            return null;
+          }
           if (!agent) {
             const made = await v2.createAgent(createBody({ name: fields.name ?? "", description: fields.description ?? "", instructions: fields.instructions ?? "", harness: fields.harness ?? "pi", tools: fields.tools ?? [], thinking: fields.thinking, model: fields.model }));
             go(`#/agents/${encodeURIComponent(made.agent_id)}`);

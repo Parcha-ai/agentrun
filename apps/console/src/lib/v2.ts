@@ -5,6 +5,8 @@ export type RunState = "working" | "waiting" | "idle";
 
 export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string };
 
+export type RunReview = { kind: string; node: string; reason: string; at: string };
+
 export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null };
 
 export type Run = {
@@ -21,6 +23,8 @@ export type Run = {
   ended_at: string | null;
   result: { output?: unknown; final_answer?: string | null } | null;
   error: ApiError | null;
+  /** Set when a decision workflow routed the run's case to a person: the run is completed, and it needs review. */
+  review?: RunReview | null;
   cost: Cost | null;
   archived_at: string | null;
   poll_after_ms?: number;
