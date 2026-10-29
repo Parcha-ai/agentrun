@@ -99,6 +99,7 @@ const rolled = (text, ok = true) => ({ tool: 'x', ok, text });
 test("a nested call comes to what the store says, then what the rollout says; they must agree, or it is interrupted", () => {
   assert.deepEqual(settle(nested('e1', 'record', done('recorded'))), { kind: 'completed', text: 'recorded' }, 'store only');
   assert.deepEqual(settle(nested('e1', 'record', undefined, rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'rollout only (the store lost the end)');
+  assert.deepEqual(settle(nested('e1', 'record', { status: 'started' }, rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'store started, rollout completed: Codex writes that line only after our tool answered, so the effect happened');
   assert.deepEqual(settle(nested('e1', 'record', done('recorded'), rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'both, agreeing');
   assert.deepEqual(settle(nested('e1', 'record', done('recorded'), rolled('something else'))), { kind: 'interrupted' }, 'both, disagreeing');
   assert.deepEqual(settle(nested('e1', 'record', { status: 'started' })), { kind: 'interrupted' }, 'started, no end');

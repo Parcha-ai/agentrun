@@ -163,7 +163,7 @@ test("code mode: a model that writes a new exec while a cell still runs: a never
 });
 
 /** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
-async function crashed(after) {
+async function crashed(after, { pad = false, script } = {}) {
   let charged = 0;
   let looked = 0;
   let holding;
@@ -178,14 +178,16 @@ async function crashed(after) {
   const fetch = async (_url, init) => {
     seen.push(JSON.parse(init.body));
     const n = seen.length;
-    const items = n === 1 ? [exec('call_js', `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\ntext('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});\ntext('held');`)] : resumed ? after(seen, n) : [say(n)];
+    const first = [...(pad ? [{ type: 'message', role: 'assistant', id: 'msg_pad', content: [{ type: 'output_text', text: 'x'.repeat(4 * 1024 * 1024 + 100) }] }] : []), exec('call_js', script ?? `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\ntext('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});\ntext('held');`)];
+    const items = n === 1 ? first : resumed ? after(seen, n) : [say(n)];
     return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const died = new AbortController();
   const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
   await a.send('pay');
   await held;
-  assert.equal(charged, 1, 'the charge completed before the crash');
+  // Under an answer the proxy could not read to its end the never call is declined, never run.
+  assert.equal(charged, pad ? 0 : 1, pad ? 'the never call was declined' : 'the charge completed before the crash');
   died.abort(new Error('the process died'));
   await a.turnEnd();
   await a.close();
@@ -226,4 +228,19 @@ test("code mode: after a recovery, a safe tool called again is run again: only a
   const r = await crashed((seen, n) => (!seen.some((b, i) => i > 0 && JSON.stringify(b.input).includes('call_look')) ? [exec('call_look', `text(JSON.stringify(await tools.lookup({ q: 'x' })));`)] : [say(n)]));
   assert.equal(r.looked(), 2, 'the safe tool ran again');
   assert.equal(r.charged(), 1);
+});
+
+test("code mode: two same-arguments never calls re-issued after a recovery that recorded one: the first is answered from the log, the second runs once", { skip, timeout: 240_000 }, async () => {
+  const r = await crashed((seen, n) => (!seen.some((b, i) => i > 0 && JSON.stringify(b.input).includes('call_twice')) ? [exec('call_twice', `text(JSON.stringify(await tools.charge({ amount: 5 })));\ntext(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)]));
+  assert.equal(r.charged(), 2, 'the one before the crash, and exactly one of the two re-issued');
+  const told = toldAbout(r.seen, 'call_twice').join('\n');
+  assert.equal((told.match(/Recorded earlier in this turn, not run again/g) ?? []).length, 1, 'exactly one answered from the log');
+});
+
+test("code mode: an answer the proxy could not read to its end: a call its script makes is still listed by the recovery, as completed, and the unwatched marker is never written as an exec", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed((seen, n) => [say(n)], { pad: true });
+  const output = r.seen.slice(r.before).flatMap((b) => b.input ?? []).find((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
+  const text = Array.isArray(output.output) ? output.output.map((o) => o.text ?? '').join('\n') : String(output.output);
+  assert.match(text, /1\. lookup completed: "found"/, 'the safe call made under an unwatched answer is listed');
+  assert.ok(!/unwatched/i.test(text), 'the marker is not in what the model is told');
 });

@@ -391,3 +391,16 @@ test("a watcher that fails mid-answer is told to the session (failed), the answe
   assert.equal(a.text, body, 'the client has the whole answer');
   assert.equal(b.text, a.text, 'a policy with no watcher answers the same bytes');
 });
+
+test("a watcher that cannot start is told to the session as an answer not watched, and the answer still reaches the client", async () => {
+  const told = [];
+  const body = sse([completed({ input_tokens: 5, output_tokens: 2 })]);
+  const { p } = await proxy({
+    announce: { response: () => { throw new Error('cannot start'); }, exec: () => told.push('exec'), failed: () => told.push('failed'), end: () => told.push('end') },
+    answer: () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  });
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  assert.equal(r.status, 200);
+  assert.equal(r.text, body);
+  assert.deepEqual(told, ['failed'], 'the session was told this answer is not watched');
+});

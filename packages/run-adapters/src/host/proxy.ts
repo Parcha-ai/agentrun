@@ -62,6 +62,8 @@ export interface ProviderPolicy {
    *  next. `end` is called when the answer is over, however it ended. It only reads; one that throws is reported, `failed` is
    *  called (the answer was not watched to its end) and the answer goes on. */
   watch?(): { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
+  /** Called when `watch` threw: this answer is not watched, so nothing the policy knew of an earlier one may stand for it. */
+  unwatched?(): void;
   /** The model the body `apply` returned asks for, once `apply` checked it is one this session may use (its own, or a
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
@@ -439,6 +441,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         watchEnd = watcher?.end?.bind(watcher);
       } catch (error) {
         say(`model proxy (${policy.id}): the response watcher could not start`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        try { policy.unwatched?.(); } catch {}
       }
       if (upstream.body) {
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {

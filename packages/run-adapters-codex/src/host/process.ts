@@ -69,7 +69,8 @@ export interface SessionMachine {
     wipe(): Promise<void>;
   };
   tail(dir: CacheDir, path: string, options?: { offset?: number }): Promise<MachineTail>;
-  /** The code-mode `exec` call the model proxy's latest answer carried, read before Codex could act on it (none when that
+  /** Per acquire: a machine re-attached for a later drive announces nothing until its proxy has seen an answer.
+   *  The code-mode `exec` call the model proxy's latest answer carried, read before Codex could act on it (none when that
    *  answer held none): what a nested call of a script is tied to, even before the `exec`'s line is in the rollout. */
   announcedExec?(): string | undefined;
   fsync(): Promise<void>;

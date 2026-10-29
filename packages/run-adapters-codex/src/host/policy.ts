@@ -332,6 +332,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
     },
     usageOf,
     watch: options.announce ? () => watchResponse(options.announce!) : undefined,
+    unwatched: options.announce ? () => options.announce!.failed() : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
   };
 }

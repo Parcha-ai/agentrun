@@ -7,14 +7,14 @@ Pins: code mode: a never tool called after its exec yielded runs once, under the
 Pins: code mode: a model that writes a new exec while a cell still runs: a never tool its new script calls is declined, not run
 ---
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index 068cb7a..3299c8e 100644
+index 068cb7a..34e30a1 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
 @@ -44,6 +44,7 @@ import {
    THREAD_STREAM,
    type ThreadRecord,
  } from './rollout.ts';
-+import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, Scripts, settle } from './scripts.ts';
++import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, Scripts, settle, UNWATCHED } from './scripts.ts';
  
  /**
   * Codex on harness-world: a kernel `Harness` that drives `codex app-server
@@ -36,7 +36,7 @@ index 068cb7a..3299c8e 100644
 +      /** The exec each nested call was admitted under. */
 +      const execOf = new Map<string, string>();
 +      /** After a recovery: the `never` calls the log holds a completed outcome for, by tool and arguments, until the turn ends. */
-+      const recovered = new Map<string, { tool: string; text: string }>();
++      const recovered = new Map<string, { tool: string; text: string }[]>();
        for (const line of lines) {
          const id = callIdOf(line);
          if (id) logged.add(id);
@@ -86,7 +86,8 @@ index 068cb7a..3299c8e 100644
              const tool = bridge.get(String(p.tool));
 +            // After a recovery, a `never` call the log already holds a completed outcome for, called again (a script that was cut
 +            // short and written again re-issues every call it made): answered from the log, run no more.
-+            const again = tool?.replay === 'never' ? recovered.get(callKey(tool.name, p.arguments)) : undefined;
++            const owed = tool?.replay === 'never' ? recovered.get(callKey(tool.name, p.arguments)) : undefined;
++            const again = owed?.shift();
 +            if (again) {
 +              log('codex: answered a never call from the log: it completed before the interruption', { callId, tool: again.tool });
 +              return { contentItems: [{ type: 'inputText', text: `Recorded earlier in this turn, not run again: ${again.text}` }], success: true };
@@ -99,10 +100,9 @@ index 068cb7a..3299c8e 100644
 +            if (NESTED_CALL.test(callId)) {
 +              const tie = code.tie(machine.announcedExec?.(), (id) => logged.has(id));
 +              const exec = execOf.get(callId) ?? (tie.kind === 'tied' || tie.kind === 'held' ? tie.exec : undefined);
-+              if (exec) {
-+                execOf.set(callId, exec);
-+                journal.append(NESTED_STREAM, { callId, exec });
-+              }
++              if (exec) execOf.set(callId, exec);
++              // Never the unwatched-answer sentinel: a call tied to no known exec is journaled with none.
++              journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec });
 +            }
              const text = takeSaid(active);
              journal.message({ type: 'message', role: 'assistant', text, toolCalls: [{ id: callId, name: String(p.tool) }] });
@@ -115,18 +115,20 @@ index 068cb7a..3299c8e 100644
          journal.message({ type: 'turn', ...outcome });
          await guard(journal.flush());
          ledger.turnEnded();
-@@ -1062,7 +1106,26 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -1062,7 +1106,33 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
          const owed = owedSubmissions(ctx.state(), note.turn.placed, summary.clientIds);
          if (resume && summary.dangling.length > 0) {
            // Calls the rollout has no output for get theirs from the log.
 -          const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
-+          const ties = (await journal.read<{ callId: string; exec: string }>(NESTED_STREAM)).map((r) => r.data);
++          const ties = (await journal.read<{ callId: string; exec: string | null }>(NESTED_STREAM)).map((r) => r.data);
++          const lastExec = [...summary.dangling].reverse().find((d) => d.name === 'exec')?.callId;
 +          const rolled = completedNested(lines);
 +          const items = summary.dangling.map((c) => {
 +            // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
 +            if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
 +            const facts: NestedFact[] = [];
-+            for (const tie of ties.filter((t) => t.exec === c.callId)) {
++            // A call whose script could not be told when it ran (an answer the proxy did not see to its end) is the last cut-off exec's.
++            for (const tie of ties.filter((t) => t.exec === c.callId || (t.exec === null && c.callId === lastExec))) {
 +              const e = ctx.state().effects.get(toolKey(tie.callId));
 +              const fact: NestedFact = {
 +                callId: tie.callId,
@@ -136,7 +138,12 @@ index 068cb7a..3299c8e 100644
 +              };
 +              facts.push(fact);
 +              const settled = settle(fact);
-+              if (settled.kind === 'completed' && e?.replay === 'never') recovered.set(callKey(fact.tool, e.input), { tool: fact.tool, text: settled.text });
++              // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
++              // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
++              if (settled.kind === 'completed' && e?.replay === 'never') {
++                const key = callKey(fact.tool, e.input);
++                recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text }]);
++              }
 +            }
 +            return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(facts) };
 +          });
