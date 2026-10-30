@@ -421,6 +421,36 @@ test("a run's quarantined box stays held when the run opens a new one: the sweep
   assert.deepEqual(quarantine.list(), [], "let go once its own reap counts it empty");
 });
 
+test("a quarantined box whose later reap empties and removes its cgroup is let go: the removal after it finds none, and that is done", linux, async (t) => {
+  const dir = await scratch(t);
+  const run = join(dir, "run-1");
+  await mkdir(run);
+  await writeFile(join(run, "box.json"), JSON.stringify({ id: "box-a", cgroup: "/cg/a", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  const cgroups = new Set(["/cg/a"]);
+  const removed = [];
+  let aLeft = 2;
+  const h = {
+    // bwrapBox's reap removes a cgroup it empties.
+    reap: async (record) => (record.id === "box-a" && aLeft === 0 && cgroups.delete(record.cgroup), { empty: record.id !== "box-a" || aLeft === 0, left: record.id === "box-a" ? aLeft : 0, by: "cgroup" }),
+    cgroups: {
+      list: async () => [...cgroups],
+      remove: async (path) => {
+        removed.push(path);
+        if (!cgroups.delete(path)) throw Object.assign(new Error(`ENOENT: no such file or directory, rmdir '${path}'`), { code: "ENOENT" });
+      },
+    },
+  };
+  const quarantine = await Quarantine.open(join(dir, BOX_QUARANTINE));
+  await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.deepEqual(quarantine.list().map((e) => e.key), ["run-1/box-a"], "held: its reap left processes");
+  // The run opens again with a box of no cgroup; the held box's own reap now empties it and removes its cgroup.
+  await writeFile(join(run, "box.json"), JSON.stringify({ id: "box-b", pid: 5151, startTime: "9", writer: await goneWriter() }));
+  aLeft = 0;
+  await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.deepEqual(quarantine.list(), [], "let go");
+  assert.deepEqual(removed, ["/cg/a"], "its removal found the cgroup already gone");
+});
+
 test("a run's boxes share its cgroup: an old box's empty reap leaves the cgroup in place while the run's current box names it", linux, async (t) => {
   const dir = await scratch(t);
   const run = join(dir, "run-1");
