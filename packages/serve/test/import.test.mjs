@@ -358,3 +358,31 @@ test("a re-import does not read a file its imports took whole and that has not c
   assert.equal(plan.already, 5);
   assert.equal(report.agents.reduce((n, a) => n + a.runs, 0), 5);
 });
+
+test("a key value in a session file's own path is in no file the import writes, and a second run still imports none again", async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  // The project folder Claude Code named holds the key value; the project itself does not.
+  const file = claudeSession(h.at, h.site, 12, { prompt: "From an odd folder.", slug: `odd-${CANARY}` });
+  assert.ok(file.includes(CANARY));
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  const first = await runImport(store, await planImport(options(h), store), options(h));
+  assert.equal(first.agents.reduce((n, a) => n + a.runs, 0), 6);
+  const written = [];
+  const walk = (at) => {
+    for (const name of readdirSync(at)) {
+      const path = join(at, name);
+      if (statSync(path).isDirectory()) walk(path);
+      else written.push(path);
+    }
+  };
+  walk(data);
+  for (const path of written) assert.ok(!readFileSync(path).includes(CANARY), `no key value in ${path}`);
+  const plan = await planImport(options(h), store);
+  assert.deepEqual([plan.projects.length, plan.already], [0, 6], "every file, the odd one too, known and unread");
+  const second = await runImport(store, plan, options(h));
+  assert.equal(second.agents.reduce((n, a) => n + a.runs, 0), 0);
+  assert.equal(store.listRuns().length, 6);
+});

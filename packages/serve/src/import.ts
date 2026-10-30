@@ -75,16 +75,17 @@ export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)
 /** The sessions the store holds already, as `source:session`, to their run's id. */
 const importedIn = (store: AgentStoreReader) => new Map(store.listRuns().flatMap((run) => (run.importedFrom ? [[`${run.importedFrom.source}:${run.importedFrom.session}`, run.id] as const] : [])));
 /** A session file as an import read it: its size and its time, so an unchanged one is not parsed again. */
-type SourceFile = { file: string; size: number; mtime_ms: number };
+/** The file by the sha256 of its path, never the path: a path can hold what the cut takes out of everything written. */
+type SourceFile = { path_sha256: string; size: number; mtime_ms: number };
 const sameFile = (seen: SourceFile | undefined, stats: { size: number; mtimeMs: number }) => seen !== undefined && seen.size === stats.size && seen.mtime_ms === stats.mtimeMs;
-/** The session files the store's imports read whole, by path: each from a run whose transcript is there. */
+/** The session files the store's imports read whole, by their path's sha256: each from a run whose transcript is there. */
 async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile>> {
   const out = new Map<string, SourceFile>();
   for (const run of store.listRuns()) {
     if (!run.importedFrom || !existsSync(store.runStorePath(run.id))) continue;
     const meta = (await readJson(join(store.dir, "runs", run.id, RUN_META))) as { source_file?: SourceFile } | null;
     const seen = meta?.source_file;
-    if (seen && typeof seen.file === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.file, seen);
+    if (seen && typeof seen.path_sha256 === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.path_sha256, seen);
   }
   return out;
 }
@@ -103,7 +104,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
     for (const file of await sessionFiles(home, source)) {
       const stats = await stat(file).catch(() => null);
       if (!stats) continue;
-      if (sameFile(seen.get(file), stats)) {
+      if (sameFile(seen.get(hash(file)), stats)) {
         already += 1;
         continue;
       }
@@ -443,7 +444,7 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
       const stats = await stat(listed.file).catch(() => null);
       const session = stats ? await readSession(listed.file, listed.source).catch((error: unknown) => void report.skipped.push(unread(listed.file, error))) : void report.skipped.push({ what: listed.file, why: "gone since it was listed" });
       if (!session || !stats) continue;
-      const read: SourceFile = { file: listed.file, size: stats.size, mtime_ms: stats.mtimeMs };
+      const read: SourceFile = { path_sha256: hash(listed.file), size: stats.size, mtime_ms: stats.mtimeMs };
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
