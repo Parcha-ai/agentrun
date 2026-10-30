@@ -4,5 +4,5 @@ export { hostHeaderProblems, matchRoute, parseStrict, providerIdsOf, ProxyRefusa
 export type { ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRoute, ProxyUsage } from "./proxy.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
-export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from "./parent-death.js";
+export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, PdeathsigOffMainThread, SETPRIV } from "./parent-death.js";
 export type { LaunchCommand, ParentWatch } from "./parent-death.js";
