@@ -22,6 +22,7 @@ import type { GitIdentity, Repo } from "@parcha/pi-git-remote";
 import { type AgentEntry, definitionOf, whenFree } from "./agents.js";
 import { type HarvestResult, harvestWorktree } from "./harvest.js";
 import { readJson, RUN_META } from "./files.js";
+import { forModel } from "./result.js";
 import { isObject } from "./validate.js";
 
 const REPO = "learning.git";
@@ -70,7 +71,7 @@ export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T
     execute: async (args, api, context) => {
       const path = isObject(args) && typeof args.path === "string" ? args.path : "";
       const refused = await copyRefusal(work, tool.name, path);
-      if (refused) return { content: [{ type: "text", text: refused }], isError: true };
+      if (refused) return forModel(refused, { isError: true });
       return tool.execute(args, api, context);
     },
   };
