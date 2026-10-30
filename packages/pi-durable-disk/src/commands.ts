@@ -64,9 +64,9 @@ export interface Reaped {
  *      paths: "serve's data root is never shown to a box ..."). A box is a child namespace whose PID 1 also started after
  *      the host's records were written, and would otherwise forget live host commands.
  *  (2) Two servers never hold one data root at once (serve's server.lock: "a second server on the same data root ...").
- *  (3) The server is its namespace's main process: when it exits, the namespace ends (the image's ENTRYPOINT, tini with
- *      the launcher and then serve as its only child, no supervisor and no restart in place). A deployment that keeps
- *      the namespace alive past its server is outside this rule.
+ *  (3) Serve is the child of its namespace's PID 1 (tini), which the image's ENTRYPOINT makes by the launcher's exec into
+ *      tini: when serve exits, tini exits, and the namespace ends with it. A server started without that chain (node
+ *      dist/cli.js directly, or under a supervisor that restarts it in place) is outside this rule.
  *  The PR that boxes pi's commands re-opens this rule by name.
  *
  *  A record with no namespace (written before namespaces were recorded) is read as before, in the reader's own. */
