@@ -7,7 +7,7 @@
 // request in flight holds its worst case until it answers.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
-import { REQUEST_COST, REQUEST_COST_LATE } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -25,22 +25,29 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
 }
 
 /** What the run's store says its model requests cost: every response of every conversation in it, and each cost
- *  written apart from a response (a compaction summary's; a harness request's that came in after its answer). */
+ *  written apart from a response (a compaction summary's; a harness request's that came in after its answer), counted
+ *  as the run's timeline counts them (pi-durable-agent's timeline.ts). Unknown (null) while any cost is: a response or
+ *  a booked request whose cost is not a number, or a harness answer's cost still pending; under a cap, never $0. */
 export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true });
   try {
-    let spent = 0;
+    let known = 0;
+    let unknown = 0;
+    let pending = 0;
+    const add = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
     for (const row of db.prepare("SELECT record FROM entries").iterate()) {
       const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[]; data?: { usd?: unknown } };
-      const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : entry.kind === REQUEST_COST || entry.kind === REQUEST_COST_LATE ? entry.data?.usd : undefined;
-      if (total === undefined && entry.kind !== "pi.assistant") continue;
-      // A response or a booked request whose cost is not a number (a provider that does not price it, a request a crash
-      // cut) makes what the run has spent unknown: under a cap, never read as $0.
-      if (typeof total !== "number" || !Number.isFinite(total)) return null;
-      spent += total;
+      if (entry.kind === "pi.assistant") add(entry.model?.[0]?.usage?.cost?.total);
+      else if (entry.kind === REQUEST_COST) add(entry.data?.usd);
+      // The answer just before it was written with its cost to come: unknown until its REQUEST_COST_LATE.
+      else if (entry.kind === REQUEST_COST_PENDING && unknown > 0) (unknown -= 1), (pending += 1);
+      else if (entry.kind === REQUEST_COST_LATE) {
+        if (pending > 0) pending -= 1;
+        add(entry.data?.usd);
+      }
     }
-    return spent;
+    return unknown > 0 || pending > 0 ? null : known;
   } finally {
     db.close();
   }

@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { REQUEST_COST } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING } from "@parcha/pi-durable-agent/timeline";
 import { capModels, spentIn } from "../dist/cap.js";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
@@ -147,5 +147,11 @@ test("spent so far, read back from a run's store: a response or a booked request
   assert.equal(spentIn(storeOf("priced", [answer(0.25), answer(0.5), { kind: "other" }])), 0.75);
   assert.equal(spentIn(storeOf("unpriced", [answer(0.25), answer(undefined)])), null, "a response that reported no price");
   assert.equal(spentIn(storeOf("cut", [answer(0.25), { kind: REQUEST_COST, data: { usd: null } }])), null, "a request a crash cut, booked at an unknown price");
+  // A harness answer written before its cost came in, then that cost written apart, as the timeline reads it.
+  const pending = { kind: REQUEST_COST_PENDING, data: {} };
+  const late = (usd) => ({ kind: REQUEST_COST_LATE, data: { usd } });
+  assert.equal(spentIn(storeOf("late", [answer(0.25), answer(undefined), pending, late(0.5)])), 0.75, "a pending cost that came in counts once");
+  assert.equal(spentIn(storeOf("still-pending", [answer(0.25), answer(undefined), pending])), null, "a cost still to come is unknown");
+  assert.equal(spentIn(storeOf("late-unknown", [answer(0.25), answer(undefined), pending, late(null)])), null, "a late cost no one knows");
 });
 
