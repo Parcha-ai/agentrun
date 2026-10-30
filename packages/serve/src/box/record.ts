@@ -23,8 +23,21 @@ function text(record: BoxRecord): string {
  *  the file and its directory are synced; `started` resolves then. */
 export function boxRecorder(runDir: string): BoxRecorder {
   const path = join(runDir, BOX_RECORD);
+  const failed = (error: unknown) => (error instanceof BoxError ? error : new BoxError("box_record_failed", `box_record_failed: the box record could not be written whole: ${(error as Error).message}`, { cause: error }));
   return {
-    ahead: (record) => writeDurableSync(path, text(record)),
-    started: async (record) => writeDurable(path, text(record)),
+    ahead: (record) => {
+      try {
+        writeDurableSync(path, text(record));
+      } catch (error) {
+        throw failed(error);
+      }
+    },
+    started: async (record) => {
+      try {
+        await writeDurable(path, text(record));
+      } catch (error) {
+        throw failed(error);
+      }
+    },
   };
 }

@@ -1,6 +1,6 @@
 // The small JSON files the server reads and writes beside the agent store.
-import { closeSync, fsyncSync, openSync, renameSync, writeSync } from "node:fs";
-import { open, readFile, rename, writeFile } from "node:fs/promises";
+import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Json } from "./validate.js";
 
@@ -27,13 +27,22 @@ export async function writeWhole(path: string, text: string, mode = 0o600): Prom
  *  so once this resolves a crash, even of the machine, leaves the new text in place, never the old or none. */
 export async function writeDurable(path: string, text: string, mode = 0o600): Promise<void> {
   const temp = `${path}.tmp`;
+  const bytes = Buffer.from(text);
   const file = await open(temp, "w", mode);
   try {
-    await file.writeFile(text);
+    // Every byte, or an error: a short write (a disk nearly full) is never synced and renamed as if whole.
+    for (let at = 0; at < bytes.length; ) {
+      const { bytesWritten } = await file.write(bytes, at, bytes.length - at);
+      if (bytesWritten <= 0) throw new Error(`${temp}: wrote ${at} of ${bytes.length} bytes`);
+      at += bytesWritten;
+    }
     await file.sync();
-  } finally {
+  } catch (error) {
     await file.close();
+    await unlink(temp).catch(() => {});
+    throw error;
   }
+  await file.close();
   await rename(temp, path);
   const dir = await open(dirname(path), "r");
   try {
@@ -47,13 +56,24 @@ export async function writeDurable(path: string, text: string, mode = 0o600): Pr
  *  must be durable before the next line runs, with nothing between them that could let anything else happen first. */
 export function writeDurableSync(path: string, text: string, mode = 0o600): void {
   const temp = `${path}.tmp`;
+  const bytes = Buffer.from(text);
   const file = openSync(temp, "w", mode);
   try {
-    writeSync(file, text);
+    // Every byte, or an error: a short write (a disk nearly full) is never synced and renamed as if whole.
+    for (let at = 0; at < bytes.length; ) {
+      const written = writeSync(file, bytes, at, bytes.length - at);
+      if (written <= 0) throw new Error(`${temp}: wrote ${at} of ${bytes.length} bytes`);
+      at += written;
+    }
     fsyncSync(file);
-  } finally {
+  } catch (error) {
     closeSync(file);
+    try {
+      unlinkSync(temp);
+    } catch {}
+    throw error;
   }
+  closeSync(file);
   renameSync(temp, path);
   const dir = openSync(dirname(path), "r");
   try {
