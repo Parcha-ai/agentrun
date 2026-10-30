@@ -26,10 +26,12 @@ const node = { kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', sc
 function fakeBox(isolation = { mode: 'bwrap', cgroup: false }) {
   const box = { isolation, started: [] };
   box.start = (spec, child, recorder) => {
-    box.started.push(child.command);
+    // On this host there is no box network: the CLI runs as itself, past the forwarder's own arguments.
+    const harness = child.args.slice(child.args.indexOf('--') + 1);
+    box.started.push(harness[0]);
     const record = { id: `box-${box.started.length}`, writer: { pid: process.pid, startTime: '1' } };
     recorder.ahead(record);
-    const proc = startChild({ command: child.command, args: child.args, env: spec.env }, {}, spec.workspace);
+    const proc = startChild({ command: harness[0], args: harness.slice(1), env: spec.env }, {}, spec.workspace);
     return { ...proc, record, ready: recorder.started({ ...record, pid: proc.child.pid }).then(() => record) };
   };
   box.reap = async () => ({ empty: true, left: 0, by: 'pidns' });
