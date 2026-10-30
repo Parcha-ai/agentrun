@@ -1,5 +1,6 @@
 // The small JSON files the server reads and writes beside the agent store.
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
@@ -14,9 +15,19 @@ export const readJson = (path: string): Promise<Json | null> =>
     .then((text) => JSON.parse(text) as Json)
     .catch(() => null);
 
-/** Writes `text` to `path` whole: through a temporary file and a rename, so a reader never sees half of it. */
+/** A temporary file beside `path`, this write's own: two writes of one file at once never share one, so neither renames
+ *  the other's away nor writes into the file the other renamed. */
+export const tempOf = (path: string): string => `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+
+/** Writes `text` to `path` whole: through a temporary file of its own and a rename, so a reader never sees half of it.
+ *  A failed write removes its temporary file. */
 export async function writeWhole(path: string, text: string, mode = 0o600): Promise<void> {
-  const temp = `${path}.tmp`;
-  await writeFile(temp, text, { mode });
-  await rename(temp, path);
+  const temp = tempOf(path);
+  try {
+    await writeFile(temp, text, { mode });
+    await rename(temp, path);
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
 }

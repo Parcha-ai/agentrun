@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,8 @@ import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type Run
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
+import { readJson, RUN_CANCELLED, RUN_META, tempOf, writeWhole } from "./files.js";
+import { type BoxView, UNSANDBOXED_RUN_LINE } from "./box/config.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
@@ -70,6 +71,8 @@ function workflowEnding(record: Json | null): WorkflowEnding | undefined {
 }
 
 type RunMeta = {
+  /** The box as this run saw it at its start (capabilities.box then): its mode, cgroup and egress. */
+  box?: BoxView;
   title: string;
   created_at: string;
   /** The run's input: an agentic run's first message is its `content`, a workflow run's input is the whole of it. */
@@ -241,7 +244,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; boxView?: BoxView; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -328,6 +331,7 @@ export class Runs {
       ...(stored && "output" in stored ? { output: stored.output } : {}),
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
+      ...(isObject(stored?.box) && typeof stored.box.mode === "string" ? { box: stored.box as BoxView } : {}),
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
@@ -598,7 +602,12 @@ export class Runs {
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
-        if (!fresh) this.launch(run), (launched = true);
+        if (!fresh) {
+          const refused = this.boxRefusal(run);
+          if (refused) throw new ApiError("not_continuable", refused.message);
+          this.launch(run);
+          launched = true;
+        }
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
@@ -607,7 +616,9 @@ export class Runs {
   private finished(run: Run): ApiError {
     const status = run.cancel ? "cancelled" : statusOf(run).status;
     const why = status === "completed" ? "This run is finished." : `This run ${status === "failed" ? "failed" : "was cancelled"}.`;
-    return new ApiError("not_continuable", `${why} Start a new run of the agent.`, {
+    // A run its box ended says so in its own words (box_downgrade, box_unavailable): they name what to do.
+    const boxed = status === "failed" && run.error?.code.startsWith("box_") ? run.error.message : undefined;
+    return new ApiError("not_continuable", boxed ?? `${why} Start a new run of the agent.`, {
       next_action: { type: "request", method: "POST", path: `/agents/${run.agentId}/runs`, caller_supplies: ["input", "Idempotency-Key"] },
     });
   }
@@ -647,7 +658,21 @@ export class Runs {
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // The box this open runs in, recorded before its process starts: every launch's own (a relaunch after the operator
+    // changed AGENTRUN_BOX records the new mode), so the record always tells the truth about the latest open.
+    if (this.options.boxView) {
+      run.meta.box = this.options.boxView;
+      // Written here, before the spawn, through a temporary file of its own (a save in flight has its own). Then a save
+      // is queued behind any in flight, so the last write of the record is always the run's latest, box and all.
+      const meta = join(run.dir, RUN_META);
+      const temp = tempOf(meta);
+      writeFileSync(temp, `${JSON.stringify(run.meta)}\n`, { mode: 0o600 });
+      renameSync(temp, meta);
+      void this.saveMeta(run).catch((error: Error) => warn(run.id, `its record is not saved again: ${error.message}`));
+    }
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
+    // Loud, in the run's own log too: its harness's tools run with no box.
+    if (this.options.boxView?.mode === "unsandboxed") writeSync(log, `${UNSANDBOXED_RUN_LINE}\n`);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
@@ -666,6 +691,20 @@ export class Runs {
 
   /** Opens the run again on its directory after its process went before the run ended: it resumes from its store. An
    *  agentic run whose first message never landed gets it again, under the same request id. */
+  /** Why the run may not open again in this server's box, given the box its last open ran in. It never loses its box
+   *  mid-run: boxed, then unsandboxed, ends it (box_downgrade). With no box here after it had one (box_unavailable) it is
+   *  held: never opened, its messages and follow-ups refused, until a server with a box opens it. A run that had no box
+   *  may open in one, and one boxed kind may follow another. */
+  private boxRefusal(run: Run): { code: "box_downgrade" | "box_unavailable"; message: string } | undefined {
+    const now = this.options.boxView;
+    const before = run.meta.box?.mode;
+    if (!now || !before) return undefined;
+    const boxed = (mode: string) => mode === "bwrap" || mode === "seatbelt" || mode === "provider";
+    if (boxed(before) && now.mode === "unsandboxed") return { code: "box_downgrade", message: "box_downgrade: this run started in a box; start a new run to run it unsandboxed" };
+    if (before !== "unavailable" && now.mode === "unavailable") return { code: "box_unavailable", message: `box_unavailable: this run ran with ${before === "unsandboxed" ? "no box, by the operator's setting" : `a ${before} box`}, and this server has no box (${now.error}); it is held, and opens again on a server whose box is back` };
+    return undefined;
+  }
+
   private relaunch(run: Run): void {
     run.relaunches++;
     warn(run.id, `its process went before the run ended; opening it again (${run.relaunches} of ${MAX_RELAUNCHES})`);
@@ -724,9 +763,18 @@ export class Runs {
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
-      if (!gone || !stalled || this.closing) return this.refresh(run);
-      if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
-      run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
+      if (!gone || this.closing) return this.refresh(run);
+      const refused = this.boxRefusal(run);
+      // No box here for a run that had one: held, unopened, until a server with a box opens it. Nothing runs without one.
+      if (refused?.code === "box_unavailable") {
+        warn(run.id, `held: ${refused.message}`);
+        return this.refresh(run);
+      }
+      // A run that started in a box ends here, waiting for the person or not: no message could ever open it again.
+      if (refused) run.error = { code: refused.code, message: refused.message, retryable: false };
+      else if (!stalled) return this.refresh(run);
+      else if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
+      else run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
@@ -866,6 +914,7 @@ export class Runs {
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(this.options.boxView ? { box: this.options.boxView } : {}),
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);
@@ -938,6 +987,9 @@ export class Runs {
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    // Before it opens again: a run that started in a box never continues without one.
+    const refused = this.boxRefusal(run);
+    if (refused) throw new ApiError("not_continuable", refused.message);
     await this.takePlace();
     try {
       // Read again: the place may have been waited for, and the run (or its agent) archived meanwhile.
