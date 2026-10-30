@@ -496,3 +496,21 @@ test('a record-only write lands its input and its effects in one append, with an
   assert.equal(await length(), before, 'nothing written');
   assert.equal(whole.state().effects.get('n:2'), undefined);
 });
+
+test('a record-only write reserves its keys before it awaits: a second write of a key started with it is Fatal, and one intent lands', async () => {
+  const store = memorySessionStore();
+  const effect = (key) => ({ key, options: { name: 'note', replay: 'safe', input: { key } }, output: { noted: key } });
+  const drive = await open(store);
+  const ran = [];
+  const writes = await Promise.allSettled([
+    drive.recordOnly([effect('k')]),
+    drive.recordOnly([effect('k')]),
+    drive.recordOnly([effect('j')]),
+    drive.effect('j', { name: 'note', replay: 'safe', input: {} }, async () => (ran.push('j'), null)),
+  ]);
+  assert.deepEqual(writes.map((r) => r.status), ['fulfilled', 'rejected', 'fulfilled', 'rejected']);
+  assert.ok(writes[1].reason instanceof Fatal && writes[3].reason instanceof Fatal);
+  assert.deepEqual(ran, [], 'the effect never ran');
+  const intents = (await store.read('run-1')).filter((r) => r.kind === KERNEL_RECORDS.start).map((r) => r.data.key);
+  assert.deepEqual(intents, ['k', 'j'], 'one intent per key');
+});

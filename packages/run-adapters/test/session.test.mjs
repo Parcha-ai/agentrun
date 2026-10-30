@@ -436,6 +436,19 @@ test('a send names its submission when asked, and an id the session already hold
   assert.deepEqual(harness.given, ['first']);
 });
 
+test('two sends of one id at once: exactly one submission lands, and the other is refused, though neither is folded yet', async () => {
+  const store = memorySessionStore();
+  const harness = counting();
+  const { session } = await openOn(store, harness.drive);
+  const sends = await Promise.allSettled([session.send('first', { id: 'x' }), session.send('second', { id: 'x' })]);
+  await session.turnEnd();
+  assert.deepEqual(sends.map((r) => r.status), ['fulfilled', 'rejected']);
+  assert.equal(sends[1].reason.name, 'SubmissionExists');
+  const written = (await store.read('step:s')).filter((r) => r.kind === 'kernel.submission' && r.data.id === 'x');
+  assert.deepEqual(written.map((r) => r.data.text), ['first'], 'one submission x in the log');
+  assert.deepEqual(harness.given, ['first']);
+});
+
 test('a settle on a halted session writes nothing, and throws the halt\'s error', async () => {
   const store = memorySessionStore();
   await cutBeforePlacing(store, 'cut');
