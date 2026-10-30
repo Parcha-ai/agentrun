@@ -570,6 +570,10 @@ describe("a stop in progress", () => {
 				);
 				expect(existsSync(at("stop.done"))).toBe(true);
 				expect(existsSync(at("trim"))).toBe(false);
+				// Given up, never silent: the process it could not end is named in the launch's log.
+				expect(readFileSync(at("out.log"), "utf8")).toContain(
+					"[launcher] could not end 4194999 (held); removed the trim lock anyway",
+				);
 			} finally {
 				await box.destroy(context);
 			}

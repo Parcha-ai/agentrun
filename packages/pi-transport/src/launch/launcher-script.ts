@@ -339,7 +339,9 @@ stopit() {
 stop_end() {
   if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
   end_launcher
-  # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s).
+  # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s). What the
+  # stop could not end is named in the log, never passed over.
+  if [ -n "$unended" ]; then printf '[launcher] could not end %s; removed the trim lock anyway\n' "$(echo $unended)" >> "$D/out.log"; fi
   rmdir "$D/trim" 2>/dev/null
   case "$before" in
     exited|gave_up|stopped) ;;
@@ -357,7 +359,7 @@ stop_end() {
 # The supervisor and the watchdog ended, with what each runs at that moment: a lock's mkdir in flight outlives a kill of its
 # shell alone and would take the lock after its holder is gone, so a stop's trim would wait out the lock (15 s). With setsid
 # each leads a group of its own, which is killed; without, the shell is stopped first (it starts nothing more), then its
-# children and it are killed. Either way this returns once none of them is left, or after 2 s.
+# children and it are killed. Either way this returns once none of them is left, or after 2 s, with what is left in $unended.
 end_launcher() {
   groups=
   kids=
@@ -378,6 +380,7 @@ end_launcher() {
   for c in $kids; do
     while pid_live "$c" && [ $(( $(centis) - began )) -lt 200 ]; do sleep $STEP; done
   done
+  unended=$(for g in $groups; do group_live "$g" && members_of "$g"; done; for c in $kids; do pid_live "$c" && named "$c"; done)
 }
 
 # A stop that did not claim the launch waits for the owner's end, within its own bound ($1 tenths of drain, the hook at its
@@ -755,6 +758,25 @@ const GROUP_LIVE = [
 	'    if [ "$2" = "$pp" ] && [ "$1" != Z ]; then echo "\x24{ck##*/}"; fi',
 	"  done",
 	"} 2>/dev/null",
+	"# Each process of group $1 that is not a zombie, as its id and its name in brackets, read from $PROC like group_live.",
+	"members_of() {",
+	"  g=$1",
+	'  for f in "$PROC"/[0-9]*/stat; do',
+	'    read -r line < "$f" || continue',
+	"    r=\x24{line##*) }",
+	'    [ "$r" != "$line" ] || continue',
+	"    set -- $r",
+	"    ck=\x24{f%/stat}",
+	"    nm=\x24{line#*(}",
+	'    if [ "$3" = "$g" ] && [ "$1" != Z ]; then echo "\x24{ck##*/} (\x24{nm%) *})"; fi',
+	"  done",
+	"} 2>/dev/null",
+	"# Process $1 as its id and its name in brackets, read from $PROC.",
+	"named() {",
+	'  read -r line < "$PROC/$1/stat" || return 1',
+	"  nm=\x24{line#*(}",
+	'  echo "$1 (\x24{nm%) *})"',
+	"} 2>/dev/null",
 	"# Whether process $1 is left and not a zombie, read from $PROC like group_live.",
 	"pid_live() {",
 	'  read -r line < "$PROC/$1/stat" || return 1',
@@ -972,6 +994,8 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"ck",
 	"groups",
 	"kids",
+	"nm",
+	"unended",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
