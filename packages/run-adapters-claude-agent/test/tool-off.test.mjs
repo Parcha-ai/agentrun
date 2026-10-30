@@ -131,7 +131,18 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
   // The model thinks before each call, as a thinking model answers, so the CLI sends its thinking back.
   const plan = [...attacks.map(([name, input]) => ({ tool: { name, input } })), { tool: { name: 'mcp__hands__lookup', input: { q: 'x' } } }, { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } }].map((r, i) => ({ ...r, thinking: `step ${i}`, ...(i % 2 ? { redacted: 'cmVkYWN0ZWQ=' } : {}) }));
   let main = 0;
-  const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL ? plan[main++] ?? { text: 'done' } : { text: 'ok' }) });
+  // While the first main-model reply is held, another local process finds the session proxy's port and calls it with no
+  // key (as a port prober on a shared machine does): refused, and no failure of the CLI's.
+  const servers = new Set(received.keys());
+  let providerPort;
+  const proxyServer = () => [...received].find(([s, seen]) => !servers.has(s) && s.address()?.port !== providerPort && seen.some((r) => r.bearer));
+  const probed = [];
+  const provider = await fakeAnthropic({ reply: async (r) => {
+    if (r.model !== MODEL) return { text: 'ok' };
+    if (main === 0) probed.push(await probe(proxyServer()[0].address(), 'Go-http-client/1.1'));
+    return plan[main++] ?? { text: 'done' };
+  } });
+  providerPort = Number(new URL(provider.url).port);
   t.after(() => provider.close());
 
   const logged = [];
@@ -177,7 +188,9 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
     assert.ok(table.has(`${r.method} ${r.path}`), `${r.method} ${r.path} is not in the table`);
     assert.ok(r.query === '' || CLAUDE_MESSAGES_ROUTES.find((x) => x.path === r.path)?.query?.includes(r.query), `query ${r.query} on ${r.path}`);
   }
-  assert.deepEqual(logged.filter((l) => /refused/.test(l.message)), [], 'the proxy refused nothing the CLI asked');
+  assert.deepEqual(cliRefusals(t, logged), [], 'the proxy refused nothing the CLI asked');
+  assert.deepEqual(probed, [401], "the other client's keyless call is refused");
+  assert.ok(logged.some((l) => /refused/.test(l.message) && l.userAgent === 'Go-http-client/1.1'), "and named in the log by its user-agent");
   // Even with its built-ins on, a session could not reach a tool of this CLI's that the allowlist does not name.
   assert.deepEqual(asked.tools, []);
   for (const tool of PINNED_CLI_TOOLS.filter((t) => !CLAUDE_BUILTINS.includes(t))) assert.ok(asked.disallowedTools.includes(tool), `${tool} is not off by name`);
