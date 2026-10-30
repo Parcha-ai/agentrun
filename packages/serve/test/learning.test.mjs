@@ -855,6 +855,25 @@ test("a run's input that is a JSON number of 4 or more digits refuses its harves
   assert.match(show(bareOf(data, "ledger"), `runs/${short.runId}`, "learnings/L-5ca1ab1e0004.md"), /Step {2}1 takes 12 seconds\./);
 });
 
+test("a run whose note holds the value of this host's secret-named variable refuses its harvest by name: nothing is committed, in the repository or the host's clone, and the value is not quoted", async (t) => {
+  const secret = "ledger-host-value-5ca1ab1e0005";
+  withEnv(t, { LEDGER_TEST_API_KEY: secret });
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("ledger"))).status, 201);
+  const id = "L-5ca1ab1e0005";
+  const content = `Make these calls: ${JSON.stringify([["write", { path: `.agent/repo/learnings/${id}.md`, content: `---\nid: ${id}\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nThe registry takes ${secret} as its key.\n` }]])}`;
+  const { body: run } = await api("POST", "/agents/ledger/runs", { input: { content } });
+  await follow(api, run.run_id, ["completed"]);
+  const state = await stateOf(data, "ledger", run.run_id);
+  assert.deepEqual([state.state, state.reasons], ["refused", [`learnings/${id}.md holds a value no learning may keep`]], JSON.stringify(state));
+  assert.ok(!JSON.stringify(state).includes(secret), "the refusal does not quote the value");
+  const runRefs = (dir) => git(dir, "for-each-ref", "--format=%(refname)", "refs/heads/runs/");
+  assert.equal(runRefs(bareOf(data, "ledger")), "", "nothing is committed");
+  const clone = join(data, "agents", "ledger", "host.git");
+  assert.ok(existsSync(clone), "the harvest opened the host's clone");
+  assert.equal(runRefs(clone), "", "not even in the host's clone");
+});
+
 test("a holder that exited and was never reaped is not live: a zombie never keeps a run from its harvest", async (t) => {
   const { api, data } = await serve(t);
   await api("POST", "/agents", agent("calc"));
