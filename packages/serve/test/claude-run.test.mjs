@@ -180,6 +180,19 @@ test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted),
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "priced at Anthropic's id in the catalog, never unknown for the dotted name");
 });
 
+test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's ceiling, it is refused before anything is sent", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake, {}, "claude-haiku-4.5");
+  // claude-haiku-4-5's output ceiling at $5 a million is well past a tenth of a cent.
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 120_000 });
+  const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
+  assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
+});
+
 test("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
