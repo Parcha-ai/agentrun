@@ -762,7 +762,7 @@ async function calls(api, agentId, list) {
   return { runId: run.run_id, outcomes: JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer) };
 }
 
-test("learning never widens a revision's tools: every file tool of a learning run, named or added, works on the working copy only, and is refused by name anywhere else", async (t) => {
+test("learning never widens a revision's tools: a tool learning adds works on the working copy only, and is refused by name anywhere else", async (t) => {
   const { api, data } = await serve(t);
   const skill = { "cite/SKILL.md": "Cite the source." };
   assert.equal((await api("POST", "/agents", { ...agent("reader", { tools: ["read"], skills: ["cite"] }), skills: skill })).status, 201);
@@ -775,7 +775,7 @@ test("learning never widens a revision's tools: every file tool of a learning ru
   assert.equal(outcomes[0].isError, false, JSON.stringify(outcomes[0]));
   assert.deepEqual([outcomes[1].isError, outcomes[1].text], [true, "write is the learning copy's only here: input.txt is outside .agent/repo"]);
   assert.equal(existsSync(join(data, "runs", runId, "work", "input.txt")), false, "nothing was written");
-  assert.deepEqual([outcomes[2].isError, outcomes[2].text], [true, "read is the learning copy's only here: .agents/skills/cite/SKILL.md is outside .agent/repo and .agent/learnings"], "read was named: it is the copy's only too");
+  assert.deepEqual([outcomes[2].isError, outcomes[2].text.includes("Cite the source.")], [false, true], "read was named: it keeps its scope");
   await stateOf(data, "reader", runId);
   assert.match(show(bareOf(data, "reader"), `runs/${runId}`, "learnings/L-5ca1ab1e0002.md"), /Cite twice/);
   // A revision that names no tool: even read is the learning copy's only.
@@ -935,42 +935,52 @@ test("a learning run's tools hold none that runs a process: no entry of the tabl
   await stateOf(data, "asker", run.run_id);
 });
 
-test("every file tool of a learning run is the working copy's only: a named read of /proc/self/environ, a named write out of the workspace, and a read through a link out of the copy are refused by name", async (t) => {
+const OUTSIDE = /^<harness>\n\[error\] .*: outside the workspace /;
+
+test("a learning run's named file tools are held to work/ by pi: a named read of /proc/self/environ, a named write outside work/, and a named read through a link out of work/ are refused with pi's own message", async (t) => {
   const { api, data } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("named", { tools: ["read", "write", "edit"] }))).status, 201);
   const outside = await scratch(t);
   await writeFile(join(outside, "canary.txt"), "canary-5ca1ab1e-outside\n");
   const planted = join(outside, "planted");
-  const { runId, outcomes } = await (async () => {
-    const list = [
-      ["read", { path: "/proc/self/environ" }],
-      ["write", { path: "../escape.txt", content: "out" }],
-      ["edit", { path: "input.txt", edits: [{ oldText: "a", newText: "b" }] }],
-      ["write", { path: ".agent/repo/learnings/L-5ca1ab1e0006.md", content: "---\nid: L-5ca1ab1e0006\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nRead twice.\n" }],
-      ["read", { path: ".agent/repo/out/canary.txt" }, planted],
-    ];
-    const { body: run } = await api("POST", "/agents/named/runs", { input: { content: `Make these calls: ${JSON.stringify(list)}` } });
-    // Once the copy is laid out, a link in it to a directory outside the workspace, then the last call.
-    const copy = join(data, "runs", run.run_id, "work", ".agent", "repo");
-    for (let i = 0; !existsSync(join(copy, "learnings", "L-5ca1ab1e0006.md")); i++) {
-      assert.ok(i < 400, "the run wrote its note");
-      await sleep(50);
-    }
-    const { symlink } = await import("node:fs/promises");
-    await symlink(outside, join(copy, "out"));
-    await writeFile(planted, "");
-    await follow(api, run.run_id, ["completed"]);
-    return { runId: run.run_id, outcomes: JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer) };
-  })();
-  assert.deepEqual(outcomes.map((o) => [o.isError, o.text]), [
-    [true, "read is the learning copy's only here: /proc/self/environ is outside .agent/repo and .agent/learnings"],
-    [true, "write is the learning copy's only here: ../escape.txt is outside .agent/repo"],
-    [true, "edit is the learning copy's only here: input.txt is outside .agent/repo"],
-    [false, outcomes[3].text],
-    [true, "read is the learning copy's only here: .agent/repo/out/canary.txt is outside .agent/repo and .agent/learnings"],
-  ]);
-  assert.equal(existsSync(join(data, "runs", runId, "escape.txt")), false, "nothing was written");
-  await stateOf(data, "named", runId);
+  const list = [
+    ["read", { path: "/proc/self/environ" }],
+    ["write", { path: "../escape.txt", content: "out" }],
+    ["write", { path: join(outside, "escape.txt"), content: "out" }],
+    ["write", { path: ".agent/repo/learnings/L-5ca1ab1e0006.md", content: "---\nid: L-5ca1ab1e0006\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nRead twice.\n" }],
+    ["read", { path: "out/canary.txt" }, planted],
+  ];
+  const { body: run } = await api("POST", "/agents/named/runs", { input: { content: `Make these calls: ${JSON.stringify(list)}` } });
+  // Once the run has written its note, a link in its work/ to a directory outside, then the last call.
+  const work = join(data, "runs", run.run_id, "work");
+  for (let i = 0; !existsSync(join(work, ".agent", "repo", "learnings", "L-5ca1ab1e0006.md")); i++) {
+    assert.ok(i < 400, "the run wrote its note");
+    await sleep(50);
+  }
+  const { symlink } = await import("node:fs/promises");
+  await symlink(outside, join(work, "out"));
+  await writeFile(planted, "");
+  await follow(api, run.run_id, ["completed"]);
+  const outcomes = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
+  for (const at of [0, 1, 2, 4]) assert.match(outcomes[at].text, OUTSIDE, `${list[at][0]} ${list[at][1].path}`);
+  assert.deepEqual(outcomes.map((o) => o.isError), [true, true, true, false, true]);
+  assert.equal(existsSync(join(data, "runs", run.run_id, "escape.txt")), false, "nothing was written");
+  assert.equal(existsSync(join(outside, "escape.txt")), false);
+  assert.equal((await stateOf(data, "named", run.run_id)).state, "proposed", "a named write in the copy is harvested like the learning tool's");
+});
+
+test("a canary a named write plants in the learning copy is refused at harvest, by name, as one the learning tool writes is", async (t) => {
+  const secret = "ledger-host-value-5ca1ab1e0008";
+  withEnv(t, { LEDGER_TEST_API_KEY: secret });
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("ledger", { tools: ["write"] }))).status, 201);
+  const id = "L-5ca1ab1e0008";
+  const { runId, outcomes } = await calls(api, "ledger", [["write", { path: `.agent/repo/learnings/${id}.md`, content: `---\nid: ${id}\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nThe registry takes ${secret} as its key.\n` }]]);
+  assert.equal(outcomes[0].isError, false, "the named write landed in the copy");
+  const state = await stateOf(data, "ledger", runId);
+  assert.deepEqual([state.state, state.reasons], ["refused", [`learnings/${id}.md holds a value no learning may keep`]], JSON.stringify(state));
+  assert.ok(!JSON.stringify(state).includes(secret));
+  assert.equal(branches(bareOf(data, "ledger")).includes(`runs/${runId}`), false, "nothing is committed");
 });
 
 test("a learning run is told where and how to save what it learned: its working copy, its memo, and the paths a harvest takes", async (t) => {
@@ -1093,9 +1103,9 @@ test("a pid handed to a later process is not the run's: a holder whose start tic
   await assert.rejects(harvestFor(data, same.agents, same.runId), /still live/, "its own start ticks: the same process");
 });
 
-test("read also reaches the seeded notes, and nothing else outside the copy; no write tool reaches them", async (t) => {
+test("a read learning adds also reaches the seeded notes, and nothing else outside the copy; no write tool learning adds reaches them", async (t) => {
   const { api, data } = await serve(t);
-  await api("POST", "/agents", agent("calc", { tools: ["read", "write", "edit"] }));
+  await api("POST", "/agents", agent("calc"));
   await onMain(t, data, "calc", note(lesson("L-0123456789ab", "Search both forms of the legal name.")));
   const outside = join(data, "outside.txt");
   await writeFile(outside, "outside\n");
