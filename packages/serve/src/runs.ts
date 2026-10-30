@@ -517,7 +517,12 @@ export class Runs {
       const rows = await this.options.agents.request(() => this.store.listRuns());
       const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
       for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
-    })();
+    })().catch((error: unknown) => {
+      // A sweep that failed is not kept: the next start, open or relaunch sweeps again, so one transient error never
+      // holds every run back until the server restarts. Nothing of this server's runs has started a box before it.
+      this.swept = undefined;
+      throw error;
+    });
     return this.swept;
   }
 

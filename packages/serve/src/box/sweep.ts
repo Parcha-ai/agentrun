@@ -24,6 +24,16 @@ export interface BoxHost {
   };
 }
 
+/** A run cgroup removed, or already gone: a reap that empties a cgroup may remove it itself (bwrapBox's does), so a
+ *  missing one is the removal done. Any other failure is the caller's. */
+async function removeCgroup(cgroups: NonNullable<BoxHost["cgroups"]>, path: string): Promise<void> {
+  try {
+    await cgroups.remove(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+  }
+}
+
 /** A process's start time as /proc/<pid>/stat gives it (clock ticks since boot), or undefined when it is not running. */
 export function startTimeOf(pid: number): string | undefined {
   try {
@@ -127,7 +137,7 @@ export async function settleBox(host: BoxHost, quarantine: Quarantine, runId: st
     await quarantine.add(boxKey(runId, record), record, left(verdict));
     return "quarantined";
   }
-  if (record.cgroup && host.cgroups && !namedElsewhere(quarantine, record.cgroup, boxKey(runId, record))) await host.cgroups.remove(record.cgroup);
+  if (record.cgroup && host.cgroups && !namedElsewhere(quarantine, record.cgroup, boxKey(runId, record))) await removeCgroup(host.cgroups, record.cgroup);
   await writeDurable(path, `${JSON.stringify({ ...record, reaped: { at: new Date().toISOString(), by: verdict.by } })}\n`);
   await quarantine.clear(boxKey(runId, record));
   return "reaped";
@@ -161,7 +171,7 @@ export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: Re
     else verdict = await host.reap(entry.record).catch(() => undefined);
     if (verdict && (verdict.empty || verdict.by === "none")) {
       const cgroup = entry.record.cgroup;
-      if (verdict.empty && cgroup && host.cgroups && !namedElsewhere(quarantine, cgroup, entry.key, now)) await host.cgroups.remove(cgroup);
+      if (verdict.empty && cgroup && host.cgroups && !namedElsewhere(quarantine, cgroup, entry.key, now)) await removeCgroup(host.cgroups, cgroup);
       await quarantine.clear(entry.key);
     } else if (entry.record.cgroup) named.add(entry.record.cgroup);
   }
@@ -177,7 +187,7 @@ export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: Re
       continue;
     }
     if (verdict.empty) {
-      await host.cgroups.remove(cgroup);
+      await removeCgroup(host.cgroups, cgroup);
       await quarantine.clear(leftoverKey(cgroup));
     } else await quarantine.add(leftoverKey(cgroup), record, left(verdict));
   }
