@@ -37,10 +37,26 @@ function killGroup(pid: number): void {
   }
 }
 
+/** Waits for `check` to hold, and passes on the value it saw: never a second read, since a check can turn false again
+ *  (a process's environment reads empty while it is inside an exec). */
 async function until(check: () => boolean, ms = 5_000): Promise<void> {
-  for (const end = Date.now() + ms; !check() && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.ok(check(), "in time");
+  let held = check();
+  for (const end = Date.now() + ms; !held && Date.now() < end; held = check()) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(held, "in time");
 }
+
+describe("until()", () => {
+  it("passes on the value it saw: a check that turns false again after it held is not read twice", async () => {
+    const seen = [false, true, false];
+    let i = 0;
+    await until(() => seen[Math.min(i++, seen.length - 1)]!);
+    assert.equal(i, 2, "read until it held, and no more");
+  });
+
+  it("fails in time when the check never holds", async () => {
+    await assert.rejects(until(() => false, 50), (error: unknown) => error instanceof assert.AssertionError && error.message === "in time");
+  });
+});
 
 const tables: { name: string; kind: "machine" | "ps"; table: ProcessTable }[] = [{ name: "this machine's process table", kind: "machine", table: processTable() }];
 if (process.platform === "linux") tables.push({ name: "ps, as on macOS (procps over /proc)", kind: "ps", table: psTable(linuxPs) });
@@ -375,6 +391,83 @@ describe("command records, from a scripted /proc", () => {
     }
   });
 
+  it("a recorded command is never dropped on an empty read of its environment (inside an exec); it leaves its record once it is a zombie", () => {
+    // Through /proc: 4200 is the instance, 4300 its command leading its own group. The first walk reads the mark and
+    // records 4300; the next reads an empty environment (an exec) and must keep the record; once 4300 is a zombie (its
+    // state read first), the record goes.
+    const dir = scratchRoot("commands-recorded-empty-read");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "commands");
+    const uid = process.getuid!();
+    const stat = (pid: number, state: string, ppid: number, pgrp: number, start: number) => `${pid} (cmd) ${[state, String(ppid), String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+    const status = (state: string) => `Name:\tcmd\nState:\t${state} (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`;
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
+      writeFileSync(join(proc, "4200/stat"), stat(4200, "S", 1, 4200, 10));
+      writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
+      mkdirSync(join(proc, "4300"));
+      const recorder = new CommandRecorder(records, { proc, instance: 4200 });
+      const at = (state: string, environ: string) => {
+        writeFileSync(join(proc, "4300/stat"), stat(4300, state, 4200, 4300, 77));
+        writeFileSync(join(proc, "4300/status"), status(state));
+        writeFileSync(join(proc, "4300/environ"), environ);
+      };
+      at("S", `PATH=/usr/bin\0${COMMANDS_MARK}=${recorder.token}\0`);
+      recorder.scan();
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"], "recorded from its mark");
+      at("S", "");
+      recorder.scan();
+      recorder.scan();
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"], "an empty read keeps a recorded command");
+      at("Z", "");
+      recorder.scan();
+      recorder.close();
+      assert.deepEqual(readdirSync(records).filter(isRecord), [], "a zombie leaves its record");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a recorded pid the kernel gave to another process (its start time differs) is gone: the walk drops its record, and a reap never signals the stranger", async () => {
+    // 4300 is recorded with start 77, exits, and its number goes to a new process (start 99) whose environment reads
+    // non-empty and lacks the word. Only the start time tells the two apart.
+    const dir = scratchRoot("commands-recorded-pid-reused");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "commands");
+    const uid = process.getuid!();
+    const stat = (pid: number, ppid: number, pgrp: number, start: number) => `${pid} (cmd) ${["S", String(ppid), String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
+      writeFileSync(join(proc, "4200/stat"), stat(4200, 1, 4200, 10));
+      writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
+      mkdirSync(join(proc, "4300"));
+      writeFileSync(join(proc, "4300/status"), `Name:\tcmd\nState:\tS (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+      const recorder = new CommandRecorder(records, { proc, instance: 4200 });
+      writeFileSync(join(proc, "4300/stat"), stat(4300, 4200, 4300, 77));
+      writeFileSync(join(proc, "4300/environ"), `PATH=/usr/bin\0${COMMANDS_MARK}=${recorder.token}\0`);
+      recorder.scan();
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"]);
+      const recorded = readFileSync(join(records, "4300-77.json"), "utf8");
+      // The stranger: the same pid, leading its own group, started later, its environment without the word.
+      writeFileSync(join(proc, "4300/stat"), stat(4300, 4200, 4300, 99));
+      writeFileSync(join(proc, "4300/environ"), "PATH=/usr/bin\0HOME=/tmp\0");
+      recorder.scan();
+      recorder.close();
+      assert.deepEqual(readdirSync(records).filter(isRecord), [], "the walk drops a record whose pid now has another start time");
+      // An instance killed before that walk leaves the record behind: the reap at the next open must not signal 4300.
+      writeFileSync(join(records, "4300-77.json"), recorded);
+      const signals: number[] = [];
+      assert.deepEqual(await reapCommands(records, { proc, kill: (target) => void signals.push(target), timeoutMs: 50 }), { signalled: 0, survivors: [] });
+      assert.deepEqual(signals, [], "no SIGKILL to the process that took the recorded pid");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("an open refuses the run while a process a killed incarnation left is still alive, and keeps its record", async () => {
     const dir = scratchRoot("commands-refuse");
     const proc = join(dir.root, "proc");
@@ -431,7 +524,7 @@ describe("command records, from a scripted ps (macOS)", () => {
    *  row's state is `S` unless `options.states` names another (`Z`: a zombie). */
   /** `environments`: a process's `ps -E -o command=` line (arguments, then environment). Its arguments alone (`ps -o
    *  command=`) are `argv[pid]` when given, else the words before the first NAME=value word. */
-  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string | string[]> } = {}): CommandRunner {
+  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string | string[]>; envReads?: Record<number, string[]>; ruids?: Record<number, number> } = {}): CommandRunner {
     const lstart = (second: number) => `Thu Oct 15 06:00:${String(second).padStart(2, "0")} 2026`;
     // A list of arguments answers the process's reads without -E in turn, its last answer from then on: a process that
     // exec'd between two reads.
@@ -448,14 +541,27 @@ describe("command records, from a scripted ps (macOS)", () => {
       const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
       return (env < 0 ? words : words.slice(0, env)).join(" ");
     };
+    // A list of -E lines answers the process's -E reads in turn, its last answer from then on: an environment that reads
+    // empty (inside an exec) and then fills in.
+    const envReads = new Map<number, number>();
+    const eOf = (pid: number) => {
+      const given = options.envReads?.[pid];
+      if (given === undefined) return environments[pid];
+      const n = envReads.get(pid) ?? 0;
+      envReads.set(pid, n + 1);
+      return given[Math.min(n, given.length - 1)]!;
+    };
+    const ruidOf = (pid: number) => options.ruids?.[pid] ?? process.getuid!();
     return (file, args) => {
       if (file === "/usr/sbin/sysctl") return "boot-1\n";
       if (args.includes("-E") && args.includes("-A") && options.failMarks) throw new Error("ps: cannot list environments");
-      if (args.includes("-A") && args.includes("pid=,command=")) {
+      const columns = args.find((a) => /^pid=,(ruid=,)?command=$/.test(a));
+      if (args.includes("-A") && columns !== undefined) {
         return rows().flatMap(([pid]) => {
           const text = environments[pid!];
           if (text === undefined) return [];
-          return [`${pid} ${args.includes("-E") ? text.trim() : argvOf(pid!, text)}`];
+          const shown = args.includes("-E") ? eOf(pid!)!.trim() : argvOf(pid!, text);
+          return [columns.includes("ruid") ? `${pid} ${ruidOf(pid!)} ${shown}` : `${pid} ${shown}`];
         }).join("\n");
       }
       if (args.includes("-A")) {
@@ -465,7 +571,7 @@ describe("command records, from a scripted ps (macOS)", () => {
       const pid = Number(args[args.indexOf("-p") + 1]);
       const text = environments[pid];
       if (text === undefined) throw new Error("no such process");
-      return args.includes("-E") ? text : `${argvOf(pid, text)}\n`;
+      return args.includes("-E") ? eOf(pid)! : `${argvOf(pid, text)}\n`;
     };
   }
   const startAt = (second: number) => Date.UTC(2026, 9, 15, 6, 0, second) / 1000;
@@ -553,6 +659,89 @@ describe("command records, from a scripted ps (macOS)", () => {
     const argv = { 4620: Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "worker: idle" : "worker: busy")) };
     const { run, counted } = countingEnvironments(scriptedPs(() => [[4620, 1, 4620, 5]], { 4620: "worker: idle LANG=C\n" }, { argv }));
     assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.equal(counted.reads, 1);
+  });
+
+  it("(5) a -E line with no environment after its arguments (inside an exec) is read again in the window, and the mark it then shows counts", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Its first -E line holds its arguments alone; its second, its environment too.
+    const envReads = { 4900: ["sleep 600", `sleep 600 LANG=C ${word}`] };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[4900, 1, 4900, 5]], { 4900: `sleep 600 LANG=C ${word}\n` }, { argv: { 4900: "sleep 600" }, envReads }));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4900]);
+    assert.equal(counted.reads, 2);
+  });
+
+  it("a -E line of this uid whose arguments changed across the read (an exec) and that shows no environment yet is read again in the window, and the mark it then shows counts; another uid's is read once", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Its arguments read `sh -c held` before the -E listing and `sleep 600` after it; its first -E line holds the new
+    // arguments alone, its second its environment too.
+    const options = { argv: { 4910: ["sh -c held", "sleep 600"] }, envReads: { 4910: ["sleep 600", `sleep 600 LANG=C ${word}`] } };
+    const own = countingEnvironments(scriptedPs(() => [[4910, 1, 4910, 5]], { 4910: `sleep 600 LANG=C ${word}\n` }, options));
+    assert.deepEqual(psTable(own.run).snapshot().withMark(COMMANDS_MARK, token), [4910]);
+    assert.equal(own.counted.reads, 2);
+    const other = countingEnvironments(scriptedPs(() => [[4910, 1, 4910, 5]], { 4910: `sleep 600 LANG=C ${word}\n` }, { ...options, ruids: { 4910: process.getuid!() + 1 } }));
+    assert.deepEqual(psTable(other.run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.equal(other.counted.reads, 1);
+  });
+
+  it("arguments an exec added are never taken for an environment: a -E line that is a reading of its arguments, or shows more arguments after one, is read again in the window", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Each re-execs, so its arguments read differently before and after its first -E listing, which shows no environment
+    // yet; from the second read on the line is stable and shows the mark.
+    for (const [pid, argv, first] of [
+      // `worker` re-execs as `worker --child`, and its first -E line is the longer reading alone.
+      [4940, ["worker", "worker --child"], "worker --child"],
+      // The added argument looks like an environment word.
+      [4941, ["worker", "worker FOO=1"], "worker FOO=1"],
+      // The line holds a third reading, which ends in more arguments after the longer one.
+      [4942, ["worker", "worker x", "worker x --child"], "worker x --child"],
+      // The reverse order: the longer reading first, and the line is that reading.
+      [4943, ["worker --child", "worker"], "worker --child"],
+    ] as const) {
+      const last = argv[argv.length - 1]!;
+      const options = { argv: { [pid]: [...argv] }, envReads: { [pid]: [first, `${last} LANG=C ${word}`] } };
+      const { run, counted } = countingEnvironments(scriptedPs(() => [[pid, 1, pid, 5]], { [pid]: `${last} LANG=C ${word}\n` }, options));
+      assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [pid], first);
+      assert.equal(counted.reads, 2, first);
+    }
+  });
+
+  it("a -E line of this uid that starts with neither reading of its arguments (a second exec between the reads) cannot be told: it is read again in the window, never taken for unmarked at once, even when it shows an environment", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Its arguments read `sh -c a` before the -E listing and `sh -c b` after it, while the -E line already shows a third
+    // program with an environment; from the second read on it reads `sleep 600` throughout, with the mark.
+    const options = { argv: { 4930: ["sh -c a", "sh -c b", "sleep 600"] }, envReads: { 4930: ["sleep 600 LANG=C", `sleep 600 LANG=C ${word}`] } };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[4930, 1, 4930, 5]], { 4930: `sleep 600 LANG=C ${word}\n` }, options));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4930]);
+    assert.equal(counted.reads, 2);
+  });
+
+  it("a -E line of this uid that stays without an environment is unmarked after the window; another uid's is read once", () => {
+    const token = randomUUID();
+    const rows = () => [[4910, 1, 4910, 5], [4911, 1, 4911, 6]];
+    const lines = { 4910: "worker\n", 4911: "daemon\n" };
+    const own = countingEnvironments(scriptedPs(rows, lines, { ruids: { 4911: process.getuid!() + 1 } }));
+    const start = Date.now();
+    assert.deepEqual(psTable(own.run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.ok(Date.now() - start < 500);
+    assert.equal(own.counted.reads, 6, "the first listing and the five of the window, for 4910 alone");
+    const other = countingEnvironments(scriptedPs(() => [[4911, 1, 4911, 6]], { 4911: "daemon\n" }, { ruids: { 4911: process.getuid!() + 1 } }));
+    assert.deepEqual(psTable(other.run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.equal(other.counted.reads, 1, "another uid's no-environment line is not read again");
+  });
+
+  it("the recorder's read (marked) of a -E line of this uid with no environment is one read, never the window: its next walk reads it again", () => {
+    const counted = { reads: 0 };
+    const ps = scriptedPs(() => [[4920, 1, 4920, 5]], { 4920: "worker\n" });
+    const run: CommandRunner = (file, args) => {
+      if (args.includes("-E") && args.includes("-p")) counted.reads++;
+      return ps(file, args);
+    };
+    assert.equal(psTable(run).snapshot().marked(4920, COMMANDS_MARK, randomUUID()), false);
     assert.equal(counted.reads, 1);
   });
 
@@ -850,8 +1039,11 @@ describe("a recorder's mark", () => {
       await until(() => alive(pid));
       assert.equal(marked(), false, "held before its exec, the command does not carry the mark yet");
       writeFileSync(fifo, "go\n");
-      // The reap looks for the mark, so it runs only once the command carries it.
-      await until(marked);
+      // The reap looks for the mark, so it runs only once the command carries it, in its final image: the command execs
+      // twice (the shell, then sleep), and a read of its environment inside an exec finds none. Once it is sleep, nothing
+      // swaps its environment again.
+      const final = () => processTable().snapshot().commandLine(pid) === "sleep 600" && marked();
+      await until(final);
       assert.ok(marked(), "the command carries the mark");
       // A kill that does nothing: the marked command outlives the first reap's deadline.
       await assert.rejects(reapOrRefuse(records, { kill: () => {}, timeoutMs: 100 }), (error: unknown) => error instanceof HeldError && error.holder === "commands");

@@ -50,3 +50,15 @@ describe("markdown", () => {
     expect(html).toContain("<strong>bold</strong>");
   });
 });
+
+describe("cost in the runs list", () => {
+  it("the runs list shows a null cost as Unknown, never $0", async () => {
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { createElement } = await import("react");
+    const { RunsList } = await import("../components/RunsList");
+    const run = (unpriced as unknown as { body: Parameters<typeof RunsList>[0]["runs"] extends (infer R)[] | null ? R : never }).body;
+    const html = renderToStaticMarkup(createElement(RunsList, { runs: [run], agentName: () => "Meeting notes", onOpen: () => {} }));
+    expect(html).toContain("Unknown");
+    expect(html).not.toMatch(/\$0(\.0+)?(?!\.\d*[1-9])/);
+  });
+});

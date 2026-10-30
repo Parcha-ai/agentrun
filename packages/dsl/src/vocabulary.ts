@@ -45,8 +45,8 @@ export const IGNORED_NODE_FIELDS: { readonly [Kind in WorkflowNodeKind]?: readon
   decide: ["samples", "voteField"],
 };
 
-/** Predicates that read a state value. `poll` accepts only these. */
-export const MECHANICAL_PREDICATES = ["field_equals", "field_true", "in", "count_gte", "gte", "lt", "empty", "no_new_items"] as const;
+/** Predicates that read a state value. `poll` accepts only these, and `not` holds only one of these. */
+export const MECHANICAL_PREDICATES = ["field_equals", "field_true", "in", "count_gte", "gte", "lt", "empty", "no_new_items", "field_type", "not"] as const;
 /** Every predicate `loop.until` and `escalate.when` accept: the mechanical set plus `ask`, a yes/no judge question. */
 export const WORKFLOW_PREDICATES = [...MECHANICAL_PREDICATES, "ask"] as const;
 export type WorkflowPredicateName = typeof WORKFLOW_PREDICATES[number];
@@ -61,8 +61,14 @@ export const PREDICATE_FIELDS: { readonly [Name in WorkflowPredicateName]: reado
   lt: ["path", "n"],
   empty: ["path"],
   no_new_items: ["key"],
+  field_type: ["path", "type"],
+  not: ["of"],
   ask: ["instructions", "state", "criteria", "gte"],
 };
+
+/** The JSON types `field_type` names. A number is a finite one: NaN and the infinities are no JSON value. */
+export const FIELD_TYPES = ["number", "string", "boolean", "array", "object", "null"] as const;
+export type FieldType = typeof FIELD_TYPES[number];
 
 export const EFFORT_LEVELS = ["minimal", "low", "medium", "high"] as const;
 /** There is no "off": every generative node thinks. */

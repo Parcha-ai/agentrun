@@ -261,6 +261,11 @@ def mechHolds (v : Value) : Pred → Bool
   | .lt p n => match getPathP v p with
     | some (.num m) => decide (m < n)
     | _ => false
+  | .fieldType p ty => match getPathP v p, ty with
+    | some (.num _), "number" | some (.str _), "string" | some (.bool _), "boolean"
+    | some (.arr _), "array" | some (.obj _), "object" | some .null, "null" => true
+    | _, _ => false
+  | .not q => !mechHolds v q
   | .ask .. => false
 
 /-- `evaluatePredicate`: mechanical predicates read the state; `ask` asks the oracle. -/
