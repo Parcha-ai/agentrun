@@ -465,3 +465,52 @@ test("a duplicate begin whose first call's outcome could not be written stops wi
   assert.equal(drive.signal.aborted, true);
   assert.equal((await inner.read()).some((r) => r.kind === KERNEL_RECORDS.end), false, 'the log has no outcome');
 });
+
+test('a record-only write lands its input and its effects in one append, with an effect\'s guards: nothing from a halted drive, or over a key written first or in flight', async () => {
+  const store = memorySessionStore();
+  const effect = (key) => ({ key, options: { name: 'note', replay: 'safe', input: { key } }, output: { noted: key } });
+  const appends = [];
+  const counted = { ...store, open: async (key) => {
+    const writer = await store.open(key);
+    return { ...writer, append: (records) => (appends.push(records.map((r) => r.kind)), writer.append(records)) };
+  } };
+  const whole = await openDrive({ writer: await counted.open('run-1'), signal: new AbortController().signal });
+  await whole.recordOnly([effect('n:0'), effect('n:1')], { before: [{ id: 'w', kind: 'withdraw', target: 'p' }] });
+  assert.deepEqual(appends, [['kernel.submission', 'kernel.start', 'kernel.end', 'kernel.start', 'kernel.end']]);
+  assert.deepEqual(['n:0', 'n:1'].map((k) => [whole.state().effects.get(k).status, whole.state().effects.get(k).output]), [['completed', { noted: 'n:0' }], ['completed', { noted: 'n:1' }]]);
+  assert.deepEqual([...whole.state().withdrawn], ['p']);
+
+  const length = async () => (await store.read('run-1')).length;
+  let before = await length();
+  // A key a write took first: refused, and nothing of the write lands.
+  await assert.rejects(whole.recordOnly([effect('n:2'), effect('n:0')]), Restart);
+  assert.equal(await length(), before, 'nothing of a refused write lands');
+  // A key in flight in this drive: refused.
+  void whole.effect('held', { name: 'held', replay: 'safe', input: {} }, () => new Promise(() => {})).catch(() => {});
+  await new Promise((resolve) => setImmediate(resolve));
+  before = await length();
+  await assert.rejects(whole.recordOnly([effect('held')]), Fatal);
+  // A halted drive: refused with the halt's reason.
+  whole.halt(new Error('halted'));
+  await assert.rejects(whole.recordOnly([effect('n:3')], { before: [{ id: 'w2', kind: 'withdraw', target: 'q' }] }), /^Error: halted$/);
+  assert.equal(await length(), before, 'nothing written');
+  assert.equal(whole.state().effects.get('n:2'), undefined);
+});
+
+test('a record-only write reserves its keys before it awaits: a second write of a key started with it is Fatal, and one intent lands', async () => {
+  const store = memorySessionStore();
+  const effect = (key) => ({ key, options: { name: 'note', replay: 'safe', input: { key } }, output: { noted: key } });
+  const drive = await open(store);
+  const ran = [];
+  const writes = await Promise.allSettled([
+    drive.recordOnly([effect('k')]),
+    drive.recordOnly([effect('k')]),
+    drive.recordOnly([effect('j')]),
+    drive.effect('j', { name: 'note', replay: 'safe', input: {} }, async () => (ran.push('j'), null)),
+  ]);
+  assert.deepEqual(writes.map((r) => r.status), ['fulfilled', 'rejected', 'fulfilled', 'rejected']);
+  assert.ok(writes[1].reason instanceof Fatal && writes[3].reason instanceof Fatal);
+  assert.deepEqual(ran, [], 'the effect never ran');
+  const intents = (await store.read('run-1')).filter((r) => r.kind === KERNEL_RECORDS.start).map((r) => r.data.key);
+  assert.deepEqual(intents, ['k', 'j'], 'one intent per key');
+});

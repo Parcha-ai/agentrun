@@ -1,8 +1,8 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/journal.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; blobs are kept in the session's own records; message prefixes; the fence comment names the session writer's fence.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; blobs are kept in the session's own records; message prefixes; the fence comment names the session writer's fence; a batch's effect is built by `journalBatchEffect`, which a write of the next batch whole shares.
 import { randomUUID } from 'node:crypto';
-import { BLOB_PIECE_CHARS, blobStreamName, type DriveContext, Fatal, readBlobs, Restart, sha256Hex, writeBlob } from '../kernel/index.js';
+import { BLOB_PIECE_CHARS, blobStreamName, type DriveContext, Fatal, readBlobs, Restart, type SessionState, sha256Hex, writeBlob } from '../kernel/index.js';
 import {
   JOURNAL,
   type JournalBatch,
@@ -217,9 +217,9 @@ export class NativeJournal {
       part.entries.push(await this.store(q));
     }
     const n = this.n;
-    const batch: JournalBatch = { v: 1, n, streams };
     const writer = this.writer;
-    const out = await this.ctx.effect(journalKey(n), { name: JOURNAL, replay: 'safe', input: batch }, async () => ({ n, records: queued.length, writer }));
+    const batch = journalBatchEffect(n, streams, writer);
+    const out = await this.ctx.effect(batch.key, batch.options, async () => batch.output);
     if ((out as { writer?: unknown } | undefined)?.writer !== writer) throw new Restart(`agentrun-kernel: journal batch ${n} was written by another drive`);
     this.n = n + 1;
   }
@@ -240,6 +240,28 @@ export class NativeJournal {
     }
     return { ...id, blob: hash, bytes };
   }
+}
+
+/**
+ * Batch `n` as its record-only effect: its key `journal:<n>`, its options,
+ * and its outcome, which names the writer, so a writer whose batch number
+ * another took first can tell. `NativeJournal` writes it through `ctx.effect`.
+ */
+export function journalBatchEffect(n: number, streams: JournalBatch['streams'], writer: string) {
+  const input: JournalBatch = { v: 1, n, streams };
+  const records = Object.values(streams).reduce((sum, part) => sum + part.entries.length, 0);
+  return { key: journalKey(n), options: { name: JOURNAL, replay: 'safe' as const, input }, output: { n, records, writer } };
+}
+
+/**
+ * The next batch of the journal `state` holds, with `entries` per stream,
+ * each stream's from where the log leaves it: for a write that must land the
+ * batch whole, with other records, in one append (`Drive.recordOnly`).
+ */
+export function nextJournalBatch(state: SessionState, entries: Record<string, StoredEntry[]>, writer: string) {
+  const streams: JournalBatch['streams'] = {};
+  for (const [name, list] of Object.entries(entries)) streams[name] = { from: journalRecords(state, name).length, entries: list };
+  return journalBatchEffect(journalBatches(state).length, streams, writer);
 }
 
 /**

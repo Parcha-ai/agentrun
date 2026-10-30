@@ -8,9 +8,10 @@
 //  - A pause (`interrupt` with `drainMs`) sends no new turn, and lets the calls in flight run on until their outcomes are
 //    recorded, for at most `drainMs`, before the turn stops. The adapter counts its calls in `calls`.
 import { randomUUID } from "node:crypto";
+import { SubmissionExists } from "./errors.js";
 import { serialWriter } from "./host/serial.js";
 import { openDrive, pendingSubmissions, Restart, type Drive } from "./kernel/index.js";
-import { recoveryNote, transcriptOf } from "./process/index.js";
+import { nextJournalBatch, openTurn, recoveryNote, TRANSCRIPT, type TranscriptEntry, transcriptOf } from "./process/index.js";
 import type { AdapterSession, SessionIO, TurnStatus } from "./types.js";
 
 /** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause waits for these to have
@@ -59,6 +60,9 @@ export interface AdapterSessionOptions {
   restarts?: number;
 }
 
+/** What a settled turn's record says ended it. */
+const SETTLED: TranscriptEntry = { type: "turn", status: "interrupted", error: "settled: the turn a crash cut off was ended, not resumed" };
+
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
 /** Open the session over `io.writer`: its state from the records, then one turn at a time. */
@@ -72,6 +76,8 @@ export async function openAdapterSession(options: AdapterSessionOptions): Promis
   let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
     ? "open_turn"
     : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
+  // Ids sent and not yet folded: a second send of one is refused too, never dropped by the fold.
+  const sending = new Set<string>();
 
   let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
   let closed = false;
@@ -109,16 +115,38 @@ export async function openAdapterSession(options: AdapterSessionOptions): Promis
 
   return {
     get state() { return state; },
-    async send(text) {
+    async send(text, sendOptions = {}) {
       if (calls.draining) throw new Error(`${name}: the session is pausing; no new turn`);
       await ready();
-      await drive.submit({ id: randomUUID(), kind: "prompt", text });
+      const id = sendOptions.id ?? randomUUID();
+      if (sending.has(id) || drive.state().submissions.some((s) => s.id === id)) throw new SubmissionExists(id, name);
+      sending.add(id);
+      try {
+        await drive.submit({ id, kind: "prompt", text });
+      } finally {
+        sending.delete(id);
+      }
       void run();
     },
     async recover() {
       if (state !== "open_turn") throw new Error(`${name}: there is no turn to recover`);
       await ready();
       void run();
+    },
+    async settleOpenTurn(settleOptions = {}) {
+      if (state !== "open_turn") throw new Error(`${name}: there is no turn to settle`);
+      await ready();
+      const now = drive.state();
+      // A settle never infers which prompt to drop: it withdraws only the submission it is named, while that is unplaced
+      // and the oldest pending. Then a settle again finds it withdrawn, and a message that came after it is never touched.
+      // Named behind an older pending message, it is not withdrawn: it runs as a later turn, and a re-send of it is refused.
+      const opening = settleOptions.opening !== undefined && pendingSubmissions(now)[0]?.id === settleOptions.opening ? settleOptions.opening : undefined;
+      if (openTurn(now) || opening) {
+        // The withdraw and the turn's end, as the journal's next batch, in one write.
+        await drive.recordOnly([nextJournalBatch(now, { [TRANSCRIPT]: [{ data: SETTLED }] }, "settle")], { before: opening ? [{ id: randomUUID(), kind: "withdraw", target: opening }] : [] });
+        io.onEvent({ type: "turn_end", status: "interrupted" });
+      }
+      state = pendingSubmissions(drive.state()).length ? "open_turn" : "idle";
     },
     async turnEnd() {
       if (!running) throw new Error(`${name}: no turn is in flight`);
