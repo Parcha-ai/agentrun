@@ -20,6 +20,7 @@ import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js"
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 
@@ -148,7 +149,7 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
+export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -160,6 +161,13 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
+    /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
+    secrets: {
+      names: [...SECRET_NAMES],
+      handoff: "pipe",
+      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token over a pipe of its own, whatever its harness and tools: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
+      limit: "In memory is not out of reach: a process of the same user can read another's memory (/proc/<pid>/mem) where the kernel lets it attach. Linux's Yama ptrace_scope of 1 or more refuses that to all but a process's own ancestors; a host at 0 exposes the secrets to a run's own code. A run's process holds its model keys in memory, since it calls the model itself. A harness's CLI (codex, claude-agent) holds a key of its own for its session's model proxy in its environment: not a provider's key, but one a process of the same user could spend through that run's proxy while the session lives. Started as the package's bin on a host, until it execs, the launcher and any subshell it forks show the caller's environment, secrets included, to a process of the same user (/proc keeps a process's environment as it was at its exec). A run's process gets its secrets over a socket, read and closed as it starts; another process can take a socket only through pidfd_getfd, which the same ptrace rule refuses.",
+    },
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
@@ -250,7 +258,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = { ...withoutFaux(process.env), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  const env = withSecrets({ ...withoutFaux(process.env), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
