@@ -23,6 +23,7 @@ import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./ru
 import { type BoxFactory, type BoxView, boxConfig, cgroupDelegation, NO_BOX, resolveBox, UNSANDBOXED_BANNER } from "./box/config.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { workspaceOf } from "./run-workspace.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -512,7 +513,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
     if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    let path = join(run.dir, "work");
+    let path = workspaceOf(run);
     if (!(await lstat(path).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
     for (const part of parts) {
       path = join(path, part);
@@ -763,7 +764,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       }
       case "listRunFiles": {
         const run = await needRun(id);
-        const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
+        const files = (await walk(workspaceOf(run))).sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
       }
       case "readRunFile":

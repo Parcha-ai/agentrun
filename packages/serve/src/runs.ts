@@ -26,6 +26,7 @@ import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
+import { isWorkspace, type Workspace, workspaceFor } from "./run-workspace.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -74,6 +75,8 @@ function workflowEnding(record: Json | null): WorkflowEnding | undefined {
 type RunMeta = {
   /** The box as this run saw it at its start (capabilities.box then): its mode, cgroup and egress. */
   box?: BoxView;
+  /** Where the run's workspace sits under its directory, from its first open (run-workspace.ts); absent: `work`. */
+  workspace?: Workspace;
   title: string;
   created_at: string;
   /** The run's input: an agentic run's first message is its `content`, a workflow run's input is the whole of it. */
@@ -335,6 +338,9 @@ export class Runs {
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
       ...(isObject(stored?.box) && typeof stored.box.mode === "string" ? { box: stored.box as BoxView } : {}),
+      // Only a known value: it becomes a path. Anything else reads as none (work), and the run's own record (run.json)
+      // then refuses the open by name rather than move it.
+      ...(isWorkspace(stored?.workspace) ? { workspace: stored.workspace } : {}),
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
@@ -715,7 +721,7 @@ export class Runs {
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
-      "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
+      "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--workspace", run.meta.workspace ?? "work", "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
     ], { stdio: ["ignore", "ignore", log], env });
     closeSync(log);
@@ -951,7 +957,8 @@ export class Runs {
   }
 
   private async start(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
-    const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id })).catch((error) => storeError(error, "revision"));
+    const workspace = workspaceFor(revision);
+    const started = await this.options.agents.request(() => this.store.startRun({ agent: entry.agent.id, revision: revision.id, workspace })).catch((error) => storeError(error, "revision"));
     const meta: RunMeta = {
       title: clip(options.title.trim().replace(/\s+/g, " "), 80),
       created_at: new Date().toISOString(),
@@ -959,6 +966,7 @@ export class Runs {
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
       ...(this.options.boxView ? { box: this.options.boxView } : {}),
+      workspace,
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);

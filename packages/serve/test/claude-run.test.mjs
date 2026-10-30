@@ -132,7 +132,8 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   // The endpoint reports a response's input as its request body's length over 4, and 12 output tokens.
   const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * PRICE.input + 12 * PRICE.output, 0) / 1e6;
   assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "each response's input and output at serve's catalog price");
-  const left = (await filesUnder(join(data, "runs", runId, "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
+  // The run's workspace is its harness's directory, the CLI's own cwd (run-workspace.ts).
+  const left = (await filesUnder(join(data, "runs", runId, "harness", "work"))).filter((path) => path.startsWith(".claude") || path.endsWith(".jsonl"));
   assert.deepEqual(left, [], "no CLI file in the run's workspace");
 });
 

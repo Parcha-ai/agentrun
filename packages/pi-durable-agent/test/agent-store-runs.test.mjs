@@ -1,7 +1,7 @@
 // The agent store's run half: store.startRun pins a revision and seeds the run's folder, store.carryBack ends the run once.
 // Real stores in temp dirs; no model calls. The runs are read with plain SQL, read-only, as serve reads them.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -50,6 +50,23 @@ test("startRun pins the current revision at start: it returns the verified revis
   assert.deepEqual(runs(dir).map((r) => [r.id, r.agent_id, r.revision_id, r.state]), [[run.runId, agent.id, a.id, "running"]], "the row names the pinned revision, not the new current");
   assert.match(runs(dir)[0].started_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
   assert.equal(runs(dir)[0].ended_at, null);
+  await store.close();
+});
+
+test("startRun seeds the workspace it is given: work/ by default, harness/work under a private harness/, and nothing else", async () => {
+  const { dir, store, agent } = await aStore();
+  const plain = await store.startRun({ agent: agent.id });
+  assert.equal(plain.workspace, path.join(plain.dir, "work"));
+  const boxed = await store.startRun({ agent: agent.id, workspace: "harness/work" });
+  assert.equal(boxed.workspace, path.join(boxed.dir, "harness", "work"));
+  assert.equal(await readFile(path.join(boxed.workspace, ".agents/skills/read/SKILL.md"), "utf8"), "Read the site.\n", "its skills are in its own workspace");
+  assert.equal(existsSync(path.join(boxed.dir, "work")), false, "no second tree at work/");
+  assert.equal(statSync(path.join(boxed.dir, "harness")).mode & 0o777, 0o700, "harness/ is private");
+  assert.equal(boxed.storePath, path.join(boxed.dir, "store", "run.sqlite"), "the store stays at the run's root");
+  for (const bad of ["../x", "/tmp/x", "harness", "elsewhere"]) {
+    await assert.rejects(store.startRun({ agent: agent.id, workspace: bad }), (error) => refused("invalid")(error) && /is not one of work, harness\/work/.test(error.message));
+  }
+  assert.equal(runs(dir).length, 2, "a refused start writes no row");
   await store.close();
 });
 

@@ -193,7 +193,8 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
   const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
   const runId = await started(api, "files", "Write then read.", "codex", ["read", "write"]);
   const { rows } = await follow(api, runId, ["completed"]);
-  assert.equal(await readFile(join(data, "runs", runId, "work", "note.txt"), "utf8"), "hello from the tool");
+  // A harness run's one workspace is its harness's directory (run-workspace.ts).
+  assert.equal(await readFile(join(data, "runs", runId, "harness", "work", "note.txt"), "utf8"), "hello from the tool");
   const results = toolResults(rows);
   assert.equal(results.length, 2, JSON.stringify(results));
   assert.match(results[1][0], /hello from the tool/, "the read returned what the write wrote");
@@ -210,7 +211,7 @@ test("pi's confinement holds for another harness's read: a link out of the works
     assert.ok(i < 300, "the first tool's row");
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  await symlink(secret, join(data, "runs", runId, "work", "out.txt"));
+  await symlink(secret, join(data, "runs", runId, "harness", "work", "out.txt"));
   await writeFile(go, "");
   await killRun(data, runId);
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 60_000 });
