@@ -263,6 +263,41 @@ test('T8: a dry run passes a node that requires evidence: its synthetic answer c
   }
 });
 
+test('T4c: a sift carries each request\'s evidence into the sidecars of its items, and its judge.answered names the evidence and the provider', async () => {
+  const source = (id) => ({ url: `https://registry.example/filings/${id}`, title: null, excerpts: [], scope: 'call' });
+  // A provider whose request cites one source per item it holds, so an item's sidecar shows which request answered it.
+  const base = provider('parallel');
+  const parallel = { ...base, decide: async (request, ctx) => ({ ...(await base.decide(request, ctx)), evidence: request.state.items.map((named) => source(named.item.id)) }) };
+  const sift = { node: 'sift', label: 'siftThem', itemsPath: 'filings', out: 'Item', as: 'kept', provider: 'parallel', evidence: 'required' };
+  for (const [what, perRequest, sidecars, all] of [
+    ['one request', 8, [[source('a'), source('b')], [source('a'), source('b')]], [source('a'), source('b')]],
+    ['a request per item', 1, [[source('a')], [source('b')]], [source('a'), source('b')]],
+  ]) {
+    const events = [];
+    const outcome = await outcomeOf(runWorkflow(doc([sift]), INPUT, { ...hosted([parallel]), maxQuestionsPerRequest: perRequest, onEvent: (event) => { if (event.type === 'judge.answered') events.push(event); } }));
+    assert.equal(outcome.status, 'complete', `${what}: ${JSON.stringify(outcome).slice(0, 300)}`);
+    assert.deepEqual(outcome.result.state.kept.answers.map((sidecar) => sidecar.evidence), sidecars, `${what}: each item's sidecar holds its request's evidence`);
+    assert.deepEqual(events.map((event) => [event.detail.provider, event.detail.evidence]), [['parallel', all]], `${what}: judge.answered names the provider and every request's evidence`);
+  }
+});
+
+test('T2d: a provider named by an inherited property is unknown: the run is refused before any node runs, and the judge refuses it, both by name', async () => {
+  const jev = provider('jev');
+  let ran = 0;
+  const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+  const outcome = await outcomeOf(runWorkflow(doc([first, judge({ provider: 'constructor' })]), INPUT, { ...hosted([jev]), onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+  assert.equal(outcome.status, 'threw', 'the run is refused');
+  assert.match(outcome.message, /judge node "check" names the decision provider constructor, which this host does not have/, 'the refusal names the setting');
+  assert.deepEqual([ran, jev.asked.length], [0, 0], 'refused before any node runs');
+  const ask = { label: 'check', kind: 'judge', state: {}, questions: { legit: { type: 'noul', instructions: 'Is it?' } }, decisionId: 'd' };
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const named = (error) => error instanceof DecisionProviderError && error.code === 'configuration' && error.message.includes(`"${name}"`);
+    await assert.rejects(dsl.judgeFromProviders({ providers: { jev }, default: 'jev' })({ ...ask, provider: name }), named, `${name}: the judge refuses it as configuration, by name`);
+    await assert.rejects(dsl.judgeFromProviders({ providers: { jev }, default: name })(ask), named, `${name}: a default named by an inherited property is refused too`);
+  }
+  assert.equal(jev.asked.length, 0);
+});
+
 test('T6: the published schema and the author guide carry the four fields', () => {
   const schema = JSON.parse(readFileSync(new URL('../schema/workflow.schema.json', import.meta.url), 'utf8'));
   const nodes = [];
