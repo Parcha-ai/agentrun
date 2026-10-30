@@ -49,7 +49,7 @@ async function proxy(t, extra = {}) {
     log: extra.log ?? ((message, detail) => hooks.logged.push({ message, ...detail })),
     policy: extra.policy ?? policy,
     model: 'session-model',
-    origin: 'https://provider.invalid/ignored/path',
+    origin: 'https://provider.invalid',
     credential: extra.credential ?? (() => 'provider-secret'),
     hooks: { beforeRequest: async (r) => { hooks.before.push(r); if (extra.refuse) throw new Error(extra.refuse); }, afterRequest: async (u) => { hooks.after.push(u); if (extra.afterThrows) throw new Error(extra.afterThrows); } },
     price: extra.price ?? (() => 0.001),
@@ -569,6 +569,34 @@ test("a stop that comes while a paid request's record is being written: the requ
   assert.equal((await store.read('chat:stop')).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).length, 0, 'never booked as cut');
   await next.models.beforeRequest({ model: 'session-model' });
   assert.deepEqual(asked, [{ turn: 2, spentUsd: 0 }], 'the next request is turn 2, at a known $0 spent');
+});
+
+test("a provider base with a path prefix: each request goes to the base's path plus the route's, in one hop, with its key, and nowhere else", async (t) => {
+  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const asked = [];
+  const fetchStub = async (url, init) => {
+    asked.push({ url: String(url), authorization: new Headers(init.headers).get('authorization') });
+    return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  for (const [base, sent] of [['https://provider.invalid', 'https://provider.invalid/v1/test?beta=true'], ['https://provider.invalid/api', 'https://provider.invalid/api/v1/test?beta=true'], ['https://provider.invalid/api/', 'https://provider.invalid/api/v1/test?beta=true']]) {
+    asked.length = 0;
+    const booking = await modelPortFor(await memorySessionStore().open('base:path'), { key: 'base:path' });
+    const p = await startModelProxy({ policy, model: 'session-model', origin: base, credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+    t.after(() => p.close());
+    assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200, base);
+    assert.deepEqual(asked, [{ url: sent, authorization: 'Bearer provider-secret' }], base);
+  }
+});
+
+test("a provider base with userinfo, a query, a fragment or a backslash is refused when the proxy starts: a key goes only where the base reads", async () => {
+  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  // A base naming a user, built in two parts so the source holds no URL with a credential in it.
+  for (const base of ['https://user' + ':pw@provider.invalid/api', 'https://provider.invalid/api?x=1', 'https://provider.invalid/api#y', 'https://provider.invalid/api\\..\\other']) {
+    const booking = await modelPortFor(await memorySessionStore().open('base:bad'), { key: 'base:bad' });
+    await assert.rejects(startModelProxy({ policy, model: 'session-model', origin: base, credential: () => 'provider-secret', hooks: booking.models, fetch: async () => { throw new Error('never sent'); } }, KEY), /base/, base);
+  }
 });
 
 test("each booked request carries the ids its response headers gave (a gateway's call id, the provider's request id), recorded when the headers arrive: a request a crash cut after them keeps them, one cut before them has none, and nothing else of the response is kept", async (t) => {
