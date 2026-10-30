@@ -3,7 +3,7 @@
 // danger-full-access on its own.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { codexSandboxMode } from '../dist/harness.js';
+import { codexSandboxMode } from '../dist/host/box.js';
 
 const quiet = () => {};
 
