@@ -117,3 +117,30 @@ test('a poll under not on a path outside the declared result is refused as the b
   assert.match(errors.join('\n'), /poll\.until path "nope" is not in the declared result shape \(state\); the poll could never settle/);
   assert.deepEqual(errors, refusals(at(bare)));
 });
+
+// A malformed poll predicate is refused by name; it never throws. A shape error stops the checks that read inside it.
+const pollUntil = (until) => {
+  const flow = guarded(notNumber);
+  flow.schemas.Job = { type: 'object', properties: { state: { type: 'string' } } };
+  flow.root.steps = [{ node: 'call', label: 'job', via: 'tool', tool: 'jobs.get', out: 'Job', as: 'job', deadline_s: 5, poll: { until, interval_s: 1, deadline_s: 5 } }];
+  flow.output.path = 'job';
+  return flow;
+};
+const refusedPoll = (until, message) => {
+  let checked;
+  assert.doesNotThrow(() => { checked = validateWorkflow(pollUntil(until), { input: {} }); });
+  assert.equal(checked.ok, false);
+  assert.deepEqual(checked.issues.filter((issue) => message.test(issue.message)).map((issue) => issue.code), ['PREDICATE_INVALID'], checked.errors.join('\n'));
+};
+
+test('a poll whose until is not with no of is refused with PREDICATE_INVALID naming the missing of, and never throws', () => {
+  refusedPoll({ predicate: 'not' }, /poll\.until: not needs "of", one mechanical predicate/);
+});
+
+test('a poll whose until is not over a not with no of is refused the same way, and never throws', () => {
+  refusedPoll({ predicate: 'not', of: { predicate: 'not' } }, /poll\.until\.of: not needs "of", one mechanical predicate/);
+});
+
+test('a poll whose until is a field_type with no type is refused with its shape error, and never throws', () => {
+  refusedPoll({ predicate: 'field_type', path: 'state' }, /poll\.until: field_type needs a type of number\|string\|boolean\|array\|object\|null, not none/);
+});
