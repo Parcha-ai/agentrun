@@ -2,7 +2,7 @@
 // other provider, a missing key, or a gateway under a path the proxy cannot reach is a reason capabilities shows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
+import { claudeModelId, claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -52,6 +52,19 @@ test("the model id codex is given is the one model.ts chose: OpenAI's own id dir
   const gateway = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" };
   assert.equal((await chooseModel(gateway, "openai/gpt-4o")).model.modelId, "openai/gpt-4o", "through a gateway: its name, whole");
   assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-4o")).model.modelId, "gpt-4o", "unless the gateway takes bare ids");
+});
+
+test("the model id claude-agent sends: Anthropic's own id, unless ANTHROPIC_BASE_URL is the same gateway as AGENT_MODEL_BASE_URL, whose own name for it is sent whole, as OpenRouter names its models", () => {
+  const sonnet = { provider: "anthropic", modelId: "claude-sonnet-5.5" };
+  const openrouter = { ANTHROPIC_BASE_URL: "https://openrouter.ai/api", AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1" };
+  assert.equal(claudeModelId({}, sonnet), "claude-sonnet-5.5", "to Anthropic: its own id");
+  assert.equal(claudeModelId({ ANTHROPIC_BASE_URL: "http://127.0.0.1:5000" }, sonnet), "claude-sonnet-5.5", "to an Anthropic-compatible endpoint of its own: Anthropic's id");
+  assert.equal(claudeModelId({ AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1" }, sonnet), "claude-sonnet-5.5", "the other harnesses' gateway alone does not reach claude-agent");
+  assert.equal(claudeModelId(openrouter, sonnet), "anthropic/claude-sonnet-5.5", "one gateway for every harness: its name, whole");
+  assert.equal(claudeModelId({ ...openrouter, ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1/" }, sonnet), "anthropic/claude-sonnet-5.5", "the same base, given with /v1");
+  assert.equal(claudeModelId({ ...openrouter, AGENT_MODEL_GATEWAY_IDS: "bare" }, sonnet), "claude-sonnet-5.5", "unless that gateway takes bare ids");
+  assert.equal(claudeModelId({ ...openrouter, AGENT_MODEL_BASE_URL: "https://gw.example/v1" }, sonnet), "claude-sonnet-5.5", "another gateway than Claude's: Anthropic's id");
+  assert.equal(claudeModelId({ ...openrouter, AGENT_MODEL_BASE_URL: "https://user@openrouter.ai/api/v1" }, sonnet), "claude-sonnet-5.5", "a gateway setting refused elsewhere is not Claude's to refuse here");
 });
 
 test("a gateway base with a path: codex sends to <base>/v1/responses and claude-agent to <base>/v1/messages, a trailing /v1 taken once, so one OpenRouter-style base serves both", () => {
