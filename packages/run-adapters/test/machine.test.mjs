@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
+import { socketBase, traversable } from '../dist/host/machine.js';
 import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, openLocalMachine, processAlive, startChild } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'kernel-machine-'));
@@ -168,7 +169,8 @@ test("in a box, a child starts through the host's Box with the session's directo
   assert.equal(spec.env.SECRET_KEY, undefined, 'nothing outside the allowlist reaches the box');
   assert.deepEqual([spec.readOnly, spec.modelPort], [['/opt/cli', process.execPath, FORWARD], 4100]);
   // The sockets are local and short: under the OS's temp directory, never in the session's (possibly shared) directory.
-  assert.ok(spec.modelSocket.startsWith(tmpdir()) && spec.modelSocket.endsWith('/model.sock') && Buffer.byteLength(spec.modelSocket) < 108, spec.modelSocket);
+  // Under the OS's temp directory when the box can pass through it, else /tmp (traversable() below).
+  assert.ok(spec.modelSocket.startsWith(socketBase()) && spec.modelSocket.endsWith('/model.sock') && Buffer.byteLength(spec.modelSocket) < 108, spec.modelSocket);
   assert.equal(statSync(dirname(spec.modelSocket)).mode & 0o777, 0o700);
   assert.equal(spec.egressSocket, undefined, 'no egress was given: the box reaches nothing but the model');
   assert.deepEqual(box.order, ['ahead', 'spawn'], 'the record is written before the spawn');
@@ -440,9 +442,13 @@ test("an egress proxy whose close throws still lets the model front close, and t
 });
 
 test("the default socket directory is short: under a 64-byte TMPDIR it still fits the bound", async (t) => {
-  const base = shortDir();
+  // A temp directory the box can pass through all the way up, so the default goes under it, not to /tmp.
+  const base = mkdtempSync('/tmp/krl-');
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  chmodSync(base, 0o755);
   const longTmp = join(base, 't'.repeat(Math.max(0, 64 - Buffer.byteLength(base) - 1)));
-  mkdirSync(longTmp, { recursive: true });
+  mkdirSync(longTmp, { recursive: true, mode: 0o755 });
+  chmodSync(longTmp, 0o755);
   assert.equal(Buffer.byteLength(longTmp), 64);
   const before = process.env.TMPDIR;
   process.env.TMPDIR = longTmp;
@@ -452,6 +458,30 @@ test("the default socket directory is short: under a 64-byte TMPDIR it still fit
     const [{ spec }] = (await machine.start({ command: '/bin/true' }).exited, [box.specs[0]]);
     const dir = dirname(spec.modelSocket);
     assert.ok(dir.startsWith(longTmp) && Buffer.byteLength(dir) <= 81, `${dir} (${Buffer.byteLength(dir)} bytes)`);
+  } finally {
+    if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
+  }
+});
+
+test("a temp directory only its owner may search sends the default socket directory to /tmp, under the bound", async (t) => {
+  // Every directory above it is searchable by others except one: the box cannot pass it, so the default leaves it.
+  const stat = (modes) => (path) => ({ mode: modes[path] ?? 0o40755 });
+  assert.equal(traversable('/a/b/c', stat({ '/a/b': 0o40700 })), false, 'a 700 ancestor stops it');
+  assert.equal(traversable('/a/b/c', stat({})), true);
+  assert.equal(socketBase('/a/b/c', stat({ '/a': 0o40700 })), '/tmp');
+  assert.equal(socketBase('/a/b/c', stat({})), '/a/b/c');
+  // A real one: a mode-700 TMPDIR.
+  const closed = mkdtempSync('/tmp/kr7-');
+  t.after(() => rmSync(closed, { recursive: true, force: true }));
+  chmodSync(closed, 0o700);
+  const before = process.env.TMPDIR;
+  process.env.TMPDIR = closed;
+  try {
+    const box = fakeBox();
+    const machine = await machineAt(t, scratch(), { box: boxOf(box) });
+    await machine.start({ command: '/bin/true' }).exited;
+    const dir = dirname(box.specs[0].spec.modelSocket);
+    assert.ok(dir.startsWith('/tmp/arb-') && Buffer.byteLength(dir) <= 81, `${dir}`);
   } finally {
     if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
   }

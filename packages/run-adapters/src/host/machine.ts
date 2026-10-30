@@ -12,7 +12,7 @@
 //    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
@@ -179,6 +179,25 @@ export function socketDir(dir: string, name: string, statfs: (dir: string) => { 
   return dir;
 }
 
+/** Whether `dir` and every directory above it can be passed through by anyone (search for others): a box's binds
+ *  are made by a process that may not be this one's user, and a directory only its owner may search (mode 700, as
+ *  macOS's per-user temp directory or XDG_RUNTIME_DIR is) stops it before the socket. `stat` is this module's test seam. */
+export function traversable(dir: string, stat: (path: string) => { mode: number } = statSync): boolean {
+  for (let at = dir; ; at = dirname(at)) {
+    try {
+      if ((stat(at).mode & 0o001) === 0) return false;
+    } catch {
+      return false;
+    }
+    if (dirname(at) === at) return true;
+  }
+}
+
+/** Where the default socket directory goes: the OS's temp directory when the box can pass through it, else /tmp. */
+export function socketBase(temp: string = tmpdir(), stat: (path: string) => { mode: number } = statSync): string {
+  return traversable(temp, stat) ? temp : "/tmp";
+}
+
 /** A box's way out, for the clients in it that ask for a proxy: the session's egress proxy, at the port the box serves it
  *  on. The model's own port is left out (NO_PROXY), so the harness reaches its front directly. */
 function proxyEnv(port: number): Record<string, string> {
@@ -207,7 +226,8 @@ export interface MachineBox {
   cgroup?: string;
   /** A local directory for the session's sockets: never on a disk shared between hosts or a FUSE mount, where a socket
    *  either cannot be made or reads as dead while another host's is live. Default: one per session under the OS's temp
-   *  directory, named by the session's directory and kept short (`arb-` and 12 hex digits, 17 bytes), so a long temp
+   *  directory (or /tmp, when the temp directory has an ancestor only its owner may search, so the box can reach it),
+   *  named by the session's directory and kept short (`arb-` and 12 hex digits, 17 bytes), so a long temp
    *  directory (macOS's is about 49 bytes) still leaves the socket directory under its 81-byte bound. */
   runtimeDir?: string;
 }
@@ -291,7 +311,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
 
   const key = randomBytes(32).toString("base64url");
   // In a box, the front's only door is a socket of the session's own, which the box is given; outside one, loopback.
-  const sockets = boxing ? socketDir(boxing.runtimeDir ?? join(tmpdir(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name) : "";
+  const sockets = boxing ? socketDir(boxing.runtimeDir ?? join(socketBase(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name) : "";
   const modelSocket = join(sockets, "model.sock");
   const egressSocket = join(sockets, "egress.sock");
   const proxy = await startModelProxy(boxing ? { ...spec.proxy, socketPath: modelSocket } : spec.proxy, key);
