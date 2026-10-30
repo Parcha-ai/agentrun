@@ -2,7 +2,7 @@
 // "CLI" child makes each model request through the session's real proxy to a scripted Anthropic API. No key, no network,
 // no Claude Agent CLI.
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
@@ -331,4 +331,11 @@ test("a turn a halt ended with a reason (the transcript mirror's) ends failed an
     assert.equal((await ending).status, 'interrupted', stop);
     if (stop === 'interrupt') await b.close();
   }
+});
+
+test("the adapter ends an aborted turn only through the kernel's abortedOutcome, and keeps no interrupted end of its own", () => {
+  // Structural: a halt with a reason the fakes cannot raise mid-turn still ends this adapter's turn as every other's.
+  const source = readFileSync(new URL('../src/adapter.ts', import.meta.url), 'utf8');
+  assert.match(source, /abortedOutcome\(current\.signal, io\.signal\)/);
+  assert.doesNotMatch(source, /status:\s*"interrupted"/);
 });

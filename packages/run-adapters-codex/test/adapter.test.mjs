@@ -1,7 +1,7 @@
 // The Codex adapter behind createHarnessRunner, as a DSL host runs it, on the stand-in app-server (fake-app-server.mjs)
 // with its model requests going through the session's real proxy to a scripted provider. No network, no Codex binary.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -365,3 +365,10 @@ test("a Codex turn the session itself stops, by its interrupt or its close, ends
   }
 });
 
+
+test("the adapter ends an aborted turn only through the kernel's abortedOutcome, and keeps no interrupted end of its own", () => {
+  // Structural: a halt with a reason the fakes cannot raise mid-turn still ends this adapter's turn as every other's.
+  const source = readFileSync(new URL('../src/adapter.ts', import.meta.url), 'utf8');
+  assert.match(source, /abortedOutcome\(current\.signal, io\.signal\)/);
+  assert.doesNotMatch(source, /status:\s*"interrupted"/);
+});
