@@ -53,18 +53,23 @@ test("a commit given a date is the same commit from any host: author and committ
   const date = new Date("2026-10-29T23:59:30.000Z");
   const options = { files: { "b.md": "b\n", "a.md": "a\n", "old.md": null }, message: "harvest", trailers: { "Run-Id": "r1" }, parent: main, date };
   const one = await (await openRepo({ dir: path.join(root, "host-one"), remote })).commitTo("runs/r1", options);
-  // A second host, a moment later, with nothing of the first's: the same commit.
+  // A second host, a moment later, in another time zone, with nothing of the first's: the same commit. The package builds
+  // git's environment from nothing, so the zone is given to that host's git itself.
   await new Promise((resolve) => setTimeout(resolve, 1_100));
-  const twoRepo = await openRepo({ dir: path.join(root, "host-two"), remote });
+  const { git: zoned } = await recordingGit(path.join(root, "zoned"), { inject: { TZ: "Asia/Kolkata" } });
+  const twoRepo = await openRepo({ dir: path.join(root, "host-two"), remote, git: zoned });
   const two = await twoRepo.commitTo("runs/r1", options);
   assert.equal(two.sha, one.sha);
-  // Instants, not strings: how git prints a UTC offset differs between versions.
-  const dates = (await rawGit(["log", "-1", "--format=%at %ct", two.sha], { gitDir: path.join(root, "host-two") })).toString().trim();
-  assert.equal(dates, `${date.getTime() / 1000} ${date.getTime() / 1000}`);
+  // The raw object, as every git version writes it: both dates are that instant at +0000.
+  const raw = (await rawGit(["cat-file", "-p", two.sha], { gitDir: path.join(root, "host-two") })).toString();
+  const seconds = date.getTime() / 1000;
+  assert.match(raw, new RegExp(`^author .* ${seconds} \\+0000$`, "m"));
+  assert.match(raw, new RegExp(`^committer .* ${seconds} \\+0000$`, "m"));
   const loose = await twoRepo.makeCommit({ parent: main, files: { "a.md": "a\n" }, message: "m", date });
   assert.equal(loose, await (await openRepo({ dir: path.join(root, "host-three"), remote })).makeCommit({ parent: main, files: { "a.md": "a\n" }, message: "m", date }));
+  // Refused by name before git runs: an invalid Date is never handed to git to fail on.
   for (const bad of [new Date(Number.NaN), "2026-10-29", 1_700_000_000_000]) {
-    await assert.rejects(twoRepo.commitTo("runs/r2", { ...options, date: bad }), (error) => error instanceof GitRemoteError && /date/.test(error.message));
+    await assert.rejects(twoRepo.commitTo("runs/r2", { ...options, date: bad }), (error) => error instanceof GitRemoteError && error.code === "refused" && error.message === "a commit's date must be a valid Date", String(bad));
   }
 });
 
