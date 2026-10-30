@@ -6,9 +6,9 @@ import assert from "node:assert/strict";
 import { link, mkdir, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { confineHooks } from "@parcha/pi-durable-disk/internals";
+import { confineTestHooks as confineHooks } from "@parcha/pi-durable-disk/internals";
 import { promptOf } from "../dist/app.js";
-import { assertHardlinkProtection, openWorkFile, walkWork } from "../dist/workspace.js";
+import { assertHardlinkProtection, openWorkFile, walkWork, workspaceTestHooks } from "../dist/workspace.js";
 import { agent, follow, serve } from "./support.mjs";
 
 const CANARY = `not-a-secret-canary-${process.pid}`;
@@ -161,4 +161,118 @@ test("a file this server cannot read (created private in the box) is listed, fla
   assert.equal(res.body.error.code, "system_file_forbidden");
   assert.equal(res.body.error.details?.reason, "unreadable");
   assert.match(res.body.error.message, /created private by a tool in the run's box/);
+});
+
+test("a directory the walk cannot read is reported refused, never read as empty, so no caller infers its files are gone", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
+  const { chmod } = await import("node:fs/promises");
+  const server = await served(t);
+  await mkdir(join(server.work, "locked"));
+  await writeFile(join(server.work, "locked", "kept.txt"), "still here");
+  await chmod(join(server.work, "locked"), 0o000);
+  const refused = [];
+  const seen = [];
+  // The mode goes back before the test ends: the server's own cleanup, registered first, removes the directory.
+  try {
+    await walkWork(server.work, (path) => void seen.push(path), { refused: (path, reason) => void refused.push([path, reason]) });
+  } finally {
+    await chmod(join(server.work, "locked"), 0o700);
+  }
+  assert.deepEqual(refused, [["locked", "unreadable"]], "the directory itself is reported");
+  assert.ok(!seen.some((p) => p.startsWith("locked/")), "and nothing is said of what is in it");
+});
+
+test("a directory swapped for a link after the walk listed it, and before it enters, is reported as a link, and not entered", async (t) => {
+  const server = await served(t);
+  await mkdir(join(server.work, "inner"));
+  await writeFile(join(server.work, "inner", "f.txt"), "in");
+  await mkdir(join(server.work, "other"));
+  await writeFile(join(server.work, "other", "g.txt"), "other");
+  // Swapped for a link to a directory INSIDE work/: still a link, and refused as one.
+  workspaceTestHooks.beforeEnter = async (path) => {
+    if (path !== "inner") return;
+    workspaceTestHooks.beforeEnter = undefined;
+    await rename(join(server.work, "inner"), join(server.work, "inner.moved"));
+    await symlink(join(server.work, "other"), join(server.work, "inner"));
+  };
+  t.after(() => void (workspaceTestHooks.beforeEnter = undefined));
+  const refused = [];
+  const seen = [];
+  await walkWork(server.work, (path) => void seen.push(path), { refused: (path, reason) => void refused.push([path, reason]) });
+  assert.deepEqual(refused.filter(([path]) => path === "inner"), [["inner", "link"]]);
+  assert.ok(!seen.includes("inner/g.txt"), "nothing listed through the link");
+});
+
+test("work/ itself unreadable is no working copy: the walk throws, never reads as empty", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
+  const { chmod } = await import("node:fs/promises");
+  const server = await served(t);
+  await chmod(server.work, 0o000);
+  try {
+    await assert.rejects(walkWork(server.work, () => {}), (error) => error.path === "." && error.reason === "unreadable");
+  } finally {
+    await chmod(server.work, 0o700);
+  }
+});
+
+test("a capped read refuses a file grown past its cap without reading it whole", async (t) => {
+  const { readWorkBytes } = await import("../dist/workspace.js");
+  const server = await served(t);
+  await writeFile(join(server.work, "big.bin"), Buffer.alloc(64, 1));
+  await assert.rejects(readWorkBytes(server.work, "big.bin", { maxBytes: 63 }), (error) => error.reason === "over_cap");
+  assert.equal((await readWorkBytes(server.work, "big.bin", { maxBytes: 64 })).length, 64);
+});
+
+/** Sets one test seam for this test only. */
+function seam(t, name, hook) {
+  workspaceTestHooks[name] = hook;
+  t.after(() => void delete workspaceTestHooks[name]);
+}
+
+test("a link INSIDE work/ on the way to a file is refused too: the path must be work/ joined with its own names", { timeout: 60_000 }, async (t) => {
+  const server = await served(t);
+  await mkdir(join(server.work, "real"));
+  await writeFile(join(server.work, "real", "f.txt"), "through a link");
+  await symlink(join(server.work, "real"), join(server.work, "alias"));
+  await assert.rejects(openWorkFile(server.work, "alias/f.txt"), (error) => error.reason === "link");
+  assert.equal((await get(server, "/alias/f.txt")).status, 404);
+  assert.equal((await get(server, "/real/f.txt")).status, 200, "the file itself, by its own path, reads");
+});
+
+test("the file view streams the bytes it opened: a swap after the open, before the read, still serves the file, never the link's target", { timeout: 60_000 }, async (t) => {
+  const server = await served(t);
+  await writeFile(join(server.work, "a.txt"), "the original bytes");
+  seam(t, "afterOpen", async (rel) => {
+    if (rel !== "a.txt") return;
+    await rename(join(server.work, "a.txt"), join(server.work, "a.moved"));
+    await symlink(server.secret, join(server.work, "a.txt"));
+  });
+  const res = await server.api("GET", `/runs/${server.runId}/files/a.txt`);
+  assert.equal(res.status, 200);
+  assert.ok(!holds(res), "no byte of the link's target");
+  assert.match(String(res.text ?? res.body), /the original bytes/);
+});
+
+test("a directory that becomes unreadable between its pin and its read is reported refused, not read as empty", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
+  const { chmod } = await import("node:fs/promises");
+  const server = await served(t);
+  await mkdir(join(server.work, "late"));
+  await writeFile(join(server.work, "late", "kept.txt"), "x");
+  seam(t, "afterPin", async (rel) => {
+    if (rel === "late") await chmod(join(server.work, "late"), 0o000);
+  });
+  const refused = [];
+  try {
+    await walkWork(server.work, () => {}, { refused: (path, reason) => void refused.push([path, reason]) });
+  } finally {
+    await chmod(join(server.work, "late"), 0o700);
+  }
+  assert.deepEqual(refused, [["late", "unreadable"]]);
+});
+
+test("a capped read refuses a file that grows past its cap between its size check and its read", async (t) => {
+  const { appendFile } = await import("node:fs/promises");
+  const { readWorkBytes } = await import("../dist/workspace.js");
+  const server = await served(t);
+  await writeFile(join(server.work, "grows.bin"), Buffer.alloc(8, 1));
+  seam(t, "afterSizeCheck", (rel) => appendFile(join(server.work, rel), Buffer.alloc(8, 2)));
+  await assert.rejects(readWorkBytes(server.work, "grows.bin", { maxBytes: 10 }), (error) => error.reason === "over_cap");
 });

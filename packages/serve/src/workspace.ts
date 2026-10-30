@@ -26,6 +26,16 @@ const reasonOf = (error: unknown): RefusedReason => {
   return code === "ENOENT" ? "missing" : code === "EACCES" ? "unreadable" : "link";
 };
 
+/** Test seams, tests only: before the walk enters a directory it listed (after its lstat, before its pin); after a
+ *  directory is pinned and before it is read; after a file is opened and checked, before the caller reads it; after a
+ *  capped read's size check, before the bytes are read. */
+export const workspaceTestHooks: {
+  beforeEnter?: (path: string) => Promise<void> | void;
+  afterPin?: (path: string) => Promise<void> | void;
+  afterOpen?: (path: string) => Promise<void> | void;
+  afterSizeCheck?: (path: string) => Promise<void> | void;
+} = {};
+
 const confinementOf = (work: string) => {
   const real = realpathSync(work);
   return { real, confinement: new Confinement(real, []) };
@@ -43,13 +53,17 @@ export async function openWorkFile(work: string, rel: string): Promise<{ handle:
     const handle = await pin.openFile(constants.O_RDONLY).catch((error) => {
       throw new WorkRefused(rel, reasonOf(error));
     });
-    const stats = await handle.stat();
-    const refused: RefusedReason | undefined = !stats.isFile() ? "not_regular" : stats.nlink !== 1 ? "hard_link" : undefined;
-    if (refused) {
-      await handle.close();
-      throw new WorkRefused(rel, refused);
+    // The handle is the caller's only once every check passed; on any failure before that it is closed here.
+    try {
+      const stats = await handle.stat();
+      const refused: RefusedReason | undefined = !stats.isFile() ? "not_regular" : stats.nlink !== 1 ? "hard_link" : undefined;
+      if (refused) throw new WorkRefused(rel, refused);
+      await workspaceTestHooks.afterOpen?.(rel);
+      return { handle, stats };
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      throw error;
     }
-    return { handle, stats };
   } finally {
     await pin.close();
   }
@@ -70,10 +84,13 @@ export async function readWorkBytes(work: string, rel: string, { maxBytes }: { m
   const { handle, stats } = await openWorkFile(work, rel);
   try {
     if (stats.size > maxBytes) throw new WorkRefused(rel, "over_cap");
-    const bytes = await handle.readFile();
-    // A file that grew after its stat is still capped.
-    if (bytes.length > maxBytes) throw new WorkRefused(rel, "over_cap");
-    return bytes;
+    await workspaceTestHooks.afterSizeCheck?.(rel);
+    // At most one byte past the cap: a file that grew after its stat is refused without being read whole.
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let read = 0;
+    for (let got; read < buffer.length && (got = (await handle.read(buffer, read, buffer.length - read, read)).bytesRead) > 0; ) read += got;
+    if (read > maxBytes) throw new WorkRefused(rel, "over_cap");
+    return buffer.subarray(0, read);
   } finally {
     await handle.close();
   }
@@ -81,19 +98,39 @@ export async function readWorkBytes(work: string, rel: string, { maxBytes }: { m
 
 /**
  * Each regular file (with one link) and directory under `work`, by its path below it, with its own stats and whether
- * this server may read it: a link is skipped and never followed, so no target's size or time is read. Each entry left out for what it is goes to `refused`
- * with its reason (a link, not a regular file, another hard link). `skip` leaves a name (and what is below it) out
- * unreported; `visit` returning false stops the walk. Directories are entered down to `depth` levels.
+ * this server may read it: a link is skipped and never followed, so no target's size or time is read. Each entry left out
+ * for what it is goes to `refused` with its reason (a link, not a regular file, another hard link), and so does a
+ * directory that cannot be read: its contents are unknown, never empty. work/ itself unread throws `WorkRefused` (no
+ * working copy). `skip` leaves a name (and what is below it) out unreported; `visit` returning false stops the walk.
+ * Directories are entered down to `depth` levels.
  */
 export async function walkWork(work: string, visit: (path: string, stats: Stats, readable: boolean) => boolean | void, { skip = () => false, depth = 16, refused = () => {} }: { skip?: (name: string) => boolean; depth?: number; refused?: (path: string, reason: RefusedReason) => void } = {}): Promise<void> {
   const { real, confinement } = confinementOf(work);
   const into = async (rel: string, level: number): Promise<boolean> => {
     const abs = rel ? join(real, rel) : real;
-    const pin = await confinement.pinDir(abs, rel || ".", { access: "read" }).catch(() => undefined);
-    if (!pin) return true;
+    // A directory not read is reported, never taken as empty: a caller must not infer that what it held is gone.
+    let failed: RefusedReason | undefined;
+    const pin = await confinement.pinDir(abs, rel || ".", { access: "read" }).catch((error) => void (failed = reasonOf(error)));
+    if (!pin) {
+      // work/ itself unread is no working copy, never an empty one.
+      if (!rel) throw new WorkRefused(".", failed ?? "missing");
+      refused(rel, failed ?? "missing");
+      return true;
+    }
     try {
-      if (pin.canonical !== abs) return true;
-      for (const name of await readdir(pin.dir).catch(() => [] as string[])) {
+      if (pin.canonical !== abs) {
+        if (!rel) throw new WorkRefused(".", "link");
+        refused(rel, "link");
+        return true;
+      }
+      await workspaceTestHooks.afterPin?.(rel || ".");
+      const names = await readdir(pin.dir).catch((error) => void (failed = reasonOf(error)));
+      if (!names) {
+        if (!rel) throw new WorkRefused(".", failed ?? "unreadable");
+        refused(rel, failed ?? "unreadable");
+        return true;
+      }
+      for (const name of names) {
         if (skip(name)) continue;
         // By the held directory: a name swapped for a link reads as the link, which is skipped.
         const stats = await lstat(`${pin.dir}/${name}`).catch(() => null);
@@ -105,6 +142,7 @@ export async function walkWork(work: string, visit: (path: string, stats: Stats,
         }
         if (stats.isDirectory()) {
           if (visit(path, stats, true) === false) return false;
+          await workspaceTestHooks.beforeEnter?.(path);
           if (level < depth && !(await into(path, level + 1))) return false;
         } else if (!stats.isFile()) refused(path, "not_regular");
         else if (stats.nlink !== 1) refused(path, "hard_link");
