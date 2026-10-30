@@ -12,9 +12,9 @@
 //    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, rmSync, statfsSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
 import { BoxError, type Box, type BoxedChild, type BoxRecord, type BoxRecorder, type BoxSpec, type Isolation, type Reaped } from "./box.js";
 import { BOX_FORWARD, BOX_LOOPBACK, forwardChild } from "./box-forward.js";
@@ -169,14 +169,63 @@ export function socketDir(dir: string, name: string, statfs: (dir: string) => { 
   // on the name alone, before anything is made.
   const bytes = Buffer.byteLength(dir);
   if (bytes > 81) throw new Error(`${name}: runtime_dir_too_long: the session's socket directory ${dir} is ${bytes} bytes; a socket path in it must fit 107`);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const stat = lstatSync(dir);
-  if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
-    throw new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`);
+  // The name is judged by lstat before anything is made, so what someone else put there (a file, a FIFO, a socket, a link,
+  // a directory of theirs) is never followed or touched: it reads as not this user's own. Only a missing name is made; one
+  // made by someone else between the lstat and the mkdir is judged the same way, and one gone again reads as not this
+  // user's own too, never as an error of its own.
+  if (!lstatIfAny(dir)) {
+    mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
+    try {
+      mkdirSync(dir, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  const stat = lstatIfAny(dir);
+  if (!stat || !stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+    throw Object.assign(new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`), { code: "runtime_dir_not_owned" });
   }
   const kind = process.platform === "linux" ? NOT_LOCAL[statfs(dir).type] : undefined;
   if (kind) throw new Error(`${name}: runtime_dir_not_local: the session's socket directory ${dir} is on ${kind}, not a local filesystem`);
   return dir;
+}
+
+/** `path`'s own entry (never what a link names), or undefined when there is none. */
+function lstatIfAny(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** The default socket directory: its name is the session's (a relaunch finds and replaces a dead session's sockets
+ *  there), but it sits in a directory others may write (/tmp), where another user can make that name first. A name
+ *  someone else holds is never used and never fails the session: it gets a fresh directory of its own instead. */
+function defaultSocketDir(dir: string, name: string): string {
+  try {
+    return socketDir(dir, name);
+  } catch (error) {
+    if ((error as { code?: string }).code !== "runtime_dir_not_owned") throw error;
+    // One of this session's own beside it first, which an earlier run of it left (so a crash leaves at most one): only one
+    // that passes every check the default would (this user's own, 0700, not a link, local) is taken.
+    const parent = dirname(dir);
+    const stem = `${basename(dir)}-`;
+    for (const entry of readdirSync(parent)) {
+      if (!entry.startsWith(stem)) continue;
+      try {
+        return socketDir(join(parent, entry), name);
+      } catch {
+        // Not this user's own 0700 directory: never reused.
+      }
+    }
+    // Else a fresh one. mkdtemp adds 6 characters: the name is checked against the bound before anything is made.
+    const prefix = join(parent, stem);
+    const bytes = Buffer.byteLength(prefix) + 6;
+    if (bytes > 81) throw new Error(`${name}: runtime_dir_too_long: the session's fresh socket directory under ${parent} would be ${bytes} bytes; a socket path in it must fit 107`);
+    return socketDir(mkdtempSync(prefix), name);
+  }
 }
 
 /** A box's way out, for the clients in it that ask for a proxy: the session's egress proxy, at the port the box serves it
@@ -298,7 +347,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
 
   const key = randomBytes(32).toString("base64url");
   // In a box, the front's only door is a socket of the session's own, which the box is given; outside one, loopback.
-  const sockets = boxing ? socketDir(boxing.runtimeDir ?? join(tmpdir(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name) : "";
+  const sockets = !boxing ? "" : boxing.runtimeDir !== undefined ? socketDir(boxing.runtimeDir, name) : defaultSocketDir(join(tmpdir(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name);
   const modelSocket = join(sockets, "model.sock");
   const egressSocket = join(sockets, "egress.sock");
   // A failed open returns no machine to close: what it started is closed here, and the socket directory it made goes when
