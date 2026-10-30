@@ -486,3 +486,57 @@ test("the default socket directory is short: under a 64-byte TMPDIR it still fit
     if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
   }
 });
+
+/** A box's start for the tests: once its child exits, the slot's reap counts it empty, and the next may start. */
+async function exitedAndReaped(box, proc) {
+  await proc.exited;
+  for (let i = 0; i < 100 && box.reaped.length < box.specs.length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+test("a child's binds are refused by name before anything starts: not absolute, not this user's own directory, outside the session, or the session or one of its directories", async (t) => {
+  const dir = scratch();
+  const box = fakeBox();
+  const machine = await machineAt(t, dir, { box: boxOf(box) });
+  const outside = mkdtempSync(join(ROOT, 'outside-'));
+  mkdirSync(join(dir, 'proc-tmp'), { mode: 0o700 });
+  symlinkSync(outside, join(dir, 'proc-tmp', 'linked'));
+  const refused = [
+    ['relative', 1, /a child's bind proc-tmp is not an absolute, normalized path/],
+    [`${dir}/proc-tmp/../proc-tmp`, 1, /is not an absolute, normalized path/],
+    [join(dir, 'proc-tmp', 'not-there'), 2, /is not a directory of this user's own \(a link, or not there\)/],
+    [join(dir, 'proc-tmp', 'linked'), 2, /is not a directory of this user's own \(a link, or not there\)/],
+    [outside, 3, new RegExp(`is not under the session ${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)],
+    [dir, 4, /is the session or holds one of its directories/],
+    [machine.root, 4, /is the session or holds one of its directories/],
+    [machine.dirs.home, 4, /is the session or holds one of its directories/],
+  ];
+  for (const [bind, rule, message] of refused) {
+    const path = bind === 'relative' ? 'proc-tmp' : bind;
+    assert.throws(() => machine.start({ command: '/bin/true', binds: [path] }), (error) => error.name === 'BoxError' && error.code === 'box_refused' && message.test(error.message), `rule ${rule}: ${path}`);
+  }
+  assert.equal(box.specs.length, 0, 'no refused start reached the box');
+});
+
+test("a child's binds reach its own box as homes, and only its: the next child's box holds none of them", async (t) => {
+  const dir = scratch();
+  const box = fakeBox();
+  const machine = await machineAt(t, dir, { box: boxOf(box) });
+  const config = join(dir, 'proc-tmp', 'dh-claude-a');
+  mkdirSync(config, { recursive: true, mode: 0o700 });
+  const first = machine.start({ command: '/bin/true', binds: [config] });
+  await exitedAndReaped(box, first);
+  assert.equal(box.specs[0].spec.homes['bind:0'], config, "the bind is the child's own home in its box");
+  const second = machine.start({ command: '/bin/true' });
+  await exitedAndReaped(box, second);
+  assert.deepEqual(Object.keys(box.specs[1].spec.homes).filter((k) => k.startsWith('bind:')), [], "the next child's box holds no bind of the last one's");
+});
+
+test("unboxed, a child's binds are checked as in a box: a refused one starts nothing, and a good one changes nothing", async (t) => {
+  const dir = scratch();
+  const machine = await machineAt(t, dir, { box: 'unsandboxed' });
+  assert.throws(() => machine.start({ command: '/bin/true', binds: [mkdtempSync(join(ROOT, 'outside-'))] }), (error) => error.code === 'box_refused' && /is not under the session/.test(error.message));
+  const config = join(dir, 'proc-tmp', 'dh-claude-b');
+  mkdirSync(config, { recursive: true, mode: 0o700 });
+  assert.equal((await machine.start({ command: '/bin/true', binds: [config] }).exited).code, 0);
+});
