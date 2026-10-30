@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/recovery.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 003-comments-name-this-host, 009-recovery-system-note
+// Changed by Parcha, imports rewritten for AgentRun; patches: 003-comments-name-this-host, 009-recovery-system-note, 010-recovery-note-statuses-only
 import { type EffectRecord, pendingSubmissions, type ReplayPolicy, type SessionState, type Submission } from '../kernel/index.js';
 import { type OpenTurn, openTurn } from './records.js';
 
@@ -88,11 +88,42 @@ export function recoveryNote(state: SessionState, options: RecoveryOptions = {})
 
 /**
  * The note as a harness carries it outside the user's turn (a system prompt, a developer item): from the harness, about the
- * turn before, with no quoted prompt and no pending message. `undefined` when no turn is open.
+ * turn before, in the harness's own words only. It names each call and says how it ended, and never quotes what a tool was
+ * given or answered with (that is data the agent read, not something the harness may speak for), a prompt, or a pending message.
+ * `undefined` when no turn is open.
  */
-export function recoverySystemNote(state: SessionState, options: Pick<RecoveryOptions, 'clipChars'> = {}): string | undefined {
-  const note = recoveryNote(state, { ...options, pending: [] });
-  return note && `The harness, not the user, adds this about the turn before this one:\n${note.text}`;
+export function recoverySystemNote(state: SessionState): string | undefined {
+  const turn = openTurn(state);
+  if (!turn) return undefined;
+  const calls = turn.calls.map((e) => recoveryCall(e, 0));
+  const lines: string[] = [
+    'The harness, not the user, adds this about the turn before this one:',
+    '[Recovery] Your previous turn was interrupted: the process running it stopped, and this session was resumed from its durable log.',
+    '',
+  ];
+  if (calls.length === 0) lines.push('No tool call had started in that turn.');
+  else {
+    lines.push('What the log records about the tool calls since that turn began (none was run again):');
+    for (const c of calls) lines.push(`- ${c.name}, call ${c.callId}: ${ended(c)}`);
+    lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
+  }
+  lines.push('', 'Check the actual state before repeating anything that may have taken effect, then carry on with the task.');
+  return lines.join('\n');
+}
+
+function ended(c: RecoveryCall): string {
+  switch (c.status) {
+    case 'completed':
+      return 'completed.';
+    case 'failed':
+      return 'failed.';
+    case 'interrupted':
+      return 'interrupted before it reported a result. It is not safe to repeat, and it may have taken effect.';
+    case 'retryable':
+      return 'interrupted before it reported a result. It is safe to repeat.';
+    case 'running':
+      return 'interrupted, and it may still be running. It may have taken effect.';
+  }
 }
 
 /** The user's turn that resumes a cut-off turn: only the user's words (the prompts the session never got, then the messages sent since), or a bare nudge. */
