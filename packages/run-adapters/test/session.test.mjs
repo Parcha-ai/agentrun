@@ -220,6 +220,24 @@ test('the faux harness settles a turn a crash cut off: its end is recorded, and 
   assert.equal(adapter.requests, 1);
 });
 
+test('the faux harness keeps a send\'s id: an id it already holds is refused, at once or after a reopen, with nothing written', async () => {
+  const store = memorySessionStore();
+  const adapter = fauxAdapter({ script: () => [{ end: true }] });
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const spec = { key: 'step:f', label: 'f', system: [], tools: [], context: 'fresh' };
+  const openIt = async () => adapter.open(spec, { writer: await store.open('step:f'), models, signal: new AbortController().signal, onEvent: () => {} });
+  const first = await openIt();
+  const sends = await Promise.allSettled([first.send('one', { id: 'x' }), first.send('two', { id: 'x' })]);
+  assert.deepEqual(sends.map((r) => r.status), ['fulfilled', 'rejected']);
+  assert.equal(sends[1].reason.name, 'SubmissionExists');
+  await first.turnEnd();
+  const second = await openIt();
+  const before = (await store.read('step:f')).length;
+  await assert.rejects(second.send('three', { id: 'x' }), { name: 'SubmissionExists', id: 'x' });
+  assert.equal((await store.read('step:f')).length, before, 'nothing written');
+  assert.deepEqual((await store.read('step:f')).filter((r) => r.kind === 'faux.user').map((r) => r.data), [{ id: 'x', text: 'one' }]);
+});
+
 /** A submission that reached the session while no process ran it (a test seam: today's send cannot leave a second one
  *  pending): written through a drive of its own, as the next process to open the session would find it. */
 async function submittedMeanwhile(store, text) {
