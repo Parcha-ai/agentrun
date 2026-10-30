@@ -8,17 +8,14 @@ import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { pageTools, workspaceFiles } from "../dist/index.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
+import { killNaming, processesNaming } from "./fixtures/scratch.mjs";
 import { startSite, totp } from "./fixtures/site.mjs";
 
 const LOOPBACK_ONLY = "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost";
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} });
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const parse = (out) => JSON.parse(out.content[0].text);
-const scratch = (t, prefix) => {
-  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), prefix));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }), { timeout: 30_000 });
-  return dir;
-};
+const scratch = (prefix) => fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), prefix));
 const until = async (check, ms, what) => {
   for (const end = Date.now() + ms; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
     const value = await check().catch(() => undefined);
@@ -28,18 +25,47 @@ const until = async (check, ms, what) => {
 };
 
 test("workspace files go into a real page and downloads come back into the workspace; the shared fixture site behaves", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
-  const site = await startSite();
-  t.after(() => site.close(), { timeout: 30_000 });
-  const root = scratch(t, "files-chrome-");
-  const workspace = scratch(t, "files-chrome-ws-");
+  const root = scratch("files-chrome-");
+  const workspace = scratch("files-chrome-ws-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK_ONLY] } });
   const signal = new AbortController().signal;
-  let ref, driver;
+  let ref, driver, site;
+  // One hook, registered first, so the order is fixed: a hook that throws ends every hook after it, and the
+  // profile removed while Chrome still writes into it fails ENOTEMPTY and leaves that Chrome running. The release kills
+  // Chrome and waits on its exit; whatever still runs naming the profile root (a release that failed, a process slow to
+  // exit) is killed and waited on, bounded, and the directories are removed after. A process that outlived that wait is
+  // thrown first, then a release's failure; a removal's failure only when there is neither, so it never hides them. The
+  // fixture site closes in the same finally: a server a skipped hook left listening keeps the file's process alive.
+  t.after(async () => {
+    let failure;
+    try {
+      if (driver) await Promise.race([driver.close().catch(() => undefined), new Promise((resolve) => setTimeout(resolve, 10_000).unref())]);
+      if (ref) await provider.release(ref);
+    } catch (error) { failure = error; }
+    let removal;
+    try {
+      let left = processesNaming(root).filter((p) => p.pid !== process.pid);
+      if (left.length > 0) t.diagnostic(`killing ${left.length} process(es) still running in ${path.basename(root)} after the release`);
+      for (const end = Date.now() + 10_000; left.length > 0 && Date.now() < end; left = processesNaming(root).filter((p) => p.pid !== process.pid)) {
+        killNaming(root, [process.pid]);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (left.length > 0) throw new Error(`processes outlived the teardown: ${left.map((p) => `${p.pid} ${p.cmd.slice(0, 120)}`).join("; ")}`);
+      if (failure) throw failure;
+    } finally {
+      // The provider's own directories outside the profile root (its private TMPDIR) go with a release made once nothing runs.
+      if (failure && ref) await provider.release(ref).catch(() => undefined);
+      // Caught, so a removal a live process failed (or the site's close) never replaces the error thrown above.
+      for (const dir of [root, workspace]) await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch((error) => { removal ??= error; });
+      if (site) await Promise.race([site.close().catch((error) => { removal ??= error; }), new Promise((resolve) => setTimeout(resolve, 10_000).unref())]);
+    }
+    if (removal) throw removal;
+  }, { timeout: 60_000 });
+  site = await startSite();
   try {
     ref = await provider.create(spec("files-1"), signal);
     driver = await stagehandDriver()(await provider.attach(ref), signal, { batchTimeoutMs: 10_000 });
-  } catch (error) { if (ref) await provider.release(ref); if (skipIncapable(t, error)) return; throw error; }
-  t.after(async () => { await driver.close().catch(() => undefined); await provider.release(ref); }, { timeout: 30_000 });
+  } catch (error) { if (skipIncapable(t, error)) return; throw error; }
   const port = {
     session: async () => ({ driver, tag: ref.tag, sessionId: ref.id, record: { lastUrl: null }, notice: null, interrupted: null, recorded: false, effects: null, downloads: provider.downloads }),
     dispatching: async () => {}, journal: async () => {}, mark: async () => {}, settle: async () => {}, ended: async () => false, dropped: async () => {},

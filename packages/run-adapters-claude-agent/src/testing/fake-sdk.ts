@@ -61,6 +61,10 @@ export interface FakeSdkOptions {
   onQuery?: (options: Record<string, any>) => void;
   /** Called with each user message the fake consumes. */
   onMessage?: (message: { uuid: string; text: string; priority?: string }) => void;
+  /**
+   * Called once per `query()` with the system prompt it sends, by the CLI's snapshot rule (`sentSystemPrompt`).
+   */
+  onSystem?: (system: { sessionId: string; resumed: boolean; snapshot: boolean; sent: string }) => void;
   /** Stream what it says from the model behind `ANTHROPIC_BASE_URL` (see above). */
   remoteModel?: boolean;
   /**
@@ -147,6 +151,35 @@ async function sessionTools(instance: any, listed: FakeSdk['listed']): Promise<M
   );
 }
 
+/**
+ * Each session's recorded system prompt. The CLI keeps it with the session, which it keys by project (its cwd) and
+ * session id, so it outlives one fake's process; keyed the same way here, two tests share a record only if they share
+ * a cwd and a session.
+ */
+const recordedPrompts = new Map<string, string>();
+
+/**
+ * The system prompt a launch sends, by the CLI's snapshot rule (measured on the real CLI, Agent SDK 0.3.286, in five
+ * cases: a later launch's own append dropped under a record; sent fresh with `snapshot: false`; a first or resumed
+ * launch with snapshot on recording its prompt when the session has none; a `false` launch recording nothing): with
+ * snapshot on (or omitted), the session's record, made from this launch's prompt if there is none yet; with it off,
+ * this launch's own prompt, recorded nowhere.
+ */
+export function sentSystemPrompt(records: Map<string, string>, session: string, text: string, snapshot: boolean): string {
+  if (!snapshot) return text;
+  if (!records.has(session)) records.set(session, text);
+  return records.get(session)!;
+}
+
+/** The text of a `systemPrompt` option: a preset's name, a custom prompt, then the append. */
+function systemText(prompt: unknown): string {
+  if (typeof prompt === 'string') return prompt;
+  if (!prompt || typeof prompt !== 'object') return '';
+  const p = prompt as { type?: string; preset?: string; prompt?: string | string[]; append?: string };
+  const custom = p.prompt === undefined ? [] : Array.isArray(p.prompt) ? p.prompt : [p.prompt];
+  return [p.type === 'preset' ? `<preset ${p.preset}>` : '', ...custom, p.append ?? ''].filter(Boolean).join('\n\n');
+}
+
 export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
   const lag = fake.mirrorLagMs ?? 100;
   let scripted = 0;
@@ -160,6 +193,12 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
       fake.onQuery?.(options);
       const store = options.sessionStore;
       const sessionId: string = options.resume ?? options.sessionId;
+      {
+        const text = systemText(options.systemPrompt);
+        const snapshot = (options.systemPrompt as { snapshot?: boolean } | undefined)?.snapshot !== false;
+        const sent = sentSystemPrompt(recordedPrompts, `${options.cwd}\0${sessionId}`, text, snapshot);
+        fake.onSystem?.({ sessionId, resumed: !!options.resume, snapshot, sent });
+      }
       const key = { projectKey: `-fake${options.cwd.replace(/[^A-Za-z0-9]/g, '-')}`, sessionId };
       const tools = sessionTools(options.mcpServers?.hands?.instance, listed);
       tools.catch(() => {});

@@ -1,0 +1,139 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-7f56-797d-bbae-fb855c2c9d2d/timeline"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-7f56-797d-bbae-fb855c2c9d2d",
+    "status": "input_required",
+    "state": "waiting",
+    "reset": true,
+    "rows": [
+      {
+        "id": "1:7",
+        "timestamp": "2026-10-28T19:33:16.118Z",
+        "created_at": "2026-10-28T19:33:16.118Z",
+        "kind": "user_message",
+        "summary": "You: Check invoice INV-1046 (the currency is missing): consulting 2,400.00, travel 310.00, total 2,710.00.",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "Check invoice INV-1046 (the currency is missing): consulting 2,400.00, travel 310.00, total 2,710.00.",
+        "conversation_id": 1,
+        "seq": 0
+      },
+      {
+        "id": "1:12:0",
+        "timestamp": "2026-10-28T19:33:17.581Z",
+        "created_at": "2026-10-28T19:33:17.581Z",
+        "kind": "thinking",
+        "summary": "Thinking: The amounts carry no currency symbol, and the vendor bills in two.",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "The amounts carry no currency symbol, and the vendor bills in two.",
+        "conversation_id": 1,
+        "seq": 1
+      },
+      {
+        "id": "1:12:1",
+        "timestamp": "2026-10-28T19:33:17.581Z",
+        "created_at": "2026-10-28T19:33:17.581Z",
+        "kind": "tool_use",
+        "summary": "Asked you: Which currency are these amounts in: USD or EUR?",
+        "agent_label": null,
+        "tool_name": "ask_person",
+        "tool_use_id": "tool:1793215997581:5usefndunbf",
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 1,
+        "round": 12,
+        "seq": 2
+      },
+      {
+        "id": "1:14",
+        "timestamp": "2026-10-28T19:33:18.470Z",
+        "created_at": "2026-10-28T19:33:18.470Z",
+        "kind": "tool_result",
+        "summary": "Asked you: Which currency are these amounts in: USD or EUR?: ok",
+        "agent_label": null,
+        "tool_name": "ask_person",
+        "tool_use_id": "tool:1793215997581:5usefndunbf",
+        "tool_status": "success",
+        "tool_input_preview": null,
+        "tool_result_preview": "Asked the person: Which currency are these amounts in: USD or EUR?. Waiting for their answer.",
+        "tool_result_size_bytes": 93,
+        "text": null,
+        "conversation_id": 1,
+        "round": 12,
+        "seq": 3
+      },
+      {
+        "id": "1:14:waiting",
+        "timestamp": "2026-10-28T19:33:18.470Z",
+        "created_at": "2026-10-28T19:33:18.470Z",
+        "kind": "waiting",
+        "summary": "Waiting for you: Which currency are these amounts in: USD or EUR?",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "Which currency are these amounts in: USD or EUR?",
+        "conversation_id": 1,
+        "round": 12,
+        "seq": 4
+      },
+      {
+        "id": "1:usage",
+        "timestamp": "2026-10-28T19:33:18.470Z",
+        "created_at": "2026-10-28T19:33:18.470Z",
+        "kind": "usage",
+        "summary": "Cost so far: $0.0040 over 1 model request",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 1,
+        "usage": {
+          "usd": 0.004043,
+          "requests": 1
+        },
+        "seq": 5
+      }
+    ],
+    "drop": [],
+    "next_after": 1793222378904016,
+    "unchanged": false,
+    "has_more": false,
+    "final": false,
+    "cost": {
+      "usd": 0.004043,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "poll_after_ms": 1000
+  }
+}

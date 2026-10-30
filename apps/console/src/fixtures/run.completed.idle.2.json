@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18401-01ea-7eed-84d2-1963c61165fe"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18401-01ea-7eed-84d2-1963c61165fe",
+    "agent_id": "lead-scorer",
+    "agent_version": 1,
+    "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+    "kind": "workflow",
+    "sha": null,
+    "status": "completed",
+    "state": "idle",
+    "title": "Example Tutoring Club",
+    "created_at": "2026-10-28T19:33:41.746Z",
+    "updated_at": "2026-10-28T21:19:54.544Z",
+    "ended_at": "2026-10-28T19:33:45.626Z",
+    "result": {
+      "output": {
+        "qualified": false,
+        "next_step": "Book a 30-minute call with the team lead this week."
+      },
+      "final_answer": null
+    },
+    "error": null,
+    "cost": {
+      "usd": 0.004257,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 0
+  }
+}
