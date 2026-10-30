@@ -206,6 +206,11 @@ async function serverProcess(data) {
 }
 // A process that has exited is not alive though it is a zombie, as one stays under a PID 1 that does not reap.
 const alive = (pid) => processAlive(pid);
+/** A process's start ticks, as pi-durable-disk records its holder's (field 22 of /proc/<pid>/stat). */
+const startTicks = (pid) => {
+  const stat = execFileSync("cat", [`/proc/${pid}/stat`], { encoding: "utf8" });
+  return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+};
 
 test("a run's base stays where it was seeded when its process dies, main moves, and the next server resumes it", async (t) => {
   const dir = await scratch(t);
@@ -636,7 +641,7 @@ test("a run whose process is still live is never harvested: its working copy is 
   t.after(() => holder.kill("SIGKILL"));
   const recordFile = join(data, "runs", run.run_id, "run.json");
   const record = JSON.parse(await readFile(recordFile, "utf8"));
-  await writeFile(recordFile, JSON.stringify({ ...record, holder: { ...(record.holder ?? {}), pid: holder.pid } }));
+  await writeFile(recordFile, JSON.stringify({ ...record, holder: { ...(record.holder ?? {}), pid: holder.pid, startTicks: startTicks(holder.pid) } }));
   const bare = bareOf(data, "calc");
   git(bare, "update-ref", "-d", `refs/heads/runs/${run.run_id}`);
   const store = openStoreReader(data);
@@ -1011,7 +1016,105 @@ test("a base64-wrapped host secret, or an input value only in a path the run wro
   const b64 = await runWith({ content: `Make these calls: ${JSON.stringify([["write", { path: `.agent/repo/learnings/${id}.md`, content: `---\nid: ${id}\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nSend ${encoded} first.\n` }]])}` });
   assert.deepEqual([b64.state.state, b64.state.reasons], ["refused", [`learnings/${id}.md holds a value no learning may keep`]], JSON.stringify(b64.state));
   const path = await runWith({ content: `Make these calls: ${JSON.stringify([["write", { path: ".agent/repo/workflows/123456789012/README.md", content: "Checks an account.\n" }]])}`, account: "123456789012" });
-  assert.deepEqual([path.state.state, path.state.reasons], ["refused", ["a path the run wrote holds a value no learning may keep"]], JSON.stringify(path.state));
+  assert.deepEqual([path.state.state, path.state.reasons], ["refused", ["a path in the harvest holds a value no learning may keep"]], JSON.stringify(path.state));
   assert.ok(![secret, encoded, "123456789012"].some((value) => JSON.stringify([b64.state, path.state]).includes(value)), "no refusal quotes a value");
   assert.deepEqual(branches(bareOf(data, "ledger")).filter((name) => name.startsWith("runs/")), [], "nothing is committed");
+});
+
+/** A learning run of `agentId` that wrote its note and ended, its branch then removed, and its record naming a holder
+ *  that sleeps: a process that outlives its run's end. */
+async function outlived(t, api, data, agentId, holderFields = (pid) => ({ pid, startTicks: startTicks(pid) })) {
+  await api("POST", "/agents", agent(agentId));
+  const { body: run } = await api("POST", `/agents/${agentId}/runs`, { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  const { sha, base } = await stateOf(data, agentId, run.run_id);
+  const { spawn } = await import("node:child_process");
+  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  t.after(() => holder.kill("SIGKILL"));
+  await new Promise((resolve) => holder.once("spawn", resolve));
+  const recordFile = join(data, "runs", run.run_id, "run.json");
+  const record = JSON.parse(await readFile(recordFile, "utf8"));
+  await writeFile(recordFile, JSON.stringify({ ...record, holder: { ...(record.holder ?? {}), ...holderFields(holder.pid) } }));
+  git(bareOf(data, agentId), "update-ref", "-d", `refs/heads/runs/${run.run_id}`);
+  await rmState(data, agentId, run.run_id);
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  const ended = async () => (holder.kill("SIGKILL"), await new Promise((resolve) => (holder.exitCode !== null || holder.signalCode !== null ? resolve() : holder.once("exit", resolve))));
+  return { runId: run.run_id, sha, base, holder, ended, agents: { store, request: async (act) => act() } };
+}
+const rmState = async (data, agentId, runId) => (await import("node:fs/promises")).rm(join(data, "agents", agentId, "learning", "runs", `${runId}.json`), { force: true });
+
+test("a run whose process outlives its end is recorded waiting while it lives, and harvested once when it exits, with no restart", async (t) => {
+  const { harvestOnExit } = await learningModule();
+  const { api, data } = await serve(t);
+  const run = await outlived(t, api, data, "calc");
+  const watching = harvestOnExit(data, run.agents, run.runId, new AbortController().signal, 50);
+  for (let i = 0; (await readRunState(data, "calc", run.runId))?.state !== "waiting"; i++) {
+    assert.ok(i < 200, "the run's learning says it waits");
+    await sleep(25);
+  }
+  assert.deepEqual(await readRunState(data, "calc", run.runId), { state: "waiting", reason: `the run ${run.runId}'s process is still live, so its working copy is not harvested yet` });
+  await sleep(300);
+  assert.equal(branches(bareOf(data, "calc")).includes(`runs/${run.runId}`), false, "nothing is harvested while it lives");
+  await run.ended();
+  const result = await watching;
+  // The host's clone still holds the commit its first harvest made: harvested again, it is that commit, pushed once.
+  assert.deepEqual([result.status, result.sha, tip(bareOf(data, "calc"), `runs/${run.runId}`)], ["already", run.sha, run.sha], "harvested once it exited: the same commit as before");
+  assert.equal(count(bareOf(data, "calc"), `runs/${run.runId}`), count(bareOf(data, "calc"), run.base) + 1, "one commit");
+  assert.deepEqual(await readRunState(data, "calc", run.runId), { state: "proposed", branch: `runs/${run.runId}`, base: run.base, sha: run.sha });
+});
+
+test("a server that closes while a run's process outlives its end stops watching it; the run stays waiting, and the next start's catch-up harvests it once it has exited", async (t) => {
+  const { harvestOnExit } = await learningModule();
+  const { api, data } = await serve(t);
+  const run = await outlived(t, api, data, "calc");
+  const closing = new AbortController();
+  const watching = harvestOnExit(data, run.agents, run.runId, closing.signal, 50);
+  for (let i = 0; (await readRunState(data, "calc", run.runId))?.state !== "waiting"; i++) {
+    assert.ok(i < 200);
+    await sleep(25);
+  }
+  closing.abort();
+  assert.equal(await watching, undefined, "the watch stops at close");
+  await run.ended();
+  await sleep(200);
+  assert.equal((await readRunState(data, "calc", run.runId)).state, "waiting", "nothing harvested it after the close");
+  assert.deepEqual(await catchUp(data, run.agents, () => {}), [run.runId]);
+  assert.equal((await readRunState(data, "calc", run.runId)).sha, run.sha);
+});
+
+test("a pid handed to a later process is not the run's: a holder whose start ticks differ, or whose boot is another, is not live", async (t) => {
+  const { api, data } = await serve(t);
+  const recycled = await outlived(t, api, data, "calc", (pid) => ({ pid, startTicks: startTicks(pid) + 1 }));
+  assert.equal((await harvestFor(data, recycled.agents, recycled.runId)).sha, recycled.sha, "harvested, never waited on for ever");
+  const rebooted = await outlived(t, api, data, "other", (pid) => ({ pid, startTicks: startTicks(pid), bootId: "00000000-0000-0000-0000-000000000000" }));
+  assert.equal((await harvestFor(data, rebooted.agents, rebooted.runId)).sha, rebooted.sha);
+  const same = await outlived(t, api, data, "third");
+  await assert.rejects(harvestFor(data, same.agents, same.runId), /still live/, "its own start ticks: the same process");
+});
+
+test("read also reaches the seeded notes, and nothing else outside the copy; no write tool reaches them", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc", { tools: ["read", "write", "edit"] }));
+  await onMain(t, data, "calc", note(lesson("L-0123456789ab", "Search both forms of the legal name.")));
+  const outside = join(data, "outside.txt");
+  await writeFile(outside, "outside\n");
+  const { runId, outcomes } = await calls(api, "calc", [
+    ["read", { path: ".agent/learnings/L-0123456789ab.md" }],
+    ["write", { path: ".agent/learnings/L-0123456789ab.md", content: "changed" }],
+    ["edit", { path: ".agent/learnings/L-0123456789ab.md", edits: [{ oldText: "Search", newText: "Skip" }] }],
+    ["read", { path: "downloads/manifest.json" }],
+    ["read", { path: ".agents/skills/x/SKILL.md" }],
+    ["read", { path: outside }],
+  ]);
+  assert.deepEqual([outcomes[0].isError, outcomes[0].text.includes("Search both forms")], [false, true], "read reaches the seeded notes");
+  assert.deepEqual(outcomes.slice(1).map((o) => [o.isError, o.text]), [
+    [true, "write is the learning copy's only here: .agent/learnings/L-0123456789ab.md is outside .agent/repo"],
+    [true, "edit is the learning copy's only here: .agent/learnings/L-0123456789ab.md is outside .agent/repo"],
+    [true, "read is the learning copy's only here: downloads/manifest.json is outside .agent/repo and .agent/learnings"],
+    [true, "read is the learning copy's only here: .agents/skills/x/SKILL.md is outside .agent/repo and .agent/learnings"],
+    [true, `read is the learning copy's only here: ${outside} is outside .agent/repo and .agent/learnings`],
+  ]);
+  assert.match(await readFile(join(data, "runs", runId, "work", ".agent", "learnings", "L-0123456789ab.md"), "utf8"), /Search both forms/, "the seeded note is unchanged");
+  await stateOf(data, "calc", runId);
 });

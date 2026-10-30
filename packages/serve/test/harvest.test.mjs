@@ -332,7 +332,7 @@ test("a value only in a path the run wrote refuses the harvest, and the refusal 
   await mkdir(join(s.work, "workflows", "123456789012"), { recursive: true });
   await writeFile(join(s.work, "workflows", "123456789012", "README.md"), "Checks an account.\n");
   const result = await harvest(s, "host", { refuse: ["123456789012"] });
-  assert.deepEqual([result.status, result.refused], ["refused", ["a path the run wrote holds a value no learning may keep"]]);
+  assert.deepEqual([result.status, result.refused], ["refused", ["a path in the harvest holds a value no learning may keep"]]);
   assert.doesNotMatch(JSON.stringify(result.refused), /123456789012/);
   noBranch(s);
   // Encoded in a path too.
@@ -370,4 +370,20 @@ test("a value's forms: exact and JSON-escaped always; hex, percent and base64 at
     assert.ok(forms.base64.some((core) => inBlob(CANARY, lead, true).includes(core)), `base64url at offset ${lead}`);
   }
   assert.ok(forms.folded.includes(Buffer.from(CANARY).toString("hex")));
+});
+
+test("a value in a path the run deleted refuses the harvest too", async (t) => {
+  const s = await seeded(t);
+  const seeder = await s.host("seeder2");
+  const made = await seeder.commitTo("main", { files: { "workflows/123456789012/README.md": "Checks an account.\n" }, message: "seed a draft" });
+  await seeder.push(made.sha, "main");
+  const work = join(s.root, "work2");
+  await mkdir(work, { recursive: true });
+  await seeder.checkout(made.sha, { into: work });
+  // Its directory stays, read empty: a deletion is read only in a directory that was read.
+  await rm(join(work, "workflows", "123456789012", "README.md"));
+  await writeFile(join(work, NOTE), note("L-0a93ff12c4e7", "Policies live under /policies/."));
+  const result = await harvestWorktree({ repo: await s.host("host"), runId: RUN, seed: made.sha, dir: work, date: END, head: HEAD, refuse: ["123456789012"] });
+  assert.deepEqual([result.status, result.refused], ["refused", ["a path in the harvest holds a value no learning may keep"]]);
+  noBranch(s);
 });
