@@ -52,6 +52,10 @@ describe("until()", () => {
     await until(() => seen[Math.min(i++, seen.length - 1)]!);
     assert.equal(i, 2, "read until it held, and no more");
   });
+
+  it("fails in time when the check never holds", async () => {
+    await assert.rejects(until(() => false, 50), (error: unknown) => error instanceof assert.AssertionError && error.message === "in time");
+  });
 });
 
 const tables: { name: string; kind: "machine" | "ps"; table: ProcessTable }[] = [{ name: "this machine's process table", kind: "machine", table: processTable() }];
