@@ -4,7 +4,7 @@
 //     closed table in tools.ts;
 //   - workflow: the revision's workflow, started with startWorkflowRevision of @parcha/pi-durable-agent/workflow on
 //     agentrun-pi's durable workflow task, each model node on the host's model of its tier with the tools it names of the
-//     table's node tools, and its typed questions on Jev when the server hands this process Jev's key. When the
+//     table's node tools, and its typed questions on Jev or Parallel when the server hands this process the provider's key. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
@@ -135,7 +135,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     import("@parcha/agentrun-dsl"),
     import("@parcha/agentrun-dsl/recovery"),
     import("@parcha/pi-durable-agent/workflow"),
-    // The decision providers, holding the decision key the server handed this process: in no environment a tool reads.
+    // The decision providers, holding the decision keys the server handed this process: in no environment a tool reads.
     decisionProvidersOf(process.env),
   ]);
   const nodeTools = new Map<string, ToolBinding>();

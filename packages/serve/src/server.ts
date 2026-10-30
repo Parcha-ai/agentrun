@@ -9,7 +9,7 @@ import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
-import { DECISION_ADAPTER, decisionsOf, jevRoute } from "./decisions.js";
+import { DECISION_ADAPTER, decisionsOf } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
@@ -74,6 +74,9 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch Jev's runner sends through (the tests' fake), in place
    *  of TypeSafe's API. */
   fauxJev?: string;
+  /** With `faux` only: a module whose default export is the fetch the Parallel provider sends through (the tests' fake),
+   *  in place of Parallel's API. */
+  fauxParallel?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
@@ -175,7 +178,7 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
-    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(jevRoute(env) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
+    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(decisionsOf(env).some((offer) => offer.available) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
@@ -270,7 +273,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
