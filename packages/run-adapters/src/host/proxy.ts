@@ -55,6 +55,16 @@ export interface ProviderPolicy {
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
+  /** Called once for each request the proxy forwards that the provider answers, as the answer starts. Requests overlap (a
+   *  client's background calls run beside its turn), so what it keeps is for the sink to tell apart: each call returns its own
+   *  observer. The observer is given each piece of the answer as text, BEFORE that piece is written to the client, so what it
+   *  saw of an answer, the client has not yet acted on: the one thing the proxy can say causally about what a client does
+   *  next. `end` is called when the answer is over, however it ended. It only reads; one that throws is reported, `failed` is
+   *  called (the answer was not watched to its end) and the answer goes on. A `watch` must not throw after it has told its
+   *  sink the answer started (its sink counts open answers, and only `end` closes one): do that last. */
+  watch?(): { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
+  /** Called when `watch` threw: this answer is not watched, so nothing the policy knew of an earlier one may stand for it. */
+  unwatched?(): void;
   /** The model the body `apply` returned asks for, once `apply` checked it is one this session may use (its own, or a
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
@@ -409,6 +419,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let answered: { ok: boolean } | undefined;
     /** That the provider's answer began, with its status: what a client that left before the end had of it. */
     let began: { ok: boolean } | undefined;
+    let watchEnd: (() => void) | undefined;
     /** The ids its headers gave it. */
     let ids: Record<string, string> | undefined;
     let reported: number | undefined;
@@ -435,8 +446,27 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       began = { ok: upstream.ok };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
+      let watcher: { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
+      try {
+        watcher = policy.watch?.();
+        watchEnd = watcher?.end?.bind(watcher);
+      } catch (error) {
+        say(`model proxy (${policy.id}): the response watcher could not start`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        try { policy.unwatched?.(); } catch {}
+      }
       if (upstream.body) {
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
+          // What the watcher reads of a piece, it reads before the client has the piece.
+          const text = decoder.decode(chunk, { stream: true });
+          if (watcher) {
+            try {
+              watcher.chunk(text);
+            } catch (error) {
+              say(`model proxy (${policy.id}): the response watcher failed`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+              try { watcher.failed?.(); } catch {}
+              watcher = undefined;
+            }
+          }
           // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
           if (!res.write(chunk)) {
             // One wait, and nothing left behind: whichever comes first takes both listeners off.
@@ -447,7 +477,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
             });
           }
           // The usage is at the start, the end, or both: keep those, not the whole answer.
-          const text = decoder.decode(chunk, { stream: true });
           length += text.length;
           if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
           tail = (tail + text).slice(-USAGE_WINDOW);
@@ -461,6 +490,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       else res.destroy();
     } finally {
       inflight.delete(controller);
+      try { watchEnd?.(); } catch {}
     }
     // Every paid request the proxy forwarded is booked exactly once, after the client has its answer (or lost it):
     // nothing here can turn an answer into an error the client sees and might pay again for. Its usage and price
