@@ -201,12 +201,23 @@ export async function unknownCost<M extends Models>(models: M, unpriced: Readonl
       if (!unpriced.has(model.id)) return inner;
       const outer = createAssistantMessageEventStream();
       void (async () => {
-        for await (const event of inner) {
-          if ("message" in event) unknown(event.message as AssistantMessage);
-          if ("error" in event) unknown(event.error as AssistantMessage);
-          outer.push(event);
+        try {
+          for await (const event of inner) {
+            if ("message" in event) unknown(event.message as AssistantMessage);
+            if ("error" in event) unknown(event.error as AssistantMessage);
+            outer.push(event);
+          }
+          outer.end(unknown(await inner.result())!);
+        } catch (error) {
+          // A stream that throws still ends, as an answer that failed, at an unknown cost: what it read may be billed.
+          const failed = unknown({
+            role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            errorMessage: String((error as Error)?.message ?? error).slice(0, 500),
+          })!;
+          outer.push({ type: "error", reason: "error", error: failed });
+          outer.end(failed);
         }
-        outer.end(unknown(await inner.result())!);
       })();
       return outer;
     };

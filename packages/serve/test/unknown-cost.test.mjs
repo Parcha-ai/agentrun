@@ -44,3 +44,16 @@ test("an unpriced model's answer that ends in an error is at unknown cost too", 
   const models = await unknownCost(fakeModels("error"), new Set(["unlisted"]));
   assert.deepEqual(await answered(models, "unlisted"), { events: [null], result: null });
 });
+
+test("an unpriced model's stream that throws still ends: its answer is an error at unknown cost, and nothing is left unhandled", { timeout: 10_000 }, async () => {
+  const throwing = () => ({ async *[Symbol.asyncIterator]() { throw new Error("the connection reset"); }, result: () => Promise.reject(new Error("the connection reset")) });
+  const models = await unknownCost({ stream: throwing, streamSimple: throwing, complete: async () => { throw new Error("the connection reset"); }, completeSimple: async () => { throw new Error("the connection reset"); } }, new Set(["unlisted"]));
+  const events = models.streamSimple(model("unlisted"), context);
+  const seen = [];
+  for await (const event of events) seen.push(event.type);
+  const answer = await events.result();
+  assert.deepEqual(seen, ["error"]);
+  assert.equal(answer.stopReason, "error");
+  assert.match(answer.errorMessage, /the connection reset/);
+  assert.equal(answer.usage.cost.total, null, "its cost unknown");
+});
