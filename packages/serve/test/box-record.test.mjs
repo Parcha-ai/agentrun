@@ -3,7 +3,7 @@
 // that names no writer is refused: nothing could ever clear it safely.
 import assert from "node:assert/strict";
 import { readlinkSync } from "node:fs";
-import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -94,4 +94,21 @@ test("a record that arrives without its writer is refused, named, and nothing is
   assert.throws(() => recorder.ahead({ id: "box-1" }), (error) => error.code === "box_record_failed" && /^box_record_failed: /.test(error.message));
   await assert.rejects(recorder.started({ id: "box-1", pid: 1, writer: { pid: 1, startTime: "" } }), (error) => error.code === "box_record_failed");
   await assert.rejects(readFile(join(dir, BOX_RECORD)), { code: "ENOENT" });
+});
+
+test("a box record is the server's alone: 0600, written by either form", async (t) => {
+  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
+  const dir = await scratch(t);
+  const recorder = boxRecorder(dir);
+  const path = join(dir, BOX_RECORD);
+  recorder.ahead({ id: "box-1", writer: WRITER });
+  assert.equal((await stat(path)).mode & 0o777, 0o600, "ahead");
+  await rm(path);
+  await recorder.started({ id: "box-1", pid: 4242, writer: WRITER });
+  assert.equal((await stat(path)).mode & 0o777, 0o600, "started");
+  writeDurableSync(join(dir, "plain"), "x");
+  await writeDurable(join(dir, "plain-async"), "x");
+  assert.deepEqual([(await stat(join(dir, "plain"))).mode & 0o777, (await stat(join(dir, "plain-async"))).mode & 0o777], [0o600, 0o600], "the default mode of both");
 });
