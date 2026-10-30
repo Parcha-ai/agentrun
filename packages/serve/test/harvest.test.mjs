@@ -178,3 +178,34 @@ test("a deletion is read only in a directory that was read: a note removed from 
   assert.deepEqual(whole.deleted, []);
   assert.ok(tree(s.bare, `runs/${RUN}`).includes(OLD), "the notes stay when their directory is gone");
 });
+
+test("a file where the seed has a directory, or a directory where it has a file, stops the harvest by name", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  await rm(join(s.work, "learnings"), { recursive: true });
+  await writeFile(join(s.work, "learnings"), "x\n");
+  await assert.rejects(harvest(s, "host"), /the working copy's learnings is a file where the seed has a directory: nothing is harvested/);
+  const untouched = () => {
+    assert.equal(git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
+    if (existsSync(join(s.root, "host"))) assert.equal(git(["--git-dir", join(s.root, "host"), "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
+  };
+  untouched();
+  // The reverse: the seed's learnings/INDEX.md is a file; a directory in its place.
+  await rm(join(s.work, "learnings"));
+  await mkdir(join(s.work, "learnings", "INDEX.md"), { recursive: true });
+  await assert.rejects(harvest(s, "host-two"), /the working copy's learnings\/INDEX\.md is a directory where the seed has a file: nothing is harvested/);
+  untouched();
+});
+
+test("a link in a directory's place is left out and reported, and the seed files under it are not deleted", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  const elsewhere = join(s.root, "elsewhere");
+  await mkdir(elsewhere);
+  await rm(join(s.work, "learnings"), { recursive: true });
+  await symlink(elsewhere, join(s.work, "learnings"));
+  const result = await harvest(s, "host");
+  assert.match(result.ignored.find((i) => i.path === "learnings")?.reason ?? "", /link/);
+  assert.deepEqual(result.deleted, []);
+  assert.ok(tree(s.bare, `runs/${RUN}`).includes(OLD));
+});
