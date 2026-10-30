@@ -72,6 +72,8 @@ test("PUT definition takes the contract's body too: the definition itself, with 
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
   assert.deepEqual([edited.body.definition.version, edited.body.definition.instructions, edited.body.definition.tools], [2, "Answer briefly.", ["read"]]);
   const etag = edited.headers.get("etag");
+  const again = await api("PUT", "/agents/contract/definition", body, { "if-match": etag });
+  assert.deepEqual([again.status, again.body.error?.fields?.map((f) => f.field)], [422, ["definition.version"]], "the same definition at the current version is not past it");
   const stale = await api("PUT", "/agents/contract/definition", { ...body, instructions: "Again." }, { "if-match": etag });
   assert.deepEqual([stale.status, stale.body.error?.fields?.map((f) => f.field)], [422, ["definition.version"]], "a version not past the current one");
   const unversioned = await api("PUT", "/agents/contract/definition", (({ version, ...rest }) => rest)({ ...body, instructions: "Again." }), { "if-match": etag });
