@@ -161,7 +161,9 @@ test('the cgroup a box could run in here: whether this host delegates a cgroup v
   } catch {
     // no cgroup file
   }
-  const path = own.startsWith('0::') ? join('/sys/fs/cgroup', own.slice(3)) : undefined;
+  // cgroup v2's one line: hierarchy id 0, no controller list, then the path.
+  const [id, controllers, ...rest] = own.split(':');
+  const path = id === '0' && controllers === '' ? join('/sys/fs/cgroup', rest.join(':')) : undefined;
   let delegated = false;
   try {
     if (path) writeFileSync(join(path, 'cgroup.subtree_control'), readFileSync(join(path, 'cgroup.subtree_control'), 'utf8').trim());
