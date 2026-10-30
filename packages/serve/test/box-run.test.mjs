@@ -71,13 +71,13 @@ test("native tools: only claude-agent, only in a box whose probe passed, only on
 test("the launch settings are read strictly: none is no box; no data root, a relative one, or a malformed value is refused by name", () => {
   assert.equal(runBoxOf({}), undefined);
   const isolation = { mode: "bwrap", cgroup: false };
-  assert.deepEqual(runBoxOf({ [RUN_BOX_ENV]: JSON.stringify({ data: "/srv/data", isolation }) }), { data: "/srv/data", isolation });
+  assert.deepEqual(runBoxOf({ [RUN_BOX_ENV]: JSON.stringify({ data: "/var/lib/agentrun/agents", isolation }) }), { data: "/var/lib/agentrun/agents", isolation });
   for (const [value, why] of [
     [JSON.stringify({ isolation }), /this run's box is refused: serve gave it no data root \(an absolute path\), so nothing of the server's would be hidden from it/],
     [JSON.stringify({ data: "data", isolation }), /gave it no data root/],
-    [JSON.stringify({ data: "/srv/data" }), /names no isolation/],
+    [JSON.stringify({ data: "/var/lib/agentrun/agents" }), /names no isolation/],
     ["{", /is not JSON/],
-    [JSON.stringify({ data: "/srv/data", isolation, cgroupRoot: "rel" }), /cgroup root is not an absolute path/],
+    [JSON.stringify({ data: "/var/lib/agentrun/agents", isolation, cgroupRoot: "rel" }), /cgroup root is not an absolute path/],
   ]) assert.throws(() => runBoxOf({ [RUN_BOX_ENV]: value }), (error) => error.code === "box_refused" && why.test(error.message), value);
 });
 
