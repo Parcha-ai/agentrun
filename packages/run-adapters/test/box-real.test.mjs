@@ -3,9 +3,9 @@
 // without one they skip, naming the probe's answer, unless AGENTRUN_BOX_REAL=1 (the CI job that installs it) makes them fail.
 // The server's home is never bound into a box, so the job runs them with a HOME outside the checkout.
 import assert from 'node:assert/strict';
-import { chmodSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { BOX_FORWARD, boxListens, bwrapBox, countInPidns, forwardChild, probeBox } from '@parcha/agentrun-kernel/host';
 
@@ -197,4 +197,54 @@ test('the cgroup a box could run in here: whether this host delegates a cgroup v
     delegated = false;
   }
   t.diagnostic(`this process's cgroup: ${own}; a subtree delegated to uid ${process.getuid()}: ${delegated ? 'yes' : 'no'}`);
+});
+
+// A cgroup-backed box (the shared-server mode): AGENTRUN_BOX_CGROUP_ROOT names a cgroup v2 subtree delegated to this user.
+// Which case runs is read from this process's own cgroup: started inside the root, a box gets a cgroup under it; started
+// outside, the start is refused by name.
+const CGROUP_ROOT = process.env.AGENTRUN_BOX_CGROUP_ROOT;
+const ownCgroup = (() => {
+  try {
+    for (const line of readFileSync('/proc/self/cgroup', 'utf8').split('\n')) {
+      const [id, controllers, ...rest] = line.split(':');
+      if (id === '0' && controllers === '') return resolve('/sys/fs/cgroup', `.${rest.join(':')}`);
+    }
+  } catch {
+    // unreadable
+  }
+  return undefined;
+})();
+const inside = CGROUP_ROOT !== undefined && ownCgroup !== undefined && (ownCgroup === CGROUP_ROOT || ownCgroup.startsWith(`${CGROUP_ROOT}/`));
+const cgroupSkip = (want) => skip || (CGROUP_ROOT === undefined ? 'no delegated cgroup root given (AGENTRUN_BOX_CGROUP_ROOT)' : inside === want ? false : `this process (${ownCgroup}) is ${inside ? 'inside' : 'outside'} ${CGROUP_ROOT}`);
+
+test('started inside the delegated root, a box runs in a cgroup of its own under it, and its reap ends it and answers by the cgroup', { skip: cgroupSkip(true) }, async () => {
+  const r = run('cgroup');
+  const cgroup = join(CGROUP_ROOT, `box-real-${process.pid}`);
+  try {
+    const box = bwrapBox({ cgroupRoot: CGROUP_ROOT, reapMs: 5000 });
+    const boxed = box.start({ ...r.spec, cgroup }, forwardChild({ command: '/bin/sh', args: ['-c', 'echo ready > /workspace/ready; exec sleep 600'] }, boxListens(r.spec)), { ahead() {}, async started() {} });
+    const record = await boxed.ready;
+    for (let i = 0; i < 200 && !existsSync(join(r.workspace, 'ready')); i++) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.ok(existsSync(join(r.workspace, 'ready')), `the boxed command did not start: ${boxed.stderrTail()}`);
+    assert.match(readFileSync(join(cgroup, 'cgroup.events'), 'utf8'), /^populated 1$/m, 'the box runs in its cgroup');
+    assert.equal(record.cgroup, cgroup);
+    assert.deepEqual(await box.reap(record), { empty: true, left: 0, by: 'cgroup' });
+    await boxed.exited;
+  } finally {
+    r.remove();
+  }
+});
+
+test('started outside the delegated root, a cgroup box is refused by name before anything is made: the server must start inside it', { skip: cgroupSkip(false) }, () => {
+  const r = run('cgroup-out');
+  const cgroup = join(CGROUP_ROOT, `box-real-${process.pid}-out`);
+  try {
+    assert.throws(
+      () => bwrapBox({ cgroupRoot: CGROUP_ROOT }).start({ ...r.spec, cgroup }, forwardChild({ command: '/bin/true', args: [] }, boxListens(r.spec)), { ahead: () => assert.fail('recorded'), async started() {} }),
+      (e) => e.code === 'box_refused' && /is not under the delegated root .*start the server inside its delegated subtree/.test(e.message),
+    );
+    assert.equal(existsSync(cgroup), false, 'a cgroup was made');
+  } finally {
+    r.remove();
+  }
 });

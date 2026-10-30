@@ -331,6 +331,20 @@ function populated(cgroup: string, root: string | undefined): boolean | "gone" |
   return line === "populated 1" ? true : line === "populated 0" ? false : "unknown";
 }
 
+/** This process's own cgroup v2, as a path under /sys/fs/cgroup; undefined when it cannot be read. */
+function selfCgroup(): string | undefined {
+  try {
+    for (const line of readFileSync("/proc/self/cgroup", "utf8").split("\n")) {
+      // cgroup v2's one line: hierarchy id 0, no controller list, then the path.
+      const [id, controllers, ...rest] = line.split(":");
+      if (id === "0" && controllers === "") return resolve("/sys/fs/cgroup", `.${rest.join(":")}`);
+    }
+  } catch {
+    // unreadable
+  }
+  return undefined;
+}
+
 /** A box's cgroup, refused by name unless it is an absolute, normalized path strictly under the delegated root (at a
  *  "/" boundary: "<root>x/a" is not under "<root>"), and not the root itself. */
 function checkCgroup(cgroup: string, root: string | undefined): void {
@@ -349,8 +363,12 @@ export interface BwrapBoxOptions {
   /** pids.max for a run's cgroup. */
   pidsMax?: number;
   /** The delegated cgroup v2 subtree (the operator's), under which every box's cgroup is made. A spec with a cgroup is
-   *  refused without it, and a reap reads a missing box cgroup as emptied only while this root itself reads. */
+   *  refused without it, and a reap reads a missing box cgroup as emptied only while this root itself reads. The server
+   *  must START inside it (systemd's Delegate=yes): cgroup v2 lets a process move another only within a subtree they
+   *  share, so a server moved in later cannot put its boxes there (EACCES), and its start is refused by name. */
   cgroupRoot?: string;
+  /** For tests: this process's own cgroup, as a path under /sys/fs/cgroup (default: read from /proc/self/cgroup). */
+  selfCgroup?: () => string | undefined;
   /** Paths no box may see (serve's data root): a bind that is one or holds one is refused before the spawn. */
   hidden?: readonly string[];
   /** How long a reap waits for the kernel to empty the box. */
@@ -481,6 +499,13 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
     // already exists is refused (EEXIST), never adopted. A crash between the two leaves an empty cgroup, the sweep's.
     if (spec.cgroup !== undefined) {
       checkCgroup(spec.cgroup, options.cgroupRoot);
+      const own = (options.selfCgroup ?? selfCgroup)();
+      if (own === undefined || !isUnder(own, options.cgroupRoot!)) {
+        throw new BoxError(
+          "box_refused",
+          `this server's own cgroup ${own ?? "(unreadable)"} is not under the delegated root ${options.cgroupRoot}: start the server inside its delegated subtree (systemd's Delegate=yes); a server moved in later cannot put its boxes there (EACCES)`,
+        );
+      }
       mkdirSync(dirname(spec.cgroup), { recursive: true });
       try {
         mkdirSync(spec.cgroup, { recursive: false });

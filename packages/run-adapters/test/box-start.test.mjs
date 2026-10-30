@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmdirSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -219,7 +219,7 @@ test('a box cgroup that already exists (another run\'s) is refused before the sp
   mkdirSync(theirs, { recursive: true });
   const { spawnFake, calls } = fakeBwrap({ marker });
   let aheads = 0;
-  assert.throws(() => bwrapBox({ spawn: spawnFake, cgroupRoot: root }).start({ ...spec, cgroup: theirs }, forwardChild(harness, boxListens(spec)), { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused' && /already exists/.test(e.message));
+  assert.throws(() => bwrapBox({ spawn: spawnFake, cgroupRoot: root, selfCgroup: () => root }).start({ ...spec, cgroup: theirs }, forwardChild(harness, boxListens(spec)), { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused' && /already exists/.test(e.message));
   assert.equal(calls.length, 0);
   assert.equal(aheads, 0, 'a record named a cgroup this box did not make');
 });
@@ -229,7 +229,7 @@ test('an ahead that throws removes the box cgroup it made, and nothing is spawne
   const root = mkdtempSync(join(tmpdir(), 'box-cgroot-'));
   const mine = join(root, 'runs', 'b');
   const { spawnFake, calls } = fakeBwrap({ marker });
-  assert.throws(() => bwrapBox({ spawn: spawnFake, cgroupRoot: root }).start({ ...spec, cgroup: mine }, forwardChild(harness, boxListens(spec)), { ahead: () => { throw new Error('no disk'); }, started: async () => {} }), /no disk/);
+  assert.throws(() => bwrapBox({ spawn: spawnFake, cgroupRoot: root, selfCgroup: () => root }).start({ ...spec, cgroup: mine }, forwardChild(harness, boxListens(spec)), { ahead: () => { throw new Error('no disk'); }, started: async () => {} }), /no disk/);
   assert.equal(calls.length, 0);
   assert.equal(existsSync(mine), false, 'the unrecorded cgroup was left behind');
   assert.ok(existsSync(join(root, 'runs')), 'its parent, made recursively, stays');
@@ -284,4 +284,26 @@ test("bwrap that says why only AFTER its reported pid 1 has vanished (the order 
   const boxed = bwrapBox({ spawn: spawnFake }).start(spec, forwardChild(harness, boxListens(spec)), { ahead: durable, started: async () => assert.fail('started for a pid 1 that was gone') });
   await assert.rejects(boxed.ready, (e) => e instanceof BoxError && e.code === 'bwrap_userns_denied' && /Failed RTM_NEWADDR/.test(e.message));
   await boxed.exited;
+});
+
+test("a server whose own cgroup is not under the delegated root is refused by name before anything is made, spawned or recorded: it must start inside it", () => {
+  const { spec, marker } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'box-cgroot-'));
+  const cgroup = join(root, 'runs', 'r1');
+  for (const [own, refused] of [['/sys/fs/cgroup/system.slice/other.service', true], [undefined, true], [`${root}x/scope`, true], [root, false], [join(root, 'init'), false]]) {
+    const { spawnFake, calls } = fakeBwrap({ marker });
+    let aheads = 0;
+    const start = () => bwrapBox({ spawn: spawnFake, cgroupRoot: root, selfCgroup: () => own }).start({ ...spec, cgroup }, forwardChild(harness, boxListens(spec)), { ahead: () => aheads++, started: async () => {} });
+    if (refused) {
+      assert.throws(start, (e) => e instanceof BoxError && e.code === 'box_refused' && /is not under the delegated root .*start the server inside its delegated subtree/.test(e.message), String(own));
+      assert.equal(calls.length, 0);
+      assert.equal(aheads, 0);
+      assert.equal(existsSync(cgroup), false, `a cgroup was made for ${own}`);
+    } else {
+      const boxed = start();
+      assert.equal(aheads, 1, `a server inside the root (${own}) starts its box`);
+      boxed.ready.then(() => boxed.kill(), () => {});
+      rmdirSync(cgroup);
+    }
+  }
 });
