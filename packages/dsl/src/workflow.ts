@@ -2908,8 +2908,8 @@ function resolveSopSections(node: { node: string; label?: string; sopSection?: s
 }
 
 /** Refuses, before any node runs, a decision node (or an `ask` predicate) the host's providers cannot answer as asked:
- *  a provider it lacks, `evidence: "required"` on a provider that gives none, a question type it does not answer, or
- *  more questions than one of its requests may hold. A host that names no providers is not checked here. */
+ *  a provider it lacks, `evidence: "required"` on a provider that gives none, a model it does not serve, a question type
+ *  it does not answer, or more questions than one of its requests may hold. A host that names no providers is not checked here. */
 function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow?: Workflow): void {
   const registry = deps.decisionProviders;
   if (!registry) return;
@@ -2932,6 +2932,7 @@ function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow
     if (!provider) throw new Error(`${what} names the decision provider ${id}, which this host does not have`);
     const capabilities = provider.capabilities;
     if (choice.evidence === "required" && capabilities.evidence === "none") throw new Error(`${what} requires evidence, and the decision provider ${id} gives none`);
+    if (choice.model !== undefined && capabilities.models && !capabilities.models.includes(choice.model)) throw new Error(`${what} pins the model ${choice.model}, which the decision provider ${id} does not answer with`);
     const missing = [...new Set(types.filter((type) => !(capabilities.types as string[]).includes(type)))];
     if (missing.length) throw new Error(`${what} asks ${missing.join(", ")} questions, which the decision provider ${id} does not answer`);
     if (count !== null && capabilities.maxQuestions !== null && count > capabilities.maxQuestions) throw new Error(`${what} asks ${count} questions, more than the ${capabilities.maxQuestions} one request to ${id} may hold`);

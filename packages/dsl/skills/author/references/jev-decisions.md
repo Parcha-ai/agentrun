@@ -111,7 +111,8 @@ predicate) may say four things about the provider that answers it. Each is optio
   `parallel`. Absent, the host's default answers.
 - `model`: a model or version to pin, so a run asks the same model next month. A
   changed pin is a different decision: its answer is never replayed from another
-  model's receipt.
+  model's receipt. A provider that declares the models it serves refuses any
+  other pin before the run starts; Parallel serves `parallel-fast` only.
 - `evidence`: `"off"` keeps none; `"if_supported"` keeps what the provider gives;
   `"required"` needs some. A provider whose capabilities declare no evidence is
   refused for a `"required"` node before the run starts, and an answer that comes
@@ -121,8 +122,8 @@ predicate) may say four things about the provider that answers it. Each is optio
   have been answered and billed: it is not asked again, and the run goes to review.
 
 The host checks each decision node against its providers before any node runs: a
-provider it lacks, evidence it cannot give, or a question type it does not answer
-stops the run with the node named. The evidence a provider gives travels with the
+provider it lacks, evidence it cannot give, a model it does not serve, or a
+question type it does not answer stops the run with the node named. The evidence a provider gives travels with the
 answer, in `<as>$answers.evidence`, the decision receipt and the node's event.
 
 ## Consume uncertainty honestly

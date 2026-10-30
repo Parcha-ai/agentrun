@@ -30,6 +30,8 @@ export interface DecisionCapabilities {
   maxQuestions: number | null;
   /** The largest state one request may hold, as UTF-8 JSON bytes, or null for no limit. */
   maxStateBytes: number | null;
+  /** The models a node may pin, by name; absent or null, any name goes to the provider. */
+  models?: readonly string[] | null;
 }
 
 export type DecisionRequest = Pick<JudgeParams, "label" | "kind" | "state" | "questions" | "item" | "executionPath" | "model">;
@@ -107,8 +109,9 @@ export function chargedCost(error: unknown): number | null | undefined {
 }
 
 /** Refuses, as invalid_request, a request beyond what `capabilities` declares: a question type it does not answer, more
- *  questions than it takes, or a larger state. A provider calls it before it sends anything. */
-export function checkCapabilities(capabilities: DecisionCapabilities, request: Pick<DecisionRequest, "questions" | "state">): void {
+ *  questions than it takes, a larger state, or a model it does not serve. A provider calls it before it sends anything. */
+export function checkCapabilities(capabilities: DecisionCapabilities, request: Pick<DecisionRequest, "questions" | "state" | "model">): void {
+  if (request.model !== undefined && capabilities.models && !capabilities.models.includes(request.model)) throw new DecisionProviderError("invalid_request", `The provider does not answer with the model "${request.model}".`);
   const types = Object.values(request.questions).map((question) => question?.type);
   const unknown = types.filter((type) => !capabilities.types.includes(type));
   if (unknown.length) throw new DecisionProviderError("invalid_request", `The provider does not answer ${[...new Set(unknown)].map(String).join(", ")} questions.`);
