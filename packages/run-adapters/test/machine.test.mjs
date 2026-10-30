@@ -218,3 +218,52 @@ test("a child in a box runs in the session's working directory: another is refus
   assert.equal(box.specs.length, 0);
   await machine.start({ command: '/bin/true', cwd: machine.root }).exited;
 });
+
+/** A box whose `started` record arrives when the test says: `late` waits for the child to have exited first. */
+function slowBox({ late = false, startedFails = false } = {}) {
+  const box = { isolation: { mode: 'bwrap', cgroup: false }, reaped: [], started: [], made: 0 };
+  box.start = (spec, child, recorder) => {
+    const record = { id: `box-${++box.made}`, writer: { pid: process.pid, startTime: '1' } };
+    recorder.ahead(record);
+    const proc = startChild({ command: child.command, args: child.args, env: spec.env }, {}, spec.workspace);
+    const full = { ...record, pid: proc.child.pid, startTime: '2', pidns: 'pid:[1]' };
+    const record2 = () => recorder.started(full).then(() => { box.started.push(full.id); return full; });
+    // A box that is never let go is killed, as bwrap's pid 1 is.
+    // Late: the record comes after the child exited and its box was ended, as a slow write would.
+    const ready = (late ? proc.exited.then(() => new Promise((resolve) => setTimeout(resolve, 50))).then(record2) : record2()).catch((error) => { proc.kill('SIGKILL'); throw error; });
+    ready.catch(() => {});
+    return { ...proc, record, ready };
+  };
+  box.reap = async (record) => { box.reaped.push(record.id); return { empty: true, left: 0, by: 'pidns' }; };
+  return box;
+}
+const settled = async (box, n = 1) => { for (let i = 0; i < 200 && box.reaped.length < n; i++) await new Promise((resolve) => setTimeout(resolve, 10)); await new Promise((resolve) => setImmediate(resolve)); };
+
+test("a box whose started record fails is never let go: it is reaped, and the session's next box waits for that reap", async (t) => {
+  const box = slowBox();
+  const log = [];
+  const failing = { ahead: (r) => log.push(['ahead', r.id]), started: async () => { throw new Error('the disk is full'); } };
+  const machine = await machineAt(t, scratch(), { box: { ...boxOf(box), recorder: failing } });
+  const proc = machine.start({ command: '/bin/sh', args: ['-c', 'sleep 300'] });
+  assert.throws(() => machine.start({ command: '/bin/true' }), (error) => error.code === 'box_busy', 'nothing else starts while the box is not let go');
+  await assert.rejects(proc.ready, /the disk is full/);
+  await settled(box);
+  assert.deepEqual(box.reaped, ['box-1'], 'the box is reaped, by its ahead record');
+  assert.deepEqual(box.started, [], 'nothing recorded it as started');
+  await machine.start({ command: '/bin/true' }).exited;
+});
+
+test("a started record that arrives after the box ended is refused, never written: the box is reaped once, by its ahead record", async (t) => {
+  const box = slowBox({ late: true });
+  const log = [];
+  const machine = await machineAt(t, scratch(), { box: { ...boxOf(box), recorder: recorder(log) } });
+  const proc = machine.start({ command: '/bin/true' });
+  await assert.rejects(proc.ready, (error) => error.code === 'box_record_failed');
+  await settled(box);
+  assert.deepEqual(box.reaped, ['box-1']);
+  assert.deepEqual(log, [['ahead', 'box-1']], 'the late started record never reached the recorder');
+  const next = machine.start({ command: '/bin/true' });
+  await next.exited;
+  await settled(box, 2);
+  assert.deepEqual(box.reaped, ['box-1', 'box-2'], "the next box keeps its own record, the late one never replaced it");
+});
