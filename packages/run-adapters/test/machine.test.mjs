@@ -282,3 +282,17 @@ test("an abort kills a boxed child: it exits, its box is reaped, and only then d
   await new Promise((resolve) => setImmediate(resolve));
   await machine.start({ command: '/bin/true' }).exited;
 });
+
+test("a box that fails to start after it was recorded is reaped, and the close waits for that reap and fails when it finds a process left", async (t) => {
+  const reaped = [];
+  // The host's box records itself, then its spawn fails; the reap of that record finds a process left (a stray it began).
+  const box = {
+    isolation: { mode: 'bwrap', cgroup: false },
+    start: (spec, child, recorder) => { recorder.ahead({ id: 'box-failed', writer: { pid: process.pid, startTime: '1' } }); throw new Error('bwrap: the spawn failed'); },
+    reap: async (record) => { await new Promise((resolve) => setTimeout(resolve, 100)); reaped.push(record.id); return { empty: false, left: 1, by: 'pidns' }; },
+  };
+  const machine = await openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(box) });
+  assert.throws(() => machine.start({ command: '/bin/true' }), /the spawn failed/);
+  await assert.rejects(machine.close(), /box_not_empty: the box still holds 1 process after its reap \(counted by pidns\)/);
+  assert.deepEqual(reaped, ['box-failed'], 'the close waited for the reap of the failed start');
+});

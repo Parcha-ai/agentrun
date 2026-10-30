@@ -321,11 +321,38 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
       for (const proc of children) proc.kill("SIGKILL");
       await Promise.all([...children].map((p) => p.exited));
       // Closed means counted empty: every box's reap gave its verdict, and one that found a process left fails the close.
-      const verdicts = await Promise.allSettled(reaps);
+      const verdicts = await Promise.allSettled([...reaps, ...(slot ? [slot.settled()] : [])]);
       lost.abort();
       await proxy.close();
       const left = verdicts.find((v): v is PromiseRejectedResult => v.status === "rejected");
       if (left) throw left.reason;
+    },
+  };
+}
+
+/** A machine factory whose machines keep a failed close: a harness closes its machine in a `finally` and goes on, never
+ *  reading the verdict, so a box a reap found a process left in (box_not_empty) would end the drive as clean. `drive`
+ *  runs a drive and, when it returned, throws the close's error instead; a drive that threw keeps its own error. */
+export function watchClose<A extends unknown[], M extends { close(): Promise<void> }>(acquire: (...args: A) => Promise<M>): { acquire: (...args: A) => Promise<M>; drive<T>(run: Promise<T>): Promise<T> } {
+  let failed: { error: unknown } | undefined;
+  return {
+    acquire: async (...args) => {
+      const machine = await acquire(...args);
+      const close = machine.close.bind(machine);
+      machine.close = () => close().catch((error: unknown) => {
+        failed ??= { error };
+        throw error;
+      });
+      return machine;
+    },
+    async drive(run) {
+      try {
+        const result = await run;
+        if (failed) throw failed.error;
+        return result;
+      } finally {
+        failed = undefined;
+      }
     },
   };
 }
