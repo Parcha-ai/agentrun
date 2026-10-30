@@ -670,6 +670,17 @@ describe("command records, from a scripted ps (macOS)", () => {
     assert.equal(other.counted.reads, 1);
   });
 
+  it("a -E line of this uid that starts with neither reading of its arguments (a second exec between the reads) cannot be told: it is read again in the window, never taken for unmarked at once, even when it shows an environment", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Its arguments read `sh -c a` before the -E listing and `sh -c b` after it, while the -E line already shows a third
+    // program with an environment; from the second read on it reads `sleep 600` throughout, with the mark.
+    const options = { argv: { 4930: ["sh -c a", "sh -c b", "sleep 600"] }, envReads: { 4930: ["sleep 600 LANG=C", `sleep 600 LANG=C ${word}`] } };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[4930, 1, 4930, 5]], { 4930: `sleep 600 LANG=C ${word}\n` }, options));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4930]);
+    assert.equal(counted.reads, 2);
+  });
+
   it("a -E line of this uid that stays without an environment is unmarked after the window; another uid's is read once", () => {
     const token = randomUUID();
     const rows = () => [[4910, 1, 4910, 5], [4911, 1, 4911, 6]];
