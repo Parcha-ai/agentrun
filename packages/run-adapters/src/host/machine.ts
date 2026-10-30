@@ -7,12 +7,16 @@
 //  - a child's git stops at the session's directory (GIT_CEILING_DIRECTORIES), and the host may start every child under
 //    its own confinement, in front of the command;
 //  - each child runs in its own process group, which kill() and close() end whole;
-//  - the model proxy (./proxy.ts, with the harness's policy) starts with the machine and stops with it.
+//  - the model proxy (./proxy.ts, with the harness's policy) starts with the machine and stops with it;
+//  - where the host gives it a box (./box.ts), every child starts in one, one at a time, through the session's slot
+//    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
+import type { Box, BoxedChild, BoxRecord, BoxRecorder, BoxSpec, Isolation } from "./box.js";
+import { boxSlot } from "./box-slot.js";
 import { startModelProxy, type ModelProxyOptions } from "./proxy.js";
 
 /** The variables a child takes from this process, when they are set. */
@@ -141,6 +145,26 @@ function inside(base: string, rel: string, name: string): string {
   return path;
 }
 
+/** The host's box for a session's children, and where it records them. */
+export interface MachineBox {
+  box: Box;
+  /** Where the host keeps the session's box record, durably. */
+  recorder: BoxRecorder;
+  /** Bound read-only beyond the box's own system allowlist: node and the harness's pinned binary. */
+  readOnly: readonly string[];
+  /** The model front's Unix socket, and the port the box serves it on. */
+  modelSocket: string;
+  modelPort: number;
+  /** The egress proxy's socket and port; absent, the box reaches nothing but the model. */
+  egressSocket?: string;
+  egressPort?: number;
+  /** A shared server's cgroup for the run. */
+  cgroup?: string;
+  /** The record the session's last box left (a relaunch, a woken run): reaped, and counted empty, before anything
+   *  starts. */
+  previous?: BoxRecord;
+}
+
 export interface LocalMachineSpec<D extends string> {
   /** The adapter's package name, which the machine's messages begin with. */
   name: string;
@@ -156,6 +180,9 @@ export interface LocalMachineSpec<D extends string> {
   from: Readonly<Record<string, string | undefined>>;
   /** The model proxy's options, its policy included; the machine makes the session's key. */
   proxy: ModelProxyOptions;
+  /** The host's box for every child of the session, or `unsandboxed` where the operator said there is none. Absent:
+   *  the host gave none, and the machine's `isolation` says so. */
+  box?: MachineBox | "unsandboxed";
 }
 
 /** A local session machine: private directories, a loopback model proxy, and children ended with it. Unbranded: each
@@ -171,7 +198,11 @@ export interface LocalMachine<D extends string> {
   readonly notes: readonly string[];
   /** The environment the allowlist reads. */
   readonly from: Readonly<Record<string, string | undefined>>;
-  /** Start a child of the session, ended with it. */
+  /** What the host's box proved (undefined: the host gave none). A harness turns its own tools on only in a box, or
+   *  where it is `unsandboxed` by the operator's word. */
+  readonly isolation?: Isolation;
+  /** Start a child of the session, ended with it. In a box, refused (BoxError box_busy) while the last one is live or
+   *  not yet counted empty. */
   start(options: MachineSpawn): MachineChild;
   readonly files: {
     upload(dir: D, files: readonly CacheFile[]): Promise<void>;
@@ -192,14 +223,46 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   const root = join(base, "work");
   for (const dir of [...Object.values<string>(dirs), root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
+  // A box the probe found unavailable boxes nothing: children start as they would without one, and a harness keeps its
+  // own tools off, since `isolation` says why.
+  const boxed = typeof spec.box === "object" ? spec.box : undefined;
+  const isolation: Isolation | undefined = boxed ? boxed.box.isolation : spec.box === "unsandboxed" ? { mode: "unsandboxed" } : undefined;
+  const boxing = boxed && isolation?.mode !== "unavailable" ? boxed : undefined;
+  const slot = boxing ? boxSlot<BoxedChild>({ reap: (record) => boxing.box.reap(record) }) : undefined;
+  // The last box first: nothing of this session starts while one of its old boxes may still hold a process.
+  if (slot && boxing?.previous) await slot.adopt(boxing.previous);
+
   const key = randomBytes(32).toString("base64url");
   const proxy = await startModelProxy(spec.proxy, key);
   const lost = new AbortController();
   const children = new Set<MachineChild>();
+  const reaps = new Set<Promise<void>>();
   let closed = false;
+  const inBox = (options: MachineSpawn, box: MachineBox): MachineChild => {
+    // The box's working directory is the session's: a child that asks for another is refused, not moved.
+    if (options.cwd !== undefined && normalize(options.cwd) !== root) throw new Error(`${name}: a child in a box runs in the session's working directory, not ${options.cwd}`);
+    const child = confined({ command: options.command, args: options.args ?? [] }, spec.confine, name);
+    const boxSpec: BoxSpec = {
+      workspace: root,
+      homes: { ...dirs },
+      readOnly: [...box.readOnly],
+      modelSocket: box.modelSocket,
+      modelPort: box.modelPort,
+      ...(box.egressSocket === undefined ? {} : { egressSocket: box.egressSocket, egressPort: box.egressPort }),
+      env: { ...childEnv(from, options.env), GIT_CEILING_DIRECTORIES: base },
+      ...(box.cgroup === undefined ? {} : { cgroup: box.cgroup }),
+    };
+    const { process: proc, reaped } = slot!.start((recorder) => box.box.start(boxSpec, child, recorder), box.recorder);
+    reaps.add(reaped);
+    if (options.signal) {
+      if (options.signal.aborted) proc.kill();
+      else options.signal.addEventListener("abort", () => proc.kill(), { once: true });
+    }
+    return proc;
+  };
   const start = (options: MachineSpawn): MachineChild => {
     if (closed) throw new Error(`${name}: the session machine is closed`);
-    const proc = startChild(options, from, root, base, spec.confine, name);
+    const proc = boxing ? inBox(options, boxing) : startChild(options, from, root, base, spec.confine, name);
     children.add(proc);
     void proc.exited.then(() => children.delete(proc));
     return proc;
@@ -214,6 +277,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
     modelKey: key,
     notes: [],
     from,
+    ...(isolation ? { isolation } : {}),
     start,
     files: {
       upload: async (dir, files) => {
@@ -256,8 +320,12 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
       closed = true;
       for (const proc of children) proc.kill("SIGKILL");
       await Promise.all([...children].map((p) => p.exited));
+      // Closed means counted empty: every box's reap gave its verdict, and one that found a process left fails the close.
+      const verdicts = await Promise.allSettled(reaps);
       lost.abort();
       await proxy.close();
+      const left = verdicts.find((v): v is PromiseRejectedResult => v.status === "rejected");
+      if (left) throw left.reason;
     },
   };
 }
