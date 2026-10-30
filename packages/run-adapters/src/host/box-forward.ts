@@ -1,7 +1,7 @@
 // The first command of a session's box, written for AgentRun: it serves the box's sockets on the box's own loopback, then
 // runs the harness. A box has no network but its own loopback (bubblewrap's --unshare-net), and the host binds two Unix
 // sockets into it: the model front's and the egress proxy's. A CLI speaks HTTP to a port, so this listens on
-// 127.0.0.1:<port> inside the box and pipes each connection to its socket, nothing else.
+// a port of the box's own loopback and pipes each connection to its socket, nothing else.
 //  - The harness gets this process's stdio as its own, so its bytes pass unchanged; its environment is the box's.
 //  - TERM, INT and HUP are passed on to it, and this exits as it did: its code, or its signal raised again.
 //  - Anything in the box can kill this process: the box then has no way out at all, never one around the sockets.
@@ -17,6 +17,9 @@ export interface ForwardListen {
   port: number;
   socket: string;
 }
+
+/** The box's own loopback, inside its network namespace: where the forwarder serves the host's sockets. */
+export const BOX_LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule loopback inside the box network namespace
 
 /** This script, as the host binds it into a box (read-only, with node). */
 export const BOX_FORWARD = fileURLToPath(import.meta.url);
@@ -57,7 +60,7 @@ export function forward({ port, socket }: ForwardListen): Promise<Server> {
   });
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => resolve(server));
+    server.listen(port, BOX_LOOPBACK, () => resolve(server));
   });
 }
 

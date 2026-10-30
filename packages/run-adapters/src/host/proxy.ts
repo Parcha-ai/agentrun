@@ -19,6 +19,9 @@ import { unlinkSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { listenSocket } from "./socket.js";
 
+/** Where the front listens when it has no socket: this host's loopback. */
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the model front listener on this host
+
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
   readonly method: string;
@@ -131,7 +134,7 @@ export function hostHeaderProblems(headers: Readonly<Record<string, unknown>> | 
 }
 
 export interface ModelProxy {
-  /** The proxy's origin, `http://127.0.0.1:<port>`; on a socket, `unix:<path>`, served in the box at a port of its own. */
+  /** The proxy's origin, an http URL on this host's loopback; on a socket, `unix:<path>`, served in the box at a port of its own. */
   readonly url: string;
   /** The key the harness sends, which the proxy admits. */
   readonly key: string;
@@ -518,13 +521,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   else {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
+      server.listen(0, LOOPBACK, () => resolve());
     });
   }
   const address = server.address();
   if (socketPath === undefined && (!address || typeof address === "string")) throw new Error("agentrun-kernel: the model proxy has no port");
   return {
-    url: socketPath !== undefined ? `unix:${socketPath}` : `http://127.0.0.1:${(address as { port: number }).port}`,
+    url: socketPath !== undefined ? `unix:${socketPath}` : `http://${LOOPBACK}:${(address as { port: number }).port}`,
     key,
     close: async () => {
       closing = true;

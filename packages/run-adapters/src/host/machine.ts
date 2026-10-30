@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
 import { BoxError, type Box, type BoxedChild, type BoxRecord, type BoxRecorder, type BoxSpec, type Isolation, type Reaped } from "./box.js";
-import { BOX_FORWARD, forwardChild } from "./box-forward.js";
+import { BOX_FORWARD, BOX_LOOPBACK, forwardChild } from "./box-forward.js";
 import { boxSlot } from "./box-slot.js";
 import { startModelProxy, type ModelProxyOptions } from "./proxy.js";
 
@@ -177,11 +177,11 @@ export function socketDir(dir: string, name: string, statfs: (dir: string) => { 
 /** A box's way out, for the clients in it that ask for a proxy: the session's egress proxy, at the port the box serves it
  *  on. The model's own port is left out (NO_PROXY), so the harness reaches its front directly. */
 function proxyEnv(port: number): Record<string, string> {
-  const http = `http://127.0.0.1:${port}`;
-  const socks = `socks5h://127.0.0.1:${port}`;
+  const http = `http://${BOX_LOOPBACK}:${port}`;
+  const socks = `socks5h://${BOX_LOOPBACK}:${port}`;
   return {
     HTTPS_PROXY: http, https_proxy: http, HTTP_PROXY: http, http_proxy: http, ALL_PROXY: socks, all_proxy: socks,
-    NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost", NODE_USE_ENV_PROXY: "1",
+    NO_PROXY: `${BOX_LOOPBACK},localhost`, no_proxy: `${BOX_LOOPBACK},localhost`, NODE_USE_ENV_PROXY: "1", // key-gate: loopback-rule loopback names inside the box
   };
 }
 
@@ -341,7 +341,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
     dirs,
     signal: lost.signal,
     // The harness's view: in a box, the front at the port the box serves it on.
-    modelUrl: boxing ? `http://127.0.0.1:${boxing.modelPort}` : proxy.url,
+    modelUrl: boxing ? `http://${BOX_LOOPBACK}:${boxing.modelPort}` : proxy.url,
     modelKey: key,
     notes: [],
     from,
