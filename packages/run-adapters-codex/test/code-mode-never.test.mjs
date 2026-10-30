@@ -533,3 +533,45 @@ test("code mode: a crash while the model waited on a yielded script's cell: the 
   assert.match(text, /The session stopped while waiting on cell 1; that cell's script was cut off, and nothing was run again\./);
   assert.doesNotMatch(text, /Not executed/);
 });
+
+test("code mode: an answer that could not be read to its end, a crash, the turn closed in the log, then a new send: the cut-off exec lists the call that ran, never that it ran none", { skip, timeout: 300_000 }, async () => {
+  let looked = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: 'found' }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const spec = { key: 'step:code-unread-settled', label: 'look', system: [], tools: [lookup, hold], context: 'fresh' };
+  const store = memorySessionStore();
+  // An answer past what the proxy watches to its end: the script it carries cannot be told, so its nested calls are tied to no exec.
+  const pad = { type: 'message', role: 'assistant', id: 'msg_pad', content: [{ type: 'output_text', text: 'x'.repeat(4 * 1024 * 1024 + 100) }] };
+  const { seen, fetch } = provider([[pad, exec('call_js', `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\nawait tools.hold({});`)]]);
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('look');
+  await held;
+  assert.equal(looked, 1, 'the safe call ran before the crash');
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  const ties = journalRecords(foldSession(spec.key, await store.read(spec.key)), 'codex.nested').map((r) => r.data);
+  assert.ok(ties.length > 0 && ties.every((t) => t.exec === null), `its call is tied to no exec: ${JSON.stringify(ties)}`);
+  // The turn is closed in the log without resuming it, as a settle does: the next send is a new turn, with no recovery note.
+  const closing = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  const journal = new NativeJournal(closing);
+  journal.message({ type: 'turn', status: 'interrupted' });
+  await journal.flush();
+  const before = seen.length;
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'idle');
+  await b.send('next');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  const told = seen.slice(before).flatMap((body) => body.input ?? []).filter((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
+  assert.deepEqual([...new Set(told.map((item) => item.type))], ['custom_tool_call_output']);
+  const text = told.map((item) => (Array.isArray(item.output) ? item.output.map((o) => o.text ?? '').join('\n') : String(item.output))).join('\n');
+  assert.match(text, /2 calls ran whose script could not be told/, 'both nested calls, though no exec is known for them');
+  assert.match(text, /lookup completed: "found"/);
+  assert.match(text, /hold was started and did not report a result/);
+  assert.doesNotMatch(text, /it ran none/);
+  assert.equal(looked, 1, 'nothing was run again');
+});

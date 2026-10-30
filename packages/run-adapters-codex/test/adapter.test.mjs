@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { foldSession, openDrive } from '@parcha/agentrun-adapters/kernel';
-import { NativeJournal } from '@parcha/agentrun-adapters/process';
+import { NativeJournal, toolBridge, transcriptOf } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
@@ -362,12 +362,12 @@ test('a dangling custom tool call that is not exec, such as apply_patch, is answ
 
 /** The no-note repair of a rollout holding `calls`, unanswered, with `hostTools` bridged: the items it injects. `order`, when given, records
  *  the inject, the end of the sync after it (which takes a tick, as draining the rollout's tail does), and the repair's return. */
-async function repairedItems(calls, hostTools = [], order) {
+async function repairedItems(calls, hostTools = [], order, { ctx, ties = [] } = {}) {
   const injected = [];
   const code = codeMode({
-    ctx: { state: () => ({ effects: new Map(), submissions: [], effectOrder: [] }), isMemoized: () => false },
+    ctx: ctx ?? { state: () => ({ effects: new Map(), submissions: [], effectOrder: [] }), isMemoized: () => false },
     machine: {},
-    journal: { append() {}, flush: async () => {}, read: async () => [] },
+    journal: { append() {}, flush: async () => {}, read: async (stream) => (stream === 'codex.nested' ? ties.map((data) => ({ data })) : []) },
     logged: new Set(),
     synced: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); order?.push('synced'); },
     bridge: { get: (name) => hostTools.find((t) => t === name) && { name, replay: 'safe' } },
@@ -406,4 +406,27 @@ test("a dangling wait of code mode is told the session stopped while it waited o
   // A host tool of the same name is not code mode's wait: it gets the generic answer.
   const [host] = await repairedItems([wait], ['wait']);
   assert.match(host.output, /^Not executed: the session stopped before this call started/);
+});
+
+test("the no-note repair lists the ended turn's calls whose script could not be told under its cut-off exec, and never an earlier turn's", async () => {
+  // A session log of two turns: a call in each, and each turn ended (the second as a settle ends it).
+  const drive = await openDrive({ writer: await memorySessionStore().open('step:two-turns'), signal: new AbortController().signal });
+  const journal = new NativeJournal(drive);
+  const tool = (name) => ({ name, description: name, inputSchema: { type: 'object' }, replay: 'safe', execute: async () => `${name} result` });
+  const bridge = toolBridge(drive, [tool('early'), tool('late')], { live: false });
+  await bridge.call('early', {}, 'n0');
+  journal.message({ type: 'turn', status: 'completed' });
+  await journal.flush();
+  await bridge.call('late', {}, 'n1');
+  journal.message({ type: 'turn', status: 'interrupted' });
+  await journal.flush();
+  const [firstEnd] = transcriptOf(drive.state()).filter((r) => r.data?.type === 'turn').map((r) => r.at);
+  // Both calls ran under answers that could not be read to their end, so neither is tied to an exec; each carries its turn's start.
+  const ties = [{ callId: 'n0', exec: null, since: -1 }, { callId: 'n1', exec: null, since: firstEnd }];
+  const exec = { type: 'custom_tool_call', name: 'exec', input: 'await tools.late({})', call_id: 'call_js' };
+  const [item] = await repairedItems([exec], [], undefined, { ctx: drive, ties });
+  assert.equal(item.type, 'custom_tool_call_output');
+  assert.match(item.output, /1 call ran whose script could not be told/);
+  assert.match(item.output, /late completed: "late result"/);
+  assert.doesNotMatch(item.output, /early/);
 });
