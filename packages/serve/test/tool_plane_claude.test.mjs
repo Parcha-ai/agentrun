@@ -64,16 +64,21 @@ test("a claude-agent run's tool call is journaled in its OWN records under the w
   assert.equal(fetchCalls.length, 1, `one fetch_page call under the wire name: ${calls.map((c) => c.name).join(", ")}`);
   const fetchResults = results.filter((r) => r.toolName === wire);
   assert.equal(fetchResults.length, 1, "one fetch_page result under the wire name");
-  assert.equal(fetchResults[0].toolCallId, fetchCalls[0].id, "the result answers the journaled call by id");
+  // The callId is a nonempty string before the pairing is compared, so a record that dropped both ids does not pass by
+  // undefined === undefined.
+  assert.equal(typeof fetchCalls[0].id, "string", "the callId is a string");
   assert.notEqual(fetchCalls[0].id, "", "the call has a callId");
+  assert.equal(fetchResults[0].toolCallId, fetchCalls[0].id, "the result answers the journaled call by id");
 
   // (4) The journaled name is the wire name the catalog gives, computed, never a literal; the tool actually ran under it
-  // (the result is the page, not a "no such tool" error a call gets when the name it ran under is not the one the model
-  // called), so a registration under a different name is red here, not only a drift in the TOOLS key.
+  // (the result is the page the fetch answered, not a "no such tool" error a call gets when the name it ran under is not
+  // the one the model called), so a registration under a different name is red here, not only a drift in the TOOLS key.
   assert.equal(fetchCalls[0].name, wire, "the toolCall is journaled under the wire name");
   const text = (fetchResults[0].content ?? []).map((c) => c.text ?? "").join("") || JSON.stringify(fetchResults[0].output ?? "");
-  assert.doesNotMatch(text, /no (such )?tool|not a tool|unknown tool|is not bound/i, `the tool did not run under the wire name: ${text.slice(0, 200)}`);
-  assert.match(text, /public\.example|"ok"|"status"|"title"/, `the tool ran and answered the page: ${text.slice(0, 200)}`);
+  const page = JSON.parse(text);
+  assert.equal(page.ok, true, `the fetch succeeded, not refused or errored: ${text.slice(0, 200)}`);
+  assert.equal(page.status, 200, "the page answered 200");
+  assert.equal(page.title, "Public page", "the tool returned the fixture page it fetched");
 });
 
 
