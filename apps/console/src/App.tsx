@@ -15,8 +15,8 @@ import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
 
 type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean };
-function route(): Where {
-  const h = location.hash;
+/** The page an address opens. Exported for its test. */
+export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   if (h === "#/agents/new") return { section: "agents", agent: null };
@@ -65,7 +65,7 @@ export function App() {
 
 function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const [where, setWhere] = useState(route);
+  const [where, setWhere] = useState(() => route());
   const [caps, setCaps] = useState<Capabilities | null>(null);
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
