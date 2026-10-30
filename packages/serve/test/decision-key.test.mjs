@@ -26,12 +26,12 @@ const coi = {
   root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
 };
 
-test("a server handed a decision key stays up while a workflow run is handed it, and the run's judge gets it", { timeout: 120_000 }, async (t) => {
+test("a server handed a decision key holds it with its secrets, out of its environment, and stays up while a workflow run is handed it, and the run's judge gets it", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const calls = join(dir, "jev-calls.jsonl");
   const script = `const { startServe } = await import(${JSON.stringify(SERVE)});
 const server = await startServe({ data: ${JSON.stringify(join(dir, "agents"))}, port: 0, faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, drainTimeout: "5s" });
-process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");
+process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token, inEnv: "TYPESAFE_API_KEY" in process.env }) + "\\n");
 process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
   const env = { ...process.env, TYPESAFE_API_KEY: CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls };
   delete env.OPENROUTER_API_KEY;
@@ -61,7 +61,8 @@ process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
     assert.ok(i < 600, `the server did not start: ${seen.err}`);
     await sleep(50);
   }
-  const { base, token } = JSON.parse(seen.out.split("\n")[0]);
+  const { base, token, inEnv } = JSON.parse(seen.out.split("\n")[0]);
+  assert.equal(inEnv, false, "the server holds the key with its secrets, out of its environment");
   const api = client(base, token);
   assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
   const started = await whileUp(() => api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } }));
