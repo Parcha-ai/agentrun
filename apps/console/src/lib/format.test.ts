@@ -75,8 +75,9 @@ describe("cost, by whose number it is (cost.source)", () => {
     expect(cost({ usd: 0.00003, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("<$0.0001");
     expect(cost({ usd: 1.5, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("$1.50");
   });
-  it("an estimated cost reads est.", () => {
+  it("an estimated cost reads est., whatever its basis says", () => {
     expect(cost({ usd: 1.5, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
+    expect(cost({ usd: 1.5, basis: "charge", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
   });
   it("an older server that says no source: the basis decides, as before", () => {
     expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
