@@ -1,5 +1,5 @@
 import { Archive, ArrowLeft, ArrowRight, Check, FileText, History, Settings, TriangleAlert, Wrench } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Agent, type AgentFields, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor } from "@/lib/agentForm";
@@ -44,6 +44,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: d?.tools ?? defaultTools(d?.harness ?? "pi", caps.tools) });
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
+  // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
+  const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
+  useEffect(() => {
+    if (creating && !toolsTouched) setF((x) => ({ ...x, tools: defaultTools(x.harness ?? "pi", caps.tools) }));
+  }, [toolsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);

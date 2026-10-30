@@ -20,3 +20,19 @@ describe("AgentEditor, a new agent's tools", () => {
     expect(html).toContain("can&#x27;t reach the web");
   });
 });
+
+describe("AgentEditor, a new agent whose server capabilities arrive after it opens", () => {
+  it("ticks the harness's tools once they arrive, as a page does when /v2/capabilities answers late", async () => {
+    const { act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(AgentEditor, { agent: null, caps: { ...caps, tools: [] }, step: "tools" })));
+    expect(host.querySelectorAll("input[type=checkbox]:checked").length).toBe(0);
+    act(() => root.render(createElement(AgentEditor, { agent: null, caps, step: "tools" })));
+    expect(host.querySelectorAll("input[type=checkbox]:checked").length).toBe(3);
+    expect(host.textContent).not.toContain("can't reach the web");
+    act(() => root.unmount());
+  });
+});
