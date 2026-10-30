@@ -8,7 +8,7 @@
 // It imports only node's own modules, so the box binds this one file.
 //
 //   node box-forward.js --listen <port>=<socket> [--listen <port>=<socket> ...] -- <command> [args...]
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { connect, createServer, type Server } from "node:net";
 import { fileURLToPath } from "node:url";
 
@@ -75,6 +75,15 @@ export async function main(argv: readonly string[]): Promise<void> {
     process.stderr.write(`${(error as Error).message}\n`);
     process.exit(64);
   }
+  // The handlers are set before anything starts: the harness runs before spawn returns here, so a TERM it or the host sends
+  // then must find them. One that comes before the harness exists ends this process by it, as if it had none.
+  let child: ChildProcess | undefined;
+  for (const signal of RELAYED) {
+    process.on(signal, () => {
+      if (child) child.kill(signal);
+      else exitBy(signal);
+    });
+  }
   const servers: Server[] = [];
   try {
     for (const listen of parsed.listen) servers.push(await forward(listen));
@@ -82,22 +91,22 @@ export async function main(argv: readonly string[]): Promise<void> {
     process.stderr.write(`box-forward: cannot listen in the box: ${(error as Error).message}\n`);
     process.exit(71);
   }
-  const child = spawn(parsed.command, parsed.args, { stdio: "inherit" });
-  for (const signal of RELAYED) process.on(signal, () => child.kill(signal));
+  child = spawn(parsed.command, parsed.args, { stdio: "inherit" });
   child.once("error", (error) => {
     process.stderr.write(`box-forward: the harness did not start: ${error.message}\n`);
     process.exit(127);
   });
   child.once("exit", (code, signal) => {
     for (const server of servers) server.close();
-    if (signal) {
-      // Exit as the harness did: its own signal, with this process's handler for it gone.
-      process.removeAllListeners(signal);
-      process.kill(process.pid, signal);
-      return;
-    }
-    process.exit(code ?? 1);
+    if (signal) exitBy(signal);
+    else process.exit(code ?? 1);
   });
+}
+
+/** Exit by `signal`, with this process's handler for it gone. */
+function exitBy(signal: NodeJS.Signals): void {
+  process.removeAllListeners(signal);
+  process.kill(process.pid, signal);
 }
 
 // Run as the command only (node box-forward.js ...), never when imported.
