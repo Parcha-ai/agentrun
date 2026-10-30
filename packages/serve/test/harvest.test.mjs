@@ -151,3 +151,17 @@ test("a working copy with nothing changed proposes nothing, and a memo is read o
   await assert.rejects(harvest(s, "host", { runId: "../main" }), /run id/);
   await assert.rejects(harvest(s, "host", { date: new Date(Number.NaN) }), /date/);
 });
+
+test("a harvest that would hold a refused value (a host secret, the run's input) is refused whole: nothing is committed or pushed, and the value is not quoted", async (t) => {
+  const s = await seeded(t);
+  const secret = "sk-test-0123456789abcdef";
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", `Use the key ${secret} for the registry.`));
+  const result = await harvest(s, "host", { refuse: ["", secret] });
+  assert.equal(result.status, "refused");
+  assert.deepEqual(result.refused, [`${NOTE} holds a value no learning may keep`]);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+  assert.equal(git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
+  const hostRefs = git(["--git-dir", join(s.root, "host"), "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]);
+  assert.equal(hostRefs, "", "not even the host's own clone holds a commit");
+});

@@ -23,9 +23,12 @@ export type HarvestOptions = {
   /** The run's end: the commit's date. */
   date: Date;
   head: HarvestHead;
+  /** Values no harvested file may hold (this host's secrets, the run's input): one that does refuses the whole harvest,
+   *  and nothing is committed or pushed. */
+  refuse?: readonly string[];
 };
 export type Ignored = { path: string; reason: string };
-export type HarvestResult = { status: "proposed" | "already" | "empty"; sha?: string; deleted: string[]; ignored: Ignored[] };
+export type HarvestResult = { status: "proposed" | "already" | "empty" | "refused"; sha?: string; deleted: string[]; ignored: Ignored[]; refused?: string[] };
 
 export const HARVEST_MESSAGE = "harvest: the run's learning";
 
@@ -65,7 +68,7 @@ function withHostHead(text: string, runId: string, seed: string, head: HarvestHe
   const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text) ? text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "") : text;
   const lines = [`run: ${runId}`, `base: ${seed}`, `harness: ${head.harness}`, `outcome: ${head.outcome}`];
   if (typeof head.costUsd === "number" && Number.isFinite(head.costUsd) && head.costUsd >= 0) lines.push(`cost_usd: ${head.costUsd}`);
-  if (head.untrusted) lines.push("untrusted: true");
+  if (typeof head.untrusted === "boolean") lines.push(`untrusted: ${head.untrusted}`);
   return `---\n${lines.join("\n")}\n---\n${body}`;
 }
 
@@ -108,6 +111,10 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
     files[entry.path] = null;
     deleted.push(entry.path);
   }
+  // A refused value is named by the file that holds it, never quoted.
+  const values = (options.refuse ?? []).filter((value) => typeof value === "string" && value.trim() !== "");
+  const holding = values.length ? Object.entries(files).filter(([, content]) => content !== null && values.some((value) => Buffer.from(content).includes(value))).map(([path]) => path) : [];
+  if (holding.length) return { status: "refused", deleted: [], ignored, refused: holding.map((path) => `${path} holds a value no learning may keep`) };
   const branch = `runs/${runId}`;
   const sorted = Object.fromEntries(Object.keys(files).sort().map((path) => [path, files[path]!]));
   const made = await repo.commitTo(branch, { files: sorted, message: HARVEST_MESSAGE, trailers: { "Run-Id": runId }, parent: seed, date });
