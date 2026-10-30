@@ -2,7 +2,7 @@
 // "CLI" child makes each model request through the session's real proxy to a scripted Anthropic API. No key, no network,
 // no Claude Agent CLI.
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
@@ -303,4 +303,39 @@ test("the same crash, the next process in a NEW session directory (a fresh box):
   assert.equal(charged, 1, 'the charge ran once');
   const ended = (await store.read('step:s1')).filter((r) => r.kind === 'kernel.end').map((r) => r.data);
   assert.ok(ended.some((e) => e.status === 'failed' && e.error?.interrupted === true), JSON.stringify(ended));
+});
+
+test("a turn a halt ended with a reason (the transcript mirror's) ends failed and names it; the session's own interrupt and close end it interrupted", async (t) => {
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const halted = await claude(t, { script: ['mirror-error'] });
+  const spec = { key: 'step:halt', label: 'h', system: [], tools: [], context: 'fresh' };
+  const a = await halted.adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  await a.send('go');
+  const end = await a.turnEnd();
+  assert.equal(end.status, 'failed', JSON.stringify(end));
+  assert.match(end.error ?? '', /mirror_unmapped/);
+  await a.close();
+  // A call that runs until it is stopped: stopped by the session itself, once by its interrupt and once by its close.
+  for (const stop of ['interrupt', 'close']) {
+    let inside;
+    const reached = new Promise((resolve) => { inside = resolve; });
+    const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+    const own = await claude(t, { script: ['call wait {}'] });
+    const key = `step:${stop}`;
+    const b = await own.adapter.open({ ...spec, key, tools: [wait] }, { store, writer: await store.open(key), models, signal: new AbortController().signal, onEvent: () => {} });
+    await b.send('go');
+    await reached;
+    const ending = b.turnEnd();
+    if (stop === 'interrupt') await b.interrupt(); else await b.close();
+    assert.equal((await ending).status, 'interrupted', stop);
+    if (stop === 'interrupt') await b.close();
+  }
+});
+
+test("the adapter ends an aborted turn only through the kernel's abortedOutcome, and keeps no interrupted end of its own", () => {
+  // Structural: a halt with a reason the fakes cannot raise mid-turn still ends this adapter's turn as every other's.
+  const source = readFileSync(new URL('../src/adapter.ts', import.meta.url), 'utf8');
+  assert.match(source, /abortedOutcome\(current\.signal, io\.signal\)/);
+  assert.doesNotMatch(source, /status:\s*"interrupted"/);
 });

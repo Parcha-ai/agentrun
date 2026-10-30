@@ -10,6 +10,11 @@ export const RUN_META = "serve.json";
 /** A cancelled run's mark in its directory, written before its process is told: the run's process sends no model
  *  request once it is there, however the cancel and the process's start interleave. */
 export const RUN_CANCELLED = "cancelled";
+/** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
+ *  or exits: found at a start, the server went down while it launched the run. */
+export const RUN_LAUNCHING = "launching";
+/** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
+export const LAUNCH_LOST = "server_lost_at_launch";
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>

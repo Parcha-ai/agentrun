@@ -57,6 +57,11 @@ def predErrors : Pred → List String
       (if vs.isEmpty then ["in needs a non-empty values list"] else [])
   | .gte p _ | .lt p _ => if p.isEmpty then ["gte/lt needs a path"] else []
   | .ask (some g) _ => if 1 / 2 < g && g ≤ 1 then [] else ["ask.gte must be in (0.5, 1]"]
+  | .fieldType p ty => (if p.isEmpty then ["field_type needs a path"] else []) ++
+      (if ["number", "string", "boolean", "array", "object", "null"].contains ty then []
+        else ["field_type needs a type of number|string|boolean|array|object|null"])
+  | .not (.ask ..) => ["not takes only a mechanical predicate"]
+  | .not q => predErrors q
   | _ => []
 
 mutual
