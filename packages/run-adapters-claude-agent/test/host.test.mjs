@@ -451,3 +451,63 @@ test("a request on the session's small model is asked about and priced as the sm
   }
   assert.deepEqual(asked, ['claude-small', (11 + 15) * 1 / 1e6, 'claude-main', (11 + 15) * 15 / 1e6]);
 });
+
+// Two runs on one host, each with its session machine. A client of run A that reads run B's address (a setting or a
+// port that is not its own) still holds A's key: B's proxy refuses it by name before anything is booked or forwarded.
+const MESSAGE_REPLY = JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-main', content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn', usage: { input_tokens: 3, output_tokens: 1 } });
+
+/** The user-agent of this test's own requests: another local client's keyless knock on a new loopback listener (a
+ *  shared machine's service does) is refused too, and is shown, never judged here. */
+const CROSS_RUN_AGENT = 'agentrun-cross-run-test';
+
+/** A run's session machine whose proxy's hooks and provider record what reached them. */
+async function runMachine(t, runId) {
+  const seen = { before: 0, after: 0, forwarded: 0, refused: [] };
+  const acquire = localMachine({ dir: scratch(), proxy: {
+    hooks: { beforeRequest: async () => { seen.before += 1; }, afterRequest: async () => { seen.after += 1; } },
+    tools: [],
+    log: (message, detail) => {
+      if (!/refused/.test(message)) return;
+      if (detail.userAgent === CROSS_RUN_AGENT) seen.refused.push(detail.reason);
+      else t.diagnostic(`the proxy refused another client: ${JSON.stringify(detail)}`);
+    },
+    fetch: async () => { seen.forwarded += 1; return new Response(MESSAGE_REPLY, { status: 200, headers: { 'content-type': 'application/json' } }); },
+  } });
+  const machine = await acquire({ ctx: { runId }, model: gatewayHandler({ routes: [], models: { model: 'claude-main' }, credential: () => 'provider-secret', target: 'https://provider.invalid' }) });
+  // Closed when the test ends, whatever happens after: a second machine that fails to start never leaves this one open.
+  t.after(() => machine.close());
+  return { machine, seen };
+}
+
+/** The CLI's request on `path` (its model request, or a free token count), with `key`, to the proxy at `url`. */
+async function ask(url, key, path = '/v1/messages') {
+  const res = await fetch(`${url}${path}?beta=true`, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': CROSS_RUN_AGENT, ...(key === null ? {} : { authorization: `Bearer ${key}` }), 'anthropic-version': '2023-06-01', 'anthropic-beta': [...CLAUDE_BETAS].join(',') }, body: JSON.stringify(path === '/v1/messages' ? body() : { model: 'claude-main', messages: [{ role: 'user', content: 'hi' }] }) });
+  return { status: res.status, text: await res.text() };
+}
+
+test("run A's key at run B's proxy is refused by name: B books nothing, nothing reaches the provider, and each key still works at its own run's proxy", async (t) => {
+  const a = await runMachine(t, 'run-a');
+  const b = await runMachine(t, 'run-b');
+  assert.notEqual(a.machine.modelKey, b.machine.modelKey, 'each run has a key of its own');
+  // The model request and the free token count alike: a free route still reaches the provider, so it takes the key too.
+  for (const [client, proxy] of [[a, b], [b, a]]) {
+    for (const path of ['/v1/messages', '/v1/messages/count_tokens']) {
+      const refused = await ask(proxy.machine.modelUrl, client.machine.modelKey, path);
+      assert.equal(refused.status, 401, path);
+      assert.match(refused.text, /this session's key is required/, path);
+    }
+  }
+  // No key at all is refused the same way.
+  const keyless = await ask(b.machine.modelUrl, null);
+  assert.deepEqual([keyless.status, /this session's key is required/.test(keyless.text)], [401, true]);
+  // The only route without the key is the local connectivity check, which answers here and reaches nothing.
+  assert.equal((await fetch(`${b.machine.modelUrl}/api/hello`, { method: 'HEAD', headers: { authorization: `Bearer ${a.machine.modelKey}` } })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (const run of [a, b]) {
+    assert.deepEqual({ before: run.seen.before, after: run.seen.after, forwarded: run.seen.forwarded }, { before: 0, after: 0, forwarded: 0 }, "the other run's requests were never booked or forwarded");
+    assert.deepEqual(run.seen.refused, Array(run === b ? 3 : 2).fill("this session's key is required"), 'each refusal is said, by name');
+  }
+  for (const run of [a, b]) assert.equal((await ask(run.machine.modelUrl, run.machine.modelKey)).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (const run of [a, b]) assert.deepEqual({ before: run.seen.before, forwarded: run.seen.forwarded }, { before: 1, forwarded: 1 }, "a run's own request is booked and forwarded once");
+});

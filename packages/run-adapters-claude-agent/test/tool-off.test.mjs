@@ -177,7 +177,9 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
     assert.ok(table.has(`${r.method} ${r.path}`), `${r.method} ${r.path} is not in the table`);
     assert.ok(r.query === '' || CLAUDE_MESSAGES_ROUTES.find((x) => x.path === r.path)?.query?.includes(r.query), `query ${r.query} on ${r.path}`);
   }
-  assert.deepEqual(logged.filter((l) => /refused/.test(l.message)), [], 'the proxy refused nothing the CLI asked');
+  // Another local client's call to the proxy (a shared machine's service knocks on each new loopback listener) is
+  // refused and shown; only a refusal under the CLI's user-agent fails this.
+  assert.deepEqual(cliRefusals(t, logged), [], 'the proxy refused nothing the CLI asked');
   // Even with its built-ins on, a session could not reach a tool of this CLI's that the allowlist does not name.
   assert.deepEqual(asked.tools, []);
   for (const tool of PINNED_CLI_TOOLS.filter((t) => !CLAUDE_BUILTINS.includes(t))) assert.ok(asked.disallowedTools.includes(tool), `${tool} is not off by name`);
