@@ -2,7 +2,7 @@
 // it (no bwrap): the reap counts a box's cgroup empty only once its whole subtree is, and a cgroup it cannot empty is
 // never counted empty, so the session's slot stays held. Run it inside a delegated scope, which names the root:
 //   systemd-run --user --scope -p Delegate=yes -- sh -c \
-//     'AGENTRUN_BOX_CGROUP_ROOT=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup) node --test test/box-cgroup-real.test.mjs'
+//     'AGENTRUN_BOX_CGROUP_ROOT=/sys/fs/cgroup$(awk -F: "\$1 == 0 { print \$3 }" /proc/self/cgroup) node --test test/box-cgroup-real.test.mjs'
 // Without AGENTRUN_BOX_CGROUP_ROOT these skip.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
