@@ -621,6 +621,7 @@ exists to check them. [Errors](#errors) says what each code means.
 | `openStore(dir, { busyTimeoutMs? })` | The agent store in `dir`, created if missing (`busyTimeoutMs`: how long a call waits synchronously for another connection to let go of the store before it throws SQLite's busy error, default 5000; opening it always waits up to 5 s): `createAgent({ name, description?, id? })`, `commitRevision(agent, revision, { setCurrent?, ifCurrent? })` (`ifCurrent`, the current revision the caller read or null, makes it a compare-and-swap), `setCurrent(agent, revision)`, `setArchived(kind, id, archived)`, `listAgents()`, `listRevisions(agent)`, `readRevision(id)`, `listRuns({ agent?, revision? })`, `startRun({ agent, revision? })`, `carryBack(runId, { state, costUsd?, summary? })`, `importHome(homeDir)`, `close()` ([above](#agents-in-a-folder-the-agent-store)) | `invalid`, `missing`, `exists`, `format`: a revision whose content does not match its id. `stale`: the agent's current revision is not `ifCurrent`, checked in the commit's own transaction; nothing is written |
 | `openStoreReader(dir, { busyTimeoutMs? })` | The same reads on a read-only handle (`busyTimeoutMs` as `openStore`'s) (`store.sqlite` in place, no copy), plus `runStorePath(runId)`; it writes nothing | `missing`: no `store.sqlite` in `dir`; `busy`: a store with an unfinished write; `format`: a store a newer version wrote |
 | `AgentStore`, `AgentStoreReader`, `STORE_FILE` | The two classes `openStore` and `openStoreReader` return, and `store.sqlite` | |
+| `LEARNING_MODES` | `off`, `auto` and `approve`: an agentic revision's `learning`. A body keeps `auto` or `approve`; `off` is the field's absence, so a body written before the field existed keeps its id. A workflow revision does not learn | `invalid`, from `commitRevision`: another value, or a workflow revision with one other than `off` |
 | `AgentHomeError` | The one error class of this package ([Errors](#errors)) | |
 | `EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport(kind, value)` | What an exporter may copy, what never leaves the home, and one document as an exporter writes it ([Exporting a home](#exporting-a-home)). Also from `@parcha/pi-durable-agent/export` | |
 
@@ -638,7 +639,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState` and `ArchiveKind` (`"agent" | "run"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `LearningMode`, `StartedRun`, `RunRow`, `RunState` and `ArchiveKind` (`"agent" | "run"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.

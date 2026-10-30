@@ -242,8 +242,13 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `token` is the server's own: no run's process sees it. */
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
- *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+ *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). `afterCarryBack` runs once a
+ *  run's end is written in the store, outside its settle: what it does never holds the run, and an error it throws is
+ *  said and goes no further. */
+export type RunsOptions = {
+  agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number;
+  log?: (event: string, fields: Record<string, string | number>) => void; afterCarryBack?: (run: Run) => void | Promise<void>;
+};
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -285,6 +290,8 @@ export class Runs {
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
   private readonly app = fileURLToPath(new URL("./app.js", import.meta.url));
   private closing = false;
+  /** What `afterCarryBack` is still doing: `close` waits for it. */
+  private readonly afters = new Set<Promise<void>>();
   /** Set once `close` is done: the store is closed, so nothing settles after it. */
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
@@ -794,6 +801,18 @@ export class Runs {
     run.settled = true;
     run.updatedAt = new Date().toISOString();
     this.refresh(run);
+    this.written(run);
+  }
+
+  /** Once the run's end is in the store, the one place `afterCarryBack` is called. */
+  private written(run: Run): void {
+    const after = this.options.afterCarryBack;
+    if (!after) return;
+    const done: Promise<void> = Promise.resolve()
+      .then(() => after(run))
+      .catch((error: Error) => warn(run.id, `after its carry back: ${error.message}`))
+      .finally(() => this.afters.delete(done));
+    this.afters.add(done);
   }
 
   /** Tries `persist` again every settleRetryMs while the server lives, until it lands. */
@@ -804,6 +823,7 @@ export class Runs {
         const row = await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined);
         if (row?.endedAt) run.endedAt = row.endedAt;
         if (row?.costUsd !== undefined) run.costUsd = row.costUsd;
+        this.written(run);
       }, () => this.persistLater(run, persist));
     }, this.options.settleRetryMs ?? SETTLE_RETRY_MS);
     timer.unref();
@@ -1021,6 +1041,7 @@ export class Runs {
     for (const deadline = Date.now() + this.killAfterMs(); adopted.some((run) => run.orphan && alive(run.orphan)) && Date.now() < deadline; ) await sleep(100);
     await sleep(0);
     await Promise.all([...this.runs.values()].map((run) => run.settling));
+    await Promise.all(this.afters);
     for (const run of this.runs.values()) run.feed?.abort();
     this.closed = true;
   }

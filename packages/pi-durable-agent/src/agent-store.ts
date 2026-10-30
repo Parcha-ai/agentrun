@@ -15,8 +15,12 @@ import { AgentHomeError } from "./store.js";
 
 export const STORE_FILE = "store.sqlite";
 export type RevisionKind = "agentic" | "workflow";
+/** Whether an agentic agent's runs learn: `auto` merges what a run learned by itself, `approve` waits for a person. Off is
+ *  the field's absence, so a body written before it keeps its id. */
+export type LearningMode = "off" | "auto" | "approve";
+export const LEARNING_MODES: readonly LearningMode[] = Object.freeze(["off", "auto", "approve"]);
 /** `harness`: the harness that runs the revision, an id its host knows (absent: the host's default). */
-export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string };
+export type AgenticBody = { instructions: string; skills: Record<string, string>; tools: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; learning?: Exclude<LearningMode, "off"> };
 export type WorkflowBody = { workflow: Workflow; skills: Record<string, string>; tools: string[]; harness?: string };
 /** Written once, never edited. `id` is the SHA-256 of the canonical JSON of `{ agent, parent, kind, body }`; `body.skills` maps a skill path to the SHA-256 of its text. */
 export type Revision = { id: string; agent: string; parent: string | null; createdAt: string; note?: string } & ({ kind: "agentic"; body: AgenticBody } | { kind: "workflow"; body: WorkflowBody });
@@ -39,7 +43,7 @@ export type RunRow = { id: string; agent: string; revision: string; kind: Revisi
 /** What can be archived. */
 export type ArchiveKind = "agent" | "run";
 export type NewRevision =
-  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; note?: string }
+  | { kind: "agentic"; instructions: string; skills?: Record<string, string>; tools?: string[]; model?: string; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; learning?: LearningMode; note?: string }
   | { kind: "workflow"; workflow: Workflow; skills?: Record<string, string>; tools?: string[]; harness?: string; note?: string };
 export type StartedRun = { runId: string; dir: string; storePath: string; workspace: string; agentId: string; revision: Revision };
 
@@ -133,9 +137,12 @@ function bodyOf(input: NewRevision): { body: AgenticBody | WorkflowBody; texts: 
   if (input.kind === "agentic") {
     if (typeof input.instructions !== "string") throw invalid("an agentic revision needs instructions (its prompt, possibly empty)");
     for (const field of ["model", "thinking"] as const) if (input[field] !== undefined && (typeof input[field] !== "string" || input[field] === "")) throw invalid(`the ${field} is not a non-empty string`);
-    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...harness }, texts };
+    if (input.learning !== undefined && !LEARNING_MODES.includes(input.learning)) throw invalid(`the learning is not one of ${LEARNING_MODES.join(", ")}`);
+    const learning = input.learning === undefined || input.learning === "off" ? {} : { learning: input.learning };
+    return { body: { instructions: input.instructions, skills, tools: [...tools], ...(input.model !== undefined ? { model: input.model } : {}), ...(input.thinking !== undefined ? { thinking: input.thinking } : {}), ...(input.prompts !== undefined ? { prompts: structuredClone(input.prompts) } : {}), ...harness, ...learning }, texts };
   }
   if (input.kind !== "workflow") throw invalid("the revision kind is not agentic or workflow");
+  if ((input as { learning?: unknown }).learning !== undefined && (input as { learning?: unknown }).learning !== "off") throw invalid("a workflow revision does not learn: its learning is off");
   if (!isObject(input.workflow)) throw invalid("a workflow revision needs a workflow (a JSON object)");
   return { body: { workflow: structuredClone(input.workflow), skills, tools: [...tools], ...harness }, texts };
 }

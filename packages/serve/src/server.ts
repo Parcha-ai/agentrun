@@ -14,6 +14,7 @@ import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
 import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
+import { catchUp, hostCommit, learningBlocker, proposeFor, readyToRun } from "./learning.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
@@ -257,8 +258,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
-  const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  // A new agent learns where this host can keep its learning repository.
+  const agents = new Agents(data, (await learningBlocker(env)) === undefined ? "auto" : "off");
+  // Once a learning run's end is written, what it learned is proposed as its branch.
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -280,8 +283,18 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+  // Ended runs of learning agents that were never proposed: a server that stopped between a carry back and its proposal.
+  // A host commit that failed is made again by the agent's next save or run.
+  const caughtUp = catchUp(data, agents, (line) => void process.stderr.write(`agentrun-serve: ${line}\n`))
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: learning catch-up: ${error.message}\n`));
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
+
+  /** The host commit of an agent's current revision on its learning repository's main. The revision is written either
+   *  way: a failed commit is said, and the agent's next run makes it before it starts. */
+  async function hostCommitted(entry: AgentEntry): Promise<void> {
+    await hostCommit(data, entry.agent.id, () => agents.get(entry.agent.id)).catch((error: Error) => void process.stderr.write(`agentrun-serve: agent ${entry.agent.id}: the learning repository's host commit failed: ${error.message}\n`));
+  }
 
   async function bodyOf(req: IncomingMessage): Promise<Json> {
     const type = String(req.headers["content-type"] ?? "");
@@ -402,6 +415,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       const wrong = await inputIssuesOf(revision, input);
       if (wrong.length) throw invalid(wrong);
       await runnable(revision);
+      await readyToRun(data, entry, () => agents.get(entry.agent.id), revision, version);
       const title = typeof input.content === "string" ? input.content : (Object.values(input).find((v): v is string => typeof v === "string") ?? JSON.stringify(input));
       const run = await runs.create(entry, revision, version, { input, title, ...(typeof body.effort === "string" ? { effort: body.effort } : {}), ...(typeof body.max_cost_usd === "number" ? { maxCostUsd: body.max_cost_usd } : {}) });
       return { status: 202, body: await runs.view(run), headers: { location: `/v2/runs/${run.id}` } };
@@ -638,6 +652,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         const answer = await idempotent(req, "/agents", body, async () => {
           let warnings: InputIssue[] = [];
           const entry = await agents.create(checkDefinitionBody(body), async (revision) => void (warnings = await saveable(revision)));
+          await hostCommitted(entry);
           return { status: 201, body: { ...agentView(entry), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
         });
         return send(res, answer.status, answer.body, answer.headers);
@@ -663,6 +678,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         let warnings: InputIssue[] = [];
         const check = async (revision: NewRevision) => void (warnings = await saveable(revision));
         const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false }), { check, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        await hostCommitted(edited);
         return send(res, 200, { ...agentView(edited), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
@@ -682,6 +698,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
         if (!(await agents.revision(id, revision))) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
         const moved = await agents.setCurrent(entry, revision);
+        await hostCommitted(moved);
         return send(res, 200, agentView(moved), { etag: etagOf(moved) });
       }
       case "archiveAgent":
@@ -812,6 +829,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
       await runs.close();
+      await caughtUp;
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
     },

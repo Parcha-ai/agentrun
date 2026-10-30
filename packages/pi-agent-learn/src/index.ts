@@ -7,7 +7,7 @@ export {
 } from "./layout.js";
 export { byUse, deriveSeed, indexLine, MAX_WORKFLOW_HINTS, renderSection, type SeedRecord, seededIds, trialFirstText, type WorkflowHint } from "./section.js";
 export { readSeed, SeedDoc, type Seeded, seedLearning, type SeedOptions, type Skipped } from "./seed.js";
-export { CandidatesDoc, collectCandidates, LEARN_PARAMETERS, learnTool, type LearnToolOptions } from "./tool.js";
+export { CandidatesDoc, collectCandidates, LEARN_PARAMETERS, learnTool, type LearnToolOptions, readCandidates } from "./tool.js";
 export {
   type AdmitWorkflow, type AdmitWorkflowInput, type AdmitWorkflowResult, type Candidate, ENTRY_TYPES, type EntryType, type Guard, type GuardInput,
   LEARN_TYPES, type LearnType, type Refusal, type RefusalReason, type RepoRead, type Role, type SettleUses, type SettleUsesInput, type SettleUsesResult,

@@ -205,6 +205,8 @@ into one directory at once both finish whole. Edits there are never committed. A
 that is misnamed, does not parse, is a symlink or is over 4 KB is skipped and named in `skipped`. A run is seeded once:
 when its store already holds a seed, that commit is used again and the record is kept, so a restarted host never moves a
 run to a newer commit. `readSeed` returns the record; `collectCandidates` returns the run's candidates in order.
+`readCandidates(store)` returns the same from the run's store file once no process holds it open (a host that ran the
+agent in another process), in one read transaction that writes nothing; a missing file is a `LearnError` `missing`.
 `workflows` is a list of `{ name, status: "trial" | "active" }`, at most 8: what `workflowsToTry` returns (below).
 
 With [`@parcha/pi-durable-agent`](https://github.com/Parcha-ai/agentrun/tree/main/packages/pi-durable-agent), the run

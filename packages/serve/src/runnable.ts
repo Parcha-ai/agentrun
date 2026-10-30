@@ -6,12 +6,13 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
+import { LEARN_TOOL, learningBlocker } from "./learning.js";
 import { chooseModel, nodeTiers, workflowNodes } from "./model.js";
 import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string }
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; learning?: string }
   | { kind: "workflow"; workflow: unknown; harness?: string };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
@@ -34,8 +35,12 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
+    const learning = revision.learning !== undefined && revision.learning !== "off";
     (revision.tools ?? []).forEach((tool, index) => {
-      if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
+      // The learn tool comes with learning: naming it is a no-op then, and a mistake without it.
+      if (tool === LEARN_TOOL) {
+        if (!learning) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: "The learn tool comes with learning, which is off for this definition.", fix: "Set definition.learning to auto or approve, or remove learn from definition.tools.", host: false, tool });
+      } else if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
       // Another harness gets the file tools only (host-tools.ts): any other tool this host binds, ask_person among them,
       // is pi's here and refuses the run, never runs without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
@@ -53,6 +58,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       const why = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
       if (why !== undefined) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: why, host: true, harness });
     }
+    const learns = learning ? await learningBlocker(env) : undefined;
+    if (learns) out.push({ field: "definition.learning", reason: NOT_SET_UP, message: `${learns} Install it, or set definition.learning to null.`, host: true });
     return out;
   }
   // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
@@ -82,4 +89,4 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
 }
 
 /** A blocker as a field issue, for a 422 or a warning. */
-export const issueOf = ({ field, reason, message }: Blocker): InputIssue => ({ field, reason, message });
+export const issueOf = ({ field, reason, message, fix }: Blocker): InputIssue => ({ field, reason, message, ...(fix ? { fix } : {}) });

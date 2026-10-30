@@ -371,3 +371,19 @@ test("ifCurrent makes a commit a compare-and-swap: a stale expected current is r
   await assert.rejects(store.commitRevision(agent.id, A, { ifCurrent: 7 }), refused("invalid"));
   store.close();
 });
+
+test("an agentic revision keeps learning auto or approve; off is the field's absence, so a revision written before it keeps its id", async () => {
+  const store = openStore(await scratch());
+  const agent = store.createAgent({ name: "Learner" });
+  const plain = await store.commitRevision(agent.id, A);
+  assert.equal("learning" in plain.body, false);
+  assert.equal((await store.commitRevision(agent.id, { ...A, learning: "off" })).id, plain.id, "off writes the body a revision without the field has");
+  const auto = await store.commitRevision(agent.id, { ...A, learning: "auto" });
+  assert.notEqual(auto.id, plain.id);
+  assert.equal(auto.body.learning, "auto");
+  assert.equal(store.readRevision(auto.id).body.learning, "auto", "read back, hash-checked");
+  assert.equal((await store.commitRevision(agent.id, { ...A, learning: "approve" })).body.learning, "approve");
+  await assert.rejects(store.commitRevision(agent.id, { ...A, learning: "always" }), refused("invalid", /learning/));
+  await assert.rejects(store.commitRevision(agent.id, { ...WF, learning: "auto" }), refused("invalid", /learning/), "a workflow revision does not learn");
+  store.close();
+});

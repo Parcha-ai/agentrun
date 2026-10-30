@@ -59,7 +59,8 @@ export function client(baseUrl, token) {
   };
 }
 
-export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], ...extra } });
+/** An agentic agent `id` that does not learn unless `extra` says so: learning.test.mjs covers a new agent's default. */
+export const agent = (id, extra = {}) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], tools: [], learning: null, ...extra } });
 
 /** A workflow of one model node: `answer` extracts `{answer: number}` from the input's `question`. */
 export const answerFlow = (instructions = "Answer the question.") => ({

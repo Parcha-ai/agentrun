@@ -18,6 +18,7 @@ import { cancelledIn, markRequests } from "./request-start.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
+import { LEARN_TOOL, learningOf, runLearning } from "./learning.js";
 import { adapterRun } from "./harness-app.js";
 import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
@@ -115,9 +116,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     await durable.setStatus("sleeping", { reason: "drained" }, { wakeAt: at === null ? null : new Date(at).toISOString() });
   };
   if (revision.kind === "agentic") {
-    const tools = (await Promise.all(revision.body.tools.map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    const instructions = await promptOf(revision.body.instructions, Object.keys(revision.body.skills), where.work);
-    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
+    const learns = learningOf(revision) !== "off";
+    // The learn tool comes with learning, below.
+    const tools = (await Promise.all(revision.body.tools.filter((name) => !(learns && name === LEARN_TOOL)).map((name) => bind(name)))).flatMap((binding) => binding.tools);
+    // A learning run starts from its agent's repository at one commit: the notes and the skills the agent wrote there,
+    // and the learn tool for what it learns now.
+    const learning = !learns ? undefined : await runLearning(where, run.agent, skillNames(Object.keys(revision.body.skills)), join(where.store, RUN_STORE_FILE), process.env);
+    if (learning) {
+      registry.install(learning.extension);
+      settles.push((harness) => learning.beforeResume({ harness } as BeforeResume));
+    }
+    const instructions = await promptOf(revision.body.instructions, [...Object.keys(revision.body.skills), ...(learning?.skillFiles ?? [])], where.work);
+    return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools: [...tools, ...(learning?.tools ?? [])] } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
