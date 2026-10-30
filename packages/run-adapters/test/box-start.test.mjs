@@ -6,12 +6,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmdirSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmdirSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { BoxError, boxListens, forwardChild, buildBoxArgv, bwrapBox, startTimeOf } from '@parcha/agentrun-kernel/host';
+import { BoxError, boxListens, forwardChild, buildBoxArgv, bwrapBox, probeBox, startTimeOf } from '@parcha/agentrun-kernel/host';
 
 /** The harness each box runs, behind the forwarder (`forwardChild(harness, boxListens(spec))`). */
 const harness = { command: '/usr/bin/true', args: [] };
@@ -306,4 +306,27 @@ test("a server whose own cgroup is not under the delegated root is refused by na
       rmdirSync(cgroup);
     }
   }
+});
+
+test("the start probe's deadline runs from the spawn: a bwrap that never reports a pid 1 is killed by its own handle, and the probe answers unavailable by name within the bound", { timeout: 15_000 }, async (t) => {
+  const run = mkdtempSync(join(tmpdir(), 'box-probe-deadline-'));
+  const pidFile = join(run, 'bwrap.pid');
+  // A stand-in for bwrap that never writes --info-fd and never ends on its own (a mount on a filesystem that does not
+  // answer). Its sleep is bounded, so a run that never kills it leaves nothing behind for long.
+  const bwrap = join(run, 'bwrap');
+  writeFileSync(bwrap, `#!/bin/sh\necho $$ > ${JSON.stringify(pidFile)}\nexec sleep 30\n`);
+  chmodSync(bwrap, 0o755);
+  // The probe binds node's install read-only, which is refused under the server's home: give it a home of its own.
+  const home = process.env.HOME;
+  process.env.HOME = join(run, 'home');
+  t.after(() => (home === undefined ? delete process.env.HOME : (process.env.HOME = home)));
+  const began = Date.now();
+  const probed = await probeBox({ scratch: run, bwrap, deadlineMs: 500 });
+  const took = Date.now() - began;
+  assert.equal(probed.mode, 'unavailable');
+  assert.equal(probed.error, 'box_probe_timeout', JSON.stringify(probed));
+  assert.match(probed.detail, /did not finish within 500 ms of its spawn and was killed/);
+  assert.ok(took < 500 + 3000, `the probe answered after ${took} ms`);
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  assert.equal(startTimeOf(pid), undefined, `the stand-in ${pid} is still running`);
 });

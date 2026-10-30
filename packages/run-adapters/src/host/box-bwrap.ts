@@ -14,9 +14,9 @@
 // Its answer is the kernel's count: the processes left in that pid namespace, or the cgroup's population.
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Writable, Readable } from "node:stream";
 import { type Box, type BoxedChild, BoxError, type BoxRecord, type BoxRecorder, type BoxSpec, type Isolation, type Reaped } from "./box.js";
 import { BOX_FORWARD, BOX_LOOPBACK, forwardChild, type ForwardListen, parseForward } from "./box-forward.js";
@@ -75,24 +75,56 @@ function allowedSource(path: string, what: string): string {
   return path;
 }
 
-/** The mounts a spec's box gets, in order: the system, /etc's subset and its generated passwd and group, node and the
- *  CLIs, the private /proc, /dev, /tmp and /dev/shm, then the workspace, the homes and the sockets. */
-export function boxMounts(spec: BoxSpec, host: { exists(path: string): "dir" | "file" | "link" | null; link(path: string): string } = hostFs): Mount[] {
-  const mounts: Mount[] = [];
+/**
+ * A bind's host source as the kernel will open it, every link in it followed (realpath). A path not there yet resolves
+ * through its nearest existing parent (bwrap then fails on it by name). A link that leads nowhere is refused: what it
+ * names could appear between this check and the bind.
+ */
+export function resolvedSource(path: string, what: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw new BoxError("box_refused", `${what} ${path} cannot be resolved (${code})`, { cause: error });
+    if (hostFs.exists(path) === "link") throw new BoxError("box_refused", `${what} ${path} is a link that leads nowhere`);
+    const parent = dirname(path);
+    return parent === path ? path : join(resolvedSource(parent, what), basename(path));
+  }
+}
+
+/**
+ * The mounts a spec's box gets, in order: the private /proc, /dev, /tmp and /dev/shm FIRST, so that a later mount never
+ * hides a bind under them (a node, a CLI or a workspace under the host's /tmp); then the system, /etc's subset and its
+ * generated passwd and group, node and the CLIs, the workspace, the homes and the sockets.
+ *
+ * Every bind's host source is the RESOLVED path (`resolvedSource`), checked as resolved, and bound at the path as given:
+ * a link to the server's home is refused by what it leads to, and bwrap is handed the very path that was checked, while
+ * the box sees each path where its argv and environment name it (node, the forwarder, the workspace, the homes).
+ * What is left: a parent of a source swapped for a link after this resolve and before bwrap's bind. The sources are the
+ * host's own choice (machine.ts), and no read-only source may sit under serve's data root (checkBoxArgv's `hidden`),
+ * where every box's writable tree lives; so only a process of the server's own uid outside every box could swap one, and
+ * that process could read what the box would have anyway.
+ */
+export function boxMounts(
+  spec: BoxSpec,
+  host: { exists(path: string): "dir" | "file" | "link" | null; link(path: string): string; real(path: string, what: string): string } = hostFs,
+): Mount[] {
+  /** A bind of `path` as given: its resolved source, checked both as given and as resolved, at the given path. */
+  const bind = (option: "--bind" | "--ro-bind", path: string, what: string, at = path): Mount => [option, allowedSource(host.real(allowedSource(path, what), what), what), at];
+  const mounts: Mount[] = [["--proc", "/proc"], ["--dev", "/dev"], ["--tmpfs", "/tmp"], ["--tmpfs", "/dev/shm"]];
   for (const path of SYSTEM) {
     const kind = host.exists(path);
     if (kind === "link") mounts.push(["--symlink", host.link(path), path]);
-    else if (kind === "dir") mounts.push(["--ro-bind", path, path]);
+    else if (kind === "dir") mounts.push(["--ro-bind", host.real(path, "the system's"), path]);
   }
-  for (const path of ETC) if (host.exists(path)) mounts.push(["--ro-bind", path, path]);
+  for (const path of ETC) if (host.exists(path)) mounts.push(["--ro-bind", host.real(path, "the system's"), path]);
   mounts.push(["--ro-bind-data", String(PASSWD_FD), "/etc/passwd"], ["--ro-bind-data", String(GROUP_FD), "/etc/group"]);
-  for (const path of spec.readOnly) mounts.push(["--ro-bind", allowedSource(path, "a read-only path"), path]);
-  mounts.push(["--proc", "/proc"], ["--dev", "/dev"], ["--tmpfs", "/tmp"], ["--tmpfs", "/dev/shm"]);
+  for (const path of spec.readOnly) mounts.push(bind("--ro-bind", path, "a read-only path"));
   // The workspace at its own path (the adapters pass host paths through untouched), and at /workspace as well.
-  mounts.push(["--bind", allowedSource(spec.workspace, "the workspace"), spec.workspace], ["--bind", spec.workspace, "/workspace"]);
-  for (const [name, path] of Object.entries(spec.homes)) mounts.push(["--bind", allowedSource(path, `home ${name}`), path]);
-  mounts.push(["--bind", allowedSource(spec.modelSocket, "the model socket"), BOX_MODEL_SOCKET]);
-  if (spec.egressSocket !== undefined) mounts.push(["--bind", allowedSource(spec.egressSocket, "the egress socket"), BOX_EGRESS_SOCKET]);
+  mounts.push(bind("--bind", spec.workspace, "the workspace"), bind("--bind", spec.workspace, "the workspace", "/workspace"));
+  for (const [name, path] of Object.entries(spec.homes)) mounts.push(bind("--bind", path, `home ${name}`));
+  mounts.push(bind("--bind", spec.modelSocket, "the model socket", BOX_MODEL_SOCKET));
+  if (spec.egressSocket !== undefined) mounts.push(bind("--bind", spec.egressSocket, "the egress socket", BOX_EGRESS_SOCKET));
   return mounts;
 }
 
@@ -106,6 +138,7 @@ const hostFs = {
     }
   },
   link: (path: string) => readlinkSync(path),
+  real: resolvedSource,
 };
 
 /** The box's whole argv: flags, mounts, the working directory, the environment, the two fds, then the child. */
@@ -211,11 +244,26 @@ export function checkBoxArgv(argv: readonly string[], spec: BoxSpec, options: { 
       for (const root of privateRoots()) if (isUnder(path, root)) refuse(`${m[0]} ${path} is the server's own (${root})`);
     }
   }
-  // A bind whose host source is a hidden path or holds one (its parent, or the root) shows it to the box; one under it does
-  // not. Only a bind's source is the host's: a --tmpfs, --proc or --dev, or a bind's destination, shows nothing of it.
+  // A mount made after a bind under it hides that bind (a --tmpfs /tmp over a node or a workspace bound under /tmp).
+  for (const [n, m] of mounts.entries()) {
+    if (m[0] !== "--tmpfs" && m[0] !== "--proc" && m[0] !== "--dev") continue;
+    const under = mounts.slice(0, n).find((earlier) => earlier[0] !== "--tmpfs" && earlier[0] !== "--proc" && earlier[0] !== "--dev" && isUnder(earlier.at(-1)!, m[1]!));
+    if (under) refuse(`${m[0]} ${m[1]} comes after ${under[0]} to ${under.at(-1)}, which it would hide`);
+  }
+  // A bind whose host source is a hidden path or holds one (its parent, or the root) shows it to the box. Only a bind's
+  // source is the host's: a --tmpfs, --proc or --dev, or a bind's destination, shows nothing of it. Under a hidden path
+  // only the run's own writable trees may be bound (the workspace, the homes, the sockets): a READ-ONLY source there is
+  // refused, since a run's files live there and one run could swap a link in what another run's box reads. The hidden
+  // paths are compared as resolved, as the sources are.
+  const hiddenRoots = (options.hidden ?? []).map((hidden) => resolvedSource(hidden, "the hidden path"));
   for (const m of mounts) {
     if (m[0] !== "--bind" && m[0] !== "--ro-bind") continue;
-    for (const hidden of options.hidden ?? []) if (isUnder(hidden, m[1]!)) refuse(`${m[0]} ${m[1]} shows ${hidden}, which a box never sees`);
+    for (const hidden of hiddenRoots) {
+      if (isUnder(hidden, m[1]!)) refuse(`${m[0]} ${m[1]} shows ${hidden}, which a box never sees`);
+      if (m[0] === "--ro-bind" && isUnder(m[1]!, hidden)) {
+        refuse(`a read-only path ${m[2]}${m[1] !== m[2] ? ` (${m[1]})` : ""} is under ${hidden}, where a run's files live: put the data root outside node's prefix and the installed packages`);
+      }
+    }
   }
   // Exactly the allowlist: the same mounts, the same number of times, in any order.
   const key = (m: readonly string[]) => JSON.stringify(m);
@@ -667,7 +715,7 @@ const PROBE_HOST = "127.0.0.1"; // key-gate: loopback-rule the probe listens on 
  *  closed: any failure is `unavailable` with its named cause. `scratch` is a directory the probe may make a
  *  workspace in (it is removed after); node's install prefix is bound read-only, so a node under the server's home
  *  cannot be boxed and the probe says so. */
-export async function probeBox(options: { scratch: string; bwrap?: string; reapMs?: number }): Promise<Isolation> {
+export async function probeBox(options: { scratch: string; bwrap?: string; reapMs?: number; deadlineMs?: number }): Promise<Isolation> {
   const bwrap = options.bwrap ?? BWRAP;
   const state = bwrapState(bwrap);
   if (!state.ok) return { mode: "unavailable", error: state.error, detail: state.detail };
@@ -704,14 +752,31 @@ s.on("error", (e) => { out.loopback = e.code; console.log(JSON.stringify(out)); 
     }
     let out = "";
     boxed.child.stdout?.on("data", (d: Buffer) => (out += d.toString("utf8")));
+    // One deadline from the spawn (start spawned before it returned), over the start and the run alike: a box that never
+    // reports its pid 1 (a bind of a source on a filesystem that does not answer) or never ends is killed at it, this
+    // box only (its own handle: the spawned bwrap, and its pid 1 once recorded and still the same process), and the probe
+    // fails closed.
+    const deadlineMs = options.deadlineMs ?? 20_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<"expired">((resolveExpired) => {
+      timer = setTimeout(() => {
+        boxed.kill();
+        resolveExpired("expired");
+      }, deadlineMs);
+    });
+    const timedOut = async (): Promise<Isolation> => {
+      await Promise.race([boxed.exited, sleep(2000)]);
+      const said = boxed.stderrTail().trim().slice(0, 200);
+      return { mode: "unavailable", error: "box_probe_timeout", detail: `the probe's box did not finish within ${deadlineMs} ms of its spawn and was killed${said ? `; bwrap said: ${said}` : ""}` };
+    };
     try {
-      await boxed.ready;
+      if ((await Promise.race([boxed.ready, expired])) === "expired") return await timedOut();
+      if ((await Promise.race([boxed.exited, expired])) === "expired") return await timedOut();
     } catch (error) {
       return { mode: "unavailable", error: error instanceof BoxError ? error.code : "box_probe_failed", detail: String((error as Error)?.message ?? error) };
+    } finally {
+      clearTimeout(timer);
     }
-    const timer = setTimeout(() => boxed.kill(), 10_000);
-    await boxed.exited;
-    clearTimeout(timer);
     const reaped = await box.reap(boxed.record);
     let seen: { pid1?: string; data?: boolean; loopback?: string } = {};
     try {

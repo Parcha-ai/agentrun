@@ -1,7 +1,7 @@
 // ./host's box (box-bwrap.ts): the bwrap argv is built from an explicit allowlist and checked, structurally and
 // completely, before anything is spawned. These run anywhere: no bwrap is started.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -152,4 +152,62 @@ test('the box works in its workspace: an argv whose --chdir names another direct
   const at = argv.indexOf('--chdir');
   assert.equal(argv[at + 1], s.workspace);
   for (const elsewhere of ['/tmp', '/workspace', join(s.workspace, '..')]) refused([...argv.slice(0, at + 1), elsewhere, ...argv.slice(at + 2)], s, /--chdir is not the workspace/);
+});
+
+test('the private /tmp is mounted before every bind, so a read-only source and a workspace under the host\'s /tmp stay visible: a tmpfs after a bind under it is refused by name', () => {
+  const run = mkdtempSync(join(tmpdir(), 'box-tmp-order-'));
+  assert.ok(run.startsWith('/tmp/'), `this test needs a TMPDIR under /tmp, not ${run}`);
+  const tool = join(run, 'node-prefix');
+  mkdirSync(tool);
+  const s = spec({ readOnly: [tool], workspace: join(run, 'work') });
+  const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
+  checkBoxArgv(argv, s);
+  const at = (option, operand) => argv.findIndex((a, i) => a === option && argv[i + 1] === operand);
+  const tmpfs = at('--tmpfs', '/tmp');
+  assert.ok(tmpfs >= 0 && tmpfs < at('--ro-bind', tool), 'the tmpfs comes after the read-only bind under /tmp, and hides it');
+  assert.ok(tmpfs < at('--bind', s.workspace), 'the tmpfs comes after the workspace bind under /tmp, and hides it');
+  // The same argv with the tmpfs moved after the binds.
+  const moved = [...argv];
+  moved.splice(tmpfs, 2);
+  moved.splice(moved.indexOf('--chdir'), 0, '--tmpfs', '/tmp');
+  refused(moved, s, new RegExp(`--tmpfs /tmp comes after --ro-bind to ${tool.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, which it would hide`));
+});
+
+test('a bind source given through a link is checked as what it leads to and bound at the path as given: a link to the server\'s home is refused by name, a link to an allowed tree binds its target there, a link to nothing is refused', () => {
+  const run = mkdtempSync(join(tmpdir(), 'box-links-'));
+  const toHome = join(run, 'sdk');
+  symlinkSync(homedir(), toHome);
+  const s = spec({ readOnly: [toHome] });
+  assert.throws(() => buildBoxArgv(s, forwardChild(harness, boxListens(s))), (e) => e instanceof BoxError && e.code === 'box_refused' && /a read-only path .* is or holds .*, the server's own/.test(e.message) && e.message.includes(homedir()), 'a link to the server\'s home');
+  const target = join(run, 'node-prefix');
+  mkdirSync(target);
+  const toTarget = join(run, 'node');
+  symlinkSync(target, toTarget);
+  const t = spec({ readOnly: [toTarget] });
+  const argv = buildBoxArgv(t, forwardChild(harness, boxListens(t)));
+  checkBoxArgv(argv, t);
+  const bound = argv.findIndex((a, i) => a === '--ro-bind' && argv[i + 2] === toTarget);
+  assert.deepEqual(argv.slice(bound, bound + 3), ['--ro-bind', realpathSync(target), toTarget], 'the target, bound at the path as given');
+  const nowhere = join(run, 'gone');
+  symlinkSync(join(run, 'not-there'), nowhere);
+  const u = spec({ readOnly: [nowhere] });
+  assert.throws(() => buildBoxArgv(u, forwardChild(harness, boxListens(u))), (e) => e instanceof BoxError && e.code === 'box_refused' && /is a link that leads nowhere/.test(e.message));
+});
+
+test('no read-only source lies under serve\'s data root, where a run\'s files live: one given there, through a link from outside it, or under a data root given through a link, is refused by name; the workspace under it still binds', () => {
+  const base = mkdtempSync(join(tmpdir(), 'box-ro-hidden-'));
+  const dataRoot = join(base, 'data');
+  const inRun = join(dataRoot, 'runs', 'a', 'work', 'node_modules');
+  mkdirSync(inRun, { recursive: true });
+  const fromOutside = join(base, 'packages');
+  symlinkSync(inRun, fromOutside);
+  const rootLink = join(base, 'data-link');
+  symlinkSync(dataRoot, rootLink);
+  const why = /a read-only path .* is under .*, where a run's files live: put the data root outside node's prefix and the installed packages/;
+  for (const [path, hidden] of [[inRun, [dataRoot]], [fromOutside, [dataRoot]], [inRun, [rootLink]]]) {
+    const s = spec({ readOnly: ['/usr/local/lib/node-test', path] });
+    assert.throws(() => checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s, { hidden }), (e) => e instanceof BoxError && e.code === 'box_refused' && why.test(e.message) && e.message.includes(path), `${path} under ${hidden}`);
+  }
+  const w = spec({ workspace: join(dataRoot, 'runs', 'b', 'work') });
+  checkBoxArgv(buildBoxArgv(w, forwardChild(harness, boxListens(w))), w, { hidden: [dataRoot] });
 });

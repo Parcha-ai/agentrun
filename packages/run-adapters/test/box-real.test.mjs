@@ -3,7 +3,7 @@
 // without one they skip, naming the probe's answer, unless AGENTRUN_BOX_REAL=1 (the CI job that installs it) makes them fail.
 // The server's home is never bound into a box, so the job runs them with a HOME outside the checkout.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -116,6 +116,22 @@ test("the workspace's parents are empty in the box: only the workspace is bound,
     assert.match(out(), /secret\.txt: No such file or directory/);
     assert.match(out(), /^the run$/m);
     assert.equal(lines.filter((l) => l === 'the run').length, 2, 'the workspace at its own path and at /workspace');
+  } finally {
+    r.remove();
+  }
+});
+
+test('a read-only path given through a link is its target, seen at the path as given: the box reads the target\'s file there, and the link\'s own directory shows nothing else', { skip }, async () => {
+  const r = run('link');
+  const target = join(r.root, 'tools-1.2.3');
+  mkdirSync(target);
+  writeFileSync(join(target, 'tool.txt'), 'the target');
+  const given = join(r.root, 'tools');
+  symlinkSync(target, given);
+  try {
+    const { out, said } = await inBox({ ...r.spec, readOnly: [...r.spec.readOnly, given] }, `cat '${join(given, 'tool.txt')}'; echo; ls -A '${target}' 2>&1`);
+    assert.match(out(), /^the target$/m, `the target's file at the given path: ${said()}`);
+    assert.match(out(), /tools-1\.2\.3': No such file or directory/, `the target's own path is not bound: ${said()}`);
   } finally {
     r.remove();
   }

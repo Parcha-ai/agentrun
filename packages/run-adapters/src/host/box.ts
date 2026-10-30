@@ -80,6 +80,8 @@ export type Isolation =
 
 export type BoxErrorCode =
   | "bwrap_missing" | "bwrap_setuid" | "bwrap_userns_denied" | "box_probe_failed"
+  /** The start probe's box did not finish within its deadline from the spawn, and was killed. */
+  | "box_probe_timeout"
   | "box_refused" | "box_record_failed" | "box_start_failed"
   /** A start while the session's last box is live, being reaped, or was not confirmed empty. */
   | "box_busy"
