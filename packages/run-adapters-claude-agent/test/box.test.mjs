@@ -101,3 +101,20 @@ test('with its own tools off, the CLI runs with no box, as before', async (t) =>
   const { result } = await run(t, { builtins: false });
   assert.deepEqual(await result, { answer: 'ok' });
 });
+
+/** The session's last box, as a host names it, reaped by `verdict`; the ids it was asked to reap go in `reaped`. */
+const lastBox = (reaped, verdict) => ({ record: { id: 'box-old', writer: { pid: 1, startTime: '1' } }, reap: async (record) => { reaped.push(record.id); return verdict; } });
+
+test("the session's last box the host names is reaped before the CLI starts, boxed or unsandboxed: one that will not empty fails the turn by name", async (t) => {
+  for (const box of [await machineBox(fakeBox()), 'unsandboxed']) {
+    const reaped = [];
+    const { result, seen } = await run(t, { box, previousBox: lastBox(reaped, { empty: false, left: 2, by: 'pidns' }) });
+    await assert.rejects(result, (error) => /box_not_empty: the session's last box still holds 2 processes \(counted by pidns\)/.test(String(error?.message ?? error)), String(box));
+    assert.ok(reaped.length >= 1 && reaped.every((id) => id === 'box-old'), `the host's record was reaped: ${reaped}`);
+    assert.equal(seen.length, 0, 'the CLI never started');
+  }
+  const reaped = [];
+  const { result } = await run(t, { box: 'unsandboxed', previousBox: lastBox(reaped, { empty: true, left: 0, by: 'pidns' }) });
+  assert.deepEqual(await result, { answer: 'ok' }, 'one counted empty lets the session start');
+  assert.ok(reaped.includes('box-old'));
+});
