@@ -5,13 +5,11 @@
 // model behind the session's loopback proxy (@parcha/agentrun-kernel/host), and the host's tools, exactly those `spec.tools` names,
 // as its only tools. Every paid request passes the runner's `beforeRequest` first, and its usage comes back through
 // `afterRequest`.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
-import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
-import { pendingSubmissions } from "@parcha/agentrun-kernel/kernel";
-import { recoveryNote, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { CallsInFlight, openAdapterSession, toolSchemaProblems } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AgentAdapter, HostTool, SessionIO, SessionSpec } from "@parcha/agentrun-kernel";
+import type { HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { CODEX_VERSION } from "./binary.js";
 import { readCodeModeModels } from "./code-mode.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
@@ -19,7 +17,7 @@ import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
-import { serialWriter, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import type { ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -62,7 +60,7 @@ export interface CodexAdapterOptions {
  *  The call runs as a kernel effect, whose intent is durable in the session's records before `execute` is entered, so a
  *  crash inside a `never` tool is always reported, never repeated. The copied harness's wait for Codex's own `function_call`
  *  line before it runs such a tool is a second guard (the transcript Codex resumes from), not the one that protects it. */
-function kernelTool(tool: HostTool): KernelTool {
+function kernelTool(tool: HostTool, io: SessionIO, calls: CallsInFlight): KernelTool {
   return {
     name: tool.name,
     // Codex strips some keywords from the schema its model is given: they are said in plain words in the description
@@ -70,10 +68,16 @@ function kernelTool(tool: HostTool): KernelTool {
     description: describedDescription(tool.description, tool.inputSchema),
     inputSchema: tool.inputSchema,
     replay: tool.replay,
-    async execute(input, io) {
+    async execute(input, effect) {
       // The effect's step is `tool:<Codex call id>#<attempt>`: the host sees Codex's call id.
-      const callId = (io.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
-      const result = await tool.call(input, { callId, signal: io.signal });
+      const callId = (effect.stepId ?? "").replace(/^tool:/, "").replace(/#\d+$/, "");
+      // In flight, and past the pause's check, before the host hears of it: a pause the host starts on this tool_start
+      // waits for this call rather than refusing it.
+      calls.begin(callId);
+      // A guard: a call begun during a pause is not run.
+      if (calls.draining) throw new Error(`${tool.name} was not run: the session is pausing`);
+      io.onEvent({ type: "tool_start", callId, name: tool.name, args: input });
+      const result = await tool.call(input, { callId, signal: effect.signal });
       if (result.isError) throw new Error(result.text);
       return result.text;
     },
@@ -84,12 +88,11 @@ function kernelTool(tool: HostTool): KernelTool {
 function adapterEvent(event: unknown): AdapterEvent | undefined {
   const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
-  if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args };
+  // A host tool's tool_start is the adapter's own (kernelTool), sent once the call is counted in flight: the bridge's, sent
+  // before that, is not passed on, so a pause the host starts on it never refuses the call.
   if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true };
   return undefined;
 }
-
-const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
 /** The test-only options' guard, the stand-in's: only a test run with AGENTRUN_CODEX_STANDIN=1, never in production. */
 function testOnly(name: string): void {
@@ -150,9 +153,10 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
       const dir = io.dir ?? (options.sessionsDir ? join(options.sessionsDir, createHash("sha256").update(spec.key).digest("hex").slice(0, 32)) : undefined);
       if (!dir) throw new Error("agentrun-harness-codex: a session needs a private directory: the host lends one (io.dir), or pass sessionsDir");
 
+      const calls = new CallsInFlight();
       const effort = spec.effort ?? spec.thinking;
       const harnessOptions: CodexHarnessOptions = {
-        tools: spec.tools.map(kernelTool),
+        tools: spec.tools.map((tool) => kernelTool(tool, io, calls)),
         builtins: false,
         model: modelFor(spec),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
@@ -182,75 +186,12 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
 
       const live = (event: unknown) => {
         const mapped = adapterEvent(event);
-        if (mapped) io.onEvent(mapped);
+        if (!mapped) return;
+        // A call's tool_end comes once its outcome is in the session's records: it is no longer in flight.
+        if (mapped.type === "tool_end") calls.end(mapped.callId);
+        io.onEvent(mapped);
       };
-      // Every drive of this session writes through one serialized writer, so a drive opened after an interrupt reads only
-      // once the halted drive's last writes are in.
-      const writer = serialWriter(io.writer);
-      const open = () => openDrive({ writer, signal: io.signal, live });
-      let drive = await open();
-      const initial = drive.state();
-      let state: AdapterSession["state"] = recoveryNote(initial) || pendingSubmissions(initial).length
-        ? "open_turn"
-        : initial.submissions.length === 0 && turnsIn(drive).length === 0 ? "new" : "idle";
-
-      let running: Promise<{ status: TurnStatus; error?: string }> | undefined;
-      let closed = false;
-      const run = () => {
-        const before = turnsIn(drive).length;
-        const current = drive;
-        state = "idle";
-        running = (async () => {
-          let outcome: { status: TurnStatus; error?: string };
-          try {
-            await harness.drive(current);
-            const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
-            outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
-          } catch (error) {
-            outcome = current.signal.aborted
-              ? { status: "interrupted" }
-              : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
-          }
-          io.onEvent({ type: "turn_end", status: outcome.status });
-          return outcome;
-        })();
-        return running;
-      };
-      // A drive that was halted (an interrupt) holds the session no more: the next turn opens a fresh one, on the same
-      // writer (the adapter never opens the session itself).
-      const ready = async () => {
-        if (closed) throw new Error("agentrun-harness-codex: the session is closed");
-        if (running) await running;
-        if (drive.signal.aborted && !io.signal.aborted) drive = await open();
-      };
-
-      return {
-        get state() { return state; },
-        async send(text) {
-          await ready();
-          await drive.submit({ id: randomUUID(), kind: "prompt", text });
-          void run();
-        },
-        async recover() {
-          if (state !== "open_turn") throw new Error("agentrun-harness-codex: there is no turn to recover");
-          await ready();
-          void run();
-        },
-        async turnEnd() {
-          if (!running) throw new Error("agentrun-harness-codex: no turn is in flight");
-          return running;
-        },
-        async interrupt() {
-          drive.halt?.(new Error("interrupted"));
-          await running?.catch(() => {});
-        },
-        async close() {
-          if (closed) return;
-          closed = true;
-          drive.halt?.(new Error("closed"));
-          await running?.catch(() => {});
-        },
-      };
+      return openAdapterSession({ name: "agentrun-harness-codex", io, drive: (drive) => harness.drive(drive), live, calls });
     },
   };
 }
