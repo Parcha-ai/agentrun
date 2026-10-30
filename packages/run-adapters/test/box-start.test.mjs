@@ -11,7 +11,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { BoxError, buildBoxArgv, bwrapBox, startTimeOf } from '@parcha/agentrun-adapters/host';
+import { BoxError, boxChild, buildBoxArgv, bwrapBox, startTimeOf } from '@parcha/agentrun-adapters/host';
+
+/** The harness each box runs, behind the forwarder (`boxChild`). */
+const harness = { command: '/usr/bin/true', args: [] };
 
 function setup() {
   const run = mkdtempSync(join(tmpdir(), 'box-start-'));
@@ -74,7 +77,7 @@ test('the record\'s ahead is on disk before the spawn, and carries this process 
   let atSpawn;
   const { spawnFake } = fakeBwrap({ marker, onSpawn: () => (atSpawn = existsSync(recordFile) ? JSON.parse(readFileSync(recordFile, 'utf8')) : undefined) });
   const box = bwrapBox({ spawn: spawnFake });
-  const boxed = box.start(spec, { command: '/usr/bin/true', args: [] }, { ahead: durable, started: async (r) => durable(r) });
+  const boxed = box.start(spec, boxChild(spec, harness), { ahead: durable, started: async (r) => durable(r) });
   assert.ok(atSpawn, 'the ahead record was not on disk when bwrap was spawned');
   assert.equal(typeof atSpawn.id, 'string');
   assert.deepEqual(atSpawn.writer, { pid: process.pid, startTime: startTimeOf(process.pid) });
@@ -88,7 +91,7 @@ test('no process of the harness runs before started() is durable: the marker is 
   const { spawnFake } = fakeBwrap({ marker });
   let markerDuringStarted;
   const box = bwrapBox({ spawn: spawnFake });
-  const boxed = box.start(spec, { command: '/usr/bin/true', args: [] }, {
+  const boxed = box.start(spec, boxChild(spec, harness), {
     ahead: durable,
     started: async (r) => {
       await new Promise((resolve) => setTimeout(resolve, 50)); // a slow disk: the box must still wait
@@ -111,7 +114,7 @@ test('a failed started() kills the box: the harness never ran, and ready rejects
   const { spec, marker, durable } = setup();
   const { spawnFake, procs } = fakeBwrap({ marker });
   const box = bwrapBox({ spawn: spawnFake, reapMs: 200 });
-  const boxed = box.start(spec, { command: '/usr/bin/true', args: [] }, { ahead: durable, started: async () => { throw new Error('disk full'); } });
+  const boxed = box.start(spec, boxChild(spec, harness), { ahead: durable, started: async () => { throw new Error('disk full'); } });
   await assert.rejects(boxed.ready, (e) => e instanceof BoxError && e.code === 'box_record_failed' && /disk full/.test(e.message));
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(existsSync(marker), false, 'the harness ran although its record failed');
@@ -124,7 +127,7 @@ test('stdin written before the release reaches the harness intact', async () => 
   const box = bwrapBox({ spawn: spawnFake });
   let release;
   const gate = new Promise((resolve) => (release = resolve));
-  const boxed = box.start(spec, { command: '/usr/bin/true', args: [] }, { ahead: durable, started: async (r) => { await gate; durable(r); } });
+  const boxed = box.start(spec, boxChild(spec, harness), { ahead: durable, started: async (r) => { await gate; durable(r); } });
   const sent = Buffer.concat([Buffer.from('{"type":"user","message":"hi"}\n'), Buffer.from([0, 1, 2, 255, 13, 10])]);
   boxed.child.stdin.write(sent); // the SDK writes at once, before the box is released
   let out = Buffer.alloc(0);
@@ -141,7 +144,7 @@ test('a refused argv throws synchronously and nothing is spawned or recorded', (
   const { spawnFake, calls } = fakeBwrap({ marker });
   let aheads = 0;
   const box = bwrapBox({ spawn: spawnFake });
-  assert.throws(() => box.start({ ...spec, readOnly: ['/'] }, { command: '/usr/bin/true', args: [] }, { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused');
+  assert.throws(() => box.start({ ...spec, readOnly: ['/'] }, boxChild(spec, harness), { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused');
   assert.equal(calls.length, 0);
   assert.equal(aheads, 0);
   void durable;
@@ -152,7 +155,7 @@ test('an argv the builder got wrong is still refused before the spawn: start che
   const { spawnFake, calls } = fakeBwrap({ marker });
   let aheads = 0;
   const box = bwrapBox({ spawn: spawnFake, buildArgv: (s, c) => buildBoxArgv(s, c).filter((a) => a !== '--unshare-net') });
-  assert.throws(() => box.start(spec, { command: '/usr/bin/true', args: [] }, { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused' && /--unshare-net is missing/.test(e.message));
+  assert.throws(() => box.start(spec, boxChild(spec, harness), { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused' && /--unshare-net is missing/.test(e.message));
   assert.equal(calls.length, 0);
   assert.equal(aheads, 0);
 });
@@ -161,7 +164,7 @@ test('an ahead that throws stops the start before the spawn', () => {
   const { spec, marker } = setup();
   const { spawnFake, calls } = fakeBwrap({ marker });
   const box = bwrapBox({ spawn: spawnFake });
-  assert.throws(() => box.start(spec, { command: '/usr/bin/true', args: [] }, { ahead: () => { throw new Error('no disk'); }, started: async () => {} }), /no disk/);
+  assert.throws(() => box.start(spec, boxChild(spec, harness), { ahead: () => { throw new Error('no disk'); }, started: async () => {} }), /no disk/);
   assert.equal(calls.length, 0);
 });
 
@@ -169,7 +172,7 @@ test('bwrap that ends before reporting its pid rejects ready with the named caus
   const { spec, marker, durable } = setup();
   const { spawnFake } = fakeBwrap({ marker, exitBeforeInfo: 'bwrap: setting up uid map: Permission denied\n' });
   const box = bwrapBox({ spawn: spawnFake });
-  const boxed = box.start(spec, { command: '/usr/bin/true', args: [] }, { ahead: durable, started: async () => assert.fail('started without a pid') });
+  const boxed = box.start(spec, boxChild(spec, harness), { ahead: durable, started: async () => assert.fail('started without a pid') });
   await assert.rejects(boxed.ready, (e) => e instanceof BoxError && e.code === 'bwrap_userns_denied');
   assert.equal(existsSync(marker), false);
 });
@@ -179,7 +182,7 @@ test('bwrap is started with only PATH in its environment, never the run process\
   const { spawnFake, calls } = fakeBwrap({ marker });
   process.env.BOX_TEST_CANARY = 'canary';
   try {
-    const boxed = bwrapBox({ spawn: spawnFake }).start(spec, { command: '/usr/bin/true', args: [] }, { ahead: durable, started: async (r) => durable(r) });
+    const boxed = bwrapBox({ spawn: spawnFake }).start(spec, boxChild(spec, harness), { ahead: durable, started: async (r) => durable(r) });
     assert.deepEqual(calls[0].options.env, { PATH: '/usr/bin:/bin' });
     boxed.ready.then(() => boxed.kill());
   } finally {
