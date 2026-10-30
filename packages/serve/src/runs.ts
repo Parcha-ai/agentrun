@@ -27,7 +27,7 @@ import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
-import { handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -258,8 +258,9 @@ export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
-/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own. */
-export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name));
+/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
+ *  keys, which go on their own descriptor. */
+export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
@@ -712,7 +713,8 @@ export class Runs {
     // process gets the decision key once on an inherited pipe, for its judge's runner alone (decisions.ts).
     delete env[JEV_KEY_ENV];
     delete env[DECISION_KEY_FD_ENV];
-    const decision = run.kind === "workflow" ? jevKey(process.env) : undefined;
+    // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
+    const decision = run.kind === "workflow" ? jevKey(withSecrets(process.env)) : undefined;
     const handsKey = decision !== undefined;
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];

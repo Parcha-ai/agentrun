@@ -322,6 +322,9 @@ node, with typed answers and their probabilities.
   inherits it. With no key, no descriptor is opened. On the OpenRouter route the judge's key comes on the same
   descriptor, never from the run's environment; that key is also the model gateway's key, which a run's process holds
   for its model nodes.
+- `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` are among the secrets the launcher hands the server over its pipe, so the
+  server holds them out of its own environment too. Neither is ever among the secrets a run's process gets over its own
+  pipe, which are its tools' environment: the decision descriptor is their only way into a run.
 
 ## Archiving
 
