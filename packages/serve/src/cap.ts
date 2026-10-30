@@ -56,18 +56,28 @@ export interface CapGuard {
  *  flight, plus this request's, must stay within `cap`, else the request is refused with spend_cap_reached. A request's
  *  worst case is its output ceiling at the run model's price (its input is not known before the harness sends it; a
  *  request on a cheaper model is held at that price too, which only refuses sooner). Requests in flight hold theirs until
- *  they answer, as pi's own cap holds them, so requests sent side by side cannot pass the cap together. A spend that is
- *  unknown (a request a crash cut) cannot be kept within a cap, so it is refused too; a model with no price never reaches
- *  a cap, as on pi. */
+ *  they answer, as pi's own cap holds them, so requests sent side by side cannot pass the cap together. Under a cap,
+ *  whatever cannot be priced refuses, never passes as $0: a spend that is unknown (a request a crash cut), a model this
+ *  process cannot find, a model with no price, and one with no output ceiling to price a request by. */
 export async function capBefore(cap: number | undefined, model: Model<Api> | undefined): Promise<CapGuard | undefined> {
-  if (cap === undefined || model === undefined) return undefined;
+  if (cap === undefined) return undefined;
+  const refusing = (why: string): CapGuard => ({ beforeRequest: () => ({ refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. ${why}, so its cap of $${cap} cannot be kept: the run is out of budget.` }) });
+  if (model === undefined) return refusing("The run's model is unknown here (model unknown)");
+  const ceiling = ceilingTokens(model);
+  if (!(Number.isFinite(ceiling) && ceiling > 0)) return refusing(`The model ${model.id} has no output ceiling to price a request by (no output ceiling)`);
   const { calculateCost } = await import("@earendil-works/pi-ai");
-  const worst = calculateCost(model, { input: 0, output: ceilingTokens(model), cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }).total;
+  const worst = calculateCost(model, { input: 0, output: ceiling, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }).total;
+  if (!(worst > 0)) return refusing(`The model ${model.id} has no price (no price)`);
+  return guardOf(cap, worst);
+}
+
+/** The guard over a request's worst case `worst`: written so that a worst case that is not a number refuses. */
+export function guardOf(cap: number, worst: number): CapGuard {
   return {
     beforeRequest({ spentUsd, inFlight }) {
       if (spentUsd === null) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. What the run has spent is unknown, so its cap of $${cap} cannot be kept: the run is out of budget.` };
       const held = worst * inFlight.length;
-      if (spentUsd + held + worst > cap) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
+      if (!(spentUsd + held + worst <= cap)) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
       return undefined;
     },
   };
