@@ -541,6 +541,39 @@ describe("a stop in progress", () => {
 				await box.destroy(context);
 			}
 		});
+
+		it(`gives up its wait after 2 s on a clock that moves: a listed process that never goes does not hold the stop, which removes the lock and ends (${setsid ? "with" : "without"} setsid)`, async () => {
+			const box = await boxOn(setsid, false);
+			try {
+				const started = getOrThrow(await launch(box, "endless", { argv: ["sleep", "300"] }, context));
+				const at = (file: string) => join(started.directory, file);
+				const watch = Number(readFileSync(at("watch.pid"), "utf8").trim());
+				mkdirSync(at("trim"));
+				// The stop's own process table, on the real clock: every process there is now, and one it cannot end that is
+				// never taken away, in the watchdog's group (setsid) or its child (no setsid), at an id past any pid_max.
+				const proc = mkdtempSync(join(root, "proc-"));
+				for (const name of readdirSync("/proc"))
+					if (/^\d+$/.test(name)) symlinkSync(`/proc/${name}`, join(proc, name));
+				symlinkSync("/proc/uptime", join(proc, "uptime"));
+				mkdirSync(join(proc, "4194999"));
+				writeFileSync(
+					join(proc, "4194999", "stat"),
+					setsid ? `4194999 (held) S 1 ${watch} ${watch} 0\n` : `4194999 (held) S ${watch} 4194999 4194999 0\n`,
+				);
+				writeFileSync(at("launcher.sh"), LAUNCHER_SCRIPT.replace(PROC_LINE, `PROC='${proc}'`));
+				const stopped = await Promise.race([
+					launchStop(box, started.launch, { graceMs: 300 }, context),
+					new Promise<"held">((resolve) => setTimeout(() => resolve("held"), 15_000)),
+				]);
+				expect(stopped === "held" ? "the stop was still waiting after 15 s" : getOrThrow(stopped).phase).toBe(
+					"stopped",
+				);
+				expect(existsSync(at("stop.done"))).toBe(true);
+				expect(existsSync(at("trim"))).toBe(false);
+			} finally {
+				await box.destroy(context);
+			}
+		});
 	}
 });
 
