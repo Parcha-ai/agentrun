@@ -1,21 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { stagehandDriver } from "../dist/driver/stagehand.js";
 import { cdpProvider } from "../dist/providers/cdp.js";
 import { pageTools, workspaceFiles } from "../dist/index.js";
 import { CHROME, NO_CHROME, skipIncapable } from "./fixtures/local-chrome.mjs";
-import { killNaming, processesNaming } from "./fixtures/scratch.mjs";
+import { killNaming, processesNaming, scratch } from "./fixtures/scratch.mjs";
 import { startSite, totp } from "./fixtures/site.mjs";
 
 const LOOPBACK_ONLY = "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost";
 const spec = (tag) => ({ tag, maxLifetimeS: 600, idleTimeoutS: 60, proxies: false, verified: false, captcha: false, viewport: { width: 1000, height: 700 }, metadata: {} });
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const parse = (out) => JSON.parse(out.content[0].text);
-const scratch = (prefix) => fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), prefix));
 const until = async (check, ms, what) => {
   for (const end = Date.now() + ms; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
     const value = await check().catch(() => undefined);
@@ -25,8 +23,11 @@ const until = async (check, ms, what) => {
 };
 
 test("workspace files go into a real page and downloads come back into the workspace; the shared fixture site behaves", { skip: NO_CHROME, timeout: 180_000 }, async (t) => {
-  const root = scratch("files-chrome-");
-  const workspace = scratch("files-chrome-ws-");
+  // The shared scratch registers each directory in the preload's `made` set and schedules its removal LAST, after this
+  // test's own teardown, killing a Chrome that outlived it before removing the directory. So a teardown that throws
+  // (a process outliving its wait) no longer orphans the profile root under the runner's temp directory.
+  const root = await scratch(t, "files-chrome-");
+  const workspace = await scratch(t, "files-chrome-ws-");
   const provider = cdpProvider({ chrome: { executablePath: CHROME, profileRoot: root, args: [LOOPBACK_ONLY] } });
   const signal = new AbortController().signal;
   let ref, driver, site;
