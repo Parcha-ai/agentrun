@@ -36,3 +36,43 @@ describe("AgentEditor, a new agent whose server capabilities arrive after it ope
     act(() => root.unmount());
   });
 });
+
+describe("AgentEditor, tools a person chose by hand", () => {
+  const setup = async (props: Record<string, unknown>) => {
+    const { act } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    act(() => root.render(createElement(AgentEditor, props as never)));
+    const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
+    const checked = () => [...host.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].filter((i) => i.checked).map((i) => i.value);
+    return { host, click, checked, done: () => act(() => root.unmount()) };
+  };
+  const both = { ...caps, harnesses: [{ id: "pi", available: true }, { id: "codex", available: true }], tools: [...tools, { name: "ask_person", available: true }] };
+
+  it("keeps a hand-picked set when the harness changes", async () => {
+    const { host, click, checked, done } = await setup({ agent: null, caps: both, step: "tools" });
+    const fetchBox = host.querySelector<HTMLInputElement>('input[type=checkbox][value="fetch_page"]');
+    click(fetchBox);
+    const picked = checked();
+    expect(picked).not.toContain("fetch_page");
+    click([...host.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent ?? "")));
+    click(host.querySelector('input[type=radio][value="codex"]'));
+    click([...host.querySelectorAll("button")].find((b) => /Tools/.test(b.textContent ?? "")));
+    expect(checked()).toEqual(picked);
+    done();
+  });
+
+  it("an existing agent whose definition names no tools opens with none ticked, never the defaults", async () => {
+    const agent = { agent_id: "old", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Old", instructions: "Answer.", harness: "pi", skills: [] } };
+    let saved: { tools?: string[] } | undefined;
+    const { host, click, checked, done } = await setup({ agent, caps: both, step: "tools", onSave: async (fields: { tools?: string[] }) => { saved = fields; return null; } });
+    expect(checked()).toEqual([]);
+    // A save sends none: it never widens what the agent can do.
+    const { act } = await import("react");
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => /Save revision/i.test(b.textContent ?? ""))!.click(); });
+    expect(saved?.tools ?? []).toEqual([]);
+    done();
+  });
+});
