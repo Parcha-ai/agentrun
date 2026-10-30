@@ -8,6 +8,8 @@ import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
 import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
+import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
+import { REPLAY } from "./host-tools.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 
@@ -209,9 +211,10 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
   return { message: `This server's environment does not set what the revision's tools need: ${said}.`, unbound: [], missing };
 }
 
-/** Every tool as capabilities show it: available here, or the variables it is missing (names only). */
+/** Every tool as capabilities show it: available here, or the variables it is missing (names only), and the harnesses
+ *  that run it (another harness than pi runs only the host tools, host-tools.ts). */
 export const toolsView = (env: NodeJS.ProcessEnv) =>
   Object.entries(TOOLS).map(([name, entry]) => {
     const missing = missingEnv(entry, env);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, available: missing.length === 0, ...(missing.length ? { missing } : {}) };
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, available: missing.length === 0, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS] };
   });

@@ -20,7 +20,7 @@ import { AssistantEntry, type Cursor, ROOT_CONVERSATION_ID, ToolResultEntry, typ
 import { type AdapterEvent, type AdapterSession, type AgentAdapter, type ModelPortEvent, type ModelUsage, modelPortFor, RUNNER_RECORDS, type SessionSpec } from "@parcha/agentrun-adapters";
 import type { DoorContext, DoorEvent, DoorHook, DurableRun } from "@parcha/pi-durable-disk";
 import { type ConfineChild, confineOf } from "./adapters.js";
-import { fileTools, type ToolResults } from "./host-tools.js";
+import { hostTools, type ToolResults } from "./host-tools.js";
 import type { CapGuard } from "./cap.js";
 import { durableSessions } from "./sessions.js";
 import { REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
@@ -372,7 +372,7 @@ export function adapterRun(
       // Each request the session booked and the root does not have, or has at unknown cost only: written now, once.
       for (const [request, usage] of await bookedInSession(await writer.read())) if (!written.has(request) || (unpriced.has(request) && !priced.has(request))) costed.push({ request, usage });
       await flush();
-      session = await adapter.open({ ...spec, tools: fileTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
+      session = await adapter.open({ ...spec, tools: hostTools(durable, tools, context, results) }, { writer, models: booking.models, signal: stop.signal, onEvent, ...(dir ? { dir } : {}) });
       queue.push(...accepted.values());
       openedDone();
       if (session.state === "open_turn") runTurns(() => session!.recover());
