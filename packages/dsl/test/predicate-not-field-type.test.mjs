@@ -130,7 +130,11 @@ const refusedPoll = (until, message) => {
   let checked;
   assert.doesNotThrow(() => { checked = validateWorkflow(pollUntil(until), { input: {} }); });
   assert.equal(checked.ok, false);
-  assert.deepEqual(checked.issues.filter((issue) => message.test(issue.message)).map((issue) => issue.code), ['PREDICATE_INVALID'], checked.errors.join('\n'));
+  // Exactly the shape error: nothing reads inside a malformed predicate, so nothing else about poll.until is reported.
+  const reported = checked.issues.filter((issue) => issue.message.includes('poll.until'));
+  assert.equal(reported.length, 1, checked.errors.join('\n'));
+  assert.equal(reported[0].code, 'PREDICATE_INVALID');
+  assert.match(reported[0].message, message);
 };
 
 test('a poll whose until is not with no of is refused with PREDICATE_INVALID naming the missing of, and never throws', () => {
@@ -142,5 +146,6 @@ test('a poll whose until is not over a not with no of is refused the same way, a
 });
 
 test('a poll whose until is a field_type with no type is refused with its shape error, and never throws', () => {
-  refusedPoll({ predicate: 'field_type', path: 'state' }, /poll\.until: field_type needs a type of number\|string\|boolean\|array\|object\|null, not none/);
+  // The path lies outside the result too: a shape error stops the path check, so only the shape error is reported.
+  refusedPoll({ predicate: 'field_type', path: 'nope' }, /poll\.until: field_type needs a type of number\|string\|boolean\|array\|object\|null, not none/);
 });
