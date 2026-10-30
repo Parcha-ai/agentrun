@@ -8,10 +8,10 @@ import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmdirSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { BoxError, boxListens, forwardChild, buildBoxArgv, bwrapBox, probeBox, startTimeOf } from '@parcha/agentrun-kernel/host';
+import { BOX_FORWARD, BoxError, boxListens, forwardChild, buildBoxArgv, bwrapBox, probeBox, startTimeOf } from '@parcha/agentrun-kernel/host';
 
 /** The harness each box runs, behind the forwarder (`forwardChild(harness, boxListens(spec))`). */
 const harness = { command: '/usr/bin/true', args: [] };
@@ -344,6 +344,19 @@ test("the start probe lends its own scratch: with a TMPDIR under the server's ho
   process.env.HOME = home;
   t.after(() => (before === undefined ? delete process.env.HOME : (process.env.HOME = before)));
   // The stand-in never reports a pid 1: reaching it at all (a timeout, not a refusal) is the argv's check passing.
+  const probed = await probeBox({ scratch, bwrap, deadlineMs: 500 });
+  assert.equal(probed.error, 'box_probe_timeout', JSON.stringify(probed));
+  assert.ok(readFileSync(pidFile, 'utf8').trim() !== '', 'the stand-in was spawned');
+});
+
+test("the start probe hides only its own directory, never the rest of its scratch: with the kernel's own files under the scratch, its box passes the argv's check and is spawned", { timeout: 15_000 }, async () => {
+  // The forwarder (bound read-only) lies under this scratch, as a checkout under /tmp with /tmp as the scratch would.
+  const scratch = dirname(BOX_FORWARD);
+  const run = mkdtempSync(join(tmpdir(), 'box-probe-scratch-'));
+  const pidFile = join(run, 'bwrap.pid');
+  const bwrap = join(run, 'bwrap');
+  writeFileSync(bwrap, `#!/bin/sh\necho $$ > ${JSON.stringify(pidFile)}\nexec sleep 30\n`);
+  chmodSync(bwrap, 0o755);
   const probed = await probeBox({ scratch, bwrap, deadlineMs: 500 });
   assert.equal(probed.error, 'box_probe_timeout', JSON.stringify(probed));
   assert.ok(readFileSync(pidFile, 'utf8').trim() !== '', 'the stand-in was spawned');
