@@ -56,6 +56,7 @@ interface Dangling {
   name: string;
   /** `function_call` or `custom_tool_call` (code mode's `exec`, Codex's own `apply_patch`). */
   type: string;
+  arguments?: string;
 }
 
 /** Only a custom tool call named `exec` is code mode's: a host tool that happens to be called `exec` is a function call. */
@@ -66,6 +67,10 @@ const isExec = (d: Dangling) => d.type === "custom_tool_call" && d.name === "exe
 export function withOutputKind<T extends { call_id?: unknown; output?: unknown }>(item: T, call: Dangling): T & { type: string } {
   return { ...item, type: call.type === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output" };
 }
+
+/** What a dangling `wait` of code mode is told: it had started, on the cell named, when the session stopped and took the cell's script with it. */
+export const waitStoppedText = (cell: string) =>
+  `The session stopped while waiting on cell ${cell}; that cell's script was cut off, and nothing was run again. Check the actual state before relying on it.`;
 
 type Tie = { callId: string; exec: string | null; since?: number };
 
@@ -135,6 +140,18 @@ export function codeMode(deps: CodeModeDeps) {
     }
   };
 
+  /** The cell a dangling call waited on, when it is code mode's `wait` (a function call named `wait` with a `cell_id`, and no host tool of
+   *  that name); otherwise `undefined`. */
+  const waitedCell = (c: Dangling): string | undefined => {
+    if (c.type !== "function_call" || c.name !== "wait" || deps.bridge.get("wait")) return undefined;
+    try {
+      const cell = (JSON.parse(c.arguments ?? "") as { cell_id?: unknown }).cell_id;
+      return typeof cell === "string" || typeof cell === "number" ? String(cell) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const declined = { contentItems: [{ type: "inputText", text: deps.declined }], success: false };
 
   return {
@@ -166,7 +183,7 @@ export function codeMode(deps: CodeModeDeps) {
     },
 
     /** The outputs injected for the calls the rollout left dangling: a cut-off `exec` gets a custom tool call output from the log, in place of `items`';
-     *  any other call keeps its generic output, as an item of its own kind. `since`: the
+     *  any other call keeps its generic output, as an item of its own kind, and code mode's `wait` is told that it had started. `since`: the
      *  interrupted turn a recovery note resumes, or `NaN` when none does (then no unattributed call is listed). */
     async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number): Promise<void> {
       const state: SessionState = ctx.state();
@@ -178,7 +195,10 @@ export function codeMode(deps: CodeModeDeps) {
       const listed = recoveryFacts(execs, ties, since, (tie) => factOf(state, rolled, tie));
       dangling.forEach((c, i) => {
         if (!isExec(c)) {
-          items[i] = withOutputKind(items[i] as { call_id?: unknown; output?: unknown }, c);
+          // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
+          const cell = waitedCell(c);
+          const item = items[i] as { call_id?: unknown; output?: unknown };
+          items[i] = withOutputKind(cell === undefined ? item : { ...item, output: waitStoppedText(cell) }, c);
           return;
         }
         const { own, loose } = listed.get(c.callId)!;

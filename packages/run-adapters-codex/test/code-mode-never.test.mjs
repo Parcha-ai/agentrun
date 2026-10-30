@@ -522,3 +522,14 @@ test("a settled turn whose exec dangles with a completed never call does not ans
   assert.equal(charged, 2, 'the new turn asked for a charge and it ran: it is not answered from the ended turn');
   assert.ok(!toldAbout(seen.slice(before), 'call_js2').join('\n').includes('Recorded earlier in this turn'), 'the model is not told the new call was recorded earlier in this turn');
 });
+
+test("code mode: a crash while the model waited on a yielded script's cell: the wait is told the session stopped while it waited on that cell, never that it did not start", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed((_seen, n) => [say(n)], { yielded: true });
+  assert.ok(toldAbout(r.seen, 'call_js').join('\n').includes('Script running with cell ID 1'), 'the script yielded before the crash');
+  const told = r.seen.slice(r.before).flatMap((body) => body.input ?? []).filter((item) => item.call_id === 'call_wait' && /_output$/.test(item.type ?? ''));
+  assert.ok(told.length > 0, 'the resumed requests answer the wait');
+  assert.deepEqual([...new Set(told.map((item) => item.type))], ['function_call_output']);
+  const text = told.map((item) => (Array.isArray(item.output) ? item.output.map((o) => o.text ?? '').join('\n') : String(item.output))).join('\n');
+  assert.match(text, /The session stopped while waiting on cell 1; that cell's script was cut off, and nothing was run again\./);
+  assert.doesNotMatch(text, /Not executed/);
+});

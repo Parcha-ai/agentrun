@@ -13,7 +13,7 @@ import { NativeJournal } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
-import { withOutputKind } from '../dist/code-mode.js';
+import { codeMode, waitStoppedText, withOutputKind } from '../dist/code-mode.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
@@ -358,4 +358,36 @@ test('a dangling custom tool call that is not exec, such as apply_patch, is answ
   const item = withOutputKind({ call_id: 'c-apply_patch', output: 'Not executed: the session stopped before this call started.' }, call('custom_tool_call', 'apply_patch'));
   assert.deepEqual(item, { type: 'custom_tool_call_output', call_id: 'c-apply_patch', output: 'Not executed: the session stopped before this call started.' });
   assert.equal(withOutputKind({ call_id: 'c-shell', output: 'x' }, call('function_call', 'shell')).type, 'function_call_output');
+});
+
+/** The no-note repair of a rollout holding `calls`, unanswered, with `hostTools` bridged: the items it injects. */
+async function repairedItems(calls, hostTools = []) {
+  const injected = [];
+  const code = codeMode({
+    ctx: { state: () => ({ effects: new Map(), submissions: [], effectOrder: [] }), isMemoized: () => false },
+    machine: {},
+    journal: { append() {}, flush: async () => {}, read: async () => [] },
+    logged: new Set(),
+    synced: async () => {},
+    bridge: { get: (name) => hostTools.find((t) => t === name) && { name, replay: 'safe' } },
+    log() {},
+    lines: [],
+    rpc: () => ({ request: async (_method, params) => { injected.push(...params.items); } }),
+    guard: (promise) => promise,
+    threadId: () => 'thread-1',
+    tries: 1,
+    declined: 'declined',
+  });
+  await code.repairUnnoted(calls.map((payload) => JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload })));
+  return injected;
+}
+
+test("a dangling wait of code mode is told the session stopped while it waited on its cell, never that it did not start", async () => {
+  const wait = { type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: '3', yield_time_ms: 5000 }), call_id: 'call_wait' };
+  const [item] = await repairedItems([wait]);
+  assert.deepEqual(item, { type: 'function_call_output', call_id: 'call_wait', output: waitStoppedText('3') });
+  assert.match(item.output, /^The session stopped while waiting on cell 3; that cell's script was cut off, and nothing was run again\./);
+  // A host tool of the same name is not code mode's wait: it gets the generic answer.
+  const [host] = await repairedItems([wait], ['wait']);
+  assert.match(host.output, /^Not executed: the session stopped before this call started/);
 });
