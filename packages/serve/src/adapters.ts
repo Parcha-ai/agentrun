@@ -85,8 +85,10 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
   return { model: { provider: named.slice(0, slash), modelId: named.slice(slash + 1) } };
 }
 
-/** What serve gives every harness session it opens: no tools of the harness's own (its shell, its file tools) until runs
- *  get a confined box, since here they would run as serve's own user. Every adapter serve builds takes it, here only. */
+/** What serve gives a harness session it opens: no tools of the harness's own (its shell, its file tools) until runs
+ *  get a confined box, since here they would run as serve's own user. The Claude adapter takes it here, the one place
+ *  serve builds it. The Codex adapter takes no such option yet: its own tools are off in the adapter itself, and it gets
+ *  this when it takes the option. */
 export const SERVE_SESSION_OPTIONS = Object.freeze({ builtins: false });
 
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve

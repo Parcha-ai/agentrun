@@ -267,3 +267,18 @@ test("a started record that arrives after the box ended is refused, never writte
   await settled(box, 2);
   assert.deepEqual(box.reaped, ['box-1', 'box-2'], "the next box keeps its own record, the late one never replaced it");
 });
+
+test("an abort kills a boxed child: it exits, its box is reaped, and only then does the session's next box start", async (t) => {
+  const box = fakeBox();
+  const machine = await machineAt(t, scratch(), { box: boxOf(box) });
+  const abort = new AbortController();
+  const proc = machine.start({ command: '/bin/sh', args: ['-c', 'exec sleep 300'], signal: abort.signal });
+  assert.ok(alive(proc.child.pid), 'the child runs');
+  abort.abort();
+  const exited = await Promise.race([proc.exited.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 5_000))]);
+  assert.ok(exited, 'the abort killed the child');
+  for (let i = 0; i < 200 && box.reaped.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(box.reaped, ['box-1'], 'its box is reaped');
+  await new Promise((resolve) => setImmediate(resolve));
+  await machine.start({ command: '/bin/true' }).exited;
+});

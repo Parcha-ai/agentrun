@@ -58,6 +58,8 @@ async function onClaude() {
   // The scripted SDK runs one scripted call per turn: one turn each.
   const sdk = fakeSdk({ remoteModel: true, mirrorLagMs: 10, script: SCRIPT.map(([name, args]) => `call ${name} ${JSON.stringify(args)}`) });
   const claude = claudeAgentAdapter({
+    // The host's tools only, which is what this compares across runners; the CLI's own are on by default.
+    builtins: false,
     model: 'claude-test',
     provider: { origin: provider.url, credential: () => 'provider-secret' },
     sessionsDir: join(ROOT, 'claude-sessions'),

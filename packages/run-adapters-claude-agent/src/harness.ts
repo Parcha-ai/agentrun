@@ -468,7 +468,23 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
         });
         // The built-ins: each call an intent before it runs, its outcome after (the hooks below).
-        const builtins = new BuiltinCalls(ctx, { replay, beforeNever: ({ callId }) => store.barrier(callId, barrierMs), live: true, ...(options.builtinAround ? { around: options.builtinAround } : {}) });
+        // The calls the wrapper failed before letting them run (the session is pausing): never ran, so denied as not run.
+        const refusedIds = new Set<string>();
+        const around = options.builtinAround;
+        const builtins = new BuiltinCalls(ctx, {
+          replay, beforeNever: ({ callId }) => store.barrier(callId, barrierMs), live: true,
+          ...(around ? {
+            around: async (call: Parameters<NonNullable<typeof around>>[0], run: Parameters<NonNullable<typeof around>>[1], io: Parameters<NonNullable<typeof around>>[2]) => {
+              let ran = false;
+              try {
+                return await around(call, () => { ran = true; return run(); }, io);
+              } catch (error) {
+                if (!ran) refusedIds.add(call.callId);
+                throw error;
+              }
+            },
+          } : {}),
+        });
         /** Bash calls whose timeout the invocation clamped: their outcome, if it timed out, says so. */
         const clamped = new Map<string, number>();
         const bridged = (name: string) => name.startsWith(`mcp__${MCP_SERVER}__`);
@@ -564,7 +580,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                     const start = await builtins.begin({ callId: hook.tool_use_id, name: hook.tool_name, input: updated ?? hook.tool_input });
                     if (start.run) return allow(updated);
                     // Its wrapper refused it before it ran (the session is pausing): it never ran.
-                    if (start.refused) return deny(`Not run: ${start.result.text}`);
+                    if (refusedIds.has(hook.tool_use_id)) return deny(`Not run: ${start.result.text}`);
                     // The log already has this call's outcome (it ran before a crash): never again.
                     return deny(`Not run again: this call already ran in this session. Its recorded result: ${start.result.text}`);
                   } catch (err) {
