@@ -9,10 +9,11 @@ import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
-import { BOUND_TOOLS, NODE_TOOLS, WORKFLOW_ADAPTERS } from "./app.js";
+import { WORKFLOW_ADAPTERS } from "./app.js";
+import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
-import { harnessesOf } from "./harness.js";
+import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from "./harness.js";
 import { catchUp, hostCommit, learningBlocker, proposeFor, readyToRun } from "./learning.js";
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
@@ -63,6 +64,14 @@ export type ServeOptions = {
   port?: number;
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
+  /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
+   *  backend), in place of Browserbase's. */
+  fauxBrowser?: string;
+  /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
+   *  network), in place of the system's resolver and undici. */
+  fauxWeb?: string;
+  /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
+  fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
   allowHosts?: string[];
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
@@ -140,7 +149,7 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env)) {
+export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -148,13 +157,13 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses: harnessesOf(env),
+    harnesses,
     models,
-    /** The tools an agentic revision may name. */
-    tools: [...BOUND_TOOLS],
+    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
+    tools: toolsView(env),
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
-     *  `models.default`, `models.strong`) with the file tools it names; a node that names no thinking level thinks at
-     *  the run's effort, or medium. */
+     *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
+     *  thinks at the run's effort, or medium. */
     workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
@@ -242,17 +251,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}) };
+  const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
-  const caps = capabilities(env, maxRuns);
+  const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   // A new agent learns where this host can keep its learning repository.
   const agents = new Agents(data, (await learningBlocker(env)) === undefined ? "auto" : "off");
   // Once a learning run's end is written, what it learned is proposed as its branch.
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, afterCarryBack: (run) => proposeFor(data, agents, run.id).then(() => undefined), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -360,11 +369,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
+    const missing = Object.fromEntries(blockers.flatMap((b) => (b.missing ? [[b.missing.tool, b.missing.vars]] : [])));
     const harness = blockers.find((b) => b.harness)?.harness;
     const named = harness ? { harness } : {};
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, ...named } });
+    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...named } });
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...named } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */

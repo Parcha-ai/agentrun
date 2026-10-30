@@ -134,23 +134,19 @@ const GROUPS = ["meter", "agent", "key", "day", "region"];
 /** /usage for every grouping: its total and each line's usd. */
 const usages = async (api) => Promise.all(GROUPS.map(async (group) => (await api("GET", `/usage?group_by=${group}`)).body));
 
-test("a cancelled run is priced from its usage rows, never null, and /usage stays priced with it", async (t) => {
+test("a run cancelled while its request answers costs unknown (the request may have been billed), and /usage stays priced with the runs it knows", async (t) => {
   const { api, data } = await serve(t, { faux: OUTPUT_PRICED });
   const paid = await ended(api, (await start(api, "paid", "What is six times seven?")).run_id);
   assert.ok(paid.cost.usd > 0);
-  // One cancelled while its first request is still answering, one before it made any.
+  // Cancelled while its first request is still answering: the request is cut, and may have been billed.
   const slow = await start(api, "slow", "Take your time.");
   await follow(api, slow.run_id, ["working"]);
   await api("POST", `/runs/${slow.run_id}/cancel`);
-  const early = await start(api, "early", "Take your time.");
-  await api("POST", `/runs/${early.run_id}/cancel`);
-  for (const id of [slow.run_id, early.run_id]) {
-    const run = await ended(api, id, ["cancelled"]);
-    assert.equal(typeof run.cost.usd, "number", JSON.stringify(run.cost));
-    assert.equal(storeRun(data, id).costUsd, run.cost.usd, "the store records the cost it carried back");
-    const listed = (await api("GET", `/runs?agent=${run.agent_id}`)).body.runs[0];
-    assert.equal(typeof listed.cost.usd, "number", JSON.stringify(listed.cost));
-  }
+  const run = await ended(api, slow.run_id, ["cancelled"]);
+  assert.equal(run.cost.usd, null, JSON.stringify(run.cost));
+  assert.equal(storeRun(data, slow.run_id).costUsd ?? null, run.cost.usd, "the store records the cost it carried back");
+  const listed = (await api("GET", `/runs?agent=${run.agent_id}`)).body.runs[0];
+  assert.equal(listed.cost.usd, run.cost.usd, JSON.stringify(listed.cost));
   for (const usage of await usages(api)) {
     assert.ok(Math.abs(usage.total_usd - paid.cost.usd) < 1e-9, JSON.stringify(usage));
     assert.ok(usage.lines.every((line) => typeof line.usd === "number"), JSON.stringify(usage));

@@ -64,15 +64,25 @@ export interface ProviderPolicy {
 }
 
 export interface ModelUsageReport extends ProxyUsage {
+  /** The provider's (or its gateway's) own figure when the response gave one (`reportedCostOf`); else the price table's,
+   *  `estimated`; null when neither is known. */
   usd: number | null;
   estimated?: boolean;
+  /** Beside a reported figure, what the price table makes of the same usage: kept to audit the table. */
+  tableUsd?: number | null;
+  /** The ids the response's headers gave it (`providerIdsOf`), when they came. */
+  providerIds?: Record<string, string>;
 }
 
 export interface ModelProxyHooks {
-  /** Before a paid request leaves; a throw refuses it. */
-  beforeRequest(request: { model: string }): Promise<void>;
-  /** When a request's response has completed, with its usage. */
-  afterRequest(usage: ModelUsageReport): Promise<void>;
+  /** Before a paid request leaves; a throw refuses it. What it returns (a ticket) is handed back to this request's
+   *  `afterRequest`, since requests may be in flight together. */
+  beforeRequest(request: { model: string }): Promise<unknown>;
+  /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
+  afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
+  /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
+   *  request a crash cuts off after this point is known to have reached the provider, under those ids. */
+  responded?(ids: Record<string, string>, ticket?: unknown): Promise<void>;
 }
 
 export interface ModelProxyOptions {
@@ -90,8 +100,29 @@ export interface ModelProxyOptions {
   /** Told each forwarded request's route and the provider's status once it answers: what a route does on this
    *  provider (a free route it may not serve), as a status code only, never a body or a key. */
   onResponse?: (response: { method: string; path: string; free: boolean; status: number }) => void;
+  /** Headers the host adds to every request it forwards (a gateway's spend tags, LiteLLM's `x-litellm-tags`, say):
+   *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
+   *  proxy starts (`hostHeaderProblems`). */
+  headers?: Readonly<Record<string, string>>;
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
+}
+
+/** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
+const RESERVED_HEADER = /^(?:authorization|proxy-authorization|x-api-key|host|content-length|content-type|transfer-encoding|connection|cookie|anthropic-.*)$/i;
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
+
+/** What is wrong with headers a host would add to forwarded requests: a name that is not a token or is reserved, a value
+ *  an HTTP header cannot carry (a line break or other control character, or a character beyond Latin-1, which the fetch
+ *  the proxy forwards with refuses) or over 1 KiB. Empty when they are fine. */
+export function hostHeaderProblems(headers: Readonly<Record<string, unknown>> | undefined): string[] {
+  const problems: string[] = [];
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (!HEADER_NAME.test(name)) problems.push(`the header name ${JSON.stringify(name.slice(0, 80))} is not a token`);
+    else if (RESERVED_HEADER.test(name)) problems.push(`the header ${name} is the proxy's own (credential, transport or protocol), not a host's`);
+    if (typeof value !== "string" || /[^\t\x20-\x7e\x80-\xff]/.test(value) || value.length > 1024) problems.push(`the header ${name.slice(0, 80)}'s value must be one line of text an HTTP header can carry (Latin-1, no control characters), at most 1024 characters`);
+  }
+  return problems;
 }
 
 export interface ModelProxy {
@@ -106,6 +137,47 @@ const UNSAFE_PATH = /[^A-Za-z0-9/_.\-?=&]|\.\.|\/\/|^[^/]|\?.*\?/;
 const MAX_BODY = 32 * 1024 * 1024;
 /** How much of a response's start and end the proxy keeps to read its usage from. */
 const USAGE_WINDOW = 64 * 1024;
+
+/** A response header that names the request: the provider's `request-id` (`x-request-id`), or a gateway's own call id
+ *  (LiteLLM's `x-litellm-call-id`, the id its spend log records; `llm_provider-request-id`, the provider's passed on). */
+const ID_HEADER = /^(?:[a-z0-9]+[-_])*(?:request|call)[-_]id$/;
+/** What an id looks like: nothing else (a cookie, a token, prose) is ever kept. */
+const ID_VALUE = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+/** The ids a response's headers give its request, by header name, so a run's books can be joined to the provider's (or
+ *  a gateway's) request by request; undefined when there are none. Only id-named headers with id-shaped values. */
+export function providerIdsOf(headers: Headers): Record<string, string> | undefined {
+  const ids: Record<string, string> = {};
+  headers.forEach((value, name) => {
+    if (ID_HEADER.test(name) && ID_VALUE.test(value)) ids[name] = value;
+  });
+  return Object.keys(ids).length ? ids : undefined;
+}
+
+/** LiteLLM's figures for what a response cost: its own (`x-litellm-response-cost`), and the figure before its discount
+ *  and margin (`-original`), which is the same only when both are reported 0. */
+const COST_HEADER = "x-litellm-response-cost";
+const COST_PARTS = ["x-litellm-response-cost-discount-amount", "x-litellm-response-cost-margin-amount"] as const;
+/** A cost as a gateway writes it: a decimal number, an exponent allowed (`3.7e-06`); nothing else is read as one. */
+const COST_VALUE = /^\d{1,9}(?:\.\d{1,30})?(?:[eE][-+]?\d{1,3})?$/;
+/** No one request costs this much: a figure above it is not believed. */
+const MAX_REQUEST_USD = 1000;
+
+const costOf = (value: string | null): number | undefined => {
+  if (value === null || !COST_VALUE.test(value.trim())) return undefined;
+  const usd = Number(value.trim());
+  return Number.isFinite(usd) && usd > 0 && usd <= MAX_REQUEST_USD ? usd : undefined;
+};
+
+/** What a response's headers say it cost, when they say so: LiteLLM's `x-litellm-response-cost`, or its `-original` when
+ *  the discount and margin it reports are both exactly 0. Only a positive number counts. A missing, malformed or zero
+ *  figure is unknown, never $0: a streamed answer's headers leave before it is priced, and LiteLLM writes 0.0 there. */
+export function reportedCostOf(headers: Headers): number | undefined {
+  const own = costOf(headers.get(COST_HEADER));
+  if (own !== undefined) return own;
+  if (!COST_PARTS.every((name) => /^0(?:\.0+)?$/.test(headers.get(name)?.trim() ?? ""))) return undefined;
+  return costOf(headers.get(`${COST_HEADER}-original`));
+}
 
 export class ProxyRefusal extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "ProxyRefusal"; }
@@ -200,6 +272,9 @@ export const sameKey = (given: string, key: string): boolean => {
 export async function startModelProxy(options: ModelProxyOptions, key: string): Promise<ModelProxy> {
   const { policy, hooks, model } = options;
   if (!key) throw new Error("agentrun-adapters: a model proxy needs the session's key");
+  const wrongHeaders = hostHeaderProblems(options.headers);
+  if (wrongHeaders.length) throw new Error(`agentrun-adapters: ${wrongHeaders.join("; ")}`);
+  const hostHeaders = { ...options.headers };
   const forward = options.fetch ?? fetch;
   const origin = new URL(options.origin).origin;
   const refusedStatus = policy.refusedStatus ?? 400;
@@ -213,7 +288,12 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   };
   const refuse = (res: ServerResponse, status: number, message: string, req?: IncomingMessage) => {
     // Every refusal is reported, so a client that calls something the table does not hold is seen, not silently refused.
-    say(`model proxy (${policy.id}): refused`, { status, method: String(req?.method ?? "").slice(0, 16), path: String(req?.url ?? "").slice(0, 200), reason: message.slice(0, 200) });
+    // The client's user-agent names who called: the session's own harness, or another local process that found the port.
+    const agent = req?.headers["user-agent"];
+    say(`model proxy (${policy.id}): refused`, {
+      status, method: String(req?.method ?? "").slice(0, 16), path: String(req?.url ?? "").slice(0, 200), reason: message.slice(0, 200),
+      ...(typeof agent === "string" && agent ? { userAgent: agent.slice(0, 120) } : {}),
+    });
     res.writeHead(status, { "content-type": "application/json", connection: "close" });
     res.end(JSON.stringify({ error: { message, type: "agentrun_proxy" } }));
   };
@@ -276,14 +356,23 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     }
     if (!credential) return refuse(res, 500, "the session has no provider credential", req);
     try {
-      Object.assign(headers, policy.authHeaders(credential));
+      // The host's own headers, over any the client sent by those names; then the credential's, over everything. A name
+      // replaces any other spelling of it, so no two headers of one name reach the provider combined.
+      const set = (name: string, value: string) => {
+        for (const sent of Object.keys(headers)) if (sent.toLowerCase() === name.toLowerCase()) delete headers[sent];
+        headers[name] = value;
+      };
+      for (const [name, value] of Object.entries(hostHeaders)) set(name, value);
+      for (const [name, value] of Object.entries(policy.authHeaders(credential))) set(name, value);
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not build the provider's credential headers`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       return refuse(res, 500, "the provider's credential headers could not be built", req);
     }
     if (closing) return refuse(res, 503, "the model proxy is closing", req);
+    // This request's own admission, handed back to its booking (requests may be in flight together).
+    let ticket: unknown;
     try {
-      if (!route.free) await hooks.beforeRequest({ model: asked });
+      if (!route.free) ticket = await hooks.beforeRequest({ model: asked });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
@@ -293,7 +382,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       refuse(res, 503, "the model proxy is closing", req);
       if (!route.free) {
         try {
-          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 });
+          await hooks.afterRequest({ input: 0, output: 0, cacheRead: 0, usd: 0 }, ticket);
         } catch (error) {
           say(`model proxy (${policy.id}): afterRequest threw; the request was not sent and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         }
@@ -310,6 +399,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let answered: { ok: boolean } | undefined;
     /** That the provider's answer began, with its status: what a client that left before the end had of it. */
     let began: { ok: boolean } | undefined;
+    /** The ids its headers gave it. */
+    let ids: Record<string, string> | undefined;
+    let reported: number | undefined;
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
       const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
@@ -319,6 +411,16 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         options.onResponse?.({ method: route.method, path: route.path, free: route.free === true, status: upstream.status });
       } catch (error) {
         say(`model proxy (${policy.id}): onResponse threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      }
+      // Its ids are kept before its body is read: from here the provider has seen it, whatever cuts it off.
+      ids = route.free ? undefined : providerIdsOf(upstream.headers);
+      reported = route.free ? undefined : reportedCostOf(upstream.headers);
+      if (ids && hooks.responded) {
+        try {
+          await hooks.responded(ids, ticket);
+        } catch (error) {
+          say(`model proxy (${policy.id}): responded threw; the request's ids are kept with its booking only`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        }
       }
       began = { ok: upstream.ok };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
@@ -358,6 +460,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     if (route.free) return;
     let usage: ProxyUsage | undefined;
     let usd: number | null = null;
+    // Whether `usd` is a figure the provider gave (an error answer's nothing included), not one this proxy made up.
+    let own = false;
+    let tableUsd: number | null | undefined;
     // A client may leave once it has read the response's usage (Codex does, at the completion event) while the provider
     // still holds the stream open: what was read of a successful answer is read for its usage as a whole one is. With none
     // in it, the cost is unknown, as for any answer cut short.
@@ -368,6 +473,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // A provider's error answer was not a paid response: it costs nothing.
       usage = { input: 0, output: 0, cacheRead: 0 };
       usd = 0;
+      own = true;
     } else {
       let unread = false;
       try {
@@ -387,9 +493,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         say(`model proxy (${policy.id}): the price could not be computed; the request is booked at an unknown cost`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
         usd = null;
       }
+      // What the gateway says it cost is what was paid; the table's figure stays beside it, to audit the table.
+      if (reported !== undefined) {
+        tableUsd = usd;
+        usd = reported;
+        own = true;
+      }
     }
     try {
-      await hooks.afterRequest({ ...usage, usd, ...(usd === null ? { estimated: true } : {}) });
+      await hooks.afterRequest({ ...usage, usd, ...(own ? {} : { estimated: true }), ...(tableUsd === undefined ? {} : { tableUsd }), ...(ids ? { providerIds: ids } : {}) }, ticket);
     } catch (error) {
       say(`model proxy (${policy.id}): afterRequest threw; the request was answered and not booked`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }

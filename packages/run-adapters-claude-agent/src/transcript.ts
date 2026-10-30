@@ -1,0 +1,157 @@
+// Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
+// From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/transcript.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; 2026-10-28: a call the CLI refuses itself (a tool the session doesn't have) is a `tool_refused` live event, never one that reached the session's tool server.
+import type { TranscriptEntry } from './host/process.js';
+
+/**
+ * The normalized transcript (harness-world-process's `transcript` stream) and
+ * the live events, from the Agent SDK's messages.
+ *
+ * `query()` yields one `assistant` message per completed content block
+ * (thinking, text, tool_use), `stream_event` deltas while a block streams
+ * (with `includePartialMessages`), and one `result` per turn. This keeps the
+ * text said since the last tool call, writes it with the call that follows it
+ * (`{ role: 'assistant', text, toolCalls }`), and writes the rest and a `turn`
+ * entry at the result. Text deltas go to the live stream. Subagent messages
+ * (`parent_tool_use_id` set) are left out.
+ *
+ * Pure: the drive hands it SDK messages and gets entries back through `sink`,
+ * so it is tested on recorded messages.
+ */
+
+export interface TranscriptSink {
+  message(entry: TranscriptEntry): void;
+  live(event: unknown): void;
+}
+
+/** The MCP server name the workspace tools are served under: the model sees `mcp__hands__<tool>`. */
+export const MCP_SERVER = 'hands';
+const MCP_PREFIX = `mcp__${MCP_SERVER}__`;
+
+/** A tool's name without the MCP prefix. */
+export const bareToolName = (name: string) => (name.startsWith(MCP_PREFIX) ? name.slice(MCP_PREFIX.length) : name);
+
+/** How a turn ended, from its `result` message. */
+export interface TurnEnd {
+  status: 'completed' | 'failed';
+  error?: string;
+  /** More turns follow without new input (`queued_turn_count`). */
+  queued: number;
+  /**
+   * The `uuid`s of the user messages this turn consumed (`user_message_uuids`),
+   * or `undefined` from a CLI that does not report them.
+   */
+  consumed?: string[];
+  sessionId?: string;
+}
+
+type Block = { type?: string; text?: string; id?: string; name?: string; input?: unknown };
+type ResultBlock = { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown };
+
+/** The CLI's own refusal of a call, before any hook or tool server sees it (a tool the session doesn't have, say). */
+const CLI_REFUSAL = /<tool_use_error>([\s\S]*?)<\/tool_use_error>/;
+// The SDK's message union, structurally (the SDK is a peer dependency).
+type SdkMessage = { type: string; subtype?: string; parent_tool_use_id?: string | null; [k: string]: unknown };
+
+export class TranscriptBuilder {
+  private said = '';
+  private readonly written = new Set<string>();
+  private readonly waiters = new Map<string, (() => void)[]>();
+  /** Each call the model made, by its id: its name as the model gave it and its input. */
+  private readonly asked = new Map<string, { name: string; input: unknown }>();
+  /** Calls that reached the session's tool server (`beforeCall`): their error, whatever its text, is theirs, not a refusal. */
+  private readonly bridged = new Set<string>();
+
+  constructor(private readonly sink: TranscriptSink) {}
+
+  /** One message from `query()`. Returns how the turn ended for a `result`. */
+  observe(m: SdkMessage): TurnEnd | undefined {
+    if (m.parent_tool_use_id) return undefined;
+    if (m.type === 'stream_event') {
+      const ev = m.event as { type?: string; delta?: { type?: string; text?: string } } | undefined;
+      if (ev?.type === 'content_block_delta' && ev.delta?.type === 'text_delta' && ev.delta.text) this.sink.live({ type: 'text', delta: ev.delta.text });
+      return undefined;
+    }
+    if (m.type === 'assistant') {
+      const content = (m.message as { content?: unknown } | undefined)?.content;
+      for (const block of Array.isArray(content) ? (content as Block[]) : []) {
+        if (block.type === 'text' && block.text) this.said = this.said ? `${this.said}\n\n${block.text}` : block.text;
+        else if (block.type === 'tool_use' && block.id) {
+          this.asked.set(block.id, { name: bareToolName(block.name ?? 'tool'), input: block.input });
+          this.call(block.id, bareToolName(block.name ?? 'tool'));
+        }
+      }
+      return undefined;
+    }
+    if (m.type === 'user') {
+      // A call the CLI refused itself is answered at once with its error: the call never ran, and the host is told.
+      const content = (m.message as { content?: unknown } | undefined)?.content;
+      for (const block of Array.isArray(content) ? (content as ResultBlock[]) : []) {
+        if (block.type !== 'tool_result' || block.is_error !== true || !block.tool_use_id || this.bridged.has(block.tool_use_id)) continue;
+        const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? (block.content as { text?: string }[]).map((c) => c?.text ?? '').join('') : '';
+        const refused = CLI_REFUSAL.exec(text);
+        if (!refused) continue;
+        const asked = this.asked.get(block.tool_use_id);
+        this.sink.live({ type: 'tool_refused', callId: block.tool_use_id, name: asked?.name ?? 'tool', args: asked?.input ?? {}, reason: refused[1]!.replace(/^Error:\s*/, '').trim().slice(0, 300) });
+      }
+      return undefined;
+    }
+    if (m.type === 'result') {
+      const isError = m.is_error === true || m.subtype !== 'success';
+      const errors = Array.isArray(m.errors) ? (m.errors as unknown[]).map(String) : [];
+      const error = isError ? (typeof m.result === 'string' && m.result) || errors.join('; ') || String(m.subtype) : undefined;
+      const consumed = Array.isArray(m.user_message_uuids)
+        ? (m.user_message_uuids as unknown[]).map(String)
+        : typeof m.user_message_uuid === 'string'
+          ? [m.user_message_uuid]
+          : undefined;
+      return {
+        status: isError ? 'failed' : 'completed',
+        ...(error ? { error } : {}),
+        queued: typeof m.queued_turn_count === 'number' ? m.queued_turn_count : 0,
+        ...(consumed ? { consumed } : {}),
+        ...(typeof m.session_id === 'string' ? { sessionId: m.session_id } : {}),
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * Write the turn's last text and its end. Called at each `result`, or with
+   * `interrupted` when the drive stops a turn it cannot finish.
+   */
+  endTurn(end: Pick<TurnEnd, 'status' | 'error'> | { status: 'interrupted'; error?: string }): void {
+    if (this.said) this.sink.message({ type: 'message', role: 'assistant', text: this.said });
+    this.said = '';
+    this.sink.message({ type: 'turn', status: end.status, ...(end.error ? { error: end.error } : {}) });
+  }
+
+  /**
+   * A tool call is about to run (its MCP handler was called). The message
+   * that made it is written first: by `observe`, which normally sees the
+   * `tool_use` block a moment before the handler runs (the CLI writes the
+   * block before it calls the tool); after `waitMs`, by this.
+   */
+  async beforeCall(id: string, name: string, waitMs = 1000): Promise<void> {
+    this.bridged.add(id);
+    if (this.written.has(id)) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, waitMs);
+      this.waiters.set(id, [...(this.waiters.get(id) ?? []), done]);
+      function done() {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    this.call(id, name);
+  }
+
+  private call(id: string, name: string): void {
+    if (this.written.has(id)) return;
+    this.written.add(id);
+    this.sink.message({ type: 'message', role: 'assistant', text: this.said, toolCalls: [{ id, name }] });
+    this.said = '';
+    for (const w of this.waiters.get(id) ?? []) w();
+    this.waiters.delete(id);
+  }
+}

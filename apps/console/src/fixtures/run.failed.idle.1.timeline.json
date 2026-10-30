@@ -1,0 +1,104 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-f81e-7e1c-948f-425dc50a231f/timeline"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-f81e-7e1c-948f-425dc50a231f",
+    "status": "failed",
+    "state": "idle",
+    "reset": true,
+    "rows": [
+      {
+        "id": "11:18",
+        "timestamp": "2026-10-28T19:33:40.431Z",
+        "created_at": "2026-10-28T19:33:40.431Z",
+        "kind": "user_message",
+        "summary": "You: {\"subject\":\"Data loss after the update\",\"body\":\"Half of yesterday's entries are gone after the app updated, possible data loss.\"}",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "{\"subject\":\"Data loss after the update\",\"body\":\"Half of yesterday's entries are gone after the app updated, possible data loss.\"}\nWhen you are done, call the `submit` tool ONCE with the classify record as its arguments. The arguments are validated against the required schema; if validation fails you get the problems back and may fix and resubmit.\nRequired JSON Schema (authoritative): {\"type\":\"object\",\"required\":[\"category\",\"urgency\",\"summary\"],\"properties\":{\"category\":{\"type\":\"string\",\"enum\":[\"billing\",\"bug\",\"account\",\"question\"]},\"urgency\":{\"type\":\"number\"},\"summary\":{\"type\":\"string\"}}}\nOnly a successful `submit` call counts as delivering. Do not answer in plain text.",
+        "conversation_id": 11,
+        "seq": 0
+      },
+      {
+        "id": "11:23:0",
+        "timestamp": "2026-10-28T19:33:40.673Z",
+        "created_at": "2026-10-28T19:33:40.673Z",
+        "kind": "tool_use",
+        "summary": "Submitted the answer",
+        "agent_label": null,
+        "tool_name": "submit",
+        "tool_use_id": "tool:1793216020673:4si5hoxqtsd",
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 11,
+        "round": 23,
+        "seq": 1
+      },
+      {
+        "id": "11:26",
+        "timestamp": "2026-10-28T19:33:40.861Z",
+        "created_at": "2026-10-28T19:33:40.861Z",
+        "kind": "tool_result",
+        "summary": "Submitted the answer: ok",
+        "agent_label": null,
+        "tool_name": "submit",
+        "tool_use_id": "tool:1793216020673:4si5hoxqtsd",
+        "tool_status": "success",
+        "tool_input_preview": null,
+        "tool_result_preview": "Submitted. You are DONE; end your turn.",
+        "tool_result_size_bytes": 39,
+        "text": null,
+        "conversation_id": 11,
+        "round": 23,
+        "seq": 2
+      },
+      {
+        "id": "11:usage",
+        "timestamp": "2026-10-28T19:33:40.861Z",
+        "created_at": "2026-10-28T19:33:40.861Z",
+        "kind": "usage",
+        "summary": "Cost so far: $0.0026 over 1 model request",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 11,
+        "usage": {
+          "usd": 0.002588,
+          "requests": 1
+        },
+        "seq": 3
+      }
+    ],
+    "drop": [],
+    "next_after": 1793222378904056,
+    "unchanged": false,
+    "has_more": false,
+    "final": true,
+    "cost": {
+      "usd": 0.002588,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "poll_after_ms": 0
+  }
+}

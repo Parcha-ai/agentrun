@@ -26,7 +26,7 @@ const run = (cwd, command, hang = '') => new Promise((resolve, reject) => {
   run.child = child;
 });
 
-test('a slash-command run killed mid-run resumes without a second effect', { timeout: 30_000 }, async () => {
+test('a slash-command run killed inside its judge resumes without a second effect and routes the decision to review', { timeout: 30_000 }, async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'agentrun-resume-'));
   const ledger = join(cwd, 'ledger.txt');
   try {
@@ -41,15 +41,33 @@ test('a slash-command run killed mid-run resumes without a second effect', { tim
     child.kill('SIGKILL');
     assert.equal((await first).signal, 'SIGKILL');
     assert.deepEqual(lines(ledger), ['first', 'judge']);
-    // A new process continues the same run: the first tool is answered from its receipt, the judge is asked again.
+    // A new process continues the same run: the first tool is answered from its receipt. The judge was cut inside its
+    // call, whether or not it was paid, so it is not asked again: the run goes to review.
+    const resumed = await run(cwd, 'run');
+    const result = JSON.parse(resumed.out.trim().split('\n').at(-1));
+    assert.equal(result.status, 'escalated', resumed.out);
+    assert.match(result.content, /The decision "check" was asked by an earlier process/);
+    assert.deepEqual(lines(ledger), ['first', 'judge']);
+    // A third run over an ended one starts a new run: every step runs again.
+    const again = JSON.parse((await run(cwd, 'run')).out.trim().split('\n').at(-1));
+    assert.equal(again.status, 'complete');
+    assert.deepEqual(lines(ledger), ['first', 'judge', 'first', 'judge', 'second']);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('a slash-command run killed after its judge\'s answer committed resumes without a second effect or a second judge call, and finishes', { timeout: 30_000 }, async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'agentrun-resume-'));
+  const ledger = join(cwd, 'ledger.txt');
+  try {
+    writeFileSync(join(cwd, 'workflow.json'), JSON.stringify(workflow));
+    // The first process dies once the judge answered and its node committed, before the second call starts.
+    const first = await run(cwd, 'run', 'after-judge');
+    assert.equal(first.signal, 'SIGKILL');
+    assert.deepEqual(lines(ledger), ['first', 'judge']);
     const resumed = await run(cwd, 'run');
     const result = JSON.parse(resumed.out.trim().split('\n').at(-1));
     assert.equal(result.status, 'complete', resumed.out);
-    assert.deepEqual(lines(ledger), ['first', 'judge', 'judge', 'second']);
-    // A third run over a finished one starts a new run: every step runs again.
-    const again = JSON.parse((await run(cwd, 'run')).out.trim().split('\n').at(-1));
-    assert.equal(again.status, 'complete');
-    assert.deepEqual(lines(ledger), ['first', 'judge', 'judge', 'second', 'first', 'judge', 'second']);
+    assert.deepEqual(lines(ledger), ['first', 'judge', 'second'], 'the judge is not asked again, and no effect runs twice');
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 

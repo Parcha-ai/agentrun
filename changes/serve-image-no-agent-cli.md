@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+AgentRun Server's image carries no Claude Agent SDK until its licence is reviewed for the image. The SDK (with its platform packages, which hold the Claude CLI) is a dev dependency of the Claude Agent adapter, so the image's `npm ci` installed it. The Dockerfile now removes it after the build, and `docker/image-check.sh` fails the build if any copy is left in the final tree, nested ones and a bin link included. Until then the image reports claude-agent as not installed, with the line that installs it. The Codex CLI is not held back.
+- `docker/image-smoke.sh <image> [docker run arguments...]` checks that a built image serves. In a container published on a loopback port only, `GET /v2/health` answers 200 ok and `GET /v2/capabilities` answers with the contract. Where capabilities list harnesses, pi is available; claude-agent is never available: it is unavailable as not installed, with its install line, or as a harness this server does not run yet; and any other harness is available, or unavailable with a reason a person can act on, not an import error. On a failure it shows the container's log with keys withheld, and it always removes the container.

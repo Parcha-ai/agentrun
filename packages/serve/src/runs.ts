@@ -9,11 +9,15 @@ import { closeSync, openSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
-import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { readJson, RUN_META, writeWhole } from "./files.js";
-import { ASK_TOOL } from "./app.js";
+import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
+import { FAUX_WEB_ENV } from "./fetch-page.js";
+import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -44,14 +48,8 @@ const SETTLE_RETRY_MS = 30_000;
 const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "failed", stopped: "cancelled" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-};
+// A run's process that exited and was never reaped (a zombie, under a PID 1 that does not reap) is not alive.
+const alive = processAlive;
 /** Waits between carry backs that found the store busy: each attempt itself waits 5 s for the store's lock. */
 const CARRY_BACK_RETRIES_MS = [500, 1_000, 2_000, 4_000, 8_000];
 /** How long a run's process may live on after it released the run before its store is read anyway: the process holds the
@@ -81,6 +79,11 @@ type RunMeta = {
   error?: { code: string; message: string };
   /** A workflow run's output, once it completed. */
   output?: unknown;
+  /** Where the run stood when its turn was stopped: the person's last message, by its timeline row's id (its store
+   *  entry's), or the root conversation's place 0 before any. It stays stopped until a message newer than that is shown. */
+  stopped_at?: string;
+  /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
+  stopped_after?: number;
 };
 type RunError = { code: string; message: string; retryable: boolean };
 
@@ -97,6 +100,8 @@ export type Run = {
   agentId: string;
   kind: RevisionKind;
   revision: string;
+  /** The harness its revision names, read at its first message. */
+  harness?: string;
   /** The revision's number among its agent's. */
   version: number;
   dir: string;
@@ -109,12 +114,19 @@ export type Run = {
   child?: ChildProcess;
   /** The pid of a run process an earlier server started that still serves the run: supervised by its run.json. */
   orphan?: number;
+  /** Adopted with a saved stop: its first snapshot is checked once, and a turn still working is aborted. */
+  finishStop?: boolean;
+  /** A completed run opening again for a follow-up: every follow-up meanwhile waits for this one, never a second. */
+  reopening?: Promise<void>;
   feed?: AbortController;
   /** An agentic run's turn is running; a workflow run's process serves. */
   working: boolean;
   /** Messages this server sent the run that its rows do not show yet. */
   submitted: number;
-  stopped: boolean;
+  /** The user_message rows the run has shown, by id: one shown for the first time is a submitted message arriving. */
+  users: Set<string>;
+  /** The rows the live path has shown as live, by id, over every connection to the run's door. */
+  live: Set<string>;
   cancel: boolean;
   /** Set when the run has answered or failed and is being let go; the outcome it gets. */
   finishing?: Status;
@@ -126,6 +138,8 @@ export type Run = {
   relaunches: number;
   settled: boolean;
   settling?: Promise<void>;
+  /** The newest write of its serve.json: one at a time, in order. */
+  saving?: Promise<void>;
   /** Settles of this run not yet done: while any is, nothing starts its process again. */
   settles: number;
   updatedAt: string;
@@ -133,6 +147,8 @@ export type Run = {
 
 const ASKED = "Asked you: ";
 registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`);
+// ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
+registerTurnEnding(ASK_TOOL);
 
 /** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
  *  from the call's row, whose label this module registers. */
@@ -171,9 +187,38 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
+/** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
+ *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
+ *  follow-up. */
+export function costView(rows: readonly TimelineEvent[], stored: number | undefined): number | null {
+  const usage = usageOf(rows);
+  if (!usage) return stored ?? 0;
+  return usage.usage?.usd ?? null;
+}
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
 const lastAnswer = (run: Run) => run.answerText ?? run.rows.findLast((r) => r.kind === "final_answer" || r.kind === "text_block")?.text ?? null;
 const usersOf = (rows: readonly TimelineEvent[]) => rows.filter((r) => r.kind === "user_message").length;
+const lastUserMessage = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "user_message")?.id;
+// A row's place in the store: its entry's id. The store mints conversation and entry ids from one counter, so entry ids
+// order rows across conversations and the conversation is no part of the order.
+const placeOf = (id: string) => Number(id.slice(id.lastIndexOf(":") + 1));
+/** Whether the turn a stop ended is still where the run stands: no message shown is newer than the stop's. By order,
+ *  never by a count or by the stopped message itself, which a compaction can take off the rows. */
+export const stoppedAt = (meta: { stopped_at?: string; stopped_after?: number }, rows: readonly TimelineEvent[]): boolean => {
+  if (meta.stopped_at === undefined) return meta.stopped_after !== undefined && meta.stopped_after === usersOf(rows);
+  const at = placeOf(meta.stopped_at);
+  return !rows.some((r) => r.kind === "user_message" && placeOf(r.id) > at);
+};
+const stopped = (run: Run) => stoppedAt(run.meta, run.rows);
+/** What a stop keeps of where the run stands: the person's last message, by its id, or the place before any. */
+export const stopMark = (rows: readonly TimelineEvent[]): { stopped_at: string } => ({ stopped_at: lastUserMessage(rows) ?? `${ROOT_CONVERSATION_ID}:0` });
+
+/** The rows a snapshot that no longer holds them leaves served: those committed entries made. A row any connection
+ *  showed live is not one (`live` holds them for the run), so a live row that ended while the door was away goes. */
+export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[], isLive: (id: string) => boolean): (id: string) => boolean {
+  for (const row of rows) if (isLive(row.id)) live.add(row.id);
+  return (id) => !live.has(id) && !isLive(id);
+}
 
 /** A run's status and state, by the contract's table. */
 export function statusOf(run: Run): { status: Status; state: State } {
@@ -181,9 +226,12 @@ export function statusOf(run: Run): { status: Status; state: State } {
   if (run.finishing) return { status: run.finishing, state: "idle" };
   if (run.kind === "workflow") return { status: run.working ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
+  if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
+  // No rows is a run not shown yet (adopted, before its first snapshot), whatever an old stop says. Rows with no
+  // message of the person's are a compaction's (it shows its summary), which can summarize every message of a stop.
+  if (!run.rows.length) return { status: "queued", state: "working" };
+  if (stopped(run)) return { status: "input_required", state: "idle" };
   if (!users) return { status: "queued", state: "working" };
-  if (run.submitted > 0) return { status: "working", state: "working" };
-  if (run.stopped) return { status: "input_required", state: "idle" };
   if (run.working) return { status: "working", state: "working" };
   if (meaningful(run.rows)?.kind === "waiting") return { status: "input_required", state: "waiting" };
   return { status: "working", state: "idle" };
@@ -198,7 +246,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
  *  run's end is written in the store, outside its settle: what it does never holds the run, and an error it throws is
  *  said and goes no further. */
 export type RunsOptions = {
-  agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number;
+  agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number;
   log?: (event: string, fields: Record<string, string | number>) => void; afterCarryBack?: (run: Run) => void | Promise<void>;
 };
 
@@ -287,6 +335,8 @@ export class Runs {
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
+      ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
+      ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
@@ -299,7 +349,11 @@ export class Runs {
       if (row.costUsd !== undefined) run.costUsd = row.costUsd;
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
-    } else if (record && this.doorOf(record)) this.adoptProcess(run, record);
+    } else if (record && this.doorOf(record)) {
+      // A server that died between saving a stop and its abort reaching the run leaves the turn working.
+      run.finishStop = run.meta.stopped_at !== undefined || run.meta.stopped_after !== undefined;
+      this.adoptProcess(run, record);
+    }
     this.refresh(run);
     return run;
   }
@@ -307,8 +361,14 @@ export class Runs {
   private blank(row: Pick<RunRow, "id" | "agent" | "revision" | "kind">, dir: string, meta: RunMeta, version: number): Run {
     return {
       id: row.id, agentId: row.agent, kind: row.kind, revision: row.revision, version, dir, meta, log: new RowLog(this.clock), rows: [],
-      working: false, submitted: 0, stopped: false, cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
+      working: false, submitted: 0, users: new Set(), live: new Set(), cancel: false, relaunches: 0, settled: false, settles: 0, updatedAt: meta.created_at,
     };
+  }
+
+  /** Writes the run's serve.json as it is when its turn comes. */
+  private saveMeta(run: Run): Promise<void> {
+    run.saving = (run.saving ?? Promise.resolve()).catch(() => undefined).then(() => writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`));
+    return run.saving;
   }
 
   private record(run: Run): Promise<Json | null> {
@@ -352,10 +412,15 @@ export class Runs {
   }
 
   /** New rows in: into the log, then the run's status, then whatever the status asks for. */
-  private take(run: Run, rows: TimelineEvent[]): void {
+  /** `keep`: rows that stay served though `rows` no longer holds them (the live path's committed rows). */
+  private take(run: Run, rows: TimelineEvent[], keep?: (id: string) => boolean): void {
     run.rows = withAsks(rows);
-    run.submitted = Math.max(0, run.submitted - (usersOf(run.rows) - (run.log.rows().filter((r) => r.kind === "user_message").length)));
-    if (run.log.sync(run.rows)) run.updatedAt = new Date().toISOString();
+    // Counted by id: a snapshot of a compacted conversation shows fewer user messages than before, which is not more
+    // messages waiting, so a count of rows would leave the run working forever.
+    const arrived = run.rows.filter((r) => r.kind === "user_message" && !run.users.has(r.id));
+    for (const row of arrived) run.users.add(row.id);
+    run.submitted = Math.max(0, run.submitted - arrived.length);
+    if (run.log.sync(run.rows, keep)) run.updatedAt = new Date().toISOString();
     this.refresh(run);
   }
 
@@ -376,7 +441,7 @@ export class Runs {
     // The cap's refusal in the run's process (cap.ts); a provider error with this exact prefix would read as one too.
     if (last?.kind === "error" && last.text?.startsWith(`${SPEND_CAP_REACHED}: `)) return { outcome: "failed", error: { code: SPEND_CAP_REACHED, message: last.text.slice(SPEND_CAP_REACHED.length + 2), retryable: false } };
     if (last?.kind === "error") return { outcome: "failed", error: { code: "run_failed", message: last.text ?? last.summary ?? "The run failed.", retryable: false } };
-    return !run.stopped && answerOf(run.rows) ? { outcome: "completed" } : undefined;
+    return !stopped(run) && answerOf(run.rows) ? { outcome: "completed" } : undefined;
   }
 
   /** Records the run's status as a change when it moves, and lets go of a live run that answered, failed or is over its cap. */
@@ -508,7 +573,14 @@ export class Runs {
         for (const e of events) if (e.type === "run_start" || e.type === "run_end") run.working = e.type === "run_start";
         noteAnswer(run, events.flatMap((e) => (Array.isArray(e.entries) ? e.entries : e.entry !== undefined ? [e.entry] : [])));
         reducer.apply(events as never);
-        this.take(run, reducer.rows());
+        // A snapshot rebuilds from the conversation's current view: after a compaction it holds fewer of the rows
+        // already shown, which stay; only live rows go when they end.
+        const rows = reducer.rows();
+        this.take(run, rows, keepCommitted(run.live, rows, reducer.isLive));
+        if (event === "snapshot" && run.finishStop) {
+          run.finishStop = false;
+          if (run.working && stopped(run) && run.submitted === 0) void this.abortTurn(run);
+        }
       }
     }
   }
@@ -576,7 +648,12 @@ export class Runs {
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
-    const env: NodeJS.ProcessEnv = { ...childEnv(process.env, this.options.token), ...(this.options.faux ? { [FAUX_ENV]: this.options.faux } : {}), ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}) };
+    const env: NodeJS.ProcessEnv = {
+      ...childEnv(process.env, this.options.token),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
+      ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
+      ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
+    };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
@@ -688,7 +765,7 @@ export class Runs {
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
     const persist = async () => {
-      await writeWhole(join(run.dir, RUN_META), `${JSON.stringify(run.meta)}\n`);
+      await this.saveMeta(run);
       await whenFree(() => {
         try {
           this.store.carryBack(run.id, ending);
@@ -704,7 +781,8 @@ export class Runs {
       // now, with its cost from its rows, and the write is tried again until it lands. A restart before then reads the
       // run as it was in the store.
       warn(run.id, `its end could not be written to the agent store (${(error as Error).message}); trying again every ${(this.options.settleRetryMs ?? SETTLE_RETRY_MS) / 1000} s`);
-      run.costUsd = cost ?? 0;
+      // An unknown cost stays unknown: never stored as 0.
+      if (cost !== null) run.costUsd = cost;
       run.endedAt ??= new Date().toISOString();
       run.outcome = outcome;
       run.finishing = undefined;
@@ -773,19 +851,29 @@ export class Runs {
 
   /** Start a run of `revision` (number `version`) of `entry`'s agent: `startRun` in the store, then its process, then an
    *  agentic run's first message, `input.content`. */
-  /** A place for one more live run, or 429 rate_limited. */
-  private placeFree(): void {
+  /** A place for one more live run, taken for this start (counted in `starting` from here, so two starts at once cannot
+   *  both take the last place), or 429 rate_limited. A run that has ended (failed, completed, cancelled) still holds its
+   *  place until its process exits; a start that needs that place waits for it, up to that process's drain and kill,
+   *  never refused for a place already being given back. */
+  private async takePlace(): Promise<void> {
     const max = this.options.maxRuns;
-    if (max !== undefined && [...this.runs.values()].filter((run) => this.live(run)).length + this.starting >= max) {
-      throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+    for (const deadline = Date.now() + this.killAfterMs() + 1_000; max !== undefined; await sleep(50)) {
+      const holding = [...this.runs.values()].filter((run) => this.live(run));
+      if (holding.length + this.starting < max) break;
+      const leaving = holding.some((run) => run.outcome || run.finishing || run.cancel);
+      if (!leaving || Date.now() > deadline) {
+        throw new ApiError("rate_limited", `This server runs at most ${max} runs at once (max_concurrent_runs); start this one when another ends.`, { retry_after_ms: 5_000, details: { max_concurrent_runs: max } }, { "retry-after": "5" });
+      }
     }
+    this.starting++;
   }
 
   async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
-    this.placeFree();
-    // Counted from here, so two starts at once cannot both take the last place.
-    this.starting++;
+    await this.takePlace();
     try {
+      // Read again: the place may have been waited for, and the agent archived meanwhile.
+      const now = await this.options.agents.get(entry.agent.id);
+      if (now?.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${entry.agent.id} is archived: unarchive it to run it.`, { details: { archived_at: now.agent.archivedAt } });
       return await this.start(entry, revision, version, options);
     } finally {
       this.starting--;
@@ -825,17 +913,26 @@ export class Runs {
     if (answer.status >= 400) throw new ApiError(answer.status === 409 ? "not_continuable" : "internal", String(answer.body?.message ?? answer.body?.error ?? "the run refused the message"));
   }
 
+  /** Whether the run's harness takes a message mid-turn. */
+  private async steers(run: Run): Promise<boolean> {
+    if (run.kind !== "agentic") return true;
+    run.harness ??= ((await this.options.agents.revision(run.agentId, run.revision))?.revision.body as { harness?: string } | undefined)?.harness ?? DEFAULT_HARNESS;
+    return steersMidTurn(run.harness);
+  }
+
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
     // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
     if (run.finishing && !run.outcome) await this.endWritten(run);
-    if (run.kind === "agentic" && statusOf(run).status === "completed") this.reopen(run);
+    if (run.kind === "agentic" && statusOf(run).status === "completed") await (run.reopening ??= this.reopen(run).finally(() => (run.reopening = undefined)));
     const { status, state } = statusOf(run);
     if (TERMINAL.has(status)) throw this.finished(run);
-    const mode = status === "queued" || (status === "working" && state === "working") ? "steer" : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
+    // A harness that cannot take a message mid-turn (any but pi, harness.ts) queues it for the turn's end: a new turn of
+    // the same run, which the contract calls follow_up, never a steer it does not do.
+    const working = status === "queued" || (status === "working" && state === "working");
+    const mode = working ? ((await this.steers(run)) ? "steer" : "follow_up") : status === "input_required" && state === "waiting" ? "answer" : "follow_up";
     const messageId = `m${Date.now().toString(36)}${randomBytes(4).toString("hex")}`;
-    run.stopped = false;
     run.submitted++;
     this.refresh(run);
     try {
@@ -856,27 +953,36 @@ export class Runs {
   }
 
   /** A completed agentic run that gets a follow-up opens again: the same run on its own store and session, under its
-   *  cap, taking a place under the server's. Launched here, with no wait after the place is counted, so no start takes
+   *  cap, taking a place under the server's. Launched here, with no wait after the place is taken, so no start takes
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
-  private reopen(run: Run): void {
+  private async reopen(run: Run): Promise<void> {
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
-    this.placeFree();
+    await this.takePlace();
     try {
-      this.store.reopenRun(run.id);
-    } catch (error) {
-      storeError(error, "run");
+      // Read again: the place may have been waited for, and the run (or its agent) archived meanwhile.
+      const now = this.store.readRun(run.id);
+      if (now?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
+      if (now?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+      try {
+        this.store.reopenRun(run.id);
+      } catch (error) {
+        storeError(error, "run");
+      }
+      run.outcome = undefined;
+      run.settled = false;
+      run.endedAt = undefined;
+      run.error = undefined;
+      delete run.meta.error;
+      run.relaunches = 0;
+      this.refresh(run);
+      this.launch(run);
+    } finally {
+      // Launched, it holds its place as a live run.
+      this.starting--;
     }
-    run.outcome = undefined;
-    run.settled = false;
-    run.endedAt = undefined;
-    run.error = undefined;
-    delete run.meta.error;
-    run.relaunches = 0;
-    this.refresh(run);
-    this.launch(run);
   }
 
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
@@ -884,10 +990,17 @@ export class Runs {
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
-    run.stopped = true;
+    const before = { stopped_at: run.meta.stopped_at, stopped_after: run.meta.stopped_after };
+    delete run.meta.stopped_at;
+    delete run.meta.stopped_after;
+    Object.assign(run.meta, stopMark(run.rows));
+    await this.saveMeta(run).catch((error: Error) => warn(run.id, `its stop is not saved, so a restart will not keep it: ${error.message}`));
     const answer = await this.toDoor(run, "/abort", {}).catch(() => null);
     if (!answer || answer.status >= 400) {
-      run.stopped = false;
+      if (before.stopped_at === undefined) delete run.meta.stopped_at;
+      else run.meta.stopped_at = before.stopped_at;
+      if (before.stopped_after !== undefined) run.meta.stopped_after = before.stopped_after;
+      await this.saveMeta(run).catch(() => undefined);
       this.refresh(run);
       return false;
     }
@@ -899,6 +1012,8 @@ export class Runs {
   async cancel(run: Run): Promise<boolean> {
     if (run.outcome) return false;
     run.cancel = true;
+    // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
+    await writeWhole(join(run.dir, RUN_CANCELLED), "").catch((error: Error) => warn(run.id, `its cancel mark is not written: ${error.message}`));
     if (this.live(run)) {
       // The turn is aborted first, so the drain that SIGTERM starts does not wait for it.
       await this.abortTurn(run);
@@ -935,8 +1050,7 @@ export class Runs {
 
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    const usage = usageOf(run.rows);
-    return { usd: usage ? (usage.usage?.usd ?? run.costUsd ?? null) : (run.costUsd ?? 0), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: costView(run.rows, run.costUsd), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */

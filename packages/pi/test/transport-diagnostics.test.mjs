@@ -32,6 +32,21 @@ test('typed Jev failures expose fixed categories and stage, without retry or pro
   }
 });
 
+test('a Jev request lost after sending is reported as outcome_unknown, with its status and that it may have been billed', async () => {
+  const { APIError } = await import('@typesafe-ai/sdk');
+  for (const [body, reason] of [[{ error: secret }, undefined], [{ detail: { error_type: 'max_tokens_exceeded' } }, 'max_tokens_exceeded']]) {
+    let calls = 0;
+    const judge = createJevRunner({ maxAttempts: 1, client: { async systemOne() { calls++; throw new APIError(503, body, new Headers()); } } });
+    const service = new WorkflowExtensionService(); service.prepare(graph());
+    const report = await service.run({ evidence: 'fictional' }, { deps: { runJudge: judge } });
+    assert.equal(report.status, 'failed');
+    assert.deepEqual([report.error.code, report.error.status, report.error.reason], ['jev_outcome_unknown', 503, reason]);
+    assert.match(report.error.message, /may have been (answered and )?billed/);
+    if (reason) assert.match(report.error.message, /token budget/);
+    assert.equal(calls, 1, 'it is not sent again'); safe(report);
+  }
+});
+
 test('real Jev response validation reaches the safe category', async () => {
   let calls = 0;
   const judge = createJevRunner({ maxAttempts: 1, client: { async systemOne() {
