@@ -142,6 +142,8 @@ export function buildBoxArgv(spec: BoxSpec, child: { command: string; args: stri
 export function boxListens(spec: BoxSpec): ForwardListen[] {
   const port = (value: number | undefined, what: string) => {
     if (!Number.isInteger(value) || value! < 1 || value! > 65535) throw new BoxError("box_refused", `the ${what} port ${JSON.stringify(value)} is not a port`);
+    // Nothing in a box holds the power to bind below 1024: the forwarder would die inside it, so it is refused here.
+    if (value! < 1024) throw new BoxError("box_refused", `the ${what} port ${value} is below 1024, which the box's forwarder has no power to listen on`);
     return value!;
   };
   return [
@@ -619,7 +621,7 @@ export async function probeBox(options: { scratch: string; bwrap?: string; reapM
       homes: {},
       readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD],
       modelSocket: socket,
-      modelPort: 1,
+      modelPort: 8123,
       env: { PATH: "/usr/bin:/bin" },
     };
     mkdirSync(spec.workspace);

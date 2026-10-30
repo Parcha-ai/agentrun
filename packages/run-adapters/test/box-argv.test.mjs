@@ -125,6 +125,7 @@ test('the box\'s first command is this server\'s node running this kernel\'s for
   checkBoxArgv(egressArgv, e);
   refused([...egressArgv.slice(0, egressArgv.indexOf('--') + 1), process.execPath, BOX_FORWARD, ...model, '--', '/usr/bin/true'], e, /--listen operands are not the spec's sockets/);
   // A port that is not one, or an egress socket without its port, never makes a command.
+  assert.throws(() => forwardChild(harness, boxListens(spec({ modelPort: 80 }))), (err) => err instanceof BoxError && err.code === 'box_refused' && /the model port 80 is below 1024/.test(err.message));
   assert.throws(() => forwardChild(harness, boxListens(spec({ modelPort: 0 }))), (err) => err instanceof BoxError && err.code === 'box_refused' && /the model port 0 is not a port/.test(err.message));
   assert.throws(() => forwardChild(harness, boxListens(spec({ egressSocket: s.modelSocket }))), (err) => err instanceof BoxError && /the egress port undefined is not a port/.test(err.message));
 });
