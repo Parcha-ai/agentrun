@@ -143,6 +143,7 @@ const answerOf = async (url, env, tier = "default", how = "streamSimple") => {
   const ref = byTier.get(tier);
   const model = models.getModel(ref.provider, ref.modelId);
   const context = { messages: [{ role: "user", content: "What is six times seven?", timestamp: 0 }] };
+  if (how === "complete") return models.complete(model, context);
   return how === "completeSimple" ? models.completeSimple(model, context) : models.streamSimple(model, context).result();
 };
 const usdOf = (messages) => timelineOf(messages.map((message, i) => ({ kind: "pi.assistant", id: i + 1, conversationId: 0, model: [message] })), { settled: true }).find((row) => row.kind === "usage")?.usage.usd;
@@ -169,6 +170,9 @@ test("an answer of a model with no price carries no total, so its run's cost is 
   // pi's compaction summary asks through completeSimple, the same provider: its cost is unknown too (request-start writes it as null).
   const summary = await answerOf(endpoint.url, { AGENT_MODEL: "not-a-catalog-model" }, "default", "completeSimple");
   assert.equal(summary.usage.cost.total, undefined, "a compaction's answer");
+  // The provider's other entry, stream (Models.complete and stream reach it): no pi request in serve uses it today.
+  const plain = await answerOf(endpoint.url, { AGENT_MODEL: "not-a-catalog-model" }, "default", "complete");
+  assert.equal(plain.usage.cost.total, undefined, "an answer through the provider's stream");
 });
 
 test("a model the catalog lists at $0 is a known $0, not one with no price", async () => {
