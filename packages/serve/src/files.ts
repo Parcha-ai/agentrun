@@ -37,7 +37,8 @@ export async function writeWhole(path: string, text: string, mode = 0o600): Prom
 /** Writes `text` to `path` whole and durably: the temporary file is synced before the rename, and the directory after it,
  *  so once this resolves a crash, even of the machine, leaves the new text in place, never the old or none. */
 export async function writeDurable(path: string, text: string, mode = 0o600): Promise<void> {
-  const temp = `${path}.tmp`;
+  // Its own temporary file: a box's record can be let go by two settlements at once (a run's archive and its agent's).
+  const temp = tempOf(path);
   const bytes = Buffer.from(text);
   const file = await open(temp, "w", mode);
   try {
