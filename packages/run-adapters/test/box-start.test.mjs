@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
-import { BoxError, bwrapBox, startTimeOf } from '@parcha/agentrun-adapters/host';
+import { BoxError, buildBoxArgv, bwrapBox, startTimeOf } from '@parcha/agentrun-adapters/host';
 
 function setup() {
   const run = mkdtempSync(join(tmpdir(), 'box-start-'));
@@ -145,6 +145,16 @@ test('a refused argv throws synchronously and nothing is spawned or recorded', (
   assert.equal(calls.length, 0);
   assert.equal(aheads, 0);
   void durable;
+});
+
+test('an argv the builder got wrong is still refused before the spawn: start checks what it is about to run', () => {
+  const { spec, marker } = setup();
+  const { spawnFake, calls } = fakeBwrap({ marker });
+  let aheads = 0;
+  const box = bwrapBox({ spawn: spawnFake, buildArgv: (s, c) => buildBoxArgv(s, c).filter((a) => a !== '--unshare-net') });
+  assert.throws(() => box.start(spec, { command: '/usr/bin/true', args: [] }, { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused' && /--unshare-net is missing/.test(e.message));
+  assert.equal(calls.length, 0);
+  assert.equal(aheads, 0);
 });
 
 test('an ahead that throws stops the start before the spawn', () => {

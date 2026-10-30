@@ -89,7 +89,8 @@ export function boxMounts(spec: BoxSpec, host: { exists(path: string): "dir" | "
   mounts.push(["--ro-bind-data", String(PASSWD_FD), "/etc/passwd"], ["--ro-bind-data", String(GROUP_FD), "/etc/group"]);
   for (const path of spec.readOnly) mounts.push(["--ro-bind", allowedSource(path, "a read-only path"), path]);
   mounts.push(["--proc", "/proc"], ["--dev", "/dev"], ["--tmpfs", "/tmp"], ["--tmpfs", "/dev/shm"]);
-  mounts.push(["--bind", allowedSource(spec.workspace, "the workspace"), "/workspace"]);
+  // The workspace at its own path (the adapters pass host paths through untouched), and at /workspace as well.
+  mounts.push(["--bind", allowedSource(spec.workspace, "the workspace"), spec.workspace], ["--bind", spec.workspace, "/workspace"]);
   for (const [name, path] of Object.entries(spec.homes)) mounts.push(["--bind", allowedSource(path, `home ${name}`), path]);
   mounts.push(["--bind", allowedSource(spec.modelSocket, "the model socket"), BOX_MODEL_SOCKET]);
   if (spec.egressSocket !== undefined) mounts.push(["--bind", allowedSource(spec.egressSocket, "the egress socket"), BOX_EGRESS_SOCKET]);
@@ -118,7 +119,7 @@ export function buildBoxArgv(spec: BoxSpec, child: { command: string; args: stri
     ...FLAGS,
     ...boxMounts(spec).flat(),
     "--chdir",
-    "/workspace",
+    spec.workspace,
     "--clearenv",
     ...env,
     "--info-fd",
@@ -160,7 +161,7 @@ export function checkBoxArgv(argv: readonly string[], spec: BoxSpec): void {
       mounts.push([option, ...operands]);
     } else if (option === "--info-fd" && operands[0] !== String(INFO_FD)) refuse(`--info-fd is not ${INFO_FD}`);
     else if (option === "--block-fd" && operands[0] !== String(BLOCK_FD)) refuse(`--block-fd is not ${BLOCK_FD}`);
-    else if (option === "--chdir" && operands[0] !== "/workspace") refuse("--chdir is not /workspace");
+    else if (option === "--chdir" && operands[0] !== spec.workspace) refuse("--chdir is not the workspace");
     else if (seen.has(option) && arity === 0) refuse(`${option} twice`);
     seen.add(option);
     i += 1 + arity!;
@@ -209,12 +210,23 @@ export function pidnsOf(pid: number): string | undefined {
   }
 }
 
+/** A process's parent, from /proc/<pid>/stat (always readable), or undefined when it is gone. */
+function parentOf(pid: number): number | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+  } catch {
+    return undefined;
+  }
+}
+
 /** The processes on this host in the pid namespace `pidns`, by the kernel's own /proc. A process this one may not
- *  inspect (one that made itself non-dumpable) has no readable namespace link; its /proc/<pid>/status (always readable)
- *  still says how deep its pid namespace is (NSpid) and whose it is. A box's processes are this uid's in a nested
- *  namespace, so one of those whose link cannot be read counts as left: an unread process is never taken for gone. One
- *  in this process's own namespace, or another user's, is no box of this server's. */
-export function countInPidns(pidns: string): number {
+ *  inspect (one that made itself non-dumpable, as a browser's sandbox does) has no readable namespace link. Every
+ *  process of a box's namespace descends from its pid 1, which stays (a zombie at the last) until the namespace is
+ *  empty: so an unreadable process of this uid in a nested namespace counts as left when its parents lead to `pid1`, or
+ *  when `pid1` is not known. An unread process of the box is never taken for gone; another user's, or one of this
+ *  process's own namespace, is no box's. */
+export function countInPidns(pidns: string, pid1?: number): number {
   const uid = process.getuid?.();
   let n = 0;
   for (const entry of readdirSync("/proc")) {
@@ -227,7 +239,17 @@ export function countInPidns(pidns: string): number {
         const status = readFileSync(`/proc/${entry}/status`, "utf8");
         const nspid = /^NSpid:\s*(.*)$/m.exec(status)?.[1]?.trim().split(/\s+/) ?? [];
         const owner = Number(/^Uid:\s*(\d+)/m.exec(status)?.[1]);
-        if (nspid.length !== 1 && owner === uid) n++;
+        if (nspid.length === 1 || owner !== uid) continue;
+        if (pid1 === undefined) {
+          n++;
+          continue;
+        }
+        for (let p: number | undefined = Number(entry), hops = 0; p !== undefined && p > 1 && hops < 4096; p = parentOf(p), hops++) {
+          if (p === pid1) {
+            n++;
+            break;
+          }
+        }
       } catch {
         // gone
       }
@@ -256,6 +278,8 @@ export interface BwrapBoxOptions {
   spawn?: (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   /** What the start probe proved (the caller's). */
   isolation?: Isolation;
+  /** For tests: the argv builder (buildBoxArgv). Whatever it returns is still checked before the spawn. */
+  buildArgv?: (spec: BoxSpec, child: { command: string; args: string[] }) => string[];
 }
 
 /** The passwd and group lines a box gets: its own uid and gid, named `box`, with /workspace as home. */
@@ -335,10 +359,10 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
         }
       }
       const until = Date.now() + reapMs;
-      let left = countInPidns(record.pidns);
+      let left = countInPidns(record.pidns, record.pid);
       while (left > 0 && Date.now() < until) {
         await sleep(10);
-        left = countInPidns(record.pidns);
+        left = countInPidns(record.pidns, record.pid);
       }
       return { empty: left === 0, left, by: "pidns" };
     }
@@ -346,7 +370,7 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
   }
 
   function start(spec: BoxSpec, child: { command: string; args: string[] }, recorder: BoxRecorder): BoxedChild {
-    const argv = buildBoxArgv(spec, child);
+    const argv = (options.buildArgv ?? buildBoxArgv)(spec, child);
     checkBoxArgv(argv, spec);
     const record: BoxRecord = {
       id: randomUUID(),

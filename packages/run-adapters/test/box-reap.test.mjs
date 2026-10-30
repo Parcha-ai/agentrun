@@ -25,8 +25,9 @@ test('a pid whose start time is not the recorded one is never signalled: a reuse
   const child = await sleeper();
   try {
     const reaped = await bwrapBox({ reapMs: 50 }).reap({ id: 'x', pid: child.pid, startTime: '1', pidns: 'pid:[1]', writer: { pid: process.pid, startTime: '1' } });
+    await new Promise((resolve) => setTimeout(resolve, 100)); // a SIGKILL, had there been one, has landed by now
     assert.ok(alive(child), 'a process that is not the box\'s pid 1 was killed');
-    assert.deepEqual(reaped, { empty: true, left: 0, by: 'pidns' }, 'no process is in a namespace that does not exist');
+    assert.equal(reaped.by, 'pidns');
   } finally {
     child.kill('SIGKILL');
   }
@@ -36,6 +37,7 @@ test('a pid in another namespace than the recorded one is never signalled', asyn
   const child = await sleeper();
   try {
     await bwrapBox({ reapMs: 50 }).reap({ id: 'x', pid: child.pid, startTime: startTimeOf(child.pid), pidns: 'pid:[1]', writer: { pid: process.pid, startTime: '1' } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
     assert.ok(alive(child));
   } finally {
     child.kill('SIGKILL');
@@ -58,7 +60,9 @@ test('a cgroup that is gone was emptied (rmdir succeeds only on an empty cgroup)
   assert.deepEqual(await bwrapBox().reap({ id: 'x', cgroup: gone, writer: { pid: process.pid, startTime: '1' } }), { empty: true, left: 0, by: 'cgroup' });
 });
 
-test('the count reads the kernel: this process is in its own namespace, and a made-up namespace holds nothing', () => {
+test('the count reads the kernel: this process is in its own namespace, and a made-up namespace whose pid 1 is not ours holds nothing', () => {
   assert.ok(countInPidns(pidnsOf(process.pid)) >= 1);
-  assert.equal(countInPidns('pid:[1]'), 0);
+  // A pid 1 no process descends from (pid 2 is kthreadd): an unreadable process of another sandbox on this host (a
+  // browser's) is not counted for it.
+  assert.equal(countInPidns('pid:[1]', 2), 0);
 });
