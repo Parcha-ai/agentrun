@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/recovery.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 003-comments-name-this-host
+// Changed by Parcha, imports rewritten for AgentRun; patches: 003-comments-name-this-host, 009-recovery-system-note
 import { type EffectRecord, pendingSubmissions, type ReplayPolicy, type SessionState, type Submission } from '../kernel/index.js';
 import { type OpenTurn, openTurn } from './records.js';
 
@@ -84,6 +84,21 @@ export function recoveryNote(state: SessionState, options: RecoveryOptions = {})
     for (const s of pending) lines.push(quote(s.text ?? ''));
   }
   return { text: lines.join('\n'), calls, pending, turn };
+}
+
+/**
+ * The note as a harness carries it outside the user's turn (a system prompt, a developer item): from the harness, about the
+ * turn before, with no quoted prompt and no pending message. `undefined` when no turn is open.
+ */
+export function recoverySystemNote(state: SessionState, options: Pick<RecoveryOptions, 'clipChars'> = {}): string | undefined {
+  const note = recoveryNote(state, { ...options, pending: [] });
+  return note && `The harness, not the user, adds this about the turn before this one:\n${note.text}`;
+}
+
+/** The user's turn that resumes a cut-off turn: only the user's words (the prompts the session never got, then the messages sent since), or a bare nudge. */
+export function recoveryUserTurn(lost: string[], pending: string[]): string {
+  const words = [...lost, ...pending].filter((t) => t !== '');
+  return words.length ? words.join('\n\n') : 'Continue.';
 }
 
 function recoveryCall(e: EffectRecord, max: number): RecoveryCall {

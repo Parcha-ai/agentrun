@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-repair-before-any-turn
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 009-nested-tie-turn, 010-repair-before-any-turn, 011-exec-by-kind
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -21,6 +21,8 @@ import {
   NativeJournal,
   placeSubmissions,
   recoveryNote,
+  recoverySystemNote,
+  recoveryUserTurn,
   restartEvent,
   type SessionMachine,
   type SessionProcess,
@@ -47,7 +49,7 @@ import {
   THREAD_STREAM,
   type ThreadRecord,
 } from './rollout.js';
-import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, Scripts, settle } from './scripts.js';
+import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, Scripts, settle, UNWATCHED } from './scripts.js';
 
 /**
  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
@@ -229,8 +231,10 @@ export function codexItemReplay(item: { type?: string; commandActions?: { type?:
  */
 export const KEY_ENV = 'HARNESS_CODEX_GATEWAY_KEY';
 
-/** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec }`, written before the call runs. */
+/** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec, since }` (`since`: the turn it ran in), written before the call runs. */
 export const NESTED_STREAM = 'codex.nested';
+/** The stream that records the interrupted turns whose recovery note was injected: `{ since }`, once per interrupted turn. */
+export const RECOVERY_NOTE_STREAM = 'codex.recovery-note';
 /** How long the drive waits for a call's `function_call` line before it declines the call: `SYNC` and look again, this many times, with a growing pause. */
 const BARRIER_TRIES = 5;
 /** What the model is told when a call was declined because its line wasn't in the log yet. */
@@ -581,7 +585,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       /** The exec each nested call was admitted under. */
       const execOf = new Map<string, string>();
       /** After a recovery: the `never` calls the log holds a completed outcome for, by tool and arguments, until the turn ends. */
-      const recovered = new Map<string, { tool: string; text: string }>();
+      const recovered = new Map<string, { tool: string; text: string }[]>();
       for (const line of lines) {
         const id = callIdOf(line);
         if (id) logged.add(id);
@@ -840,7 +844,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
             const tool = bridge.get(String(p.tool));
             // After a recovery, a `never` call the log already holds a completed outcome for, called again (a script that was cut
             // short and written again re-issues every call it made): answered from the log, run no more.
-            const again = tool?.replay === 'never' ? recovered.get(callKey(tool.name, p.arguments)) : undefined;
+            const owed = tool?.replay === 'never' ? recovered.get(callKey(tool.name, p.arguments)) : undefined;
+            const again = owed?.shift();
             if (again) {
               log('codex: answered a never call from the log: it completed before the interruption', { callId, tool: again.tool });
               return { contentItems: [{ type: 'inputText', text: `Recorded earlier in this turn, not run again: ${again.text}` }], success: true };
@@ -853,10 +858,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
             if (NESTED_CALL.test(callId)) {
               const tie = code.tie(machine.announcedExec?.(), (id) => logged.has(id));
               const exec = execOf.get(callId) ?? (tie.kind === 'tied' || tie.kind === 'held' ? tie.exec : undefined);
-              if (exec) {
-                execOf.set(callId, exec);
-                journal.append(NESTED_STREAM, { callId, exec });
-              }
+              if (exec) execOf.set(callId, exec);
+              // Never the unwatched-answer sentinel: a call tied to no known exec is journaled with none.
+              journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: recoveryNote(ctx.state())?.turn.since ?? -1 });
             }
             const text = takeSaid(active);
             journal.message({ type: 'message', role: 'assistant', text, toolCalls: [{ id: callId, name: String(p.tool) }] });
@@ -1107,14 +1111,23 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       // provider would refuse with a call left unanswered. A cut-off `exec` is answered first, from its nested calls; the
       // generic output is for every other call.
       const summary = summarizeRollout(lines);
+      // A turn a crash cut off.
+      const note = recoveryNote(ctx.state());
       if (resume && summary.dangling.length > 0) {
-        const ties = (await journal.read<{ callId: string; exec: string }>(NESTED_STREAM)).map((r) => r.data);
+        const ties = (await journal.read<{ callId: string; exec: string | null; since?: number }>(NESTED_STREAM)).map((r) => r.data);
+        // An `exec` is a custom tool call: a host tool that is named "exec" is a function call and gets the generic output.
+        const isExec = (d: { name: string; type: string }) => d.type === 'custom_tool_call' && d.name === 'exec';
+        const dangling = summary.dangling.filter(isExec);
+        const lastExec = dangling.at(-1)?.callId;
         const rolled = completedNested(lines);
         const items = summary.dangling.map((c) => {
           // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
-          if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
+          if (!isExec(c)) return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
           const facts: NestedFact[] = [];
-          for (const tie of ties.filter((t) => t.exec === c.callId)) {
+          // A call whose script could not be told when it ran (an answer the proxy did not see to its end) belongs to this interrupted turn
+          // only if it ran in it; with a single cut-off exec it is that exec's, with more it is listed apart.
+          const unplaced = (t: { exec: string | null; since?: number }) => note !== undefined && t.exec === null && t.since === note.turn.since;
+          for (const tie of ties.filter((t) => t.exec === c.callId || (unplaced(t) && c.callId === lastExec && dangling.length === 1))) {
             const e = ctx.state().effects.get(toolKey(tie.callId));
             const fact: NestedFact = {
               callId: tie.callId,
@@ -1124,15 +1137,19 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
             };
             facts.push(fact);
             const settled = settle(fact);
-            if (settled.kind === 'completed' && e?.replay === 'never') recovered.set(callKey(fact.tool, e.input), { tool: fact.tool, text: settled.text });
+            // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
+            // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
+            // Only a recovery note resumes the interrupted turn: on a new turn, a call the ended one completed is not "earlier in this turn", so nothing is armed.
+            if (note && settled.kind === 'completed' && e?.replay === 'never') {
+              const key = callKey(fact.tool, e.input);
+              recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text }]);
+            }
           }
           return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(facts) };
         });
         await guard(rpc.request('thread/inject_items', { threadId, items }));
         await guard(synced());
       }
-      // A turn a crash cut off.
-      const note = recoveryNote(ctx.state());
       if (note) {
         const owed = owedSubmissions(ctx.state(), note.turn.placed, summary.clientIds);
         // Codex finished the turn (its last turn was this one's, and completed): only the end was not in the log yet.
@@ -1149,9 +1166,23 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           if (last && !said) journal.message({ type: 'message', role: 'assistant', text: last });
           await endTurn({ status: 'completed' });
         } else {
-          let text = note.text;
-          if (owed.length) {
-            text += `\n\nMessages that may not have reached you before the interruption:\n${owed.map((s) => quote(s.text ?? '')).join('\n')}`;
+          // The harness's note about the interrupted turn is not the user's words: it goes to the model as a developer message,
+          // injected once for this interrupted turn (every turn opens with `thread/resume`, so injecting on each would repeat it), and the
+          // resumed turn's user input is the user's own words, or a bare nudge. That holds on a new thread too (`resume` is unset when the
+          // rollout was not mirrored yet, which a crash in a turn's first seconds leaves): the thread exists by here, so it is injected the same.
+          const system = recoverySystemNote(ctx.state()) ?? note.text;
+          const words = recoveryUserTurn(
+            owed.map((s) => s.text ?? ''),
+            note.pending.map((s) => s.text ?? '')
+          );
+          const noted = (await journal.read<{ since: number }>(RECOVERY_NOTE_STREAM)).some((r) => r.data.since === note.turn.since);
+          const text = words;
+          if (!noted) {
+            await guard(rpc.request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: system }] }] }));
+            // The injected item is in the log before it is recorded as injected: a record without it would leave the note out of every later resume.
+            await guard(synced());
+            journal.append(RECOVERY_NOTE_STREAM, { since: note.turn.since });
+            await guard(journal.flush());
           }
           const n = transcriptOf(ctx.state()).filter((r) => r.data.type === 'message' && r.data.role === 'user').length;
           journal.message({ type: 'message', role: 'user', text: notes ? `${notes}\n\n${text}` : text, synthetic: 'recovery' } satisfies TranscriptEntry);

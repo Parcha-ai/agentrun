@@ -154,10 +154,11 @@ function unansweredCalls(sessionsDir) {
   return items.filter((i) => i.type === 'function_call' && !answered.has(i.call_id)).map((i) => i.call_id);
 }
 
-test("a crash inside a never tool's call, then the turn closed in the log: the next send answers the dangling call from the log before the new turn, and the call is never run again", async () => {
+/** A session whose turn a crash cut off inside a never call of `toolName`, with the turn then closed in the log (as a settle does), and a new send. */
+async function crashThenClosedThenSend(toolName) {
   const dir = scratch();
   const file = join(dir, 'script.json');
-  writeFileSync(file, JSON.stringify(['call charge {"amount":5}', 'next']));
+  writeFileSync(file, JSON.stringify([`call ${toolName} {"amount":5}`, 'next']));
   const codex = codexAdapter({
     model: 'luna-test',
     provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' },
@@ -167,7 +168,7 @@ test("a crash inside a never tool's call, then the turn closed in the log: the n
   let charged = 0;
   let inside;
   const reached = new Promise((resolve) => { inside = resolve; });
-  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const charge = { name: toolName, description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
   const spec = { key: 'step:repair', label: 'pay', system: [], tools: [charge], context: 'fresh' };
   const store = memorySessionStore();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
@@ -192,8 +193,19 @@ test("a crash inside a never tool's call, then the turn closed in the log: the n
   await b.send('next');
   assert.equal((await b.turnEnd()).status, 'completed');
   await b.close();
+  return { charged, dir };
+}
+
+test("a crash inside a never tool's call, then the turn closed in the log: the next send answers the dangling call from the log before the new turn, and the call is never run again", async () => {
+  const { charged, dir } = await crashThenClosedThenSend('charge');
   assert.equal(charged, 1, 'the cut call is never run again');
   assert.deepEqual(unansweredCalls(join(dir, 'sessions')), [], 'every call in the history the new turn sends has its output');
+});
+
+test('a host tool named exec is a function call: the repair answers it with the generic output, never as code mode\'s exec', async () => {
+  const { charged, dir } = await crashThenClosedThenSend('exec');
+  assert.equal(charged, 1);
+  assert.deepEqual(unansweredCalls(join(dir, 'sessions')), [], 'its function call has a function_call_output');
 });
 
 test("an interrupt while a never tool's outcome is still being written: the next turn's drive folds the outcome, never takes it for abandoned", async () => {

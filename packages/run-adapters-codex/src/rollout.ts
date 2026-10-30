@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/rollout.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 004-names, 006-comments
+// Changed by Parcha, patches: 004-names, 006-comments, 011-exec-by-kind
 /**
  * Codex's rollout, as the run's log holds it. Pure functions, no Node
  * imports.
@@ -45,6 +45,8 @@ export interface RolloutLine {
 export interface RolloutCall {
   callId: string;
   name: string;
+  /** `function_call` (a model tool, or a host tool) or `custom_tool_call` (code mode's `exec`). */
+  type: string;
   arguments: string;
   /** Whether a `function_call_output` for it follows. */
   answered: boolean;
@@ -108,7 +110,7 @@ export function summarizeRollout(lines: readonly string[]): RolloutSummary {
       if (typeof id === 'string') threadId = id;
     } else if (line.type === 'response_item') {
       if ((p.type === 'function_call' || p.type === 'custom_tool_call') && typeof p.call_id === 'string') {
-        calls.push({ callId: p.call_id, name: String(p.name ?? ''), arguments: String(p.arguments ?? p.input ?? ''), answered: false, line: i });
+        calls.push({ callId: p.call_id, name: String(p.name ?? ''), type: p.type, arguments: String(p.arguments ?? p.input ?? ''), answered: false, line: i });
       } else if ((p.type === 'function_call_output' || p.type === 'custom_tool_call_output') && typeof p.call_id === 'string') {
         outputs.add(p.call_id);
       }
