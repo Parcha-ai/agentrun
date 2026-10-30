@@ -241,12 +241,20 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   const before = table.snapshot();
   const own = before.info(process.pid);
   let signalled = 0;
+  /** The groups and the pids this reap has sent SIGKILL to: a record and a mark may name the same command. */
+  const killedGroups = new Set<number>();
+  const killedPids = new Set<number>();
   /**
    * False for what is never a target: this process, its group, and a pid of 1 or below, since `kill(0)` is the caller's
-   * group and `kill(-1)` every process the user may signal.
+   * group and `kill(-1)` every process the user may signal. A target this reap already signalled (the same group, or the
+   * same pid) is still a target but gets no second SIGKILL. A member is still signalled after its group: it may have left
+   * the group since the listing.
    */
   const kill = (target: number, mark: ProcessMark): boolean => {
     if (!(mark.pid > 1) || mark.pid === process.pid || (target < 0 && -target === own?.pgrp)) return false;
+    if (target < 0 ? killedGroups.has(-target) : killedPids.has(target)) return true;
+    if (target < 0) killedGroups.add(-target);
+    else killedPids.add(target);
     try {
       signal(target, "SIGKILL");
       signalled++;
