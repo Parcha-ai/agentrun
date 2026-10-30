@@ -20,6 +20,16 @@ export class SessionFenced extends Error {
   }
 }
 
+/** A send under a submission id the session already holds: refused, with nothing written (the session's records keep
+ *  only the first submission of an id). */
+export class SubmissionExists extends Error {
+  readonly code = "SUBMISSION_EXISTS";
+  constructor(readonly id: string, adapter: string) {
+    super(`${adapter}: the session already holds a submission with id ${id}`);
+    this.name = "SubmissionExists";
+  }
+}
+
 /** A node that delivered no record. `final` says a second attempt would end the same way, so a recovery driver gives
  *  it none: the runner's own bounds (the turn cap, no progress, a refusal) are final; an abort, a timeout or a model
  *  error is not. */

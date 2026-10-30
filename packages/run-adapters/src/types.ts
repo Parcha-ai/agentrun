@@ -148,14 +148,16 @@ export type SessionState = "new" | "open_turn" | "idle";
 
 export interface AdapterSession {
   readonly state: SessionState;
-  /** Place the input, then send it: a new turn. */
-  send(text: string): Promise<void>;
+  /** Place the input, then send it: a new turn. With `id`, the input's submission has that id, so the caller can name it
+   *  later (`settleOpenTurn`); an id the session already holds is refused (`SubmissionExists`), with nothing written. */
+  send(text: string, options?: { id?: string }): Promise<void>;
   /** Resume the turn a crash cut off, from the session's records. Only when `state` is `open_turn`. */
   recover(): Promise<void>;
-  /** End the turn a crash cut off without resuming it: recorded ended `interrupted`, the submission that opened it
-   *  withdrawn when the turn never placed it, and nothing sent, so no later open resumes it. Anything else pending is the
-   *  next turn's input. Only when `state` is `open_turn`. */
-  settleOpenTurn(): Promise<void>;
+  /** End the turn a crash cut off without resuming it: recorded ended `interrupted`, and nothing sent, so no later open
+   *  resumes it. It withdraws only the submission it is named (`opening`), while that is unplaced and the oldest pending;
+   *  unnamed, it withdraws nothing. Anything else pending is the next turn's input, and `state` says so after. Only when
+   *  `state` is `open_turn`. */
+  settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Resolves when the turn in flight ends. */
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Stop the turn in flight; calls it left open end interrupted. With `drainMs`, a pause: no new turn is sent, and the

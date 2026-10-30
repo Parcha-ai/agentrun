@@ -26,6 +26,32 @@ export const INTERRUPTED_TEXT = "interrupted: the process running it stopped bef
 type StartData = { key: string; stepId: string; name: string; replay: EffectRecord["replay"]; input: unknown; placed: string[]; attempt: number; startedAt: string };
 type EndData = { stepId: string; status: "completed" | "failed"; output?: unknown; error?: EffectRecord["error"] };
 type SubmissionData = Omit<Submission, "receivedAt"> & { receivedAt: string };
+type SubmissionInput = Omit<Submission, "receivedAt"> & { receivedAt?: Date };
+
+/** A record-only effect: its outcome is known before it is written, so its intent and its outcome land together. It
+ *  places nothing. */
+export interface RecordOnlyEffect {
+  key: string;
+  options: Omit<EffectOptions, "placed">;
+  output: unknown;
+}
+
+const submissionRecord = ({ receivedAt, ...rest }: SubmissionInput): SessionRecord => ({ kind: KERNEL_RECORDS.submission, data: { ...rest, receivedAt: (receivedAt ?? new Date()).toISOString() } as never });
+/** An effect's intent, under its key's next attempt. */
+function intentRecord(state: SessionState, k: string, options: EffectOptions): { stepId: string; record: SessionRecord } {
+  const known = state.effects.get(k);
+  const attempt = known ? known.attempt + 1 : 0;
+  const stepId = `${k}#${attempt}`;
+  return { stepId, record: { kind: KERNEL_RECORDS.start, data: { key: k, stepId, name: options.name, replay: options.replay, input: options.input as never, placed: options.placed ?? [], attempt, startedAt: new Date().toISOString() } } };
+}
+const outcomeRecord = (stepId: string, outcome: Omit<EndData, "stepId">): SessionRecord => ({ kind: KERNEL_RECORDS.end, data: { stepId, ...outcome } as never });
+const completedRecord = (stepId: string, output: unknown) => outcomeRecord(stepId, { status: "completed", output: output === undefined ? null : output });
+
+/** A record-only effect's records, as `effect` writes an effect's: its intent, then its outcome. */
+function effectRecords(state: SessionState, effect: RecordOnlyEffect): SessionRecord[] {
+  const { stepId, record } = intentRecord(state, effect.key, effect.options);
+  return [record, completedRecord(stepId, effect.output)];
+}
 
 /** The state a session's records fold to. */
 export function foldSession(runId: string, records: readonly SessionRecord[]): SessionState {
@@ -88,7 +114,11 @@ export interface OpenDriveOptions {
 
 export interface Drive extends DriveContext {
   /** Record new input for the session (the door's accepted submission, or a withdraw). Resolves once it is durable. */
-  submit(submission: Omit<Submission, "receivedAt"> & { receivedAt?: Date }): Promise<void>;
+  submit(submission: SubmissionInput): Promise<void>;
+  /** Write record-only effects whole, after `before` (input that must land with them), in one append, under `effect`'s
+   *  guards: a halted drive writes nothing; a key running or in flight in this drive is `Fatal`; a key another write
+   *  took first is a `Restart`. */
+  recordOnly(effects: readonly RecordOnlyEffect[], options?: { before?: readonly SubmissionInput[] }): Promise<void>;
 }
 
 /** Open the session's drive: fold its records and resolve whatever a dead process left open. */
@@ -159,9 +189,25 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       options.halt?.(reason);
     },
     async submit(submission) {
-      const { receivedAt, ...rest } = submission;
-      await append([{ kind: KERNEL_RECORDS.submission, data: { ...rest, receivedAt: (receivedAt ?? new Date()).toISOString() } as never }]);
+      await append([submissionRecord(submission)]);
       for (const listener of [...hints]) listener({ eventType: "hook_received" });
+    },
+    async recordOnly(effects, recordOptions = {}) {
+      if (signal.aborted) throw signal.reason;
+      for (const { key: k } of effects) {
+        const known = state.effects.get(k);
+        if (known?.status === "running" || inflight.has(k)) throw new Fatal(`agentrun-kernel: effect ${k} is already running in this drive`);
+        if (known && known.status !== "pending") throw new Restart(`agentrun-kernel: effect ${k} was written first by another write; the drive must be rebuilt`);
+      }
+      // Reserved before the first await, as `effect` reserves its key: no other write of these keys can begin meanwhile.
+      for (const { key: k } of effects) inflight.add(k);
+      try {
+        const before = recordOptions.before ?? [];
+        await append([...before.map(submissionRecord), ...effects.flatMap((effect) => effectRecords(state, effect))]);
+        if (before.length) for (const listener of [...hints]) listener({ eventType: "hook_received" });
+      } finally {
+        for (const { key: k } of effects) inflight.delete(k);
+      }
     },
     async effect<T>(k: string, effectOptions: EffectOptions, fn: (io: EffectIO) => Promise<T>): Promise<T> {
       const known = state.effects.get(k);
@@ -175,9 +221,8 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
       if (placing.some((id) => state.withdrawn.has(id))) throw new Restart(`agentrun-kernel: effect ${k} would place a withdrawn submission; the drive must be rebuilt`);
       inflight.add(k);
       try {
-        const attempt = known ? known.attempt + 1 : 0;
-        const stepId = `${k}#${attempt}`;
-        await append([{ kind: KERNEL_RECORDS.start, data: { key: k, stepId, name: effectOptions.name, replay: effectOptions.replay, input: effectOptions.input as never, placed: placing, attempt, startedAt: new Date().toISOString() } }]);
+        const { stepId, record } = intentRecord(state, k, { ...effectOptions, placed: placing });
+        await append([record]);
         // A withdraw appended while this intent was being written beat the placement: what the caller would send next
         // is not what the log placed, so it must rebuild instead of running.
         if (placing.length && state.effects.get(k)?.placed.length !== placing.length) throw new Restart(`agentrun-kernel: effect ${k} placed a withdrawn submission; the drive must be rebuilt`);
@@ -189,10 +234,10 @@ export async function openDrive(options: OpenDriveOptions): Promise<Drive> {
           // The drive is stopping, or must be rebuilt: no outcome is written; the next drive resolves the intent.
           if (signal.aborted || error instanceof Restart || error instanceof Fatal) throw error;
           const failed = { message: String((error as Error)?.message ?? error), ...(error instanceof EffectInterrupted ? { interrupted: true } : {}), ...(partial.length ? { partial } : {}) };
-          await append([{ kind: KERNEL_RECORDS.end, data: { stepId, status: "failed", error: failed as never } }]);
+          await append([outcomeRecord(stepId, { status: "failed", error: failed })]);
           throw new EffectFailure(failed);
         }
-        await append([{ kind: KERNEL_RECORDS.end, data: { stepId, status: "completed", output: (output === undefined ? null : output) as never } }]);
+        await append([completedRecord(stepId, output)]);
         return output;
       } finally {
         inflight.delete(k);
