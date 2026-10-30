@@ -50,7 +50,8 @@ async function processOf(path) {
 const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(status)?.[1]?.trim();
 
 /** serve with codex on a copy of the stand-in (its process found by that copy's path), its model through `gw`. */
-async function codexServe(t, gw) {
+/** `price`: the gateway's AGENT_MODEL_PRICE, or null for none (a model serve then prices from the catalog, if it lists it). */
+async function codexServe(t, gw, { price = "1,2,0.5" } = {}) {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyFile(STAND_IN, standIn);
@@ -65,8 +66,9 @@ async function codexServe(t, gw) {
     AGENT_MODEL_BASE_URL: gw.origin,
     AGENT_MODEL: "gpt-test",
     AGENT_MODEL_API_KEY: GATEWAY_KEY,
-    AGENT_MODEL_PRICE: "1,2,0.5",
+    ...(price === null ? {} : { AGENT_MODEL_PRICE: price }),
   });
+  if (price === null) delete process.env.AGENT_MODEL_PRICE;
   const { api, data } = await serve(t, { faux: undefined });
   assert.equal((await api("POST", "/agents", agent("coder", { harness: "codex" }))).status, 201);
   return { api, standIn, data };
@@ -145,4 +147,19 @@ test("a codex run whose process dies while its request is in flight leaves no Co
     assert.ok(i < 20, `the dead process's Codex (pid ${child.pid}) is gone within 2 s`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+});
+
+test("a codex run on a gateway model serve has no price for costs unknown, never $0", { timeout: 90_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const gw = await gateway(t);
+  const { api } = await codexServe(t, gw, { price: null });
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  for (let i = 0; gw.seen.length === 0; i++) {
+    assert.ok(i < 300, "the turn's model request reaches the gateway");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  gw.release();
+  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+  assert.deepEqual(rows.findLast((r) => r.kind === "usage")?.usage, { usd: null, requests: 1 }, "one request, its cost unknown");
+  assert.equal((await api("GET", `/runs/${run.body.run_id}`)).body.cost.usd, null);
 });
