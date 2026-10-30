@@ -22,4 +22,11 @@ describe("RunHeader's cost", () => {
     expect(html).toContain("$1.50 est.");
     expect(html).toContain(DISCLAIMER);
   });
+  it("an unknown cost reads Unknown, with no estimate disclaimer, whatever its source or basis says", () => {
+    for (const c of [{ source: "estimate" as const, basis: "estimate" }, { basis: "estimate" }]) {
+      const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: null, charge_state: null, cap_usd: null, ...c }), agentName: "Calc" }));
+      expect(html).toContain("Unknown");
+      expect(html).not.toContain(DISCLAIMER);
+    }
+  });
 });
