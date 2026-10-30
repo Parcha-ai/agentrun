@@ -13,6 +13,7 @@ import { CANARY } from "./fixtures/faux-jev.mjs";
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const SERVE = new URL("../dist/index.js", import.meta.url).href;
 const DECISIONS = new URL("../dist/decisions.js", import.meta.url).href;
+const SECRETS = new URL("../dist/secrets.js", import.meta.url).href;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const coi = {
@@ -103,4 +104,34 @@ process.stdout.write(JSON.stringify({ fd, before, keys, after }));`;
   assert.deepEqual(seen.keys, { TYPESAFE_API_KEY: CANARY }, "the keys came through the descriptor");
   assert.match(seen.before, /^(socket|pipe):\[\d+\]$/, "before the read, the descriptor is the handed pipe");
   assert.notEqual(seen.after, seen.before, "after it, the number names something else or nothing");
+});
+
+test("the run's process keeps only the decision keys from its descriptor: another name the object carries reaches no provider and no environment", { skip: !existsSync("/proc/self/fdinfo") && "no /proc here" }, async () => {
+  // The object also carries a name no decision provider takes, with a value of its own, beside the three it may carry.
+  const other = `not-a-decision-key-${process.pid}-${Date.now()}`;
+  const script = `const { spawnSync } = await import("node:child_process");
+const { handedKeys } = await import(${JSON.stringify(DECISIONS)});
+const { secret, withSecrets } = await import(${JSON.stringify(SECRETS)});
+const keys = handedKeys(process.env);
+const holds = (text) => typeof text === "string" && text.includes(${JSON.stringify(other)});
+const child = spawnSync(process.execPath, ["-e", "process.stdout.write(JSON.stringify(process.env))"], { encoding: "utf8" });
+const tools = withSecrets(process.env);
+process.stdout.write(JSON.stringify({
+  names: Object.keys(keys).sort(),
+  kept: Object.values(keys).some(holds),
+  env: Object.values(process.env).some(holds),
+  child: holds(child.stdout),
+  tools: holds(tools.AGENT_MODEL_API_KEY) || holds(secret("AGENT_MODEL_API_KEY")),
+}));`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe", "ignore", "pipe"], env: { ...process.env, AGENTRUN_SERVE_DECISION_KEY_FD: "4" } });
+  child.stdio[4].end(JSON.stringify({ TYPESAFE_API_KEY: CANARY, OPENROUTER_API_KEY: CANARY, PARALLEL_API_KEY: CANARY, AGENT_MODEL_API_KEY: other }));
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  const code = await new Promise((resolve) => child.once("exit", resolve));
+  assert.equal(code, 0, err);
+  const seen = JSON.parse(out);
+  assert.deepEqual(seen.names, ["OPENROUTER_API_KEY", "PARALLEL_API_KEY", "TYPESAFE_API_KEY"], "the decision keys, and only they");
+  assert.deepEqual([seen.kept, seen.env, seen.child, seen.tools], [false, false, false, false], "the other name's value is in no provider's keys, no environment, no child's and no tools'");
 });
