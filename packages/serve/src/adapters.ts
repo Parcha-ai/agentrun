@@ -75,7 +75,7 @@ export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
 }
 
 /** Hosts a gateway may be reached at over plain http: this machine. */
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]); // key-gate: loopback-rule names this machine only, the hosts a gateway may use plain http on; nothing connects here
 
 /**
  * The base `setting` (a gateway's URL) gives the model proxy: its origin and its path, one trailing `/v1` taken off, since
