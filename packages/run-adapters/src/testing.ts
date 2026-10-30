@@ -159,13 +159,15 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         async send(text) {
           await append(FAUX_RECORDS.user, { text });
           await append(FAUX_RECORDS.turn, { n: turnsStarted + 1 });
+          state = "idle";
           begin();
         },
-        async recover() { begin(); },
+        async recover() { state = "idle"; begin(); },
         async settleOpenTurn() {
           if (state !== "open_turn") throw new Error("faux: there is no turn to settle");
           await append(FAUX_RECORDS.turnEnd, { status: "interrupted" });
           state = "idle";
+          io.onEvent({ type: "turn_end", status: "interrupted" });
         },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
         async interrupt() { turnSignal?.abort(new Error("interrupted")); },

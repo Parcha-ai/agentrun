@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { serialWriter } from "./host/serial.js";
 import { openDrive, pendingSubmissions, Restart, type Drive } from "./kernel/index.js";
-import { NativeJournal, openTurn, recoveryNote, transcriptOf } from "./process/index.js";
+import { NativeJournal, openTurn, recoveryNote, type TranscriptEntry, transcriptOf } from "./process/index.js";
 import type { AdapterSession, SessionIO, TurnStatus } from "./types.js";
 
 /** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause waits for these to have
@@ -61,6 +61,9 @@ export interface AdapterSessionOptions {
 
 /** What a settled turn's record says ended it. */
 const SETTLED = "settled: the turn a crash cut off was ended, not resumed";
+/** What a settle records in its turn entry, in the same write: the submission it withdraws, and how many submissions the
+ *  session held then, so a later settle tells a submission it already saw from one that came after it. */
+type SettleMark = { opening?: string; seen: number };
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
@@ -128,19 +131,30 @@ export async function openAdapterSession(options: AdapterSessionOptions): Promis
       await ready();
       const now = drive.state();
       const cut = openTurn(now);
-      const last = transcriptOf(now).filter((r) => r.data?.type === "turn").at(-1)?.data as { error?: string } | undefined;
-      // Settled already, and no turn cut since: what is pending now is the next turn's, never this settle's to drop.
-      if (!cut && last?.error === SETTLED) {
-        state = pendingSubmissions(now).length ? "open_turn" : "idle";
-        return;
+      const withdraw = (id: string) => drive.submit({ id: randomUUID(), kind: "withdraw", target: id });
+      let pending = pendingSubmissions(now);
+      const mark = (transcriptOf(now).filter((r) => r.data?.type === "turn").at(-1)?.data as { settle?: SettleMark } | undefined)?.settle;
+      if (!cut && mark) {
+        // The last turn ended in a settle. One a crash cut between its record and its withdraw is finished here, on the
+        // submission it named, never on whatever is oldest now.
+        const owed = mark.opening === undefined ? undefined : pending.find((s) => s.id === mark.opening);
+        if (owed) await withdraw(owed.id);
+        // What came after that settle opened a turn cut since; what it already saw is the next turn's input.
+        const at = new Map(now.submissions.map((s, i) => [s.id, i] as const));
+        pending = pending.filter((s) => s.id !== mark.opening && (at.get(s.id) ?? 0) >= mark.seen);
+        if (!pending.length) {
+          state = pendingSubmissions(drive.state()).length ? "open_turn" : "idle";
+          return;
+        }
       }
-      // Only what opened the cut turn is withdrawn: its prompt, when the turn never placed it (the oldest pending).
-      // Anything else pending reached the session meanwhile and is the next turn's input.
-      const [opening] = cut?.placed.length ? [] : pendingSubmissions(now);
-      if (opening) await drive.submit({ id: randomUUID(), kind: "withdraw", target: opening.id });
+      // Only what opened the cut turn is withdrawn: its prompt, when the turn never placed it (the oldest such pending).
+      const [opening] = cut?.placed.length ? [] : pending;
+      // The record first, naming what is withdrawn, then the withdraw: a crash between them is finished by the next settle.
+      const settle: SettleMark = { ...(opening ? { opening: opening.id } : {}), seen: now.submissions.length };
       const journal = new NativeJournal(drive);
-      journal.message({ type: "turn", status: "interrupted", error: SETTLED });
+      journal.message({ type: "turn", status: "interrupted", error: SETTLED, settle } as unknown as TranscriptEntry);
       await journal.flush();
+      if (opening) await withdraw(opening.id);
       state = "idle";
       io.onEvent({ type: "turn_end", status: "interrupted" });
     },
