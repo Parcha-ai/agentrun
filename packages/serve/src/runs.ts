@@ -723,11 +723,17 @@ export class Runs {
     run.launching = true;
   }
 
-  /** The run's newest launch came through with the server up: its process serves, or exited while it was watched. */
+  /** The run's newest launch came through with the server up: its process serves, or exited while it was watched. Its
+   *  callers are event handlers, so a mark that cannot be removed is logged, never thrown: a throw there stops the
+   *  server and every run on it. The mark left behind fails the run at the next start, which never launches it again. */
   private reportedBack(run: Run): void {
     if (!run.launching) return;
-    rmSync(join(run.dir, RUN_LAUNCHING), { force: true });
     run.launching = false;
+    try {
+      rmSync(join(run.dir, RUN_LAUNCHING), { force: true });
+    } catch (error) {
+      this.options.log?.("launch_mark_kept", { run: run.id, code: (error as NodeJS.ErrnoException).code ?? "unknown" });
+    }
   }
 
   /** Opens the run again on its directory after its process went before the run ended: it resumes from its store. An

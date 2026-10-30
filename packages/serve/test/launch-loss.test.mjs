@@ -6,7 +6,7 @@ import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
-import { LAUNCH_COUNT_ENV, LAUNCH_KILL_ENV } from "./fixtures/faux-launch-kills-server.mjs";
+import { LAUNCH_COUNT_ENV, LAUNCH_JAM_ENV, LAUNCH_KILL_ENV } from "./fixtures/faux-launch-kills-server.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, scratch, storeRun } from "./support.mjs";
 
@@ -27,7 +27,7 @@ async function serverProcess(t, data, env) {
     await sleep(50);
   }
   const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
-  return { child, stderr: () => err, api: client(value("AGENTRUN_BASE_URL"), (await readFile(join(data, ".token"), "utf8")).trim()) };
+  return { child, stdout: () => out, stderr: () => err, api: client(value("AGENTRUN_BASE_URL"), (await readFile(join(data, ".token"), "utf8")).trim()) };
 }
 
 const exited = (child) => (child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise((resolve) => child.once("exit", resolve)));
@@ -109,4 +109,23 @@ test("a run whose process served and then died with its server is opened again b
   assert.equal(run.result.final_answer, "Soon.");
   assert.equal(await launchCount(env[LAUNCH_COUNT_ENV]), 2, "opened again once");
   assert.equal(storeRun(data, started.run_id).state, "completed");
+});
+
+test("a launch mark the server cannot remove is logged by name, and the server stays up and the run completes", async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  const server = await serverProcess(t, data, { [LAUNCH_JAM_ENV]: "1" });
+  assert.equal((await server.api("POST", "/agents", agent("calc"))).status, 201);
+  const { body: started } = await server.api("POST", "/agents/calc/runs", { input: { content: "Answer soon." } });
+  const run = await until("the run completes", async () => {
+    assert.equal(server.child.exitCode, null, `the server exited: ${server.stderr()}`);
+    const { body } = await server.api("GET", `/runs/${started.run_id}`);
+    return body.status === "completed" && body.poll_after_ms === 0 ? body : undefined;
+  });
+  assert.equal(run.result.final_answer, "Soon.");
+  await sleep(500);
+  assert.equal(server.child.exitCode, null, `the server exited: ${server.stderr()}`);
+  assert.equal(server.child.signalCode, null);
+  assert.equal((await server.api("GET", "/health")).status, 200);
+  assert.match(server.stdout(), new RegExp(`launch_mark_kept.*${started.run_id}`), "the failed removal is logged with its run");
 });
