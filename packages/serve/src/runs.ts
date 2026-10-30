@@ -208,13 +208,14 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
-/** How a run's cost is reached: `reported` when it made decisions, each one's cost its provider's own report, and no
- *  model request (a model's cost is always this server's estimate); else `estimate`. */
+/** How a run's cost `usd` is reached: `reported` when it is known and every part of it is a provider's own report (the
+ *  run made decisions, each one's cost reported, and no model request: a model's cost is always this server's
+ *  estimate); else `estimate`. An unknown cost is never `reported`. */
 export type CostSource = "reported" | "estimate";
-export function costSource(rows: readonly TimelineEvent[], decisionsReported: boolean | undefined): CostSource {
+export function costSource(rows: readonly TimelineEvent[], decisionsReported: boolean | undefined, usd: number | null): CostSource {
   const usage = usageOf(rows);
   const noModel = !usage || (usage.usage?.requests === 0 && usage.usage.usd === 0);
-  return decisionsReported === true && noModel ? "reported" : "estimate";
+  return typeof usd === "number" && decisionsReported === true && noModel ? "reported" : "estimate";
 }
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
@@ -869,7 +870,7 @@ export class Runs {
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
-    run.meta.cost_source = costSource(run.rows, run.decisionsReported);
+    run.meta.cost_source = costSource(run.rows, run.decisionsReported, cost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;

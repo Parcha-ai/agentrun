@@ -139,7 +139,7 @@ const REVIEW: Json = {
 /** How a cost was reached, beside the contract's `basis`, which stays `estimate` here. */
 const COST_SOURCE: Json = {
   enum: ["reported", "estimate"],
-  description: "`reported`: the run made decisions, the cost of each is its provider's own report, and it made no model request. `estimate`: any other run, its cost (or part of it) this server's estimate. Given on every run's cost: the run, its summary and its timeline page.",
+  description: "`reported`: `usd` is a number and every part of it is a provider's own report: the run made decisions, the cost of each is its provider's report, and it made no model request. `estimate`: any other run, its cost (or part of it) this server's estimate. A run whose cost is unknown (`usd` null) is always `estimate`. Given on every run's cost: the run, its summary and its timeline page.",
   "x-agentrun-serve": "cost/1",
 };
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
