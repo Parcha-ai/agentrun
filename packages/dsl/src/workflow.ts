@@ -2928,7 +2928,7 @@ function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow
   }
   for (const { choice, types, count, what } of asked) {
     const id = choice.provider ?? registry.default;
-    const provider = registry.providers[id];
+    const provider = Object.hasOwn(registry.providers, id) ? registry.providers[id] : undefined;
     if (!provider) throw new Error(`${what} names the decision provider ${id}, which this host does not have`);
     const capabilities = provider.capabilities;
     if (choice.evidence === "required" && capabilities.evidence === "none") throw new Error(`${what} requires evidence, and the decision provider ${id} gives none`);

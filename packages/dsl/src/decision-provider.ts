@@ -150,7 +150,7 @@ export function judgeFromProvider(provider: DecisionProvider, options: { deadlin
 export function judgeFromProviders(options: { providers: Readonly<Record<string, DecisionProvider>>; default: string; deadlineMs?: number | null }): RunJudge {
   return async (params) => {
     const id = params.provider ?? options.default;
-    const provider = options.providers[id];
+    const provider = Object.hasOwn(options.providers, id) ? options.providers[id] : undefined;
     if (!provider) throw new DecisionProviderError("configuration", `No decision provider "${id}" on this host.`);
     const own = options.deadlineMs ?? null;
     const node = params.timeoutMs ?? null;
