@@ -219,3 +219,28 @@ test("capabilities lists the decision providers: jev available where its key is 
   assert.match(routed.note ?? "", /model gateway/, "on the OpenRouter route the Jev key is the gateway's, and capabilities says so");
   assert.match(routed.note ?? "", /TYPESAFE_API_KEY/);
 });
+
+test("a workflow whose decision cost is unknown and whose model request is priced reads its cost unknown, before and after the server restarts", async (t) => {
+  await withCanary(t);
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const before = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(before.error));
+  assert.equal(durableDecisions(join(data, "runs", runId, "store", "run.sqlite"))[0].cost_usd, null, "Jev reports no cost: the decision's is unknown");
+  const usage = (await api("GET", `/runs/${runId}/timeline?limit=500`)).body.rows.findLast((row) => row.kind === "usage");
+  assert.ok(usage?.usage?.usd > 0, `the model node's request is priced: ${JSON.stringify(usage?.usage)}`);
+  assert.equal(before.cost.usd, null, "the decision's unknown cost is the run's");
+  await closeFirst();
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const after = (await client(next.baseUrl, next.token)("GET", `/runs/${runId}`)).body;
+  assert.equal(after.status, "completed");
+  assert.equal(after.cost.usd, null, "and still after a restart: never the model's cost alone");
+});
