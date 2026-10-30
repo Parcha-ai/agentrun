@@ -16,7 +16,7 @@ import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
-import { type ConfineChild, localMachine, type MachineBox } from "./host/machine.js";
+import { type ConfineChild, localMachine, type MachineBox, type PreviousBox } from "./host/machine.js";
 import { type ModelProxyOptions, watchClose } from "@parcha/agentrun-kernel/host";
 
 /** A name app-server accepts for a dynamic tool. */
@@ -39,6 +39,10 @@ export interface CodexAdapterOptions {
   /** The host's box for Codex (@parcha/agentrun-kernel/host's MachineBox), or `unsandboxed`, the operator's word that
    *  there is none. Absent: the host gives none, and a session with Codex's own tools on fails with a named error. */
   box?: MachineBox | "unsandboxed";
+  /** The session's last box, as the host recorded it (its record, and how its box reaps one): the machine reaps it before
+   *  anything of the session starts, boxed or not, and one that will not empty fails the turn by name (`box_not_empty`).
+   *  Like `box`, it is the host's for the session this adapter runs (serve makes one adapter per run). */
+  previousBox?: PreviousBox;
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 32 000. */
@@ -163,6 +167,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.box ? { box: options.box } : {}),
+        ...(options.previousBox ? { previousBox: options.previousBox } : {}),
         proxy: {
           hooks: io.models,
           tools: spec.tools.map((t) => t.name),

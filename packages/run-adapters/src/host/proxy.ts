@@ -16,6 +16,10 @@
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import { listenSocket, type ListenedSocket } from "./socket.js";
+
+/** Where the front listens when it has no socket: this host's loopback. */
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the model front listener on this host
 
 /** A route a policy admits: its method, its exact path, and the request headers forwarded with it. */
 export interface ProxyRoute {
@@ -106,6 +110,9 @@ export interface ModelProxyOptions {
   headers?: Readonly<Record<string, string>>;
   /** For tests: the fetch the proxy forwards with. */
   fetch?: typeof fetch;
+  /** Listen on this Unix socket (mode 0600) instead of a loopback port: the socket a session's box is given, and the
+   *  front's only door. Its directory must exist. */
+  socketPath?: string;
 }
 
 /** A header a host may not set on forwarded requests: the credential's, the transport's, and the provider's protocol. */
@@ -126,7 +133,7 @@ export function hostHeaderProblems(headers: Readonly<Record<string, unknown>> | 
 }
 
 export interface ModelProxy {
-  /** The proxy's origin, `http://127.0.0.1:<port>`. */
+  /** The proxy's origin, an http URL on this host's loopback; on a socket, `unix:<path>`, served in the box at a port of its own. */
   readonly url: string;
   /** The key the harness sends, which the proxy admits. */
   readonly key: string;
@@ -508,20 +515,28 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   };
 
   const server = createServer((req, res) => { void serve(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed", req); else res.destroy(); }); });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
+  const socketPath = options.socketPath;
+  let listened: ListenedSocket | undefined;
+  if (socketPath !== undefined) listened = await listenSocket(server, socketPath, "agentrun-kernel: the model proxy");
+  else {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, LOOPBACK, () => resolve());
+    });
+  }
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("agentrun-kernel: the model proxy has no port");
+  if (socketPath === undefined && (!address || typeof address === "string")) throw new Error("agentrun-kernel: the model proxy has no port");
   return {
-    url: `http://127.0.0.1:${address.port}`,
+    url: socketPath !== undefined ? `unix:${socketPath}` : `http://${LOOPBACK}:${(address as { port: number }).port}`,
     key,
     close: async () => {
       closing = true;
       for (const c of inflight) c.abort();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      // A socket's file stays after its listener closes: removed, so nothing reaches a closed front by its path (only while
+      // it is still this front's own: another machine's put there since is left).
+      listened?.release();
     },
   };
 }

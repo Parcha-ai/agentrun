@@ -3,13 +3,14 @@
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
 import { foldSession } from '@parcha/agentrun-kernel/kernel';
-import { startChild } from '@parcha/agentrun-kernel/host';
+import { BOX_MODEL_SOCKET, forwardChild, parseForward, startChild } from '@parcha/agentrun-kernel/host';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
@@ -348,6 +349,26 @@ test('the catalog reader is test-only: passed outside the stand-in guard, the ad
   }
 });
 
+test("the session's last box the host names is reaped before Codex starts: one that will not empty fails the node by name", async () => {
+  const reaped = [];
+  const previousBox = { record: { id: 'box-old', writer: { pid: 1, startTime: '1' } }, reap: async (record) => { reaped.push(record.id); return { empty: false, left: 1, by: 'cgroup' }; } };
+  const { adapter: codex } = adapter(['call submit {"value":{"answer":"x"}}'], { box: 'unsandboxed', previousBox });
+  const runNode = createHarnessRunner(codex, { store: memorySessionStore(), tools: [] });
+  const out = await runWorkflow(doc(agent()), {}, { runNode }).catch((error) => ({ status: 'threw', error: String(error?.message ?? error) }));
+  assert.notEqual(out.status, 'complete');
+  assert.match(JSON.stringify(out.error ?? out), /box_not_empty: the session's last box still holds 1 process \(counted by cgroup\)/);
+  assert.ok(reaped.length >= 1 && reaped.every((id) => id === 'box-old'), `the host's record was reaped: ${reaped}`);
+});
+
+/** A port nothing listens on now. */
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
 /** One turn of a Codex session opened on the adapter itself, over a box whose reap answers `verdict`: the turn's outcome. */
 async function codexTurnOver(verdict) {
   const started = [];
@@ -355,15 +376,18 @@ async function codexTurnOver(verdict) {
   const box = {
     isolation: { mode: 'bwrap', cgroup: false },
     start: (spec, child, recorder) => {
-      started.push(child.command);
+      // The kernel's forwarder comes first, with the box's socket path mapped to the host's own (no namespaces here).
+      const forwarded = parseForward(child.args.slice(1));
+      const run = forwardChild({ command: forwarded.command, args: forwarded.args }, forwarded.listen.map((l) => ({ port: l.port, socket: l.socket === BOX_MODEL_SOCKET ? spec.modelSocket : l.socket })));
+      started.push(forwarded.command);
       const record = { id: `box-${started.length}`, writer: { pid: process.pid, startTime: '1' } };
       recorder.ahead(record);
-      const proc = startChild({ command: child.command, args: child.args, env: spec.env }, {}, spec.workspace);
+      const proc = startChild({ command: run.command, args: run.args, env: spec.env }, {}, spec.workspace);
       return { ...proc, record, ready: recorder.started({ ...record, pid: proc.child.pid }).then(() => record) };
     },
     reap: async () => verdict,
   };
-  const { adapter: codex } = adapter(['hello'], { box: { box, recorder: { ahead: () => {}, started: async () => {} }, readOnly: [], modelSocket: '/run/m.sock', modelPort: 4100 } });
+  const { adapter: codex } = adapter(['hello'], { box: { box, recorder: { ahead: () => {}, started: async () => {} }, readOnly: [], modelPort: await freePort() } });
   const spec = { key: 'step:box', label: 'task', system: [], tools: [], context: 'fresh' };
   const store = memorySessionStore();
   const session = await codex.open(spec, { store, writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} });

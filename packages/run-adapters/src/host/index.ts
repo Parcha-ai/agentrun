@@ -4,8 +4,11 @@ export { hostHeaderProblems, matchRoute, parseStrict, providerIdsOf, ProxyRefusa
 export type { ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRoute, ProxyUsage } from "./proxy.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
-export { childEnv, confined, INHERITED_ENV, openLocalMachine, startChild, watchClose } from "./machine.js";
-export type { CacheFile, ChildCommand, ConfineChild, KillSignal, LocalMachine, LocalMachineSpec, MachineBox, MachineChild, MachineSpawn, MachineTail } from "./machine.js";
+export { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, openLocalMachine, startChild, watchClose } from "./machine.js";
+export { listenSocket, type ListenedSocket } from "./socket.js";
+export { BOX_FORWARD, BOX_LOOPBACK, forward, forwardChild, parseForward } from "./box-forward.js";
+export type { ForwardListen } from "./box-forward.js";
+export type { CacheFile, ChildCommand, ConfineChild, KillSignal, LocalMachine, LocalMachineSpec, MachineBox, MachineChild, MachineSpawn, MachineTail, PreviousBox } from "./machine.js";
 export { BoxError } from "./box.js";
 export type { Box, BoxedChild, BoxErrorCode, BoxRecord, BoxRecorder, BoxSpec, Isolation, Reaped } from "./box.js";
 export { boxSlot } from "./box-slot.js";

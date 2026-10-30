@@ -21,7 +21,7 @@ import { hostHeaderProblems, type ModelProxyOptions, watchClose } from "@parcha/
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { builtinTools, type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
-import { type ConfineChild, localMachine, type MachineBox } from "./host/machine.js";
+import { type ConfineChild, localMachine, type MachineBox, type PreviousBox } from "./host/machine.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
@@ -169,6 +169,10 @@ export interface ClaudeAgentAdapterOptions {
    *  that there is none. Absent: the host gives none, and a session with built-ins on fails with a named error. The
    *  CLI's own sandbox is never used: in the box it is off, the box being the boundary. */
   box?: MachineBox | "unsandboxed";
+  /** The session's last box, as the host recorded it (its record, and how its box reaps one): the machine reaps it before
+   *  anything of the session starts, boxed or not, and one that will not empty fails the turn by name (`box_not_empty`).
+   *  Like `box`, it is the host's for the session this adapter runs (serve makes one adapter per run). */
+  previousBox?: PreviousBox;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -356,6 +360,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.box ? { box: options.box } : {}),
+        ...(options.previousBox ? { previousBox: options.previousBox } : {}),
         proxy: {
           hooks: io.models,
           tools: tools.map((t) => t.name),

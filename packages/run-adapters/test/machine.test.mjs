@@ -2,16 +2,25 @@
 // git ceiling, the host's confinement, the process group ended whole, the private directories and the tail. Each adapter
 // suite covers the same machine through its own harness; this one holds the shared code where it lives.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { connect, createServer } from 'node:net';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
-import { childEnv, confined, INHERITED_ENV, openLocalMachine, processAlive, startChild, watchClose } from '@parcha/agentrun-kernel/host';
+import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, listenSocket, openLocalMachine, processAlive, startChild, watchClose } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'kernel-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 let n = 0;
 const scratch = () => join(ROOT, `s${n++}`);
+// Socket directories have a length bound, so the tests that name one build it from a short base of their own, never from
+// the temp directory's length (macOS's is about 49 bytes).
+const SHORT = mkdtempSync(Buffer.byteLength(tmpdir()) <= 20 ? join(tmpdir(), 'krt-') : '/tmp/krt-');
+after(() => rmSync(SHORT, { recursive: true, force: true }));
+let m = 0;
+const shortDir = () => join(SHORT, `r${m++}`);
 
 /** A provider's rules, for the tests: one route and a bearer key. No request is sent. */
 const policy = {
@@ -130,7 +139,9 @@ function fakeBox({ isolation = { mode: 'bwrap', cgroup: false }, reap = async ()
     const record = { id: `box-${box.specs.length}`, writer: { pid: process.pid, startTime: '1' } };
     recorder.ahead(record);
     box.order.push('ahead');
-    const proc = startChild({ command: child.command, args: child.args, env: spec.env }, {}, spec.workspace);
+    // On this host there is no box network: the harness runs as itself, past the forwarder's own arguments.
+    const harness = child.args.slice(child.args.indexOf('--') + 1);
+    const proc = startChild({ command: harness[0], args: harness.slice(1), env: spec.env }, {}, spec.workspace);
     box.order.push('spawn');
     const full = { ...record, pid: proc.child.pid, startTime: '2', pidns: 'pid:[1]' };
     const ready = recorder.started(full).then(() => full);
@@ -140,7 +151,8 @@ function fakeBox({ isolation = { mode: 'bwrap', cgroup: false }, reap = async ()
   return box;
 }
 const recorder = (log = []) => ({ log, ahead: (r) => log.push(['ahead', r.id]), started: async (r) => { log.push(['started', r.id]); } });
-const boxOf = (box, extra = {}) => ({ box, recorder: recorder(), readOnly: ['/opt/cli'], modelSocket: '/run/m.sock', modelPort: 4100, ...extra });
+const boxOf = (box, extra = {}) => ({ box, recorder: recorder(), readOnly: ['/opt/cli'], modelPort: 4100, ...extra });
+const FORWARD = fileURLToPath(new URL('../dist/host/box-forward.js', import.meta.url));
 
 test("in a box, a child starts through the host's Box with the session's directories, its allowlisted environment and the git ceiling", async (t) => {
   const dir = scratch();
@@ -150,12 +162,16 @@ test("in a box, a child starts through the host's Box with the session's directo
   const proc = machine.start({ command: process.execPath, args: ['-e', '0'], env: { HOME: machine.dirs.home } });
   await proc.exited;
   const [{ spec, child }] = box.specs;
-  assert.deepEqual(child, { command: process.execPath, args: ['-e', '0'] });
+  assert.deepEqual(child, { command: process.execPath, args: [FORWARD, '--listen', `4100=${BOX_MODEL_SOCKET}`, '--', process.execPath, '-e', '0'] }, "the box's first command is the forwarder, then the harness");
   assert.equal(spec.workspace, machine.root);
   assert.deepEqual(spec.homes, { home: machine.dirs.home, tmp: machine.dirs.tmp });
   assert.deepEqual(spec.env, { PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: machine.dirs.home, GIT_CEILING_DIRECTORIES: dir });
   assert.equal(spec.env.SECRET_KEY, undefined, 'nothing outside the allowlist reaches the box');
-  assert.deepEqual([spec.readOnly, spec.modelSocket, spec.modelPort], [['/opt/cli'], '/run/m.sock', 4100]);
+  assert.deepEqual([spec.readOnly, spec.modelPort], [['/opt/cli', process.execPath, FORWARD], 4100]);
+  // The sockets are local and short: under the OS's temp directory, never in the session's (possibly shared) directory.
+  assert.ok(spec.modelSocket.startsWith(tmpdir()) && spec.modelSocket.endsWith('/model.sock') && Buffer.byteLength(spec.modelSocket) < 108, spec.modelSocket);
+  assert.equal(statSync(dirname(spec.modelSocket)).mode & 0o777, 0o700);
+  assert.equal(spec.egressSocket, undefined, 'no egress was given: the box reaches nothing but the model');
   assert.deepEqual(box.order, ['ahead', 'spawn'], 'the record is written before the spawn');
 });
 
@@ -189,14 +205,21 @@ test("a box whose reap finds a process left stops the session: no box starts aft
   await assert.rejects(machine.close(), (error) => error.code === 'box_not_empty' && error.left === 2);
 });
 
-test("the session's last box is reaped before anything starts, and one not counted empty fails the open", async (t) => {
-  const box = fakeBox();
+test("the session's last box is reaped before anything starts, in every mode, and one not counted empty fails the open", async (t) => {
   const previous = { id: 'old', pid: 4242, startTime: '9', pidns: 'pid:[9]', writer: { pid: 1, startTime: '1' } };
-  const machine = await machineAt(t, scratch(), { box: boxOf(box, { previous }) });
-  assert.deepEqual(box.reaped, ['old'], 'the old box is reaped at open');
-  await machine.start({ command: '/bin/true' }).exited;
-  const stuck = fakeBox({ reap: async () => ({ empty: false, left: 1, by: 'pidns' }) });
-  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: {}, box: boxOf(stuck, { previous }) }), (error) => error.code === 'box_not_empty');
+  const reaper = (verdict) => { const r = { reaped: [] }; r.reap = async (record) => { r.reaped.push(record.id); return verdict; }; return r; };
+  const empty = { empty: true, left: 0, by: 'pidns' };
+  const held = { empty: false, left: 1, by: 'cgroup' };
+  const down = fakeBox({ isolation: { mode: 'unavailable', error: 'bwrap_userns_denied', detail: 'x' } });
+  // Each mode this open may be in, after a boxed one: boxed again, unsandboxed, an unavailable box, no box at all.
+  for (const [mode, extra] of [['boxed', { box: boxOf(fakeBox()) }], ['unsandboxed', { box: 'unsandboxed' }], ['unavailable', { box: boxOf(down) }], ['no box', {}]]) {
+    const ok = reaper(empty);
+    const machine = await machineAt(t, scratch(), { ...extra, previousBox: { record: previous, reap: ok.reap } });
+    assert.deepEqual(ok.reaped, ['old'], `${mode}: the old box is reaped at open`);
+    await machine.start({ command: '/bin/true' }).exited;
+    const stuck = reaper(held);
+    await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, ...extra, previousBox: { record: previous, reap: stuck.reap } }), (error) => error.code === 'box_not_empty' && error.left === 1, `${mode}: a last box not counted empty fails the open`);
+  }
 });
 
 test("isolation says what the host gave: a box's own, unsandboxed only by the operator's word, and nothing for no box; an unavailable box boxes nothing", async (t) => {
@@ -225,7 +248,8 @@ function slowBox({ late = false, startedFails = false } = {}) {
   box.start = (spec, child, recorder) => {
     const record = { id: `box-${++box.made}`, writer: { pid: process.pid, startTime: '1' } };
     recorder.ahead(record);
-    const proc = startChild({ command: child.command, args: child.args, env: spec.env }, {}, spec.workspace);
+    const harness = child.args.slice(child.args.indexOf('--') + 1);
+    const proc = startChild({ command: harness[0], args: harness.slice(1), env: spec.env }, {}, spec.workspace);
     const full = { ...record, pid: proc.child.pid, startTime: '2', pidns: 'pid:[1]' };
     const record2 = () => recorder.started(full).then(() => { box.started.push(full.id); return full; });
     // A box that is never let go is killed, as bwrap's pid 1 is.
@@ -268,6 +292,117 @@ test("a started record that arrives after the box ended is refused, never writte
   assert.deepEqual(box.reaped, ['box-1', 'box-2'], "the next box keeps its own record, the late one never replaced it");
 });
 
+
+test("in a box, the model front's only door is the session's socket, 0600, and the harness sees it at the box's port; close removes it", async (t) => {
+  const dir = scratch();
+  const run = join(shortDir(), 'run');
+  const machine = await machineAt(t, dir, { box: boxOf(fakeBox(), { runtimeDir: run }) });
+  const socket = join(run, 'model.sock');
+  assert.ok(lstatSync(socket).isSocket(), 'the front listens on the session socket');
+  assert.equal(statSync(socket).mode & 0o777, 0o600);
+  assert.equal(machine.modelUrl, 'http://127.0.0.1:4100', "the harness's view: the port the box serves the front on");
+  await machine.close();
+  assert.equal(existsSync(socket), false, 'nothing reaches a closed front by its path');
+  assert.equal(existsSync(run), false, "the session's socket directory goes with it");
+});
+
+test('one egress proxy per session: started on the session socket before any box, shared by its boxes, closed with it, and named in the box', async (t) => {
+  const dir = scratch();
+  const box = fakeBox();
+  const egress = { port: 4101, starts: [], closed: 0 };
+  egress.start = async (path) => { egress.starts.push(path); return { close: async () => { egress.closed += 1; } }; };
+  const run = join(shortDir(), 'run');
+  const machine = await machineAt(t, dir, { box: boxOf(box, { egress, runtimeDir: run }) });
+  assert.deepEqual(egress.starts, [join(run, 'egress.sock')], 'started at open, at the session socket');
+  await machine.start({ command: '/bin/true' }).exited;
+  for (let i = 0; i < 100 && box.reaped.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  await new Promise((resolve) => setImmediate(resolve));
+  await machine.start({ command: '/bin/true' }).exited;
+  assert.equal(egress.starts.length, 1, "the session's boxes share its proxy");
+  const { spec, child } = box.specs[1];
+  assert.deepEqual([spec.egressSocket, spec.egressPort], [join(run, 'egress.sock'), 4101]);
+  assert.deepEqual(child.args.slice(1, 6), ['--listen', `4100=${BOX_MODEL_SOCKET}`, '--listen', `4101=${BOX_EGRESS_SOCKET}`, '--']);
+  for (const name of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy']) assert.equal(spec.env[name], 'http://127.0.0.1:4101', name);
+  for (const name of ['ALL_PROXY', 'all_proxy']) assert.equal(spec.env[name], 'socks5h://127.0.0.1:4101', name);
+  assert.deepEqual([spec.env.NO_PROXY, spec.env.no_proxy, spec.env.NODE_USE_ENV_PROXY], ['127.0.0.1,localhost', '127.0.0.1,localhost', '1']);
+  for (let i = 0; i < 100 && box.reaped.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  await machine.close();
+  assert.equal(egress.closed, 1, 'closed with the session, after its last box');
+});
+
+test('an egress proxy that cannot start fails the open, and leaves no model front behind', async () => {
+  const run = join(shortDir(), 'run');
+  const egress = { port: 4101, start: async () => { throw Object.assign(new Error('egress: a live listener is there'), { code: 'egress_socket_in_use' }); } };
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: run }) }), /a live listener is there/);
+  assert.equal(existsSync(join(run, 'model.sock')), false);
+  assert.equal(existsSync(run), false, 'nor the socket directory the open made: a failed open returns no machine to close it');
+});
+
+/** What a listener at the Unix socket `path` says to a connection, to its end. */
+const said = (path) => new Promise((resolve, reject) => {
+  let text = '';
+  connect(path).on('data', (d) => { text += d; }).on('end', () => resolve(text)).on('error', reject);
+});
+
+test("two opens racing for one socket path: one listens there, the other is refused by name, and neither removes a socket that is not its own", async (t) => {
+  const run = join(shortDir(), 'run');
+  mkdirSync(run, { recursive: true, mode: 0o700 });
+  const path = join(run, 'model.sock');
+  const servers = [0, 1].map((i) => createServer((c) => c.end(`front ${i}`)));
+  t.after(() => { for (const s of servers) s.close(); });
+  // Both find the path free before either has listened, as two opens of one session started together would.
+  const results = await Promise.allSettled(servers.map((s) => listenSocket(s, path, 'agentrun-test')));
+  assert.deepEqual(results.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
+  assert.match(String(results.find((r) => r.status === 'rejected').reason), /^Error: agentrun-test: a listener was published at .*model\.sock while this one started: it is not taken over$/);
+  const won = results.findIndex((r) => r.status === 'fulfilled');
+  assert.equal(await said(path), `front ${won}`, 'the path still reaches the one that published it');
+  assert.deepEqual(readdirSync(run), ['model.sock'], 'no temporary name is left behind');
+  // A socket another listener put at the path since is not this one's: releasing this one leaves it.
+  unlinkSync(path);
+  const other = createServer((c) => c.end('other'));
+  t.after(() => other.close());
+  await listenSocket(other, path, 'agentrun-test');
+  results[won].value.release();
+  assert.equal(await said(path), 'other');
+});
+
+test("a session socket a dead machine left is replaced; a live one is another machine's, and the open is refused by name", async (t) => {
+  const dir = scratch();
+  const run = join(shortDir(), 'run');
+  mkdirSync(run, { recursive: true, mode: 0o700 });
+  // A dead machine's socket: a listener in a process killed outright, which leaves the file and nothing behind it.
+  const path = join(run, 'model.sock');
+  const holder = spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${JSON.stringify(path)}, () => console.log('up'))`], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise((resolve) => holder.stdout.once('data', resolve));
+  holder.kill('SIGKILL');
+  await new Promise((resolve) => holder.once('exit', resolve));
+  assert.ok(lstatSync(path).isSocket(), 'the dead socket is there');
+  const machine = await machineAt(t, dir, { box: boxOf(fakeBox(), { runtimeDir: run }) });
+  assert.equal(machine.modelUrl, 'http://127.0.0.1:4100', 'the dead socket was replaced');
+  // A live one: this machine's own front. A second machine in the same directory is refused, and the first still serves.
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir, dirs: [], sessionId: 's2', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: run }) }), /^Error: agentrun-kernel: the model proxy: a live listener is at .*model\.sock: it is not taken over$/);
+  assert.ok(lstatSync(path).isSocket(), "the first machine's socket is untouched");
+});
+
+test("a socket directory that is not this user's own, 0700, is refused before any socket is made", async () => {
+  const run = join(shortDir(), 'open');
+  mkdirSync(run, { recursive: true });
+  chmodSync(run, 0o755);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: run }) }), /^Error: agentrun-test: the session's socket directory .* must be this user's own, 0700, and not a link$/);
+  assert.equal(existsSync(join(run, 'model.sock')), false);
+});
+
+test("the session's socket directory on FUSE or a filesystem shared between hosts is refused by name, before any socket", { skip: process.platform !== 'linux' && 'the check is Linux only' }, async () => {
+  // The machine module's own seam (dist/host/machine.js), not the package's exports: no host can pass it.
+  const { socketDir } = await import('../dist/host/machine.js');
+  const dir = join(shortDir(), 'run');
+  for (const [type, kind] of [[0x65735546, 'fuse'], [0x6969, 'nfs'], [0xff534d42, 'cifs'], [0xfe534d42, 'smb2'], [0x517b, 'smb'], [0x01021997, '9p'], [0x00c36400, 'ceph']]) {
+    assert.throws(() => socketDir(dir, 'agentrun-test', () => ({ type })), new RegExp(`^Error: agentrun-test: runtime_dir_not_local: the session's socket directory .* is on ${kind}, not a local filesystem$`), kind);
+  }
+  assert.equal(socketDir(dir, 'agentrun-test', () => ({ type: 0xef53 })), dir, 'a local filesystem (ext4) is taken');
+  assert.equal(socketDir(dir, 'agentrun-test', () => ({ type: 0x01021994 })), dir, 'tmpfs is taken');
+});
+
 test("an abort kills a boxed child: it exits, its box is reaped, and only then does the session's next box start", async (t) => {
   const box = fakeBox();
   const machine = await machineAt(t, scratch(), { box: boxOf(box) });
@@ -281,6 +416,75 @@ test("an abort kills a boxed child: it exits, its box is reaped, and only then d
   assert.deepEqual(box.reaped, ['box-1'], 'its box is reaped');
   await new Promise((resolve) => setImmediate(resolve));
   await machine.start({ command: '/bin/true' }).exited;
+});
+
+test("anything at the front's socket path that is not a socket is refused by name, and left as it was", async () => {
+  const run = join(shortDir(), 'run');
+  mkdirSync(run, { recursive: true, mode: 0o700 });
+  writeFileSync(join(run, 'model.sock'), 'not a socket');
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: run }) }), /^Error: agentrun-kernel: the model proxy: .*model\.sock is there and is not a socket: it is not replaced$/);
+  assert.ok(lstatSync(join(run, 'model.sock')).isFile(), 'the file is untouched');
+});
+
+test("a socket directory that is a link, even to a 0700 directory of this user's, is refused before any socket is made", async () => {
+  const real = join(shortDir(), 'real');
+  mkdirSync(real, { recursive: true, mode: 0o700 });
+  const parent = shortDir();
+  mkdirSync(parent, { recursive: true });
+  const link = join(parent, 'link');
+  symlinkSync(real, link);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: link }) }), /^Error: agentrun-test: the session's socket directory .* must be this user's own, 0700, and not a link$/);
+  assert.equal(existsSync(join(real, 'model.sock')), false, 'nothing was made through the link');
+});
+
+test("a socket directory too long for the egress proxy's socket names is refused by name, before any socket", async () => {
+  // The egress proxy binds a 25-byte temporary name in the directory before it links its socket: a path holds 107 bytes.
+  const long = join(shortDir(), 'r'.repeat(90));
+  assert.ok(Buffer.byteLength(long) > 81);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: long }) }), /^Error: agentrun-test: runtime_dir_too_long: the session's socket directory .* is \d+ bytes; a socket path in it must fit 107$/);
+  assert.equal(existsSync(long), false, 'nothing was made: the name alone was refused');
+  // One byte past the bound is refused too: 107 less the egress proxy's 26 is 81.
+  const base = shortDir();
+  const over = join(base, 'r'.repeat(Math.max(0, 82 - Buffer.byteLength(base) - 1)));
+  assert.equal(Buffer.byteLength(over), 82);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: over }) }), /runtime_dir_too_long: .* is 82 bytes/);
+  assert.equal(existsSync(over), false);
+});
+
+test("a socket directory exactly at the bound (81 bytes) is taken", async (t) => {
+  const base = shortDir();
+  const at = join(base, 'r'.repeat(Math.max(0, 81 - Buffer.byteLength(base) - 1)));
+  assert.equal(Buffer.byteLength(at), 81);
+  const machine = await machineAt(t, scratch(), { box: boxOf(fakeBox(), { runtimeDir: at }) });
+  assert.ok(lstatSync(join(at, 'model.sock')).isSocket());
+  await machine.close();
+});
+
+test("an egress proxy whose close throws still lets the model front close, and the error goes up", async (t) => {
+  const run = join(shortDir(), 'run');
+  const egress = { port: 4101, start: async () => ({ close: async () => { throw new Error('egress: the socket could not be read'); } }) };
+  const machine = await openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: run }) });
+  await assert.rejects(machine.close(), /the socket could not be read/);
+  assert.equal(existsSync(join(run, 'model.sock')), false, 'the model front closed anyway');
+  assert.equal(existsSync(run), false, "and the session's socket directory went with it");
+});
+
+test("the default socket directory is short: under a 64-byte TMPDIR it still fits the bound", async (t) => {
+  const base = shortDir();
+  const longTmp = join(base, 't'.repeat(Math.max(0, 64 - Buffer.byteLength(base) - 1)));
+  mkdirSync(longTmp, { recursive: true });
+  assert.equal(Buffer.byteLength(longTmp), 64);
+  const before = process.env.TMPDIR;
+  process.env.TMPDIR = longTmp;
+  try {
+    const box = fakeBox();
+    const machine = await machineAt(t, scratch(), { box: boxOf(box) });
+    const [{ spec }] = (await machine.start({ command: '/bin/true' }).exited, [box.specs[0]]);
+    const dir = dirname(spec.modelSocket);
+    assert.ok(dir.startsWith(longTmp) && Buffer.byteLength(dir) <= 81, `${dir} (${Buffer.byteLength(dir)} bytes)`);
+  } finally {
+    if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
+  }
 });
 
 test("a box that fails to start after it was recorded is reaped, and the close waits for that reap and fails when it finds a process left", async (t) => {
