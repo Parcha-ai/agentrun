@@ -1,10 +1,12 @@
 // A host listener on a Unix socket, written for AgentRun: the socket a session's box reaches the host through.
-//  - Mode 0600, made under a temporary name and renamed into place, so it never stands at its path with wider modes.
+//  - Mode 0600, made under a temporary name and linked into place, so it never stands at its path with wider modes. The
+//    link refuses a path taken meanwhile: two listeners started together never both take it, and the later one is refused.
+//  - Released only while it is still this listener's own (the same file), never another listener's put there since.
 //  - A socket already at the path is replaced only when nothing answers it (ECONNREFUSED: a session that died left it).
 //    One that answers is another listener's, live, and is refused by name; anything at the path that is not a socket is
 //    refused too. A machine that died leaves its sockets behind, and a second start must never take a live one over.
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, renameSync, unlinkSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, unlinkSync } from "node:fs";
 import type { Server } from "node:net";
 import { connect } from "node:net";
 import { dirname, join } from "node:path";
@@ -25,9 +27,14 @@ function answers(path: string): Promise<boolean> {
   });
 }
 
+/** A socket this listener put at its path: `release` removes it, only while the path is still that same file. */
+export interface ListenedSocket {
+  release(): void;
+}
+
 /** Listen with `server` on the Unix socket `path`, mode 0600. Its directory must exist, and be local: the machine's
  *  session runtime directory, checked where it is made (./machine.ts). `name` begins the messages. */
-export async function listenSocket(server: Server, path: string, name: string): Promise<void> {
+export async function listenSocket(server: Server, path: string, name: string): Promise<ListenedSocket> {
   let stat: ReturnType<typeof lstatSync> | undefined;
   try {
     stat = lstatSync(path);
@@ -47,12 +54,26 @@ export async function listenSocket(server: Server, path: string, name: string): 
       resolve();
     });
   });
+  let ino: number;
   try {
     chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
+    linkSync(temporary, path);
+    ino = lstatSync(path).ino;
   } catch (error) {
     server.close();
     try { unlinkSync(temporary); } catch { /* gone */ }
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`${name}: a listener was published at ${path} while this one started: it is not taken over`);
     throw error;
+  } finally {
+    try { unlinkSync(temporary); } catch { /* gone */ }
   }
+  return {
+    release() {
+      try {
+        if (lstatSync(path).ino === ino) unlinkSync(path);
+      } catch {
+        // Gone already.
+      }
+    },
+  };
 }

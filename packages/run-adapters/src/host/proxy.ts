@@ -15,9 +15,8 @@
 //    cut short, or one that says no usage, is booked at an unknown cost.
 // Model spend is accounted only there, by the runner: the proxy keeps no ledger of its own.
 import { createHash, timingSafeEqual } from "node:crypto";
-import { unlinkSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
-import { listenSocket } from "./socket.js";
+import { listenSocket, type ListenedSocket } from "./socket.js";
 
 /** Where the front listens when it has no socket: this host's loopback. */
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the model front listener on this host
@@ -517,7 +516,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
 
   const server = createServer((req, res) => { void serve(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, "the proxy failed", req); else res.destroy(); }); });
   const socketPath = options.socketPath;
-  if (socketPath !== undefined) await listenSocket(server, socketPath, "agentrun-kernel: the model proxy");
+  let listened: ListenedSocket | undefined;
+  if (socketPath !== undefined) listened = await listenSocket(server, socketPath, "agentrun-kernel: the model proxy");
   else {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -534,8 +534,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       for (const c of inflight) c.abort();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      // A socket's file stays after its listener closes: removed, so nothing reaches a closed front by its path.
-      if (socketPath !== undefined) try { unlinkSync(socketPath); } catch { /* gone */ }
+      // A socket's file stays after its listener closes: removed, so nothing reaches a closed front by its path (only while
+      // it is still this front's own: another machine's put there since is left).
+      listened?.release();
     },
   };
 }

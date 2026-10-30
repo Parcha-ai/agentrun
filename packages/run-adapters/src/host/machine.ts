@@ -261,6 +261,13 @@ export interface MachineBox {
   runtimeDir?: string;
 }
 
+/** The session's last box, as the host recorded it: its record, and how the host's box reaps a box by its record. The
+ *  machine reaps it at every open, whatever this open's mode, before anything of the session starts. */
+export interface PreviousBox {
+  record: BoxRecord;
+  reap(record: BoxRecord): Promise<Reaped>;
+}
+
 export interface LocalMachineSpec<D extends string> {
   /** The adapter's package name, which the machine's messages begin with. */
   name: string;
@@ -282,7 +289,7 @@ export interface LocalMachineSpec<D extends string> {
   /** The record the session's last box left (a relaunch, a woken run), and the reap of the box that wrote it: reaped,
    *  and counted empty, before anything of this session starts, whatever this open's mode. A session boxed before and
    *  unsandboxed now (or whose box is unavailable now) must not start beside a box of its own that still runs. */
-  previousBox?: { record: BoxRecord; reap(record: BoxRecord): Promise<Reaped> };
+  previousBox?: PreviousBox;
 }
 
 /** A local session machine: private directories, a loopback model proxy, and children ended with it. Unbranded: each
@@ -343,7 +350,18 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   const sockets = !boxing ? "" : boxing.runtimeDir !== undefined ? socketDir(boxing.runtimeDir, name) : defaultSocketDir(join(tmpdir(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name);
   const modelSocket = join(sockets, "model.sock");
   const egressSocket = join(sockets, "egress.sock");
-  const proxy = await startModelProxy(boxing ? { ...spec.proxy, socketPath: modelSocket } : spec.proxy, key);
+  // A failed open returns no machine to close: what it started is closed here, and the socket directory it made goes when
+  // nothing is left in it (anything there is not this open's).
+  const unmade = () => {
+    if (boxing) try { rmdirSync(sockets); } catch { /* not empty, or gone */ }
+  };
+  let proxy: Awaited<ReturnType<typeof startModelProxy>>;
+  try {
+    proxy = await startModelProxy(boxing ? { ...spec.proxy, socketPath: modelSocket } : spec.proxy, key);
+  } catch (error) {
+    unmade();
+    throw error;
+  }
   // One egress proxy per session: its boxes, one at a time, share it and its caps; another session has its own.
   let egress: { close(): Promise<void> } | undefined;
   if (boxing?.egress) {
@@ -351,6 +369,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
       egress = await boxing.egress.start(egressSocket);
     } catch (error) {
       await proxy.close();
+      unmade();
       throw error;
     }
   }
