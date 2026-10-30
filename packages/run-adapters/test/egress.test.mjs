@@ -475,3 +475,20 @@ test('anything at the path that is not a socket is refused by name and left as i
   await assert.rejects(startEgressProxy({ socketPath: path, maxTunnels: 1, maxConnections: 1, log: () => {} }), { code: 'egress_socket_path_taken' });
   assert.equal(readFileSync(path, 'utf8'), 'not a socket');
 });
+
+test('a target that cannot be a host name is refused by name (400 "invalid host", SOCKS 4) before any lookup or dial', async () => {
+  const t = await proxy();
+  try {
+    for (const target of ['bad!host.test:443', `${'a'.repeat(254)}:443`]) {
+      const answer = head((await talk(t.path, CONNECT(target))).got);
+      assert.equal(answer.status, 400, `${target.slice(0, 20)}: ${answer.line}`);
+      assert.match(answer.line, /Egress refused: invalid host$/);
+    }
+    // A SOCKS5 domain may hold any byte, a space among them.
+    assert.equal((await socks(t.path, 1, 3, 'bad host.test', 443)).reply, 4);
+    assert.deepEqual(t.lookups, [], 'no name was looked up');
+    assert.deepEqual(t.dials, [], 'nothing was dialled');
+  } finally {
+    await t.close();
+  }
+});
