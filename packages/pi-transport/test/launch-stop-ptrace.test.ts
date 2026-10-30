@@ -488,6 +488,45 @@ describe("a stop in progress", () => {
 		await box.destroy(context);
 	});
 
+	it("ends the program without setsid too: the drain's SIGTERM reaches it, and the kill ends one deaf to it and what it started", async () => {
+		const box = await boxOn(false, false);
+		try {
+			const polite = getOrThrow(
+				await launch(
+					box,
+					"polite",
+					{ argv: ["sh", "-c", "trap ': > got-term; exit 0' TERM; while :; do sleep 1; done"] },
+					context,
+				),
+			);
+			expect(getOrThrow(await launchStop(box, polite.launch, { graceMs: 5_000 }, context)).phase).toBe("stopped");
+			expect(await fileIn(box, "got-term")).toBeDefined();
+			const deaf = getOrThrow(
+				await launch(
+					box,
+					"deaf",
+					{
+						argv: [
+							"sh",
+							"-c",
+							"trap '' TERM; sleep 300 & echo $! > child.pid; echo $$ > prog.pid; while :; do sleep 1; done",
+						],
+					},
+					context,
+				),
+			);
+			const pids = await until("the program's ids", async () => {
+				const [program, child] = [await fileIn(box, "prog.pid"), await fileIn(box, "child.pid")];
+				return program && child ? [Number(program), Number(child)] : undefined;
+			});
+			expect(getOrThrow(await launchStop(box, deaf.launch, { graceMs: 300 }, context)).phase).toBe("stopped");
+			// Gone, or a zombie its new parent has yet to reap: neither runs.
+			expect(pids.map((pid) => /^ [^Z]/.test(statOf(pid)))).toEqual([false, false]);
+		} finally {
+			await box.destroy(context);
+		}
+	});
+
 	for (const setsid of [true, false]) {
 		it(`ends what the watchdog was running as it killed it, so its lock's mkdir never takes the lock after the stop (${setsid ? "with" : "without"} setsid)`, async () => {
 			const box = await boxOn(setsid, true);
@@ -511,6 +550,34 @@ describe("a stop in progress", () => {
 			}
 		});
 
+		it(`never reports the launch stopped while a process of the program it killed is still listed: the stop fails by name (${setsid ? "with" : "without"} setsid)`, async () => {
+			const box = await boxOn(setsid, false);
+			try {
+				const started = getOrThrow(await launch(box, "unended", { argv: ["sleep", "300"] }, context));
+				const at = (file: string) => join(started.directory, file);
+				const runner = Number(readFileSync(at("pid.1"), "utf8").trim());
+				// The stop's own process table lists one process it cannot end: in the program's group (setsid) or under its
+				// runner (no setsid), at an id past any kernel's pid_max, so a signal to it reaches nothing.
+				const proc = mkdtempSync(join(root, "proc-"));
+				mkdirSync(join(proc, "4194999"));
+				writeFileSync(
+					join(proc, "4194999", "stat"),
+					setsid ? `4194999 (held) S 1 ${runner} ${runner} 0\n` : `4194999 (held) S ${runner} 4194999 4194999 0\n`,
+				);
+				writeFileSync(at("launcher.sh"), LAUNCHER_SCRIPT.replace(PROC_LINE, `PROC='${proc}'`));
+				const stopped = await launchStop(box, started.launch, { graceMs: 300 }, context);
+				expect(stopped.ok ? "stopped" : stopped.error.message).toMatch(
+					setsid
+						? /the program did not end: its group \d+ still there/
+						: /the program did not end: 4194999 still there/,
+				);
+				expect(existsSync(at("stop.done"))).toBe(false);
+				expect(readFileSync(at("state"), "utf8")).toContain('"phase":"stopping"');
+			} finally {
+				await box.destroy(context);
+			}
+		});
+
 		it(`removes the trim lock only once what it killed is gone: a process of the watchdog's still listed holds it (${setsid ? "with" : "without"} setsid)`, async () => {
 			const box = await boxOn(setsid, false);
 			try {
@@ -519,10 +586,12 @@ describe("a stop in progress", () => {
 				const watch = Number(readFileSync(at("watch.pid"), "utf8").trim());
 				// A trim lock held by nobody keeps the watchdog in its lock's wait, so the stop is the one that ends it.
 				mkdirSync(at("trim"));
-				// The stop's own process table, with a clock that stands still (its 2 s bound never passes), listing one process it
-				// cannot end: in the watchdog's group (setsid) or its child (no setsid). Its id is past any kernel's pid_max, so a
-				// signal to it reaches nothing.
+				// The stop's own process table, with a clock that stands still (its 2 s bound never passes): every process there is
+				// now, and one more it cannot end, in the watchdog's group (setsid) or its child (no setsid). Its id is past any
+				// kernel's pid_max, so a signal to it reaches nothing.
 				const proc = mkdtempSync(join(root, "proc-"));
+				for (const name of readdirSync("/proc"))
+					if (/^\d+$/.test(name)) symlinkSync(`/proc/${name}`, join(proc, name));
 				writeFileSync(join(proc, "uptime"), "100.00 0\n");
 				mkdirSync(join(proc, "4194999"));
 				writeFileSync(
