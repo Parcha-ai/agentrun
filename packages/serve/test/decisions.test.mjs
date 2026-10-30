@@ -2,18 +2,20 @@
 // server's environment names its key. The key reaches the judge's runner only, never a run's tools, its model, a program
 // it starts or a file. Here Jev is the tests' fake fetch (fixtures/faux-jev.mjs): no network, no real key.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
-import { DECISION_KEY_FD, decisionsOf, jevRoute } from "../dist/decisions.js";
+import { DECISION_KEY_FD, DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
+import { FAUX_ENV } from "../dist/model.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
 const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -258,9 +260,58 @@ test("on an OpenRouter gateway alone, Jev runs on AGENT_MODEL_API_KEY: capabilit
   assert.deepEqual(run.sent, [["/api/v1/systemone", true]], "one request, to OpenRouter, with the gateway's key");
 });
 
+test("on the four gateway variables alone, the run's process is handed AGENT_MODEL_API_KEY on the decision descriptor, closes it, and its judge sends that key to OpenRouter", async (t) => {
+  const calls = join(await scratch(t), "jev-calls.jsonl");
+  withEnv(t, { AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: CANARY, ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_API_KEY: CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls }, KEYS);
+  const gate = join(await scratch(t), "go");
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [judge, probe(gate)]);
+  const pid = await processOf(data, runId);
+  const environ = await readFile(`/proc/${pid}/environ`, "utf8");
+  assert.equal(environ.split("\0").includes(`${DECISION_KEY_FD_ENV}=${DECISION_KEY_FD}`), true, "the gateway's key was handed on the decision descriptor");
+  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and the descriptor closed once read");
+  await writeFile(gate, "");
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(run.error));
+  const sent = (await readFile(calls, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent.map((c) => [c.pid, c.path, c.authorized]), [[pid, "/api/v1/systemone", true]], "the run's judge sent the gateway's key to OpenRouter");
+});
+
+/** jevJudgeOf in a process of its own, as a run's process calls it: its environment is `env` alone, and `handed` (a
+ *  route and key) comes on the decision descriptor when given. Whether it made a judge, and what the fake Jev took. */
+async function judgeIn(t, env, handed) {
+  const calls = join(await scratch(t), "jev-calls.jsonl");
+  const script = `const { jevJudgeOf } = await import(${JSON.stringify(new URL("../dist/decisions.js", import.meta.url).href)});
+const judge = await jevJudgeOf(process.env);
+const answer = judge && await judge({ label: "coi", kind: "judge", state: { doc: "x" }, questions: { is_coi: { type: "noul", instructions: "Is doc a certificate of incorporation?" } } });
+process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answers?.is_coi?.noul ?? null }));`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    env: { HOME: process.env.HOME, [FAUX_ENV]: FAUX, [FAUX_JEV_ENV]: FAUX_JEV, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, ...env, ...(handed ? { [DECISION_KEY_FD_ENV]: String(DECISION_KEY_FD) } : {}) },
+    stdio: ["ignore", "pipe", "pipe", ...(handed ? [...Array(DECISION_KEY_FD - 3).fill("ignore"), "pipe"] : [])],
+  });
+  // What the server writes there: the route, a newline, the key.
+  if (handed) child.stdio[DECISION_KEY_FD].end(`${handed.route}\n${handed.key}`);
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  const code = await new Promise((resolve) => child.once("close", resolve));
+  assert.equal(code, 0, err);
+  const sent = (await readFile(calls, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => [JSON.parse(line).path, JSON.parse(line).authorized]);
+  return { ...JSON.parse(out), sent };
+}
+
+test("a run's judge runs on the key handed on the decision descriptor alone: with no key in its environment it answers, and with keys only in its environment there is no judge", async (t) => {
+  const handedOnly = await judgeIn(t, {}, { route: "openrouter", key: CANARY });
+  assert.deepEqual(handedOnly, { judge: true, noul: 0.92, sent: [["/api/v1/systemone", true]] }, "the gateway's key, deleted from its environment, still reaches OpenRouter from the descriptor");
+  const envOnly = await judgeIn(t, { OPENROUTER_API_KEY: CANARY, AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: CANARY, TYPESAFE_API_KEY: CANARY });
+  assert.deepEqual(envOnly, { judge: false, noul: null, sent: [] }, "a key in the environment is never the judge's");
+});
+
 test("a gateway whose host is not exactly openrouter.ai, or no gateway key, leaves Jev unavailable: capabilities says why and a judge run is 409", async (t) => {
   const others = [
-    "https://openrouter.ai.example.com/v1", "https://example.com/openrouter.ai/v1", "https://notopenrouter.ai/api/v1",
+    "https://openrouter.ai.example.com/v1", "https://example.com/openrouter.ai/v1", "https://user@openrouter.ai@example.com/v1", "https://notopenrouter.ai/api/v1",
     "https://api.openai.com/v1", "http://127.0.0.1:9/openrouter.ai", "openrouter.ai/api/v1", "not a url",
   ];
   for (const base of others) {
