@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 009-cut-off-safe-call
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -1259,11 +1259,10 @@ export function repairOutput(state: SessionState, call: RolloutCall): string {
   if (!e && call.name === 'write_stdin') return 'Interrupted: the session stopped, and the process this input was for was stopped with it. Check the state its command left before running it again.';
   if (!e) return 'Not executed: the session stopped before this call started. Call it again if it is still needed.';
   if (e.status === 'completed') return typeof e.output === 'string' ? e.output : JSON.stringify(e.output);
-  // A cut-off call is told as the recovery note of the same turn tells it (the kernel's one rule, process/recovery.ts):
-  // safe to repeat by the replay policy the log recorded when it started. The drive that opens after a crash marks a
-  // safe call for a retry (pending) and a never call interrupted, and the note and this output reach Codex together.
-  const told = recoveryNote(state)?.calls.find((c) => c.callId === call.callId)?.status;
-  if (told === 'retryable') return 'Interrupted before it reported a result. It is safe to repeat.';
+  // A cut-off call is told as the recovery note of the same turn tells it (one rule), by the replay policy the log recorded
+  // when it started: the drive that opens after a crash marks a safe call for a retry (pending) and a never call interrupted,
+  // and the note and this output reach Codex together.
+  if (recoveryNote(state)?.calls.find((c) => c.callId === call.callId)?.status === 'retryable') return 'Interrupted before it reported a result. It is safe to repeat.';
   if (e.status === 'failed' && e.error) return failureText(e.error);
   return 'Interrupted: the session stopped while this call ran. It may have taken effect: check before repeating it.';
 }
