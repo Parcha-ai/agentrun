@@ -62,7 +62,7 @@ export function checkUnderData(data: string, runDir: string): void {
   if (under === "" || under.startsWith("..") || isAbsolute(under)) refuse(`its own directory ${realRun} is not under the data root ${realData} it was handed`);
 }
 
-const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule a free port is found on this host's loopback
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the free port is found on host loopback
 
 /** A port nothing listens on now: the one the box serves the session's model front on, at its own loopback. */
 async function freePort(): Promise<number> {
