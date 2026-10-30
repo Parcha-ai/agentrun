@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agent, answerFlow, flowAgent, follow, serve, startRun, storeRun } from "./support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 
 test("PUT definition commits a new revision whose parent is the current one and makes it current; skills carry over", async (t) => {
   const { api } = await serve(t);
@@ -57,6 +58,41 @@ test("PUT definition: If-Match must name the current revision, a name it does no
   assert.equal(ok.body.kind, "workflow");
   assert.deepEqual(ok.body.definition, { id: "guarded", version: 2, name: "guarded", workflow: answerFlow(), harness: "pi", skills: [], tools: [] });
   assert.equal((await api("PUT", "/agents/nobody/definition", { definition: { instructions: "x" } })).status, 404);
+});
+
+test("PUT definition takes the contract's body too: the definition itself, with If-Match required and a version past the current one", async (t) => {
+  const { api } = await serve(t);
+  const created = (await api("POST", "/agents", agent("contract"))).body;
+  const body = { id: "contract", version: 2, name: "contract", instructions: "Answer briefly.", skills: [], tools: ["read"] };
+  const revisions = async () => (await api("GET", "/agents/contract/revisions")).body.revisions.length;
+  const unmatched = await api("PUT", "/agents/contract/definition", body);
+  assert.deepEqual([unmatched.status, unmatched.body.error?.code], [412, "precondition_failed"], "the contract's form needs If-Match");
+  assert.equal(await revisions(), 1, "and nothing is written without it");
+  const edited = await api("PUT", "/agents/contract/definition", body, { "if-match": created.home_etag });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  assert.deepEqual([edited.body.definition.version, edited.body.definition.instructions, edited.body.definition.tools], [2, "Answer briefly.", ["read"]]);
+  const etag = edited.headers.get("etag");
+  const stale = await api("PUT", "/agents/contract/definition", { ...body, instructions: "Again." }, { "if-match": etag });
+  assert.deepEqual([stale.status, stale.body.error?.fields?.map((f) => f.field)], [422, ["definition.version"]], "a version not past the current one");
+  const unversioned = await api("PUT", "/agents/contract/definition", (({ version, ...rest }) => rest)({ ...body, instructions: "Again." }), { "if-match": etag });
+  assert.deepEqual([unversioned.status, unversioned.body.error?.fields?.map((f) => f.field)], [422, ["definition.version"]], "the contract requires a version");
+  const elsewhere = await api("PUT", "/agents/contract/definition", { ...body, id: "else", version: 3 }, { "if-match": etag });
+  assert.deepEqual([elsewhere.status, elsewhere.body.error?.fields?.map((f) => f.field)], [422, ["definition.id"]]);
+  assert.equal(await revisions(), 2, "only the one edit was written");
+});
+
+test("the served document takes exactly one of PUT definition's two bodies: the contract's, or this server's {definition, skills?, note?}; never both, never neither", async (t) => {
+  const { api } = await serve(t);
+  const doc = (await api("GET", "/openapi.json")).body;
+  const op = doc.paths["/agents/{agent_id}/definition"].put;
+  const schema = op.requestBody.content["application/json"].schema;
+  const definition = { id: "a", version: 2, name: "a", instructions: "x", skills: [], tools: [] };
+  const problems = (value) => schemaProblems(doc, schema, value);
+  assert.deepEqual(problems(definition), [], "the contract's body");
+  assert.deepEqual(problems({ definition, skills: { "cite/SKILL.md": "# Cite" }, note: "why" }), [], "this server's body");
+  assert.notDeepEqual(problems({ ...definition, definition }), [], "both at once");
+  assert.notDeepEqual(problems({ note: "why" }), [], "neither");
+  assert.deepEqual(op["x-agentrun-serve-changed"], { requestBody: "definitionbody/1", "If-Match": "definitionbody/1" });
 });
 
 test("POST current makes an earlier revision current again; a revision of another agent is refused", async (t) => {
