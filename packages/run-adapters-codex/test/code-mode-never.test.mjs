@@ -117,3 +117,113 @@ test("code mode: two nested calls of one exec (a Promise.all) each pass the barr
   assert.deepEqual(messages.filter((m) => /declined a call/.test(m)), [], 'neither was declined by the barrier');
   assert.ok(toldAbout(seen, 'call_both').join('\n').includes('charged 1'), 'the exec reported both results');
 });
+
+test("code mode: a never tool called after its exec yielded runs once, under the cell that is still running", { skip, timeout: 120_000 }, async () => {
+  let charged = 0;
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  // The script yields after 100 ms (its pragma) while this runs, so its exec has an output before the charge is called.
+  const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((resolve) => setTimeout(resolve, 800)); return { text: 'slept' }; } };
+  const wait = (callId, cell) => ({ type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: cell, yield_time_ms: 5000 }), call_id: callId });
+  const { seen, fetch } = provider([
+    [exec('call_js', `// @exec: {"yield_time_ms": 100}\nawait tools.slow({}); text('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));`)],
+    [wait('call_wait', '1')],
+    [exec('call_submit', `text(JSON.stringify(await tools.submit({ value: { answer: 'ok' } })));`)],
+  ]);
+  const messages = [];
+  const started = [];
+  const runNode = createHarnessRunner(adapter(fetch, (message) => messages.push(message)), { store: memorySessionStore(), tools: [slow, charge], timeoutMs: 90_000, onEvent: (e) => { if (e.type === 'tool_start') started.push(e); } });
+  const output = await runNode({ kind: 'agent', label: 'pay', system: ['Pay.'], user: 'Charge 5.', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: ['slow', 'charge'] });
+  assert.deepEqual(output, { answer: 'ok' });
+  assert.ok(toldAbout(seen, 'call_js').join('\n').includes('Script running with cell ID 1'), 'the exec yielded: its output came before the charge was called');
+  assert.equal(charged, 1, 'the never tool ran once');
+  assert.deepEqual(messages.filter((m) => /declined a call/.test(m)), [], 'the barrier did not decline it');
+  assert.ok(toldAbout(seen, 'call_wait').join('\n').includes('charged'), 'the wait reported its result to the model');
+});
+
+test("code mode: a model that writes a new exec while a cell still runs: a never tool its new script calls is declined, not run", { skip, timeout: 120_000 }, async () => {
+  let charged = 0;
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((resolve) => setTimeout(resolve, 6000)); return { text: 'slept' }; } };
+  const wait = (callId, cell) => ({ type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: cell, yield_time_ms: 20000 }), call_id: callId });
+  // Script A yields and goes on; then the model writes exec B (it was not offered one) and B calls the never tool.
+  const { seen, fetch } = provider([
+    [exec('call_a', `// @exec: {"yield_time_ms": 100}\nawait tools.slow({}); text('a done');`)],
+    [exec('call_b', `text('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));`)],
+    [wait('call_wait', '1')],
+    [exec('call_submit', `text(JSON.stringify(await tools.submit({ value: { answer: 'ok' } })));`)],
+  ]);
+  const messages = [];
+  const runNode = createHarnessRunner(adapter(fetch, (message) => messages.push(message)), { store: memorySessionStore(), tools: [slow, charge], timeoutMs: 100_000 });
+  const output = await runNode({ kind: 'agent', label: 'pay', system: ['Pay.'], user: 'Charge 5.', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: ['slow', 'charge'] });
+  assert.deepEqual(output, { answer: 'ok' });
+  assert.ok(toldAbout(seen, 'call_a').join('\n').includes('Script running with cell ID 1'), 'script A yielded and was still running when exec B was written');
+  assert.equal(charged, 0, 'the never tool did not run: which script called it could not be told');
+  assert.ok(messages.some((m) => /declined a nested call while two scripts are live/.test(m)), 'the barrier declined it for that reason');
+  assert.match(toldAbout(seen, 'call_b').join('\n'), /Not run/, 'the model was told it did not run');
+});
+
+/** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
+async function crashed(after) {
+  let charged = 0;
+  let looked = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: 'found' }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:code-adversary', label: 'pay', system: [], tools: [charge, hold, lookup], context: 'fresh' };
+  const store = memorySessionStore();
+  const seen = [];
+  let resumed = false;
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const n = seen.length;
+    const items = n === 1 ? [exec('call_js', `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\ntext('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});\ntext('held');`)] : resumed ? after(seen, n) : [say(n)];
+    return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('pay');
+  await held;
+  assert.equal(charged, 1, 'the charge completed before the crash');
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  const before = seen.length;
+  resumed = true;
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  return { charged: () => charged, looked: () => looked, seen, before };
+}
+
+test("code mode: a crash after a never call completed, an exec answered as a custom tool output that says it completed, with its result; a model that re-calls whatever is labelled not run still runs it once", { skip, timeout: 240_000 }, async () => {
+  const labelled = /not executed|not run|did not report|interrupted|may have taken effect/i;
+  const r = await crashed((seen, n) => {
+    const told = toldAbout(seen.slice(0, n - 1), 'call_js').join('\n');
+    return labelled.test(told) ? [exec(`call_retry${n}`, `text(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)];
+  });
+  assert.equal(r.charged(), 1, 'the never tool ran once, even against a model that re-calls what is labelled not run');
+  const recoveredRequest = r.seen.slice(r.before).find((body) => (body.input ?? []).some((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? '')));
+  const output = recoveredRequest.input.find((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
+  assert.equal(output.type, 'custom_tool_call_output', 'an exec is answered with a custom tool output');
+  const text = Array.isArray(output.output) ? output.output.map((o) => o.text ?? '').join('\n') : String(output.output);
+  assert.match(text, /cut short after these calls/);
+  assert.match(text, /charge completed: "charged"/, 'the call and its result');
+  assert.match(text, /effect is done/);
+  assert.ok(!/not executed/i.test(text));
+});
+
+test("code mode: after a recovery, a new exec that calls a never tool again with the same arguments is answered from the log and does not run it", { skip, timeout: 240_000 }, async () => {
+  const r = await crashed((seen, n) => (n === seen.length && !seen.some((b, i) => i > 0 && JSON.stringify(b.input).includes('call_again')) ? [exec('call_again', `text(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)]));
+  assert.equal(r.charged(), 1, 'the never tool ran once');
+  const told = toldAbout(r.seen, 'call_again').join('\n');
+  assert.match(told, /Recorded earlier in this turn, not run again: charged/);
+});
+
+test("code mode: after a recovery, a safe tool called again is run again: only a never tool's completed call is answered from the log", { skip, timeout: 240_000 }, async () => {
+  const r = await crashed((seen, n) => (!seen.some((b, i) => i > 0 && JSON.stringify(b.input).includes('call_look')) ? [exec('call_look', `text(JSON.stringify(await tools.lookup({ q: 'x' })));`)] : [say(n)]));
+  assert.equal(r.looked(), 2, 'the safe tool ran again');
+  assert.equal(r.charged(), 1);
+});

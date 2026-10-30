@@ -16,12 +16,12 @@ const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join
 const completed = (usage, extra = {}) => ({ type: 'response.completed', response: { object: 'response', status: 'completed', ...extra, usage } });
 
 /** A proxy on the Codex policy whose provider answers each request with `answer()` (a Response). */
-async function proxy({ tools = ['lookup'], answer = () => new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }) } = {}) {
+async function proxy({ tools = ['lookup'], announce, answer = () => new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }) } = {}) {
   const forwarded = [];
   const asked = [];
   const reports = [];
   const p = await startModelProxy({
-    policy: codexPolicy({ model: 'session-model', tools }),
+    policy: codexPolicy({ model: 'session-model', tools, ...(announce ? { announce } : {}) }),
     hooks: { beforeRequest: async (r) => { asked.push(r); }, afterRequest: async (u) => { reports.push(u); } },
     model: 'session-model',
     origin: 'https://provider.invalid',
@@ -278,4 +278,86 @@ test("a code-mode request has parallel tool calls off: written false when the CL
   assert.equal(RECORDED_REQUEST.parallel_tool_calls, true, 'the recorded classic request allows them');
   assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
   assert.equal(forwarded.at(-1).body.parallel_tool_calls, true, 'a classic request is as the CLI sent it');
+});
+
+/** A request's input with a code-mode `exec` that yielded (and then, if `after` is given, the `wait` items after it). */
+const yielded = (...after) => [
+  ...RECORDED_REQUEST.input,
+  { type: 'custom_tool_call', name: 'exec', call_id: 'call_a', input: 'await tools.slow({})' },
+  { type: 'custom_tool_call_output', call_id: 'call_a', output: 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n' },
+  ...after,
+];
+const waitOn = (callId, cell) => ({ type: 'function_call', name: 'wait', call_id: callId, arguments: JSON.stringify({ cell_id: cell, yield_time_ms: 5000 }) });
+const waited = (callId, text) => ({ type: 'function_call_output', call_id: callId, output: [{ type: 'input_text', text }] });
+const offered = (forwarded) => forwarded.at(-1).body.input.find((item) => item.type === 'additional_tools').tools.find((t) => t.name === 'functions').tools.map((t) => t.name);
+
+test("exec is not offered while a script that yielded still runs, only wait; it is offered again once the script ended", async () => {
+  const { p, forwarded } = await proxy();
+  const ask = async (input) => {
+    const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input: [...input, CODE_MODE_CARRIER] } });
+    assert.equal(r.status, 200, r.text);
+    return offered(forwarded);
+  };
+  assert.deepEqual(await ask(RECORDED_REQUEST.input), ['exec', 'wait'], 'no script yet');
+  assert.deepEqual(await ask(yielded()), ['wait'], 'the script yielded and runs');
+  assert.deepEqual(await ask(yielded(waitOn('call_w', '1'), waited('call_w', 'Script running with cell ID 1\nWall time 5 seconds'))), ['wait'], 'still running after a wait');
+  assert.deepEqual(await ask(yielded(waitOn('call_w', '1'), waited('call_w', 'Script completed\nWall time 1.8 seconds\nOutput:\n'))), ['exec', 'wait'], 'ended');
+  assert.deepEqual(await ask(yielded(waitOn('call_w', '1'), waited('call_w', 'Script failed\nScript error:\nexec cell 1 not found'))), ['exec', 'wait'], 'gone');
+  assert.deepEqual(await ask([...RECORDED_REQUEST.input, { type: 'custom_tool_call', name: 'exec', call_id: 'call_b', input: 'text(1)' }, { type: 'custom_tool_call_output', call_id: 'call_b', output: 'Script completed\nWall time 0.0 seconds' }]), ['exec', 'wait'], 'an exec that finished at once');
+});
+
+test("the proxy tells the session which exec an answer carries before the client has that part of the answer", async () => {
+  const told = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const exec = { type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: 'call_x', input: 'text(1)' } };
+  const other = { type: 'response.output_item.done', item: { type: 'function_call', name: 'wait', call_id: 'call_w', arguments: '{}' } };
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      // The exec's event is split across two pieces, as a network may split it.
+      const first = sse([other, exec]);
+      controller.enqueue(encoder.encode(first.slice(0, 40)));
+      controller.enqueue(encoder.encode(first.slice(40)));
+      await gate;
+      controller.enqueue(encoder.encode(sse([completed({ input_tokens: 5, output_tokens: 2 })])));
+      controller.close();
+    },
+  });
+  const { p } = await proxy({
+    announce: { response: () => told.push('response'), exec: (id) => told.push(`exec ${id}`) },
+    answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  });
+  const { hostname, port } = new URL(p.url);
+  const seenByClient = await new Promise((resolve, reject) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        text += c;
+        // The client has the exec item: the session must already have been told, while the answer is still open.
+        if (text.includes('"call_x"')) { resolve({ text, told: [...told] }); release(); }
+      });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, parallel_tool_calls: false }));
+  });
+  assert.deepEqual(seenByClient.told, ['response', 'exec call_x'], 'told before the client read it');
+  assert.equal(told.filter((x) => x === 'exec call_x').length, 1, 'once');
+});
+
+test("a watcher that fails mid-answer is told to the session (failed), the answer still reaches the client whole, and a policy with no watcher answers the same bytes", async () => {
+  const exec = { type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: 'call_x', input: 'text(1)' } };
+  const body = sse([exec, completed({ input_tokens: 5, output_tokens: 2 })]);
+  const told = [];
+  const answer = () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const watched = await proxy({ announce: { response: () => told.push('response'), exec: () => { throw new Error('the session could not take it'); }, failed: () => told.push('failed') }, answer });
+  const plain = await proxy({ answer });
+  const a = await send(watched.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  const b = await send(plain.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  assert.equal(a.status, 200);
+  assert.deepEqual(told, ['response', 'failed'], 'the failure was told, once');
+  assert.equal(a.text, body, 'the client has the whole answer');
+  assert.equal(b.text, a.text, 'a policy with no watcher answers the same bytes');
 });

@@ -48,6 +48,10 @@ export interface CodexPolicyOptions {
   tools: readonly string[];
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
+  /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
+   *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
+   *  latest answer, which is known here before Codex can run anything of it. */
+  announce?: { response(): void; exec(callId: string): void; failed(): void };
 }
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -174,21 +178,79 @@ export function usageOf(text: string): ProxyUsage | undefined {
   }
 }
 
+/** The text of a tool output item: a string, or the text of each of its parts. */
+function outputText(item: Record<string, unknown>): string {
+  if (typeof item.output === "string") return item.output;
+  return Array.isArray(item.output) ? item.output.map((part) => (isPlain(part) && typeof part.text === "string" ? part.text : "")).join("\n") : "";
+}
+
+/** Whether a script of code mode is still running, from the request's input alone: an `exec` whose output said "Script running
+ *  with cell ID N" (it yielded and went on), and no later `wait` on N whose output says the script ended. */
+function cellRunning(input: readonly unknown[]): boolean {
+  const execs = new Set<string>();
+  const waits = new Map<string, string>();
+  const cells = new Set<string>();
+  for (const item of input) {
+    if (!isPlain(item) || typeof item.call_id !== "string") continue;
+    const running = /Script running with cell ID (\S+)/.exec(outputText(item));
+    if (item.type === "custom_tool_call" && item.name === "exec") execs.add(item.call_id);
+    else if (item.type === "custom_tool_call_output" && execs.has(item.call_id) && running) cells.add(running[1]!);
+    else if (item.type === "function_call" && item.name === "wait" && typeof item.arguments === "string") {
+      try {
+        const cell = (JSON.parse(item.arguments) as { cell_id?: unknown }).cell_id;
+        if (cell !== undefined) waits.set(item.call_id, String(cell));
+      } catch {}
+    } else if (item.type === "function_call_output" && waits.has(item.call_id) && !running) cells.delete(waits.get(item.call_id)!);
+  }
+  return cells.size > 0;
+}
+
 /** The code-mode runtime a request may carry: Codex's `exec` (a custom tool) and `wait` (a function), in the `functions`
  *  namespace of an `additional_tools` item. Every other tool the item lists is dropped, and an item of any other shape is
  *  refused. Other input items pass as they are. */
 const CODE_MODE_TOOLS = new Map([["exec", "custom"], ["wait", "function"]]);
-function codeModeCarrier(item: unknown): unknown {
+function codeModeCarrier(item: unknown, offerExec: boolean): unknown {
   if (!isPlain(item) || item.type !== "additional_tools") return item;
   if (!Array.isArray(item.tools)) throw new ProxyRefusal(400, "an additional_tools item has no tools list");
   const kept: unknown[] = [];
   for (const namespace of item.tools) {
     if (!isPlain(namespace) || namespace.type !== "namespace" || !Array.isArray(namespace.tools)) throw new ProxyRefusal(400, "an additional_tools item holds something other than a namespace");
     if (namespace.name !== "functions") continue;
-    const own = namespace.tools.filter((tool) => isPlain(tool) && typeof tool.name === "string" && CODE_MODE_TOOLS.get(tool.name) === tool.type);
+    const own = namespace.tools.filter((tool) => isPlain(tool) && typeof tool.name === "string" && CODE_MODE_TOOLS.get(tool.name) === tool.type && (offerExec || tool.name !== "exec"));
     kept.push({ ...namespace, tools: own });
   }
   return { ...item, tools: kept };
+}
+
+/** Reads an answer's server-sent events as they pass, and tells `announce` of each code-mode `exec` call it holds. */
+function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): { chunk(text: string): void; failed(): void } {
+  announce.response();
+  let pending = "";
+  return {
+    // The proxy stopped watching this answer: what the session knows of its exec is no longer whole.
+    failed: () => announce.failed(),
+    chunk(text) {
+      pending += text;
+      let at: number;
+      while ((at = pending.search(/\r?\n\r?\n/)) >= 0) {
+        const event = pending.slice(0, at);
+        pending = pending.slice(pending.slice(at).match(/^\r?\n\r?\n/)![0].length + at);
+        for (const line of event.split(/\r?\n/)) {
+          if (!line.startsWith("data:") || !line.includes("custom_tool_call")) continue;
+          let data: unknown;
+          try {
+            data = JSON.parse(line.slice(5));
+          } catch {
+            continue;
+          }
+          const item = isPlain(data) && data.type === "response.output_item.done" && isPlain(data.item) ? data.item : undefined;
+          if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id);
+        }
+      }
+      // An event is never this long: what has no end yet is not kept.
+      if (pending.length > 4 * 1024 * 1024) pending = "";
+    },
+  };
 }
 
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
@@ -219,7 +281,9 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed);
       if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed);
       if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
-        out.input = out.input.map(codeModeCarrier);
+        // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.
+        const offerExec = !cellRunning(out.input);
+        out.input = out.input.map((item) => codeModeCarrier(item, offerExec));
         // One `exec` is open at a time (the session's barrier for a code-mode call rests on it): a code-mode request that allows
         // parallel calls is refused, and one that says nothing is sent with them off. A classic request is as the CLI sent it.
         if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
@@ -230,6 +294,7 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
     },
     usageOf,
+    watch: options.announce ? () => watchResponse(options.announce!) : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
   };
 }

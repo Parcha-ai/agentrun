@@ -17,6 +17,7 @@ import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, Mac
 import { brandMachine } from "./process.js";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
 import { codexPolicy } from "./policy.js";
+import { UNWATCHED } from "../scripts.js";
 
 /** The variables a child takes from this process, when they are set. */
 export const INHERITED_ENV = Object.freeze(["PATH", "LANG", "TZ"] as const);
@@ -151,8 +152,15 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
 
     const key = randomBytes(32).toString("base64url");
     const route = model.options;
+    // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
+    let announced: string | undefined;
     const proxy = await startModelProxy({
-      policy: codexPolicy({ model: route.models.model, tools: options.proxy.tools, ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}) }),
+      policy: codexPolicy({
+        model: route.models.model,
+        tools: options.proxy.tools,
+        ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
+        announce: { response: () => void (announced = undefined), exec: (callId) => void (announced = callId), failed: () => void (announced = UNWATCHED) },
+      }),
       hooks: options.proxy.hooks,
       model: route.models.model,
       origin: route.target,
@@ -172,6 +180,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       signal: lost.signal,
       modelUrl: proxy.url,
       modelKey: key,
+      announcedExec: () => announced,
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-codex: the session machine is closed");
