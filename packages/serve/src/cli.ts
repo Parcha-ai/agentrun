@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // agentrun-serve: the Agentrun v2 API on this machine, over the agent store in a data directory.
+import "./quiet-sqlite-warning.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
