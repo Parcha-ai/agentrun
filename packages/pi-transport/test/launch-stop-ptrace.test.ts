@@ -627,9 +627,13 @@ describe("a stop in progress", () => {
 				mkdirSync(join(proc, "4194999"));
 				writeFileSync(
 					join(proc, "4194999", "stat"),
-					setsid ? `4194999 (held) S 1 ${watch} ${watch} 0\n` : `4194999 (held) S ${watch} 4194999 4194999 0\n`,
+					setsid
+						? `4194999 (held * x) S 1 ${watch} ${watch} 0\n`
+						: `4194999 (held * x) S ${watch} 4194999 4194999 0\n`,
 				);
 				writeFileSync(at("launcher.sh"), LAUNCHER_SCRIPT.replace(PROC_LINE, `PROC='${proc}'`));
+				// A name with a glob and a space, and a file in the stop's working directory a glob would name instead.
+				writeFileSync(join(box.facts().workspace, "planted-in-cwd"), "");
 				const stopped = await Promise.race([
 					launchStop(box, started.launch, { graceMs: 300 }, context),
 					new Promise<"held">((resolve) => setTimeout(() => resolve("held"), 15_000)),
@@ -641,8 +645,9 @@ describe("a stop in progress", () => {
 				expect(existsSync(at("trim"))).toBe(false);
 				// Given up, never silent: the process it could not end is named in the launch's log.
 				expect(readFileSync(at("out.log"), "utf8")).toContain(
-					"[launcher] could not end 4194999 (held); removed the trim lock anyway",
+					"[launcher] could not end 4194999 (held * x); removed the trim lock anyway",
 				);
+				expect(readFileSync(at("out.log"), "utf8")).not.toContain("planted-in-cwd");
 			} finally {
 				await box.destroy(context);
 			}
