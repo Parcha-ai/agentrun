@@ -51,7 +51,7 @@ export const MARK_WINDOW_MS: readonly number[] = [2, 4, 8, 16, 20];
 
 /** Blocks this thread for `ms`: the tables are synchronous. */
 function pause(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /** What a process whose environment still reads empty or unreadable after the window counts as: unmarked. Keeping it
@@ -309,7 +309,7 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
             // Still empty after the window: unmarked (see AFTER_WINDOW_MARKED).
             if (unread.length === 0 && (empty.length === 0 || !inWindow)) return [...marked];
             only = new Set([...unread, ...(inWindow ? empty : [])]);
-            pause(MARK_WINDOW_MS[Math.min(read, MARK_WINDOW_MS.length) - 1]!);
+            pause(MARK_WINDOW_MS[Math.min(read, MARK_WINDOW_MS.length) - 1] ?? 0);
           }
         },
         commandLine(pid) {
