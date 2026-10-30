@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 009-nested-tie-turn, 010-repair-before-any-turn, 011-exec-by-kind
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer, 009-nested-tie-turn, 010-repair-before-any-turn, 011-exec-by-kind, 012-repair-output-by-kind
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -1135,7 +1135,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         const listed = recoveryFacts(execs, ties, note ? note.turn.since : Number.NaN, factOf);
         const items = summary.dangling.map((c) => {
           // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
-          if (!isExec(c)) return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
+          if (!isExec(c)) return repairItem(ctx.state(), c);
           const { own, loose } = listed.get(c.callId)!;
           // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
           // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
@@ -1348,6 +1348,15 @@ export function owedSubmissions(state: SessionState, placed: string[], clientIds
     .filter((id) => !recorded.has(id))
     .map((id) => state.submissions.find((s) => s.id === id))
     .filter((s): s is Submission => !!s && (s.kind === 'prompt' || s.kind === 'steer' || s.kind === 'followUp'));
+}
+
+/**
+ * The item injected for a call the rollout left dangling that is not an `exec`: its output, of the kind the call asks for. A
+ * custom tool call (Codex's own `apply_patch` is one) is answered with a `custom_tool_call_output`, any other with a
+ * `function_call_output`; the Responses API refuses an output of the wrong kind.
+ */
+export function repairItem(state: SessionState, call: RolloutCall): { type: 'custom_tool_call_output' | 'function_call_output'; call_id: string; output: string } {
+  return { type: call.type === 'custom_tool_call' ? 'custom_tool_call_output' : 'function_call_output', call_id: call.callId, output: repairOutput(state, call) };
 }
 
 /**

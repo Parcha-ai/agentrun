@@ -1,0 +1,34 @@
+Patch: 012-repair-output-by-kind
+Reason: a call the repair answers that is not an exec is answered with an output of the kind the call asks for: a custom tool call (Codex's own apply_patch is one, with its built-in tools on) gets a custom tool call output and any other call a function call output, because the Responses API refuses an output of the wrong kind on the next request; the text is the same
+Upstream: ours
+Pins: a dangling custom tool call that is not exec, such as apply_patch, is answered with a custom tool call output
+---
+diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
+index 3915040..b4f5cc0 100644
+--- a/packages/harness-codex/src/harness.ts
++++ b/packages/harness-codex/src/harness.ts
+@@ -1132,7 +1132,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+         const listed = recoveryFacts(execs, ties, note ? note.turn.since : Number.NaN, factOf);
+         const items = summary.dangling.map((c) => {
+           // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
+-          if (!isExec(c)) return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
++          if (!isExec(c)) return repairItem(ctx.state(), c);
+           const { own, loose } = listed.get(c.callId)!;
+           // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
+           // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
+@@ -1347,6 +1347,15 @@ export function owedSubmissions(state: SessionState, placed: string[], clientIds
+     .filter((s): s is Submission => !!s && (s.kind === 'prompt' || s.kind === 'steer' || s.kind === 'followUp'));
+ }
+ 
++/**
++ * The item injected for a call the rollout left dangling that is not an `exec`: its output, of the kind the call asks for. A
++ * custom tool call (Codex's own `apply_patch` is one) is answered with a `custom_tool_call_output`, any other with a
++ * `function_call_output`; the Responses API refuses an output of the wrong kind.
++ */
++export function repairItem(state: SessionState, call: RolloutCall): { type: 'custom_tool_call_output' | 'function_call_output'; call_id: string; output: string } {
++  return { type: call.type === 'custom_tool_call' ? 'custom_tool_call_output' : 'function_call_output', call_id: call.callId, output: repairOutput(state, call) };
++}
++
+ /**
+  * The output injected for a call the rollout left dangling, from what the
+  * log knows: the committed result (exactly once), the recorded failure, or
