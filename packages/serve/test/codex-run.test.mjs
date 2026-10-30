@@ -4,41 +4,18 @@
 // commands do, under the same user.
 import assert from "node:assert/strict";
 import { copyFile, readdir, readFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fileURLToPath } from "node:url";
-import { agent, follow, scratch, serve } from "./support.mjs";
+import { agent, follow, keyedGateway, scratch, serve } from "./support.mjs";
 
-/** The gateway's key in these tests: no real one. */
-const GATEWAY_KEY = `not-a-secret-${"gateway"}`;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 
-/** serve's gateway, on loopback: each Responses request streamed back as one short answer with its usage, once the
- *  test lets it go. */
-async function gateway(t) {
-  const seen = [];
-  let release;
-  const held = new Promise((resolve) => (release = resolve));
-  // A failing test still lets the turn finish, so the run's process and the server can stop.
-  t.after(() => release());
-  const server = createServer(async (req, res) => {
-    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
-    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
-    let body = "";
-    for await (const chunk of req) body += chunk;
-    seen.push({ path: req.url, authorization: req.headers.authorization, body: JSON.parse(body || "{}") });
-    await held;
-    const events = [{ type: "response.output_text.delta", delta: "Codex answered." }, { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 100 } } }];
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    res.end(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`);
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { seen, release, origin: `http://127.0.0.1:${server.address().port}` };
-}
+/** serve's gateway, on loopback, keyed to the test (support.mjs): each of its own Responses requests answered once the
+ *  test lets it go; another process's is printed and never counted. */
+const gateway = (t) => keyedGateway(t, { held: true });
 
 /** The process whose command line names `path`, and its status. */
 async function processOf(path) {
@@ -66,7 +43,7 @@ async function codexServe(t, gw) {
     AGENTRUN_SERVE_CODEX_STANDIN: JSON.stringify({ command: process.execPath, args: [standIn], env: { FAKE_CODEX_MODEL: "remote" } }),
     AGENT_MODEL_BASE_URL: gw.origin,
     AGENT_MODEL: "gpt-test",
-    AGENT_MODEL_API_KEY: GATEWAY_KEY,
+    AGENT_MODEL_API_KEY: gw.key,
     AGENT_MODEL_PRICE: "1,2,0.5",
   });
   const { api, data } = await serve(t, { faux: undefined });
@@ -106,7 +83,7 @@ test("a run on codex goes through the adapter's proxy to serve's gateway, priced
   gw.release();
   const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 60_000 });
   assert.equal(gw.seen[0].path, "/v1/responses");
-  assert.equal(gw.seen[0].authorization, `Bearer ${GATEWAY_KEY}`, "the gateway's key, from serve, at the proxy");
+  assert.equal(gw.seen[0].authorization, `Bearer ${gw.key}`, "the gateway's key, from serve, at the proxy");
   const usage = rows.findLast((r) => r.kind === "usage")?.usage;
   assert.deepEqual(usage, { usd: 0.0012, requests: 1 }, "1000 in at $1 and 100 out at $2 per million");
 });
@@ -181,5 +158,5 @@ test("a codex run's model proxy reports a refusal in the run's log: one harness 
   // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
   const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
   assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["codex", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
-  for (const secret of [CANARY, GATEWAY_KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+  for (const secret of [CANARY, gw.key]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
 });

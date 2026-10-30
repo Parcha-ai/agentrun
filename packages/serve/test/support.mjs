@@ -1,5 +1,6 @@
 // A server on a fresh data directory with the faux model, and a client for its /v2 routes. No key, no network.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
@@ -178,3 +179,49 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
+
+/** How a request that is not a test's own is printed: its path and model, and its key as a short prefix and a length,
+ *  never the whole value (a test log may be public, and a key there could one day be a real one). */
+export const foreignLine = (path, model, authorization) => {
+  const value = String(authorization ?? "");
+  return `a request not this test's reached its gateway: ${path}, model ${model ?? "none"}, key ${value.slice(0, 14)}... (${value.length} characters)`;
+};
+
+/**
+ * A model gateway on loopback for one test, keyed: its key is random, so a request carrying another key is another
+ * process's (another run's proxy still pointed at a port this one has since taken), never this test's. Such a request
+ * is refused, recorded in `foreign` and printed, and never counted; `seen` holds this test's own requests. Each answer
+ * is a short Responses stream; with `held`, answers wait until `release()`.
+ */
+export async function keyedGateway(t, { held = false } = {}) {
+  const key = `not-a-secret-gateway-${randomBytes(8).toString("hex")}`;
+  const seen = [];
+  const foreign = [];
+  let release = () => {};
+  const gate = held ? new Promise((resolve) => (release = resolve)) : Promise.resolve();
+  // A failing test still lets a held turn finish, so the run's process and the server can stop.
+  t.after(() => release());
+  const server = createServer(async (req, res) => {
+    // Only the API's own paths count: a host's loopback prober (a keyless GET /) is not a request of the run's.
+    if (!req.url?.startsWith("/v1/")) return void res.writeHead(404).end();
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    let parsed = {};
+    try { parsed = JSON.parse(body || "{}"); } catch {}
+    if (req.headers.authorization !== `Bearer ${key}`) {
+      const line = foreignLine(req.url, parsed?.model, req.headers.authorization);
+      foreign.push(line);
+      t.diagnostic(line);
+      return void res.writeHead(401).end();
+    }
+    seen.push({ path: req.url, authorization: req.headers.authorization, body: parsed });
+    await gate;
+    const events = [{ type: "response.output_text.delta", delta: "Codex answered." }, { type: "response.completed", response: { usage: { input_tokens: 1000, output_tokens: 100 } } }];
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(`${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return { key, seen, foreign, release, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
