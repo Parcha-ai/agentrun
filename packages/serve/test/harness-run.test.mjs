@@ -13,6 +13,7 @@ import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const FAUX_CAPPED = new URL("./fixtures/faux-capped.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
@@ -264,7 +265,8 @@ test("pi's confinement holds for another harness's read: a link out of the works
 });
 
 test("a capped run whose spend became unknown (a request cut by a crash) refuses its next request: failed, spend_cap_reached", { timeout: 90_000 }, async (t) => {
-  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  // A priced model: under a cap, a model with no price refuses its first request (cap.ts), so this run would never start.
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, faux: FAUX_CAPPED });
   const go = join(await scratch(t), "go");
   assert.equal((await api("POST", "/agents", agent("capped-cut", { harness: "claude-agent", instructions: `Cut until ${go}.` }))).status, 201);
   const run = await api("POST", "/agents/capped-cut/runs", { input: { content: "hi" }, max_cost_usd: 1 });

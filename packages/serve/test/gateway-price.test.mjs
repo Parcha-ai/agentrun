@@ -101,7 +101,7 @@ test("through a gateway a revision's provider/model-id is sent whole (OpenRouter
   assert.deepEqual((await costOf({ AGENT_MODEL: `${bare.provider}/${bare.id}` })).default, vendorCost, `${bare.provider}/${bare.id}`);
 });
 
-test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know is still $0 and never reaches its cap", async (t) => {
+test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know has no price, so under a cap it is refused before any request", async (t) => {
   const tokens = 1_000_000;
   const endpoint = await responsesEndpoint(t, "42", tokens);
   const names = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
@@ -125,9 +125,14 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
   const usage = { input: tokens, output: tokens, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const expected = calculateCost(builtinModels().getModel("openai", "gpt-4o"), usage).total;
   assert.ok(Math.abs(priced.cost.usd - expected) < 1e-9, `the run's cost is openai's list price for its usage: ${priced.cost.usd} vs ${expected}`);
-  const free = await run("free", "agent-model/not-a-catalog-model");
-  assert.deepEqual([free.status, free.error ?? null, free.cost.usd ?? 0], ["completed", null, 0], JSON.stringify(free));
-  // Each run's turns went to the gateway (other processes on the machine may probe a loopback port with a GET).
+  const sentForPriced = endpoint.asked.filter((line) => line.startsWith("POST ")).length;
+  // An unpriced model under a cap: never read as $0, refused before it is asked.
+  const unpriced = await run("unpriced", "agent-model/not-a-catalog-model");
+  assert.deepEqual([unpriced.status, unpriced.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(unpriced));
+  assert.match(unpriced.error.message, /no price/);
+  // The priced run's turns went to the gateway, the unpriced one's none (other processes on the machine may probe a
+  // loopback port with a GET).
   const posts = endpoint.asked.filter((line) => line.startsWith("POST "));
-  assert.ok(posts.length >= 2 && posts.every((line) => line === "POST /responses"), endpoint.asked.join(", "));
+  assert.ok(posts.length >= 1 && posts.every((line) => line === "POST /responses"), endpoint.asked.join(", "));
+  assert.equal(posts.length, sentForPriced, "the unpriced run sent nothing");
 });

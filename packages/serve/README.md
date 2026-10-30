@@ -413,8 +413,11 @@ at the higher of the model's input and cache-write prices, since the provider ma
 input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last response reported, plus about one token
 per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
 catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
-restart, plus each response since; a request in flight holds its worst case until it answers. A model priced at $0 (a
-gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap. Pricing the whole output
+restart, plus each response since; a request in flight holds its worst case until it answers. What a cap cannot price
+it refuses, never reads as $0: a model with no price (a gateway id pi-ai's catalog does not know, with no
+`AGENT_MODEL_PRICE`), one with no output ceiling, a run whose spend is unknown (a response that reported no price, a
+request a crash cut), and, on another harness, a model the run's process cannot find. Each refuses with
+`spend_cap_reached`, the reason named; a run with no cap is unaffected. Pricing the whole output
 ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
 so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 

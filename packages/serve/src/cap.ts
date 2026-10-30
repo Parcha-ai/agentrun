@@ -7,7 +7,7 @@
 // request in flight holds its worst case until it answers.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
-import { REQUEST_COST, REQUEST_COST_LATE } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -24,22 +24,24 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
   return cap;
 }
 
-/** What the run's store says its model requests cost: every response of every conversation in it, and each cost
- *  written apart from a response (a compaction summary's; a harness request's that came in after its answer). */
-export function spentIn(storeFile: string): number {
+/** What the run's store says its model requests cost, across every conversation in it: the total the run's own
+ *  timeline gives (pi-durable-agent's timelineOf), read as a settled run, since the process that wrote it is gone. So
+ *  every rule the timeline keeps for a cost no one knows holds here: a cost that is not a number, a harness answer's
+ *  cost still pending, an aborted answer, and a request or compaction marked as sent with no answer (a crash cut it,
+ *  and it may have been billed). Unknown is null, which a cap never reads as $0. */
+export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true });
+  const entries: EntryLike[] = [];
   try {
-    let spent = 0;
-    for (const row of db.prepare("SELECT record FROM entries").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[]; data?: { usd?: unknown } };
-      const total = entry.kind === "pi.assistant" ? entry.model?.[0]?.usage?.cost?.total : entry.kind === REQUEST_COST || entry.kind === REQUEST_COST_LATE ? entry.data?.usd : undefined;
-      if (typeof total === "number" && Number.isFinite(total)) spent += total;
-    }
-    return spent;
+    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) entries.push(JSON.parse(String((row as { record: string }).record)) as EntryLike);
   } finally {
     db.close();
   }
+  const row = timelineOf(entries, { settled: true }).find((event) => event.kind === "usage");
+  if (row === undefined) return 0;
+  const usd = row.usage?.usd;
+  return typeof usd === "number" && Number.isFinite(usd) ? usd : null;
 }
 
 /** The most output tokens one request may take: the model's ceiling, else its context window. A thinking budget can
@@ -56,25 +58,35 @@ export interface CapGuard {
  *  flight, plus this request's, must stay within `cap`, else the request is refused with spend_cap_reached. A request's
  *  worst case is its output ceiling at the run model's price (its input is not known before the harness sends it; a
  *  request on a cheaper model is held at that price too, which only refuses sooner). Requests in flight hold theirs until
- *  they answer, as pi's own cap holds them, so requests sent side by side cannot pass the cap together. A spend that is
- *  unknown (a request a crash cut) cannot be kept within a cap, so it is refused too; a model with no price never reaches
- *  a cap, as on pi. */
+ *  they answer, as pi's own cap holds them, so requests sent side by side cannot pass the cap together. Under a cap,
+ *  whatever cannot be priced refuses, never passes as $0: a spend that is unknown (a request a crash cut), a model this
+ *  process cannot find, a model with no price, and one with no output ceiling to price a request by. */
 export async function capBefore(cap: number | undefined, model: Model<Api> | undefined): Promise<CapGuard | undefined> {
-  if (cap === undefined || model === undefined) return undefined;
+  if (cap === undefined) return undefined;
+  const refusing = (why: string): CapGuard => ({ beforeRequest: () => ({ refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. ${why}, so its cap of $${cap} cannot be kept: the run is out of budget.` }) });
+  if (model === undefined) return refusing("The run's model is unknown here (model unknown)");
+  const ceiling = ceilingTokens(model);
+  if (!(Number.isFinite(ceiling) && ceiling > 0)) return refusing(`The model ${model.id} has no output ceiling to price a request by (no output ceiling)`);
   const { calculateCost } = await import("@earendil-works/pi-ai");
-  const worst = calculateCost(model, { input: 0, output: ceilingTokens(model), cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }).total;
+  const worst = calculateCost(model, { input: 0, output: ceiling, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }).total;
+  if (!(worst > 0)) return refusing(`The model ${model.id} has no price (no price)`);
+  return guardOf(cap, worst);
+}
+
+/** The guard over a request's worst case `worst`: written so that a worst case that is not a number refuses. */
+export function guardOf(cap: number, worst: number): CapGuard {
   return {
     beforeRequest({ spentUsd, inFlight }) {
       if (spentUsd === null) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. What the run has spent is unknown, so its cap of $${cap} cannot be kept: the run is out of budget.` };
       const held = worst * inFlight.length;
-      if (spentUsd + held + worst > cap) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
+      if (!(spentUsd + held + worst <= cap)) return { refuse: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spentUsd + held).toFixed(6)} spent or in flight the run would pass its cap of $${cap}: the run is out of budget.` };
       return undefined;
     },
   };
 }
 
 /** `models`, refusing each request whose worst case would take the run past `cap` after `spent` USD. */
-export async function capModels<M extends Models>(models: M, cap: number, spent: number): Promise<M> {
+export async function capModels<M extends Models>(models: M, cap: number, spent: number | null): Promise<M> {
   const [{ calculateCost, createAssistantMessageEventStream }, { estimateContextTokens }, { clampMaxTokensToContext }] = await Promise.all([
     import("@earendil-works/pi-ai"),
     import("@earendil-works/pi-ai/utils/estimate"),
@@ -89,17 +101,31 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     const output = clampMaxTokensToContext(model, transcript, Math.max(options?.maxTokens ?? 0, ceilingTokens(model)));
     return Math.max(priced(model, { input, output }), priced(model, { cacheWrite: input, output }));
   };
-  const refusal = (model: Model<Api>, worst: number): AssistantMessage => ({
+  /** Why a request on `model` of worst case `worst` cannot be kept within the cap at all, by name; else undefined. */
+  const unkept = (model: Model<Api>, worst: number): string | undefined => {
+    const ceiling = ceilingTokens(model);
+    if (!(Number.isFinite(ceiling) && ceiling > 0)) return `The model ${model.id} has no output ceiling to price a request by (no output ceiling)`;
+    if (!(worst > 0)) return `The model ${model.id} has no price (no price)`;
+    if (spent === null) return "What the run has spent is unknown";
+    return undefined;
+  };
+  const refusal = (model: Model<Api>, worst: number, why = unkept(model, worst)): AssistantMessage => ({
     role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, stopReason: "error", timestamp: Date.now(),
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     // "out of budget" is final to pi-ai's retry policy, whatever digits the amounts hold.
-    errorMessage: `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${(spent + held).toFixed(6)} spent the run would pass its cap of $${cap}: the run is out of budget.`,
+    errorMessage: why
+      ? `${SPEND_CAP_REACHED}: the next model request was not sent. ${why}, so its cap of $${cap} cannot be kept: the run is out of budget.`
+      : `${SPEND_CAP_REACHED}: the next model request was not sent. It could cost up to $${worst.toFixed(6)}, and with $${((spent ?? 0) + held).toFixed(6)} spent the run would pass its cap of $${cap}: the run is out of budget.`,
   });
   /** Adds what `answer` cost to what the run has spent once it settles. */
-  const count = (answer: Promise<AssistantMessage>) => answer.then((message) => void (spent += message.usage?.cost?.total ?? 0), () => undefined);
+  const count = (answer: Promise<AssistantMessage>) => answer.then((message) => {
+    const total = message.usage?.cost?.total;
+    // An answer whose cost is not a number makes what the run has spent unknown from here on.
+    spent = spent === null || typeof total !== "number" || !Number.isFinite(total) ? null : spent + total;
+  }, () => undefined);
   /** Admits a request of `worst`, holding it until `answer` settles, or says why not. */
-  const admit = (worst: number, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> | undefined => {
-    if (spent + held + worst > cap) return undefined;
+  const admit = (model: Model<Api>, worst: number, answer: () => Promise<AssistantMessage>): Promise<AssistantMessage> | undefined => {
+    if (unkept(model, worst) !== undefined || spent === null || !(spent + held + worst <= cap)) return undefined;
     held += worst;
     let answered: Promise<AssistantMessage>;
     try {
@@ -115,7 +141,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
     (model: Model<Api>, context: Context, options?: { maxTokens?: number }): AssistantMessageEventStream => {
       const worst = worstCase(model, context, options);
       let events: AssistantMessageEventStream | undefined;
-      if (admit(worst, () => (events = send(model, context, options)).result())) return events!;
+      if (admit(model, worst, () => (events = send(model, context, options)).result())) return events!;
       const refused = createAssistantMessageEventStream();
       const message = refusal(model, worst);
       refused.push({ type: "error", reason: "error", error: message });
@@ -125,7 +151,7 @@ export async function capModels<M extends Models>(models: M, cap: number, spent:
   const complete = (send: (model: Model<Api>, context: Context, options?: { maxTokens?: number }) => Promise<AssistantMessage>) =>
     (model: Model<Api>, context: Context, options?: { maxTokens?: number }): Promise<AssistantMessage> => {
       const worst = worstCase(model, context, options);
-      return admit(worst, () => send(model, context, options)) ?? Promise.resolve(refusal(model, worst));
+      return admit(model, worst, () => send(model, context, options)) ?? Promise.resolve(refusal(model, worst));
     };
   const guarded: Record<PropertyKey, unknown> = {
     stream: stream(models.stream.bind(models) as never),
