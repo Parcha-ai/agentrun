@@ -71,6 +71,8 @@ process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
   assert.deepEqual(run.result.output, { is_coi: true });
   const sent = (await readFile(calls, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.deepEqual(sent.map((call) => call.authorized), [true], "the judge sent the handed key");
+  // Below 16 on every platform, so a launch whose stdio grows past it fails here too, not only on a Mac.
+  assert.ok(Number(sent[0].key_fd) >= 3 && Number(sent[0].key_fd) < 16, `the key was handed on descriptor ${sent[0].key_fd}, which macOS refuses at 16 and above`);
   up();
   assert.equal((await api("GET", "/capabilities")).status, 200, "and it still answers");
 });
