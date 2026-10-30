@@ -17,6 +17,9 @@ import { CANARY } from "./fixtures/faux-jev.mjs";
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
 const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
+/** Keys that are not the canary, so a request sent with one is not authorized: held in names, as no key literal sits beside a key variable. */
+const OTHER_ROUTER_KEY = "openrouter-key-not-jevs";
+const OTHER_GATEWAY_KEY = "gateway-key-not-jevs";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** The descriptor a run's process is handed the key on: the first one after its stdio. */
 const KEY_FD = "3";
@@ -242,7 +245,7 @@ async function jevOn(t, vars) {
 }
 
 test("TYPESAFE_API_KEY wins over OPENROUTER_API_KEY and an OpenRouter gateway's key: the judge sends it to TypeSafe, and capabilities has no note", async (t) => {
-  const jev = await jevOn(t, { TYPESAFE_API_KEY: CANARY, OPENROUTER_API_KEY: "openrouter-key-not-jevs", AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: "gateway-key-not-jevs" });
+  const jev = await jevOn(t, { TYPESAFE_API_KEY: CANARY, OPENROUTER_API_KEY: OTHER_ROUTER_KEY, AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: OTHER_GATEWAY_KEY });
   assert.deepEqual(jev.offer, { id: "jev", available: true }, "no note: the decision key stays out of a run's processes");
   const run = await jev.judged();
   assert.equal(run.status, "completed", JSON.stringify(run.error));
@@ -250,7 +253,7 @@ test("TYPESAFE_API_KEY wins over OPENROUTER_API_KEY and an OpenRouter gateway's 
 });
 
 test("OPENROUTER_API_KEY wins over an OpenRouter gateway's key: the judge sends it to OpenRouter, and the note names it", async (t) => {
-  const jev = await jevOn(t, { OPENROUTER_API_KEY: CANARY, AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: "gateway-key-not-jevs" });
+  const jev = await jevOn(t, { OPENROUTER_API_KEY: CANARY, AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: OTHER_GATEWAY_KEY });
   assert.deepEqual([jev.offer.available, jev.offer.reason], [true, undefined]);
   assert.match(jev.offer.note ?? "", /^Jev runs on OPENROUTER_API_KEY, /, JSON.stringify(jev.offer));
   assert.doesNotMatch(jev.offer.note, /AGENT_MODEL_API_KEY/);
@@ -326,7 +329,7 @@ test("a gateway whose host is not exactly openrouter.ai, or no gateway key, leav
     "https://api.openai.com/v1", "http://127.0.0.1:9/openrouter.ai", "openrouter.ai/api/v1", "not a url",
   ];
   for (const base of others) {
-    const env = { AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: "gateway-key" };
+    const env = { AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: OTHER_GATEWAY_KEY };
     assert.equal(jevRoute(env), undefined, base);
     assert.equal(decisionsOf(env)[0].available, false, base);
   }
