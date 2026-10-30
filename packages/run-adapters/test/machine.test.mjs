@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
-import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, listenSocket, openLocalMachine, processAlive, startChild } from '@parcha/agentrun-kernel/host';
+import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, listenSocket, openLocalMachine, processAlive, startChild, watchClose } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'kernel-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -550,4 +550,61 @@ test("unboxed, a child's binds are checked as in a box: a refused one starts not
 
 test("no directory of the machine's may take a bind's name (bind:N): the open is refused by name", async (t) => {
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: ['home', 'bind:0'], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' } }), /agentrun-test: the machine's directory bind:0 takes the name a child's bind is bound under \(bind:N\)/);
+});
+
+test("a box that fails to start after it was recorded is reaped, and the close waits for that reap and fails when it finds a process left", async (t) => {
+  const reaped = [];
+  // The host's box records itself, then its spawn fails; the reap of that record finds a process left (a stray it began).
+  const box = {
+    isolation: { mode: 'bwrap', cgroup: false },
+    start: (spec, child, recorder) => { recorder.ahead({ id: 'box-failed', writer: { pid: process.pid, startTime: '1' } }); throw new Error('bwrap: the spawn failed'); },
+    reap: async (record) => { await new Promise((resolve) => setTimeout(resolve, 100)); reaped.push(record.id); return { empty: false, left: 1, by: 'pidns' }; },
+  };
+  const machine = await openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(box) });
+  assert.throws(() => machine.start({ command: '/bin/true' }), /the spawn failed/);
+  await assert.rejects(machine.close(), /box_not_empty: the box still holds 1 process after its reap \(counted by pidns\)/);
+  assert.deepEqual(reaped, ['box-failed'], 'the close waited for the reap of the failed start');
+});
+
+test("watchClose fails a drive by its machine's failed close, never the next drive, and the close itself still rejects", async () => {
+  let fails = true;
+  const watched = watchClose(async () => ({ close: async () => { if (fails) throw new Error('box_not_empty: the box still holds 1 process'); } }));
+  // The harness closes in a finally and goes on; its drive returns as if clean.
+  const first = await watched.acquire();
+  await assert.rejects(watched.drive((async () => { await assert.rejects(first.close(), /box_not_empty/, 'the close still rejects'); return 'done'; })()), /box_not_empty/);
+  // The next drive, whose close is clean, is clean: the last one's failure is not carried over.
+  fails = false;
+  const second = await watched.acquire();
+  assert.equal(await watched.drive((async () => { await second.close(); return 'clean'; })()), 'clean');
+  // A drive that threw keeps its own error, though its close failed too.
+  fails = true;
+  const third = await watched.acquire();
+  await assert.rejects(watched.drive((async () => { await third.close().catch(() => {}); throw new Error('the drive failed'); })()), /the drive failed/);
+});
+
+test("a failed start's reap that gives its verdict before anyone asks never rejects unhandled, and the close still fails by it", async (t) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(String(reason?.message ?? reason));
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    let answered;
+    const verdictGiven = new Promise((resolve) => { answered = resolve; });
+    const box = {
+      isolation: { mode: 'bwrap', cgroup: false },
+      start: (spec, child, recorder) => { recorder.ahead({ id: 'box-failed', writer: { pid: process.pid, startTime: '1' } }); throw new Error('bwrap: the spawn failed'); },
+      reap: async () => { answered(); return { empty: false, left: 1, by: 'pidns' }; },
+    };
+    const machine = await openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(box) });
+    // Closed however the test ends (a second close is a no-op), so a failed assertion never leaves the front open.
+    t.after(() => machine.close().catch(() => {}));
+    assert.throws(() => machine.start({ command: '/bin/true' }), /the spawn failed/);
+    // The reap's own signal, then two turns of the event loop: its verdict has settled the slot's kept promise, and the
+    // runtime has looked for a handler on every rejection by then.
+    await verdictGiven;
+    for (let i = 0; i < 2; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, [], 'no rejection went unhandled');
+    await assert.rejects(machine.close(), /box_not_empty: the box still holds 1 process after its reap/);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
 });
