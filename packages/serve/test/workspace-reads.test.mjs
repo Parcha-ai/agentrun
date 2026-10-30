@@ -268,6 +268,22 @@ test("a directory that becomes unreadable between its pin and its read is report
   assert.deepEqual(refused, [["late", "unreadable"]]);
 });
 
+test("work/ itself made unreadable between its pin and its read is no working copy: the walk throws, never lists nothing", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
+  const { chmod } = await import("node:fs/promises");
+  const server = await served(t);
+  await writeFile(join(server.work, "kept.txt"), "x");
+  seam(t, "afterPin", async (rel) => {
+    if (rel === ".") await chmod(server.work, 0o000);
+  });
+  const refused = [];
+  try {
+    await assert.rejects(walkWork(server.work, () => {}, { refused: (path, reason) => void refused.push([path, reason]) }), (error) => error.path === "." && error.reason === "unreadable");
+  } finally {
+    await chmod(server.work, 0o700);
+  }
+  assert.deepEqual(refused, []);
+});
+
 test("a capped read refuses a file that grows past its cap between its size check and its read", async (t) => {
   const { appendFile } = await import("node:fs/promises");
   const { readWorkBytes } = await import("../dist/workspace.js");
