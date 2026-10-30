@@ -1,0 +1,517 @@
+// `agentrun-serve import`: the Claude Code, Codex and pi sessions under a person's own home, into this server's agent
+// store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
+// instructions the project's CLAUDE.md or AGENTS.md and its skills the project's skill folders; each session one run,
+// ended as it ended, its transcript the run's timeline. An imported run is history: it takes no message, stop or cancel.
+// Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
+// the owner's only. Read again, it imports only the sessions it has not.
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { chmod, lstat, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, sep } from "node:path";
+import { parseArgs } from "node:util";
+import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE } from "@parcha/pi-durable-agent";
+import { RUN_META } from "./files.js";
+import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
+import { secretCut } from "./secret-cut.js";
+import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
+
+/** A session file written to this recently may still be running: it is left for a later import. */
+export const LIVE_MS = 10 * 60_000;
+/** The most of one session file read. */
+export const MAX_SESSION_BYTES = 256 * 1024 * 1024;
+/** The most of one instructions or skill file read, and of one agent's skill files together. */
+export const MAX_FILE_BYTES = 256 * 1024;
+export const MAX_SKILL_BYTES = 1024 * 1024;
+/** The project's skill folders, each `<dir>/<name>/` with its SKILL.md, by where each harness keeps them. */
+export const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills", ".pi/skills"];
+const INSTRUCTIONS: Record<string, string[]> = {
+  "claude-agent": ["CLAUDE.md", "AGENTS.md"],
+  codex: ["AGENTS.md", "CLAUDE.md"],
+  pi: ["AGENTS.md", "CLAUDE.md"],
+};
+
+export type ImportOptions = {
+  /** The home whose sessions are read (the person's own). */
+  home: string;
+  sources?: readonly Source[];
+  /** Keep projects whose directory is gone or under the temp directory, and sessions with no message of the person's. */
+  all?: boolean;
+  /** The environment whose key-shaped values are cut out of everything written. */
+  env: NodeJS.ProcessEnv;
+  now?: number;
+  /** The temp directory whose projects are left out (default the OS's). */
+  temp?: string;
+};
+export type Skipped = { what: string; why: string };
+export type ProjectPlan = {
+  cwd: string;
+  agentId: string;
+  name: string;
+  sessions: Session[];
+};
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[] };
+export type ImportReport = {
+  agents: {
+    id: string;
+    name: string;
+    cwd: string;
+    created: boolean;
+    runs: number;
+    already: number;
+  }[];
+  skipped: Skipped[];
+};
+
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)}`;
+/** The sessions the store holds already, as `source:session`. */
+const importedIn = (store: AgentStoreReader) => new Set(store.listRuns().flatMap((run) => (run.importedFrom ? [`${run.importedFrom.source}:${run.importedFrom.session}`] : [])));
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+
+/** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Reads no turns. */
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir() }: ImportOptions): Promise<Plan> {
+  const skipped: Skipped[] = [];
+  const projects = new Map<string, ProjectPlan>();
+  const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
+  for (const source of sources) {
+    for (const file of await sessionFiles(home, source)) {
+      const stats = await stat(file).catch(() => null);
+      if (!stats) continue;
+      if (now - stats.mtimeMs < LIVE_MS) {
+        skipped.push({
+          what: file,
+          why: "written in the last 10 minutes: it may still be running",
+        });
+        continue;
+      }
+      if (stats.size > MAX_SESSION_BYTES) {
+        skipped.push({ what: file, why: `over ${MAX_SESSION_BYTES} bytes` });
+        continue;
+      }
+      const session = await readSession(file, source, { turns: false });
+      if (session.child) continue;
+      if (!session.cwd) {
+        skipped.push({ what: file, why: "no project directory in it" });
+        continue;
+      }
+      if (!all && session.users === 0) {
+        skipped.push({ what: file, why: "no message of the person's" });
+        continue;
+      }
+      const cwd = session.cwd;
+      if (!all) {
+        const there = await lstat(cwd).catch(() => null);
+        if (!there?.isDirectory()) {
+          skipped.push({ what: file, why: `its project ${cwd} is gone` });
+          continue;
+        }
+        if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
+          skipped.push({
+            what: file,
+            why: `its project ${cwd} is a temp directory`,
+          });
+          continue;
+        }
+      }
+      let project = projects.get(cwd);
+      if (!project)
+        projects.set(
+          cwd,
+          (project = {
+            cwd,
+            agentId: agentIdOf(cwd),
+            name: basename(cwd) || cwd,
+            sessions: [],
+          }),
+        );
+      project.sessions.push(session);
+    }
+  }
+  for (const project of projects.values()) project.sessions.sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
+  return {
+    projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)),
+    skipped,
+  };
+}
+
+/** A project's instructions file and skill folders, read through no link and within their caps. Each file left out is
+ *  in `skipped`, named, with why: a link, not text, over its cap, or a folder with no SKILL.md. */
+export async function projectFiles(
+  cwd: string,
+  skipped: Skipped[],
+): Promise<{
+  instructions: Record<string, string>;
+  skills: Record<string, string>;
+}> {
+  const instructions: Record<string, string> = {};
+  const skills: Record<string, string> = {};
+  // A project kept by --all whose directory is gone has neither.
+  if (!(await lstat(cwd).catch(() => null))?.isDirectory()) return { instructions, skills };
+  const why = (reason: RefusedReason) => (reason === "over_cap" ? `over ${MAX_FILE_BYTES} bytes` : reason === "link" ? "a link: not followed" : reason.replace("_", " "));
+  const text = async (rel: string): Promise<string | undefined> => {
+    try {
+      const bytes = await readWorkBytes(cwd, rel, { maxBytes: MAX_FILE_BYTES });
+      const decoded = bytes.includes(0)
+        ? undefined
+        : (() => {
+            try {
+              return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            } catch {
+              return undefined;
+            }
+          })();
+      if (decoded === undefined) skipped.push({ what: join(cwd, rel), why: "not text" });
+      return decoded;
+    } catch (error) {
+      if (!(error instanceof WorkRefused)) throw error;
+      if (error.reason !== "missing") skipped.push({ what: join(cwd, rel), why: why(error.reason) });
+      return undefined;
+    }
+  };
+  for (const name of ["CLAUDE.md", "AGENTS.md"]) {
+    const found = await text(name);
+    if (found !== undefined) instructions[name] = found;
+  }
+  let total = 0;
+  for (const dir of SKILL_DIRS) {
+    // The folder itself is reached through no link: each component is a directory, not a link to one.
+    const parts = dir.split("/");
+    let reachable = true;
+    for (let i = 1; i <= parts.length && reachable; i++) {
+      const at = await lstat(join(cwd, ...parts.slice(0, i))).catch(() => null);
+      if (!at) reachable = false;
+      else if (!at.isDirectory()) {
+        skipped.push({
+          what: join(cwd, ...parts.slice(0, i)),
+          why: at.isSymbolicLink() ? "a link: not followed" : "not a directory",
+        });
+        reachable = false;
+      }
+    }
+    if (!reachable) continue;
+    const files = new Map<string, string[]>();
+    await walkWork(
+      join(cwd, dir),
+      (path, stats) => {
+        if (stats.isFile()) {
+          const name = path.split("/")[0]!;
+          if (path.includes("/")) files.set(name, [...(files.get(name) ?? []), path]);
+        }
+      },
+      {
+        depth: 8,
+        refused: (path, reason) => skipped.push({ what: join(cwd, dir, path), why: why(reason) }),
+      },
+    );
+    for (const [name, paths] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
+      if (!paths.includes(`${name}/SKILL.md`)) {
+        skipped.push({
+          what: join(cwd, dir, name),
+          why: "no SKILL.md: not a skill",
+        });
+        continue;
+      }
+      if (Object.keys(skills).some((path) => path.startsWith(`${name}/`))) {
+        skipped.push({
+          what: join(cwd, dir, name),
+          why: "a skill of this name was already taken from another folder",
+        });
+        continue;
+      }
+      // Every file is read again through the project, so a link anywhere on its way is refused, not followed.
+      const held: Record<string, string> = {};
+      for (const path of paths.sort()) {
+        const found = await text(`${dir}/${path}`);
+        if (found === undefined) continue;
+        total += Buffer.byteLength(found);
+        if (total > MAX_SKILL_BYTES) {
+          skipped.push({
+            what: join(cwd, dir, path),
+            why: `the project's skill files are over ${MAX_SKILL_BYTES} bytes together`,
+          });
+          continue;
+        }
+        held[path] = found;
+      }
+      if (held[`${name}/SKILL.md`] === undefined) {
+        skipped.push({
+          what: join(cwd, dir, name),
+          why: "its SKILL.md was not read: not a skill",
+        });
+        continue;
+      }
+      Object.assign(skills, held);
+    }
+  }
+  return { instructions, skills };
+}
+
+const message = (turn: Turn, model: string | undefined): { entry: typeof UserEntry; model: unknown; data?: unknown } => {
+  if (turn.role === "user")
+    return {
+      entry: UserEntry,
+      model: {
+        role: "user",
+        content: [{ type: "text", text: turn.text }],
+        timestamp: turn.at,
+      },
+    };
+  if (turn.role === "toolResult")
+    return {
+      entry: ToolResultEntry as unknown as typeof UserEntry,
+      model: {
+        role: "toolResult",
+        toolCallId: turn.callId,
+        toolName: turn.name,
+        content: [{ type: "text", text: turn.text }],
+        isError: turn.isError,
+        timestamp: turn.at,
+      },
+      data: { diagnostics: [] },
+    };
+  const [provider, ...id] = (model ?? "imported/unknown").split("/");
+  const cost = turn.costUsd;
+  return {
+    entry: AssistantEntry as unknown as typeof UserEntry,
+    model: {
+      role: "assistant",
+      content: [...(turn.text ? [{ type: "text", text: turn.text }] : []), ...turn.calls],
+      api: "imported",
+      provider,
+      model: id.join("/") || provider,
+      // No total when the source did not price the request: the timeline's sum is then unknown, never this request at 0.
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+      },
+      stopReason: turn.calls.length ? "toolUse" : "stop",
+      timestamp: turn.at,
+    },
+  };
+};
+
+/** The run's transcript, into a store file at `storePath`, each string with the environment's key values cut out. */
+async function writeTimeline(storePath: string, session: Session, cut: (value: unknown) => unknown): Promise<void> {
+  const { createModels } = await import("@earendil-works/pi-ai/models");
+  const storage = await openNodeSqliteStorage(storePath);
+  // No model is asked anything: the catalog is only what opening a Harness takes.
+  const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, ctx);
+  try {
+    await harness.root(ctx);
+    await harness.commit(async (tx) => {
+      for (const turn of session.turns) {
+        const { entry, model, data } = message(turn, session.model);
+        await tx.appendEntry(entry, ROOT_CONVERSATION_ID, {
+          model: [cut(model) as never],
+          ...(data ? { data: data as never } : {}),
+        });
+      }
+    }, ctx);
+  } finally {
+    await harness.close(ctx);
+  }
+  // A rollback journal, not WAL: the transcript never changes again, and a reader of a WAL file leaves -wal and -shm
+  // beside it, where nothing else may move.
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(storePath);
+  try {
+    db.exec("PRAGMA journal_mode = DELETE");
+  } finally {
+    db.close();
+  }
+  // The owner's only, whatever the umask made it.
+  for (const file of [storePath, `${storePath}-wal`, `${storePath}-shm`])
+    await chmod(file, 0o600).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+}
+
+/** The revision of `harness` an earlier import made for the agent, else a new one (current when the agent is new). */
+async function revisionFor(
+  store: AgentStore,
+  agentId: string,
+  source: Source,
+  files: {
+    instructions: Record<string, string>;
+    skills: Record<string, string>;
+  },
+  model: string | undefined,
+  cut: (text: string) => string,
+  current: boolean,
+): Promise<Revision> {
+  const note = `imported from ${source}`;
+  const held = store.readAgent(agentId)?.revisions.find((r) => r.note === note);
+  if (held) return held;
+  const harness = HARNESS_OF[source];
+  const instructions = INSTRUCTIONS[harness]!.map((name) => files.instructions[name]).find((text) => text !== undefined) ?? "";
+  const revision: NewRevision = {
+    kind: "agentic",
+    instructions: cut(instructions),
+    skills: Object.fromEntries(Object.entries(files.skills).map(([path, text]) => [path, cut(text)])),
+    tools: [],
+    ...(model ? { model } : {}),
+    ...(harness !== "pi" ? { harness } : {}),
+    note,
+  };
+  return store.commitRevision(agentId, revision, { setCurrent: current });
+}
+
+/** The plan, into `store`: the agents it does not hold, and the runs it does not. */
+export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
+  const { text, json } = secretCut(options.env);
+  const report: ImportReport = { agents: [], skipped: [...plan.skipped] };
+  const held = importedIn(store);
+  for (const project of plan.projects) {
+    const created = !store.readAgent(project.agentId);
+    if (created)
+      store.createAgent({
+        id: project.agentId,
+        name: text(project.name),
+        description: text(project.cwd),
+      });
+    const files = await projectFiles(project.cwd, report.skipped);
+    const latest = project.sessions.at(-1)!;
+    // The latest session's harness is the agent's current revision; its model, each harness's latest.
+    const revisions = new Map<Source, Revision>();
+    const order = [...new Set(project.sessions.map((s) => s.source))].sort((a, b) => (a === latest.source ? 1 : 0) - (b === latest.source ? 1 : 0));
+    for (const source of order) revisions.set(source, await revisionFor(store, project.agentId, source, files, project.sessions.findLast((s) => s.source === source && s.model)?.model, text, created && source === latest.source));
+    const line = {
+      id: project.agentId,
+      name: project.name,
+      cwd: project.cwd,
+      created,
+      runs: 0,
+      already: 0,
+    };
+    for (const listed of project.sessions) {
+      if (held.has(`${listed.source}:${listed.id}`)) {
+        line.already += 1;
+        continue;
+      }
+      const session = await readSession(listed.file, listed.source);
+      const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
+      // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
+      const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
+      let started: { runId: string; dir: string; storePath: string } | undefined;
+      try {
+        await writeTimeline(pending, session, json);
+        started = await store.importRun({
+          agent: project.agentId,
+          revision: revisions.get(session.source)!.id,
+          state: session.state,
+          startedAt: session.startedAt ?? new Date(0).toISOString(),
+          endedAt: session.endedAt ?? session.startedAt ?? new Date(0).toISOString(),
+          ...(session.costUsd !== undefined ? { costUsd: session.costUsd } : {}),
+          ...((answer ?? session.firstPrompt) ? { summary: text(answer ?? session.firstPrompt!) } : {}),
+          source: session.source,
+          session: session.id,
+        });
+        if (started) await rename(pending, started.storePath);
+      } finally {
+        await rm(pending, { force: true });
+      }
+      if (!started) {
+        line.already += 1;
+        continue;
+      }
+      const meta = json({
+        title: clip(session.firstPrompt ?? `${session.source} session`, 120),
+        created_at: session.startedAt ?? new Date(0).toISOString(),
+        input: { content: session.firstPrompt ?? "" },
+      });
+      const metaPath = join(started.dir, RUN_META);
+      await writeFile(metaPath, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
+      await chmod(metaPath, 0o600);
+      line.runs += 1;
+    }
+    report.agents.push(line);
+  }
+  return report;
+}
+
+/** The plan as a person reads it: one line per project, then what is left out and why. */
+export function describePlan(plan: Plan, store?: AgentStoreReader): string[] {
+  const held = store ? importedIn(store) : undefined;
+  const lines = plan.projects.map((project) => {
+    const by = new Map<string, number>();
+    for (const s of project.sessions) by.set(s.source, (by.get(s.source) ?? 0) + 1);
+    const already = held ? project.sessions.filter((s) => held.has(`${s.source}:${s.id}`)).length : 0;
+    const priced = project.sessions.filter((s) => s.costUsd !== undefined).length;
+    return `${project.cwd}  ${[...by].map(([source, n]) => `${source} ${n}`).join(", ")}  cost known ${priced}/${project.sessions.length}${already ? `  already imported ${already}` : ""}`;
+  });
+  return [...lines, ...plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`)];
+}
+
+/** `agentrun-serve import ARGS`: its exit code. */
+export async function importCommand(
+  args: string[],
+  usage: string,
+  {
+    home = homedir(),
+    env = process.env,
+    out = console.log,
+  }: {
+    home?: string;
+    env?: NodeJS.ProcessEnv;
+    out?: (line: string) => void;
+  } = {},
+): Promise<number> {
+  let values;
+  try {
+    ({ values } = parseArgs({
+      args,
+      options: {
+        data: { type: "string" },
+        from: { type: "string" },
+        "dry-run": { type: "boolean" },
+        all: { type: "boolean" },
+      },
+    }));
+  } catch (error) {
+    console.error(`${(error as Error).message}\n\n${usage}`);
+    return 2;
+  }
+  const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
+  const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
+  if (unknown.length) {
+    console.error(`--from takes ${SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
+    return 2;
+  }
+  const dir = values.data ?? join(env.XDG_DATA_HOME || join(home, ".local", "share"), "agentrun", "agents");
+  const options: ImportOptions = {
+    home,
+    sources: sources as Source[],
+    all: values.all === true,
+    env,
+  };
+  const plan = await planImport(options);
+  if (values["dry-run"]) {
+    // A dry run writes nothing, not even a store: one there already is only read.
+    const reader = existsSync(join(dir, STORE_FILE)) ? openStoreReader(dir) : undefined;
+    try {
+      for (const line of describePlan(plan, reader)) out(line);
+    } finally {
+      reader?.close();
+    }
+    out(`${plan.projects.length} projects, ${plan.projects.reduce((n, p) => n + p.sessions.length, 0)} sessions; nothing was written (dry run)`);
+    return 0;
+  }
+  const store = openStore(dir);
+  try {
+    const report = await runImport(store, plan, options);
+    for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.already ? `, already imported ${agent.already}` : ""}`);
+    for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
+    out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
+    return 0;
+  } finally {
+    store.close();
+  }
+}

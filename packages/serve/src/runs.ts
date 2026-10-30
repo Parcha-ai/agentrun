@@ -102,6 +102,9 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
+  /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
+   *  stop or a cancel moves nothing. */
+  imported?: { source: string; session: string };
   /** The revision's number among its agent's. */
   version: number;
   dir: string;
@@ -340,6 +343,7 @@ export class Runs {
       run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
       if (row.costUsd !== undefined) run.costUsd = row.costUsd;
+      if (row.importedFrom) run.imported = row.importedFrom;
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else if (record && this.doorOf(record)) {
@@ -497,7 +501,7 @@ export class Runs {
    *  already ended, and opened again when its process went before it ended. */
   async recover(): Promise<void> {
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
-      if (row.state !== "running") continue;
+      if (row.state !== "running" || row.importedFrom) continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
       if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
     }
@@ -604,6 +608,15 @@ export class Runs {
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
+  }
+
+  /** The refusal of a message to an imported run: it was run elsewhere, and is kept as history. */
+  private importedRefusal(run: Run): ApiError {
+    const source = run.imported?.source;
+    return new ApiError("not_continuable", `This run was imported from ${source}: it is history, not run here, so it takes no message. Start a new run of the agent.`, {
+      details: { reason: "imported", imported_from: source },
+      next_action: { type: "request", method: "POST", path: `/agents/${run.agentId}/runs`, caller_supplies: ["input", "Idempotency-Key"] },
+    });
   }
 
   private finished(run: Run): ApiError {
@@ -902,6 +915,7 @@ export class Runs {
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
+    if (run.imported) throw this.importedRefusal(run);
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
     // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
     if (run.finishing && !run.outcome) await this.endWritten(run);
@@ -967,6 +981,8 @@ export class Runs {
 
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
   async stop(run: Run): Promise<boolean> {
+    // The contract's stop has no refusal: an imported run answers as any ended one, stopped false, and nothing moves.
+    if (run.imported) return false;
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
@@ -990,6 +1006,8 @@ export class Runs {
 
   /** Record the cancel and signal the run; it is `cancelled` once its process has exited and it is carried back. */
   async cancel(run: Run): Promise<boolean> {
+    // As stop: already terminal, and no cancel mark is written.
+    if (run.imported) return false;
     if (run.outcome) return false;
     run.cancel = true;
     // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
@@ -1029,7 +1047,8 @@ export class Runs {
 
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    return { usd: costView(run.rows, run.costUsd), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    // An imported run's cost is its source's, for the whole session: its requests may not each have a price.
+    return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
@@ -1060,13 +1079,14 @@ export class Runs {
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
+      imported_from: run.imported ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at, imported_from } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at, imported_from };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1089,6 +1109,7 @@ export class Runs {
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
+      imported_from: row.importedFrom ?? null,
     };
   }
 
