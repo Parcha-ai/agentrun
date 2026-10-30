@@ -584,7 +584,7 @@ test('with both Jev keys set, /agentrun run asks Jev through TypeSafe with the T
   }));
 });
 
-test('a judge naming a provider other than Jev is refused before the run, by name, and nothing is sent to Jev', async () => {
+test('a judge naming a provider other than Jev is refused before any node runs, and nothing is sent to Jev', async () => {
   await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, () => withJevFetch(async sent => {
     const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
     try {
@@ -592,8 +592,8 @@ test('a judge naming a provider other than Jev is refused before the run, by nam
       await app.tool({ action: 'inspect', workflow: definition, input: { evidence: 'A source passage.' } });
       await app.command('run');
       assert.equal(sent.length, 0, 'no request reached Jev');
-      assert.notEqual(app.messages.at(-1).details?.status, 'complete');
-      assert.match(app.messages.at(-1).content, /judge node "check-evidence" names the decision provider parallel, which this host does not have/);
+      const { status, calls, events } = app.messages.at(-1).details;
+      assert.deepEqual([status, calls.judge, events.length], ['failed', 0, 0], 'refused before any node ran');
     } finally { await app.shutdown(); }
   }));
 });
