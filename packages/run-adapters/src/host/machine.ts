@@ -207,7 +207,8 @@ export interface MachineBox {
   cgroup?: string;
   /** A local directory for the session's sockets: never on a disk shared between hosts or a FUSE mount, where a socket
    *  either cannot be made or reads as dead while another host's is live. Default: one per session under the OS's temp
-   *  directory, named by the session's directory. A short path also keeps a socket's within the 108 bytes one allows. */
+   *  directory, named by the session's directory and kept short (`arb-` and 12 hex digits, 17 bytes), so a long temp
+   *  directory (macOS's is about 49 bytes) still leaves the socket directory under its 81-byte bound. */
   runtimeDir?: string;
 }
 
@@ -290,7 +291,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
 
   const key = randomBytes(32).toString("base64url");
   // In a box, the front's only door is a socket of the session's own, which the box is given; outside one, loopback.
-  const sockets = boxing ? socketDir(boxing.runtimeDir ?? join(tmpdir(), `agentrun-box-${createHash("sha256").update(base).digest("hex").slice(0, 16)}`), name) : "";
+  const sockets = boxing ? socketDir(boxing.runtimeDir ?? join(tmpdir(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name) : "";
   const modelSocket = join(sockets, "model.sock");
   const egressSocket = join(sockets, "egress.sock");
   const proxy = await startModelProxy(boxing ? { ...spec.proxy, socketPath: modelSocket } : spec.proxy, key);

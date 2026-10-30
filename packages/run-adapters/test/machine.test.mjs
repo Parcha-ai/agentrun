@@ -432,3 +432,21 @@ test("an egress proxy whose close throws still lets the model front close, and t
   assert.equal(existsSync(join(run, 'model.sock')), false, 'the model front closed anyway');
   assert.equal(existsSync(run), false, "and the session's socket directory went with it");
 });
+
+test("the default socket directory is short: under a 64-byte TMPDIR it still fits the bound", async (t) => {
+  const base = scratch();
+  const longTmp = join(base, 't'.repeat(64 - Buffer.byteLength(base) - 1));
+  mkdirSync(longTmp, { recursive: true });
+  assert.equal(Buffer.byteLength(longTmp), 64);
+  const before = process.env.TMPDIR;
+  process.env.TMPDIR = longTmp;
+  try {
+    const box = fakeBox();
+    const machine = await machineAt(t, scratch(), { box: boxOf(box) });
+    const [{ spec }] = (await machine.start({ command: '/bin/true' }).exited, [box.specs[0]]);
+    const dir = dirname(spec.modelSocket);
+    assert.ok(dir.startsWith(longTmp) && Buffer.byteLength(dir) <= 81, `${dir} (${Buffer.byteLength(dir)} bytes)`);
+  } finally {
+    if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
+  }
+});
