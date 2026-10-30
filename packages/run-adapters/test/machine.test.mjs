@@ -509,6 +509,8 @@ test("a child's binds are refused by name before anything starts: not absolute, 
     [`${dir}/proc-tmp/../proc-tmp`, 1, /is not an absolute, normalized path/],
     [join(dir, 'proc-tmp', 'not-there'), 2, /is not a directory of this user's own \(a link, or not there\)/],
     [join(dir, 'proc-tmp', 'linked'), 2, /is not a directory of this user's own \(a link, or not there\)/],
+    // The same link with a trailing slash, which lstat would follow: refused as not normalized.
+    [`${join(dir, 'proc-tmp', 'linked')}/`, 1, /is not an absolute, normalized path/],
     [outside, 3, new RegExp(`is not under the session ${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)],
     // A sibling whose name only begins with the session's: outside it, though the string shares its prefix.
     [sibling, 3, /is not under the session/],
@@ -544,4 +546,8 @@ test("unboxed, a child's binds are checked as in a box: a refused one starts not
   const config = join(dir, 'proc-tmp', 'dh-claude-b');
   mkdirSync(config, { recursive: true, mode: 0o700 });
   assert.equal((await machine.start({ command: '/bin/true', binds: [config] }).exited).code, 0);
+});
+
+test("no directory of the machine's may take a bind's name (bind:N): the open is refused by name", async (t) => {
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: ['home', 'bind:0'], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' } }), /agentrun-test: the machine's directory bind:0 takes the name a child's bind is bound under \(bind:N\)/);
 });

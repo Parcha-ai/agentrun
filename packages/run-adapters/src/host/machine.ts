@@ -282,6 +282,9 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   const base = normalize(spec.dir);
   if (!isAbsolute(base)) throw new Error(`${name}: the session directory must be an absolute path`);
   mkdirSync(base, { recursive: true, mode: 0o700 });
+  // A child's binds are its box's homes bind:0, bind:1, ...: no directory of the machine's may take such a name.
+  const named = spec.dirs.find((d) => d.startsWith("bind:"));
+  if (named !== undefined) throw new Error(`${name}: the machine's directory ${named} takes the name a child's bind is bound under (bind:N)`);
   const dirs = Object.fromEntries(spec.dirs.map((d) => [d, join(base, d)])) as Record<D, string>;
   const root = join(base, "work");
   for (const dir of [...Object.values<string>(dirs), root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -342,7 +345,8 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
       throw new BoxError("box_refused", `${name}: a child's bind ${path} ${why}`);
     };
     for (const path of options.binds ?? []) {
-      if (typeof path !== "string" || !isAbsolute(path) || normalize(path) !== path) refuse(String(path), "is not an absolute, normalized path");
+      // A trailing separator is refused here too: lstat of "<link>/" follows the link, so the link check below would pass it.
+      if (typeof path !== "string" || !isAbsolute(path) || normalize(path) !== path || (path.length > 1 && path.endsWith(sep))) refuse(String(path), "is not an absolute, normalized path");
       let real: string;
       try {
         const stat = lstatSync(path);
