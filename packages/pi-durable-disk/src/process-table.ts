@@ -25,8 +25,8 @@ export interface ProcessSnapshot {
   /** Whether `pid` was started with `name=value` in its environment (false when it cannot be read). */
   marked(pid: number, name: string, value: string): boolean;
   /** Every live process started with `name=value` in its environment, one look at all of them (none whose environment
-   *  cannot be read: another user's). Throws when the processes cannot be listed: none is ever taken for gone on a
-   *  failed read. */
+   *  cannot be read: another user's). Throws when the processes cannot be listed, or when a process that may carry the
+   *  mark cannot be read whole: none is ever taken for gone, or for unmarked, on a failed read. */
   withMark(name: string, value: string): number[];
   /** Its command line, for a message; `?` when it cannot be read. */
   commandLine(pid: number): string;
@@ -158,6 +158,9 @@ function argumentsListing(run: CommandRunner): Map<number, string> {
   return args;
 }
 
+/** How many times `withMark` reads the processes before it gives up on one whose arguments keep changing. */
+const MARK_READS = 3;
+
 /** The table on macOS: `ps` and `sysctl`, through `run` (for tests). */
 export function psTable(run: CommandRunner = runCommand): ProcessTable {
   let boot: string | undefined;
@@ -189,18 +192,33 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
           }
         },
         // Every process's arguments, then every process with its environment, then the arguments again: a mark is one
-        // word of the environment part (see `marked`).
+        // word of the environment part (see `marked`). A process whose `-E` line holds the mark's word but whose
+        // arguments changed between the reads (it exec'd) cannot be told marked or not: the three reads are taken again,
+        // MARK_READS times in all, and if one still cannot be told this throws, as a failed listing does, so the reap
+        // stops and keeps the mark. Unread is never unmarked: the mark would be dropped beside a live command. A process
+        // whose `-E` line does not hold the word is unmarked however its arguments read, so another program that keeps
+        // rewriting its title holds nothing up.
         withMark(name, value) {
-          const before = argumentsListing(run);
-          const all = run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]);
-          const after = argumentsListing(run);
-          return all.split("\n").flatMap((line) => {
-            const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
-            if (!m) return [];
-            const pid = Number(m[1]);
-            const own = before.get(pid);
-            return rows.has(pid) && own !== undefined && environmentOf(own, m[2]!, after.get(pid)).includes(`${name}=${value}`) ? [pid] : [];
-          });
+          const word = `${name}=${value}`;
+          for (let read = 1; ; read++) {
+            const before = argumentsListing(run);
+            const all = run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]);
+            const after = argumentsListing(run);
+            const marked: number[] = [];
+            const unread: number[] = [];
+            for (const line of all.split("\n")) {
+              const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
+              if (!m || !rows.has(Number(m[1])) || !m[2]!.includes(word)) continue;
+              const pid = Number(m[1]);
+              const own = before.get(pid);
+              if (own === undefined || after.get(pid) !== own || !m[2]!.startsWith(own)) unread.push(pid);
+              else if (environmentOf(own, m[2]!, own).includes(word)) marked.push(pid);
+            }
+            if (unread.length === 0) return marked;
+            if (read >= MARK_READS) {
+              throw new Error(`ps: cannot tell whether pid ${unread.join(", ")} carries the mark: its arguments changed in each of ${MARK_READS} reads`);
+            }
+          }
         },
         commandLine(pid) {
           try {
