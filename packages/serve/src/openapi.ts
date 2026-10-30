@@ -123,6 +123,9 @@ let vendored: Json | undefined;
  *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
  *  are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  RunFile: {
+    unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file: a tool in the run's box created it private (owner-only). Reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`.", "x-agentrun-serve": "unreadable/1" },
+  },
   DefinitionInput: {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
@@ -151,12 +154,28 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "serve/1",
     },
     workflows: {
-      type: "object", additionalProperties: false, required: ["nodes", "node_tools", "adapters"],
-      properties: { nodes: { type: "array", items: { type: "string" } }, node_tools: { type: "array", items: { type: "string" } }, adapters: { type: "array", items: { type: "string" } } },
-      description: "What a workflow revision's run gets: the model nodes it runs, the tools they may name, the adapters it binds.",
+      type: "object", additionalProperties: false, required: ["nodes", "node_tools", "adapters", "decisions"],
+      properties: {
+        nodes: { type: "array", items: { type: "string" } }, node_tools: { type: "array", items: { type: "string" } }, adapters: { type: "array", items: { type: "string" } },
+        decisions: {
+          type: "object", additionalProperties: false, required: ["providers"],
+          description: "The decision providers a workflow's typed questions (judge, pick, sift, route, ask) run on, and whether this server runs each: when not, why (`reason`); when it runs in a way an operator should know of, a `note`. `runJudge` is among `adapters` once one runs.",
+          properties: {
+            providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" } } } },
+          },
+          "x-agentrun-serve": "decisions/1",
+        },
+      },
+      description: "What a workflow revision's run gets: the model nodes it runs, the tools they may name, the adapters it binds, and the decision providers its typed questions run on.",
       "x-agentrun-serve": "serve/1",
     },
     links: { type: "object", additionalProperties: false, required: ["openapi"], properties: { openapi: { type: "string" } }, description: "This document's address.", "x-agentrun-serve": "serve/1" },
+    secrets: {
+      type: "object", additionalProperties: false, required: ["names", "handoff", "condition", "limit"],
+      properties: { names: { type: "array", items: { type: "string" } }, handoff: { enum: ["pipe"] }, condition: { type: "string" }, limit: { type: "string" } },
+      description: "How this server holds its secrets: the names it treats as secrets, handed over a pipe, the condition that rests on, and what it does not cover.",
+      "x-agentrun-serve": "serve/1",
+    },
   },
   "Capabilities/models": {
     fast: { type: ["string", "null"], description: "`provider/model` of the fast tier, when one is fixed.", "x-agentrun-serve": "serve/1" },

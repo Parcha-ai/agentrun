@@ -1,0 +1,66 @@
+Patch: 003-pinned-binary
+Reason: the install and the tests run the Codex build this package pins, and the binary lookup also reports the platform package's version so the pin can be checked; dropping it fails the build (verify.ts imports findCodex, which only this patch adds), so the compiler is its pin
+Upstream: ours
+Pins: test/pins.test.mjs
+---
+diff --git a/packages/harness-codex/src/binary.ts b/packages/harness-codex/src/binary.ts
+index 7b70dfa..d0f3596 100644
+--- a/packages/harness-codex/src/binary.ts
++++ b/packages/harness-codex/src/binary.ts
+@@ -1,6 +1,7 @@
+-import { existsSync } from 'node:fs';
++import { existsSync, readFileSync } from 'node:fs';
+ import { createRequire } from 'node:module';
+ import { dirname, join } from 'node:path';
++import { env } from 'node:process';
+ 
+ /**
+  * Where this machine's `codex` binary is, for the stand-in VM's tests and the
+@@ -13,7 +14,7 @@ import { dirname, join } from 'node:path';
+  */
+ 
+ /** The Codex version this package is built and tested against. */
+-export const CODEX_VERSION = '0.160.0';
++export const CODEX_VERSION = '0.164.0';
+ 
+ const TARGETS: Record<string, { target: string; pkg: string }> = {
+   'linux-x64': { target: 'x86_64-unknown-linux-musl', pkg: 'linux-x64' },
+@@ -35,8 +36,8 @@ export function codexTarget(platform = process.platform, arch = process.arch): {
+  * 3. the same package by its pnpm store path, walking up from the working
+  *    directory.
+  */
+-export function codexBinary(): string | undefined {
+-  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
++export function findCodex(): { path: string; packageVersion?: string } | undefined {
++  if (env.CODEX_BIN) return { path: env.CODEX_BIN };
+   const t = codexTarget();
+   if (!t) return undefined;
+   const rel = join('vendor', t.target, 'bin', 'codex');
+@@ -45,12 +46,25 @@ export function codexBinary(): string | undefined {
+     const launcher = dirname(require.resolve('@openai/codex/package.json'));
+     const platformPkg = dirname(createRequire(join(launcher, 'package.json')).resolve(`@openai/codex-${t.pkg}/package.json`));
+     const bin = join(platformPkg, rel);
+-    if (existsSync(bin)) return bin;
++    if (existsSync(bin)) return { path: bin, packageVersion: packageVersion(platformPkg) };
+   } catch {}
+   const store = join('node_modules', '.pnpm', `@openai+codex@${CODEX_VERSION}-${t.pkg}`, 'node_modules', '@openai', 'codex', rel);
+   for (let d = process.cwd(); ; d = dirname(d)) {
+     const bin = join(d, store);
+-    if (existsSync(bin)) return bin;
++    if (existsSync(bin)) return { path: bin, packageVersion: packageVersion(join(d, store, '..', '..', '..', '..')) };
+     if (d === dirname(d)) return undefined;
+   }
+ }
++
++/** The binary to run, or `undefined` if none is installed (see `findCodex`). */
++export function codexBinary(): string | undefined {
++  return findCodex()?.path;
++}
++
++function packageVersion(dir: string): string | undefined {
++  try {
++    return (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { version?: string }).version;
++  } catch {
++    return undefined;
++  }
++}

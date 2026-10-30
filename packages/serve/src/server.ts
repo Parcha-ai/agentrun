@@ -1,7 +1,6 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -10,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
+import { DECISION_ADAPTER, decisionsOf, jevRoute } from "./decisions.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { EFFORTS, FAUX_ENV, MODEL_NODES, modelSource, THINKING_LEVELS } from "./model.js";
@@ -21,7 +21,9 @@ import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js"
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
+import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -69,6 +71,9 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export gives `fetch_page` its `{ lookup, fetchImpl }` (the tests' fake
    *  network), in place of the system's resolver and undici. */
   fauxWeb?: string;
+  /** With `faux` only: a module whose default export is the fetch Jev's runner sends through (the tests' fake), in place
+   *  of TypeSafe's API. */
+  fauxJev?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
@@ -148,7 +153,7 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
+export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -160,10 +165,17 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
+    /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
+    secrets: {
+      names: [...SECRET_NAMES],
+      handoff: "pipe",
+      condition: "Started by its launcher (the package's agentrun-serve, the image's entrypoint), the server takes each secret named here over a pipe and holds it in memory only, and every run's process gets all of them but the server's own token over a pipe of its own, whatever its harness and tools: none of them is in any process's environment or command line. The launcher runs before any run's process exists; the image starts it as PID 1. Started another way (node dist/cli.js), the server reads them from its environment, where a process of its user can read them.",
+      limit: "In memory is not out of reach: a process of the same user can read another's memory (/proc/<pid>/mem) where the kernel lets it attach. Linux's Yama ptrace_scope of 1 or more refuses that to all but a process's own ancestors; a host at 0 exposes the secrets to a run's own code. A run's process holds its model keys in memory, since it calls the model itself. A harness's CLI (codex, claude-agent) holds a key of its own for its session's model proxy in its environment: not a provider's key, but one a process of the same user could spend through that run's proxy while the session lives. Started as the package's bin on a host, until it execs, the launcher and any subshell it forks show the caller's environment, secrets included, to a process of the same user (/proc keeps a process's environment as it was at its exec). A run's process gets its secrets over a socket, read and closed as it starts; another process can take a socket only through pidfd_getfd, which the same ptrace rule refuses.",
+    },
     /** What a workflow revision's run gets: each model node runs on the model of its tier (`models.fast`,
      *  `models.default`, `models.strong`) with the tools it names of `node_tools`; a node that names no thinking level
      *  thinks at the run's effort, or medium. */
-    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS] },
+    workflows: { nodes: [...MODEL_NODES], node_tools: [...NODE_TOOLS], adapters: [...WORKFLOW_ADAPTERS, ...(jevRoute(env) ? [DECISION_ADAPTER] : [])], decisions: { providers: decisionsOf(env) } },
     features: {
       agents: { create: true, list: true, update: true, revisions: true },
       /** This server's own routes, outside the contract: an archived agent or run is hidden from the lists (`?archived=true`
@@ -250,7 +262,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = { ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) };
+  const env = withSecrets({ ...process.env, ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
@@ -258,7 +270,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -361,7 +373,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const named = harness ? { harness } : {};
     if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])), unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...named } });
+    const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...named } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
@@ -471,16 +484,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  async function walk(base: string, dir = "", out: { path: string; size_bytes: number; modified_at: string; content_type: string | null }[] = [], depth = 0): Promise<typeof out> {
-    for (const d of await readdir(join(base, dir), { withFileTypes: true }).catch(() => [])) {
-      if (d.name.startsWith(".") || d.isSymbolicLink() || out.length > FILE_LIST_CAP) continue;
-      const rel = dir ? `${dir}/${d.name}` : d.name;
-      if (d.isDirectory()) depth < 16 && (await walk(base, rel, out, depth + 1));
-      else if (d.isFile()) {
-        const st = await stat(join(base, rel)).catch(() => null);
-        if (st) out.push({ path: rel, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(rel).slice(1).toLowerCase()] ?? null });
-      }
-    }
+  /** The run's files, through no link (workspace.ts): each regular file's own size and time, a dot-name left out. */
+  async function walk(base: string): Promise<{ path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[]> {
+    const out: { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[] = [];
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
+    // work/ unreadable as a whole lists nothing; what the walk could not read in it is left out.
+    await walkWork(base, (path, st, readable) => {
+      if (st.isFile()) out.push({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null, ...(readable ? {} : { unreadable: true }) });
+      return out.length <= FILE_LIST_CAP;
+    }, { skip: (name) => name.startsWith(".") }).catch((error) => {
+      if (!(error instanceof WorkRefused)) throw error;
+    });
     return out;
   }
 
@@ -494,15 +508,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
     if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    let path = join(run.dir, "work");
-    if (!(await lstat(path).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
-    for (const part of parts) {
-      path = join(path, part);
-      const st = await lstat(path).catch(() => null);
-      if (!st || st.isSymbolicLink()) throw new ApiError("not_found", "no such file");
-    }
-    const st = await lstat(path);
-    if (!st.isFile()) throw new ApiError("not_found", "no such file");
+    const work = join(run.dir, "work");
+    if (!(await lstat(work).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
+    // Through no link, held from the open to the last byte (workspace.ts): a name swapped for one is refused, not followed.
+    const opened = await openWorkFile(work, rel).catch((error) => {
+      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This file was created private by a tool in the run's box: this server cannot read it.", { details: { reason: "unreadable" } });
+      return null;
+    });
+    if (!opened) throw new ApiError("not_found", "no such file");
+    const { handle, stats: st } = opened;
     const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
     const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
     const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
@@ -514,8 +528,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       ...(type.startsWith("text/html") ? { "content-security-policy": FILE_CSP } : {}),
       ...(download ? { "content-disposition": `attachment; filename="${name}"` } : {}),
     });
-    if (req.method === "HEAD" || st.size === 0) return void res.end();
-    await pipeline(createReadStream(path), res).catch(() => undefined);
+    if (req.method === "HEAD" || st.size === 0) {
+      await handle.close();
+      return void res.end();
+    }
+    await pipeline(handle.createReadStream(), res).catch(() => undefined);
+    await handle.close().catch(() => undefined);
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------

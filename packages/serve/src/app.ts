@@ -4,10 +4,12 @@
 //     closed table in tools.ts;
 //   - workflow: the revision's workflow, started with startWorkflowRevision of @parcha/pi-durable-agent/workflow on
 //     agentrun-pi's durable workflow task, each model node on the host's model of its tier with the tools it names of the
-//     table's node tools. When the
+//     table's node tools, and its typed questions on Jev when the server hands this process Jev's key. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
-import { mkdir, readFile } from "node:fs/promises";
+// First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
+import { authContextOf, withSecrets } from "./secrets.js";
+import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
@@ -15,6 +17,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
+import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
@@ -22,24 +25,27 @@ import { adapterRun } from "./harness-app.js";
 import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
+import { readWorkText } from "./workspace.js";
 
-/** The workflow adapters this host gives a run: model nodes, and calls `via: "tool"` to the table's tools. */
+/** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
+ *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
 export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
 export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
   const skills = await Promise.all(
-    skillNames(skillFiles).map(async (name) => `<skill name="${name}">\n${(await readFile(join(work, ".agents", "skills", ...name.split("/"), "SKILL.md"), "utf8")).trim()}\n</skill>`),
+    // Through no link (workspace.ts): a skill directory, or its SKILL.md, linked out of the workspace is refused.
+    skillNames(skillFiles).map(async (name) => `<skill name="${name}">\n${(await readWorkText(work, [".agents", "skills", ...name.split("/"), "SKILL.md"].join("/"))).trim()}\n</skill>`),
   );
   return [instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
 }
 
 /** claude-agent's model and pi-ai's catalog that prices it: its own settings, never the gateway's (adapters.ts). */
-async function claudeModels(ref: string | undefined) {
-  const choice = claudeModel(process.env, ref);
+async function claudeModels(env: NodeJS.ProcessEnv, ref: string | undefined) {
+  const choice = claudeModel(env, ref);
   if ("why" in choice) throw new Error(choice.why);
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  return { models: builtinModels(), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]) };
+  return { models: builtinModels({ authContext: authContextOf(env) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]) };
 }
 
 /** The run's row and its pinned revision, read from the store the run's directory sits in. */
@@ -57,8 +63,10 @@ function revisionOf(where: AppContext): { run: RunRow; revision: Revision } {
 
 export default async function app(where: AppContext): Promise<AppOptions> {
   const { run, revision } = revisionOf(where);
+  // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
+  const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !process.env[FAUX_HARNESS_ENV] ? await claudeModels(revision.body.model) : revision.kind === "agentic" ? await runModels(process.env, revision.body.model) : await runModels(process.env, undefined, nodeTiers(workflowNodeList));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model) : await runModels(env, undefined, nodeTiers(workflowNodeList));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -78,7 +86,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     await mkdir(dir, { recursive: true, mode: 0o700 });
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
     const harness = revision.body.harness;
-    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
+    const make = (confine?: ConfineChild) => adapterFor(harness, env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never);
     // The cancel mark serve writes is read here too, as pi's model wrapper reads it (request-start.ts).
@@ -92,7 +100,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const settles: Array<(harness: Harness) => void | Promise<void>> = [];
   const stops: Array<(harness: Harness) => void | Promise<void>> = [];
   const host: ToolHost = {
-    where, env: process.env, install: (extension) => registry.install(extension),
+    where, env, install: (extension) => registry.install(extension),
     onConversation: (write) => void writes.push(write), beforeResume: (settle) => void settles.push(settle), beforeRelease: (stop) => void stops.push(stop),
   };
   const letGo = async (harness: Harness) => { for (const stop of stops) await stop(harness); };
@@ -121,12 +129,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
-  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, nodeRunner, taskScope }, { inspectWorkflow }, { workspaceFiles }, { startWorkflowRevision }] = await Promise.all([
+  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope }, { inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
     import("@earendil-works/chord/context"),
     import("@parcha/agentrun-pi/durable"),
     import("@parcha/agentrun-dsl"),
     import("@parcha/agentrun-dsl/recovery"),
     import("@parcha/pi-durable-agent/workflow"),
+    // The decision providers, holding the decision key the server handed this process: in no environment a tool reads.
+    decisionProvidersOf(process.env),
   ]);
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
@@ -134,7 +144,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const runEffect = async ({ node, input, signal }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal }) => {
     const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": agentrun-serve runs no tool ${node.tool ?? `via ${node.via}`}`);
-    return effect(input, { signal, env: process.env });
+    return effect(input, { signal, env });
   };
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
   const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
@@ -144,7 +154,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(where.work) }),
-    run: ({ runtime, context }) => ({ adapters: { runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never }, durableNodes: true }),
+    run: ({ key, runtime, context, driver }) => {
+      // Each typed question's receipt is a row of the run's store before its answer acts, and a resumed run takes an
+      // answered one instead of asking again.
+      const decisions = decisionRecovery({ key, runtime, context });
+      const deps = withRecovery(driver, {
+        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(decisionProviders ? { runJudge: judgeFromProviders(decisionProviders) as never, decisionProviders } : {}),
+        recordDecision: decisions.recordDecision,
+      }, { durableNodes: true });
+      const { recovery } = deps;
+      if (!recovery) throw new Error("the workflow's recovery gave the run no recovery hooks");
+      return { deps: { ...deps, recovery: { ...recovery, decision: decisions.decision } } };
+    },
   });
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);

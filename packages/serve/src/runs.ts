@@ -8,22 +8,26 @@ import { randomBytes } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
-import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
+import { DECISION_KEY_FD_ENV, FAUX_JEV_ENV, handedJev, JEV_KEY_ENV, jevKey } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
+import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -133,8 +137,10 @@ export type Run = {
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
-  /** The cost the store recorded when it carried the run back. */
-  costUsd?: number;
+  /** The cost the store recorded when it carried the run back; null when it recorded none (unknown). */
+  costUsd?: number | null;
+  /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
+  decisionCost?: number | null;
   relaunches: number;
   settled: boolean;
   settling?: Promise<void>;
@@ -147,6 +153,8 @@ export type Run = {
 
 const ASKED = "Asked you: ";
 registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`);
+// ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
+registerTurnEnding(ASK_TOOL);
 
 /** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
  *  from the call's row, whose label this module registers. */
@@ -188,9 +196,14 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
-export function costView(rows: readonly TimelineEvent[], stored: number | undefined): number | null {
+export function costView(rows: readonly TimelineEvent[], stored: number | null | undefined, decisions?: number | null): number | null {
   const usage = usageOf(rows);
-  if (!usage) return stored ?? 0;
+  // A workflow run's decisions, once its end is read: their cost joins its model nodes', and one unknown makes it unknown.
+  if (decisions !== undefined) {
+    const models = usage ? (usage.usage?.usd ?? null) : 0;
+    return models === null || decisions === null ? null : models + decisions;
+  }
+  if (!usage) return stored === undefined ? 0 : stored;
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
@@ -241,13 +254,19 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
-/** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
- *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
+/** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
+/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
+ *  keys, which go on their own descriptor. */
+export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
+/** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
+const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
+/** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
+ *  variables and the rest pass, and the door token goes by file. */
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
+  Object.fromEntries(Object.entries(withoutSecrets(env)).filter(([, value]) => value !== token));
 
 /** One line of the run process's log in words: pi-durable-disk writes JSON lines (`{at, event, message, ...}`). */
 function inWords(line: string): string {
@@ -262,15 +281,53 @@ function inWords(line: string): string {
   return [text("event"), text("message") ?? text("error")].filter(Boolean).join(": ") || "the run's process left no message";
 }
 
+/** The line of the run process's log a failure's message is made of: its last, past any harness's own lines (a proxy's
+ *  refusal just before a crash says nothing of why the process went). */
+export function failureLine(log: string): string {
+  const lines = log.trim().split("\n");
+  return ownLine(lines) ?? lines.at(-1) ?? "";
+}
+
+/** The last of `lines` that is not a harness's own line, if any. */
+function ownLine(lines: readonly string[]): string | undefined {
+  return lines.findLast((line) => {
+    if (line.trim() === "") return false;
+    try {
+      return (JSON.parse(line) as { event?: unknown } | null)?.event !== HARNESS_LOG_EVENT;
+    } catch {
+      return true;
+    }
+  });
+}
+
+/** How far back from its end a failure's message is looked for in the run's log, in steps of LOG_STEP. */
+const LOG_STEP = 4096;
+const LOG_REACH = 1 << 20;
+
 /** The last line of the run process's log, in words, for a failure's message. */
-async function lastLogLine(run: Run): Promise<string> {
+export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
   try {
+    // Backward until a whole line is the process's own: harness lines after it may run past any one read, and a read
+    // that starts inside a line has only its tail, which is no line at all. Each step looks only at the lines it
+    // completes; what was read is joined once, and failureLine, the one rule, picks the line from it.
     const { size } = await file.stat();
-    const length = Math.min(size, 4096);
-    const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
-    return clip(inWords(buffer.toString("utf8").trim().split("\n").at(-1) ?? ""), 300);
+    const chunks: Buffer[] = [];
+    let start = size;
+    // The oldest line read so far, torn at the read's start unless that is the file's start.
+    let head = Buffer.alloc(0);
+    while (start > 0 && size - start < LOG_REACH) {
+      const from = Math.max(0, start - LOG_STEP);
+      const { buffer } = await file.read(Buffer.alloc(start - from), 0, start - from, from);
+      start = from;
+      chunks.unshift(buffer);
+      const newline = buffer.indexOf(0x0a);
+      const completed = start === 0 ? Buffer.concat([buffer, head]) : newline < 0 ? Buffer.alloc(0) : Buffer.concat([buffer.subarray(newline + 1), head]);
+      head = start === 0 ? Buffer.alloc(0) : newline < 0 ? Buffer.concat([buffer, head]) : buffer.subarray(0, newline);
+      if (ownLine(completed.toString("utf8").split("\n")) !== undefined) break;
+    }
+    return clip(inWords(failureLine(Buffer.concat(chunks).subarray(head.length).toString("utf8"))), 300);
   } finally {
     await file.close();
   }
@@ -337,7 +394,10 @@ export class Runs {
     if (row.state !== "running") {
       run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
-      if (row.costUsd !== undefined) run.costUsd = row.costUsd;
+      // An ended run the store kept no cost for has an unknown cost, never $0.
+      run.costUsd = row.costUsd ?? null;
+      // A workflow run's decisions' cost too: an unknown one keeps the run's unknown after a restart. Unread, it is unknown.
+      if (run.kind === "workflow") await this.readDecisionCost(run).catch(() => void (run.decisionCost = null));
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else if (record && this.doorOf(record)) {
@@ -639,22 +699,50 @@ export class Runs {
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
+    // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
+    const secrets = handover(RUN_SECRETS);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
-      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
+      [SECRETS_FD_ENV]: "3",
+      [SECRETS_LEN_ENV]: String(secrets.length),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // The TypeSafe key is never in a run's environment, which its tools and its model's provider read: a workflow run's
+    // process gets the decision key once on an inherited pipe, for its judge's runner alone (decisions.ts).
+    delete env[JEV_KEY_ENV];
+    delete env[DECISION_KEY_FD_ENV];
+    // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
+    const decision = run.kind === "workflow" ? jevKey(withSecrets(process.env)) : undefined;
+    const handsKey = decision !== undefined;
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
+    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];
+    // The first descriptor after the others: macOS aborts the parent of a spawn with a pipe at 16 or above.
+    const keyFd = stdio.length;
+    if (handsKey) {
+      stdio.push("pipe");
+      env[DECISION_KEY_FD_ENV] = String(keyFd);
+    }
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
-      "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
+      // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
+      "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
-    ], { stdio: ["ignore", "ignore", log], env });
+    ], { stdio, env });
     closeSync(log);
+    const pipe = child.stdio[3] as import("node:stream").Writable | null;
+    pipe?.on("error", () => {});
+    pipe?.end(secrets);
+    if (handsKey) {
+      const keyPipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[keyFd];
+      // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
+      keyPipe?.on("error", () => undefined);
+      keyPipe?.end(handedJev(decision));
+    }
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
@@ -744,14 +832,23 @@ export class Runs {
     if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
     else if (state === "escalated") run.error = { code: "escalated", message: summary, retryable: false };
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    await this.readDecisionCost(run);
     return { outcome: STATUS_OF[state], state, summary };
+  }
+
+  /** A workflow run's decisions' cost, from their receipts in its released store: a receipt whose cost is unknown leaves
+   *  the run's unknown, never $0. Read at its end and again when a restarted server adopts it as ended. */
+  private async readDecisionCost(run: Run): Promise<void> {
+    const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
+    const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
+    if (receipts.length) run.decisionCost = receipts.every((cost) => typeof cost === "number") ? (receipts as number[]).reduce((a, b) => a + b, 0) : null;
   }
 
   /** Ends the run in the agent store, once: how it ended, its cost and a line for the list. A store held by another
    *  writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     const answer = answerOf(run.rows);
-    const cost = costOf(run.rows);
+    const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
@@ -1027,7 +1124,7 @@ export class Runs {
 
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    return { usd: costView(run.rows, run.costUsd), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */

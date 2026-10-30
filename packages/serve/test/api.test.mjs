@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { capabilities, ERROR_STATUS, startServe } from "../dist/index.js";
 import { EFFORT_ENV, thinkingOf } from "../dist/model.js";
-import { agent, answerFlow, client, flowAgent, follow, scratch, serve, storeRun } from "./support.mjs";
+import { agent, answerFlow, client, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, no upload limit", async (t) => {
+  withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
   const { baseUrl } = await serve(t);
   const { status, body } = await client(baseUrl)("GET", "/capabilities");
   assert.equal(status, 200);
@@ -27,7 +28,13 @@ test("capabilities answer without a credential and say what this server offers: 
   assert.ok(body.tools.every((t) => typeof t.summary === "string" && t.summary));
   assert.deepEqual(body.tools.find((t) => t.name === "browser").missing, keyed.length ? keyed : undefined, "what browser lacks here, by name");
   assert.deepEqual(body.workflows.node_tools, ["read", "write", "edit", "fetch_page", "browser"]);
-  assert.deepEqual(body.workflows, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect"] });
+  // This server's environment sets no Jev key (the test clears both): typed questions do not run, and say why.
+  assert.deepEqual({ ...body.workflows, decisions: undefined }, { nodes: ["agent", "decide", "extract", "report"], node_tools: ["read", "write", "edit", "fetch_page", "browser"], adapters: ["runNode", "runEffect"], decisions: undefined });
+  assert.deepEqual(body.workflows.decisions.providers.map((p) => [p.id, p.available]), [["jev", false]]);
+  // And with TYPESAFE_API_KEY set, they do: runJudge is an adapter, and jev is available.
+  process.env.TYPESAFE_API_KEY = "fake-test-key";
+  const withJev = (await client((await serve(t)).baseUrl)("GET", "/capabilities")).body.workflows;
+  assert.deepEqual([withJev.adapters, withJev.decisions.providers], [["runNode", "runEffect", "runJudge"], [{ id: "jev", available: true }]]);
   assert.deepEqual(body.features.thinking, ["low", "medium", "high", "xhigh", "max"]);
   assert.equal(body.features.files.upload, false);
   assert.deepEqual(body.regions, [{ id: "local", jurisdiction: null, state: "live" }]);

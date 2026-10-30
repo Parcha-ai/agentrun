@@ -1,0 +1,127 @@
+// Decision providers: the models a workflow's judge, pick, sift, route and ask nodes ask, through the DSL's `runJudge`.
+// Jev (TypeSafe's System One) is the one this server runs, when its environment names Jev's key: TYPESAFE_API_KEY (the
+// route to use), or for Jev through OpenRouter OPENROUTER_API_KEY, else an OpenRouter model gateway's AGENT_MODEL_API_KEY.
+//
+// The server chooses the key (jevKey) and hands it, with its route, once on an inherited pipe (`DECISION_KEY_FD_ENV`
+// names it) at each launch of a workflow run. The run's process reads it into the judge's runner and nowhere else; the
+// judge never reads a key from the environment. The TypeSafe key never enters a run's environment, which the run's
+// tools and its model's provider read (`ToolHost.env`, a call node's effect): the server drops the variable from the
+// run's process. On the OpenRouter route the key is also the model gateway's key, which the run's process holds for
+// its model nodes.
+import { closeSync, readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import type { DecisionProvider } from "@parcha/agentrun-dsl";
+import { FAUX_ENV } from "./model.js";
+
+export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
+export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
+/** The provider a decision node that names none is answered by. */
+export const DEFAULT_DECISION_PROVIDER = "jev";
+/** The adapter a workflow's typed questions run through. */
+export const DECISION_ADAPTER = "runJudge";
+/** Set on a run's process the server hands the TypeSafe key: the descriptor's number, never the key. The server puts
+ *  it on the first descriptor after the process's stdio and its secrets pipe: macOS aborts the parent of a spawn with a
+ *  pipe at 16 or above. */
+export const DECISION_KEY_FD_ENV = "AGENTRUN_SERVE_DECISION_KEY_FD";
+/** Under --faux only: a module whose default export is the fetch Jev's runner sends through, in place of TypeSafe's
+ *  API (the tests' fake). */
+export const FAUX_JEV_ENV = "AGENTRUN_SERVE_FAUX_JEV";
+
+/** One decision provider as capabilities lists it: whether this server runs it, when not why, and what to know when
+ *  it runs in a way the operator should hear of. */
+export type DecisionOffer = { id: "jev"; available: boolean; reason?: string; note?: string };
+
+const isSet = (value: string | undefined) => typeof value === "string" && value.trim() !== "";
+
+/** The model gateway's key (model.ts), Jev's on the OpenRouter route when that gateway is OpenRouter. */
+export const JEV_GATEWAY_KEY_ENV = "AGENT_MODEL_API_KEY";
+
+/** The variable Jev's OpenRouter key is in: OPENROUTER_API_KEY, else the model gateway's key when AGENT_MODEL_BASE_URL's
+ *  host is exactly openrouter.ai. Jev sends it to openrouter.ai, so another host's key never goes there. */
+function openRouterKeyEnv(env: NodeJS.ProcessEnv): string | undefined {
+  if (isSet(env[JEV_OPENROUTER_KEY_ENV])) return JEV_OPENROUTER_KEY_ENV;
+  const onOpenRouter = URL.parse(env.AGENT_MODEL_BASE_URL ?? "")?.hostname === "openrouter.ai";
+  return onOpenRouter && isSet(env[JEV_GATEWAY_KEY_ENV]) ? JEV_GATEWAY_KEY_ENV : undefined;
+}
+
+/** The key Jev runs on here and its route: TypeSafe's API when its key is set, else OpenRouter's System One when an
+ *  OpenRouter key is (openRouterKeyEnv). What the server hands a workflow run's process. */
+export function jevKey(env: NodeJS.ProcessEnv): { route: "typesafe" | "openrouter"; key: string } | undefined {
+  if (isSet(env[JEV_KEY_ENV])) return { route: "typesafe", key: env[JEV_KEY_ENV]! };
+  const name = openRouterKeyEnv(env);
+  return name ? { route: "openrouter", key: env[name]! } : undefined;
+}
+
+/** How this server reaches Jev, when it does. */
+export const jevRoute = (env: NodeJS.ProcessEnv) => jevKey(env)?.route;
+
+/** Why Jev does not run here, naming the variable to set. */
+export const jevMissing = `This server's environment does not set ${JEV_KEY_ENV} (or, for Jev through OpenRouter, ${JEV_OPENROUTER_KEY_ENV}, or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai), which a workflow's judge, pick, sift, route and ask nodes need.`;
+
+/** What this server offers of each decision provider. */
+/** Why the OpenRouter route is worth a note, naming the variable Jev runs on: its key is also the model gateway's, which
+ *  a run's process holds. */
+export const jevGatewayNote = (env: NodeJS.ProcessEnv) => `Jev runs on ${openRouterKeyEnv(env)}, the model gateway key on this server, which a run's processes hold in their environment for its model nodes. Set ${JEV_KEY_ENV} to keep the decision key out of them.`;
+
+export function decisionsOf(env: NodeJS.ProcessEnv): DecisionOffer[] {
+  const route = jevRoute(env);
+  if (route === "typesafe") return [{ id: "jev", available: true }];
+  return [route === "openrouter" ? { id: "jev", available: true, note: jevGatewayNote(env) } : { id: "jev", available: false, reason: jevMissing }];
+}
+
+/** What the server writes on the decision descriptor: the route, a newline, the key. */
+export const handedJev = ({ route, key }: { route: string; key: string }) => `${route}\n${key}`;
+
+/** What the server handed the run's process, read once and the descriptor closed; undefined when none was. */
+export function handedKey(env: NodeJS.ProcessEnv): string | undefined {
+  const fd = Number(env[DECISION_KEY_FD_ENV]);
+  if (!Number.isSafeInteger(fd) || fd < 3) return undefined;
+  try {
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Why provider `id` does not run here and the variables that would make it run; undefined when it runs, and no `needs`
+ *  for a provider this server does not have at all. */
+export function providerMissing(env: NodeJS.ProcessEnv, id: string): { message: string; needs?: string[] } | undefined {
+  if (id === DEFAULT_DECISION_PROVIDER) return jevRoute(env) ? undefined : { message: jevMissing, needs: [JEV_KEY_ENV] };
+  return { message: `This server's decision provider is jev; this workflow also names the provider ${id}.` };
+}
+
+/** The providers a workflow's typed questions are answered by (`nodes` from workflowNodes): each decision node's and
+ *  `ask` predicate's own, else the default, as is a generative node's `verify`. */
+export function providersNamed(nodes: readonly Record<string, unknown>[]): string[] {
+  const ids = new Set<string>();
+  const add = (at: unknown) => ids.add(typeof (at as { provider?: unknown }).provider === "string" ? ((at as { provider: string }).provider) : DEFAULT_DECISION_PROVIDER);
+  for (const node of nodes) {
+    if (["judge", "pick", "sift"].includes(node.node as string) || (node.node === "route" && node.valuePath === undefined)) add(node);
+    for (const predicate of [node.node === "loop" ? node.until : undefined, node.node === "escalate" ? node.when : undefined]) {
+      if ((predicate as { predicate?: unknown } | undefined)?.predicate === "ask") add(predicate);
+    }
+    if (node.verify) ids.add(DEFAULT_DECISION_PROVIDER);
+  }
+  return [...ids];
+}
+
+/** The route and key handedJev wrote, from what handedKey read; undefined when it holds no route. */
+function handedRoute(handed: string | undefined): { route: string; key: string } | undefined {
+  const at = handed?.indexOf("\n") ?? -1;
+  return at > 0 ? { route: handed!.slice(0, at), key: handed!.slice(at + 1) } : undefined;
+}
+
+/** In a run's process: the decision providers its workflow's typed questions are answered by, on the key the server
+ *  handed it, and the one a node that names none gets; undefined when it handed none. Called once per process, since
+ *  the handed key can be read once. The run's judge (`judgeFromProviders`) and its checks before any node runs take
+ *  this one registry, so a node's provider and timeoutMs hold, and a node naming a provider it lacks is refused before
+ *  the run instead of being asked of Jev. Jev sends a request once: one that fails after it was sent may have been
+ *  answered and billed, so the decision escalates as interrupted instead of being asked again. */
+export async function decisionProvidersOf(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
+  const handed = handedRoute(handedKey(env));
+  if (!handed) return undefined;
+  const faux = env[FAUX_ENV] && env[FAUX_JEV_ENV] ? ((await import(pathToFileURL(env[FAUX_JEV_ENV]).href)) as { default: typeof fetch }).default : undefined;
+  const { jevProvider } = await import("@parcha/agentrun-jev");
+  const jev = jevProvider({ ...(handed.route === "openrouter" ? { provider: "openrouter" as const } : {}), apiKey: handed.key, ...(faux ? { fetch: faux } : {}) });
+  return { providers: { jev }, default: DEFAULT_DECISION_PROVIDER };
+}

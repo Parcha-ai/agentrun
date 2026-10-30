@@ -408,6 +408,10 @@ jobs:
           test/local-run.test.ts test/cli-local.test.ts test/quickstart.test.ts test/confine.test.ts
           test/examples/kill-9.test.ts test/examples/audit-across-crashes.test.ts test/examples/no-double-charge.test.ts
           test/examples/fork-into-many.test.ts test/examples/serve-and-park.test.ts
+      - name: The server hands a workflow run its decision key
+        # macOS aborts the parent of a spawn with a pipe at descriptor 16 or above; a run with a decision key must not.
+        working-directory: packages/serve
+        run: node --test --test-timeout=240000 test/decision-key.test.mjs
       - name: The stranger's no-key quickstart
         # The README's quickstart, then the keyless examples against the registry's beta (#557). On a Mac the walk installs
         # 0.1.0-beta.14 at the least, the first release that runs there (the spec's examples.platformFloors).
