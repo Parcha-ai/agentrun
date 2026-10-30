@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/config.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: the provider is AgentRun's model proxy; code mode's host on, with no sub-agents (`agents.max_depth = 0`, and `agents` reserved); message prefixes; comments.
+// Changed by Parcha, patches: 001-code-mode-host, 004-names, 006-comments
 /**
  * The `config.toml` a session's `CODEX_HOME` gets: the model and its
  * provider (the session's model proxy), and Codex's built-in tools and side
