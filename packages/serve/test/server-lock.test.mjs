@@ -21,7 +21,8 @@ async function bin(t, data, { started = true, env = {} } = {}) {
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));
   child.stderr.on("data", (chunk) => (seen.err += chunk));
-  const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
+  // "close", not "exit": a child's stdio can still be open at "exit", and the lines read here are its last ones.
+  const exited = new Promise((resolve) => child.once("close", (code) => resolve(code)));
   if (!started) return { child, seen, code: await exited };
   // Its address line, or its exit: a start under load takes seconds (13 s measured beside other suites), so the deadline
   // is far past that, and an exit fails at once.
@@ -117,7 +118,7 @@ test("the CLI drops node:sqlite's ExperimentalWarning only: another warning stil
     const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
     child.stderr.on("data", (chunk) => (err += chunk));
-    await new Promise((resolve) => child.once("exit", resolve));
+    await new Promise((resolve) => child.once("close", resolve));
     return err;
   };
   const control = await stderrOf('await import("node:sqlite");');
