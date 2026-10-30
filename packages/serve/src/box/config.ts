@@ -68,21 +68,26 @@ export async function cgroupDelegation(path: string, uid = process.getuid?.() ??
 export type BoxFactory = (config: BoxConfig) => Promise<Box>;
 
 /** The box this server runs with, and what capabilities say of it. Unsandboxed: no box and no probe. Otherwise the
- *  factory's box, its isolation as proved; no factory, a factory that throws, or a probe that failed, `unavailable`. */
-export async function resolveBox(config: BoxConfig, factory: BoxFactory | undefined, delegated: boolean): Promise<{ box?: Box; view: BoxView }> {
-  const unavailable = (error: (typeof BOX_UNAVAILABLE)[number]): { view: BoxView } => ({ view: { mode: "unavailable", cgroup: false, egress: config.egress, error, detail: DETAIL[error] } });
+ *  factory's box, its isolation as proved; no factory, a factory that throws, or a probe that failed, `unavailable`.
+ *  Capabilities keep their fixed words; the cause itself (the factory's error, the probe's own detail) goes to the
+ *  operator's log, `log`, which is the server's stderr. */
+export async function resolveBox(config: BoxConfig, factory: BoxFactory | undefined, delegated: boolean, log: (line: string) => void = (line) => void process.stderr.write(`${line}\n`)): Promise<{ box?: Box; view: BoxView }> {
+  const unavailable = (error: (typeof BOX_UNAVAILABLE)[number], cause: string): { view: BoxView } => {
+    log(`agentrun-serve: the box is unavailable (${error}), so runs get no tools of their harness's own: ${cause}`);
+    return { view: { mode: "unavailable", cgroup: false, egress: config.egress, error, detail: DETAIL[error] } };
+  };
   if (config.provider === "unsandboxed") return { view: { mode: "unsandboxed", cgroup: false, egress: config.egress } };
-  if (!factory) return unavailable("box_probe_failed");
+  if (!factory) return unavailable("box_probe_failed", "this server was given no box to make");
   let box: Box;
   try {
     box = await factory(config);
-  } catch {
-    return unavailable("box_probe_failed");
+  } catch (error) {
+    return unavailable("box_probe_failed", `making it failed: ${(error as Error)?.message ?? String(error)}`);
   }
   const isolation = box.isolation;
-  if (isolation.mode === "unavailable") return unavailable((BOX_UNAVAILABLE as readonly string[]).includes(isolation.error) ? (isolation.error as (typeof BOX_UNAVAILABLE)[number]) : "box_probe_failed");
+  if (isolation.mode === "unavailable") return unavailable((BOX_UNAVAILABLE as readonly string[]).includes(isolation.error) ? (isolation.error as (typeof BOX_UNAVAILABLE)[number]) : "box_probe_failed", `its probe failed (${isolation.error}): ${isolation.detail}`);
   // A box can only claim what it is: its own word for bwrap, seatbelt or a provider; never unsandboxed (only the setting).
-  if (isolation.mode === "unsandboxed") return unavailable("box_probe_failed");
+  if (isolation.mode === "unsandboxed") return unavailable("box_probe_failed", "the box claimed unsandboxed, which only AGENTRUN_BOX may say");
   return { box, view: { mode: isolation.mode, cgroup: isolation.cgroup && delegated, egress: config.egress } };
 }
 
