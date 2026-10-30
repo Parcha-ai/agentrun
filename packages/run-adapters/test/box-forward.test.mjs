@@ -92,8 +92,18 @@ test("the harness's stdin and stdout pass through it unchanged, and it exits wit
 test('each port reaches its own socket, and nothing else', async (t) => {
   const model = await echoSocket(t, 'model');
   const egress = await echoSocket(t, 'egress');
-  const [m, e] = [await freePort(), await freePort()];
-  const { child, exited } = run(t, ['--listen', `${m}=${model}`, '--listen', `${e}=${egress}`, '--', '/bin/sh', '-c', 'exec sleep 300']);
+  // The forwarder starts the harness only once both ports listen, so the harness's "up" is the listen itself. A free port
+  // another process takes before the forwarder binds it makes the forwarder exit 71 (it cannot listen): try new ports.
+  let started;
+  for (let attempt = 0; attempt < 5 && !started; attempt++) {
+    const [m, e] = [await freePort(), await freePort()];
+    const forwarder = run(t, ['--listen', `${m}=${model}`, '--listen', `${e}=${egress}`, '--', '/bin/sh', '-c', 'echo up; exec sleep 300']);
+    const first = await Promise.race([forwarder.up.then(() => 'up'), forwarder.exited.then((x) => x)]);
+    if (first === 'up') started = { ...forwarder, m, e };
+    else assert.equal(first.code, 71, `the forwarder exited before listening: ${JSON.stringify(first)}`);
+  }
+  assert.ok(started, 'the forwarder listened on free ports within five tries');
+  const { child, exited, m, e } = started;
   assert.equal(await ask(m, 'hello'), 'model:hello');
   assert.equal(await ask(e, 'hi'), 'egress:hi');
   child.kill('SIGTERM');

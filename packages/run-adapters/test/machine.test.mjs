@@ -14,6 +14,12 @@ const ROOT = mkdtempSync(join(tmpdir(), 'kernel-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 let n = 0;
 const scratch = () => join(ROOT, `s${n++}`);
+// Socket directories have a length bound, so the tests that name one build it from a short base of their own, never from
+// the temp directory's length (macOS's is about 49 bytes).
+const SHORT = mkdtempSync(Buffer.byteLength(tmpdir()) <= 20 ? join(tmpdir(), 'krt-') : '/tmp/krt-');
+after(() => rmSync(SHORT, { recursive: true, force: true }));
+let m = 0;
+const shortDir = () => join(SHORT, `r${m++}`);
 
 /** A provider's rules, for the tests: one route and a bearer key. No request is sent. */
 const policy = {
@@ -288,7 +294,7 @@ test("a started record that arrives after the box ended is refused, never writte
 
 test("in a box, the model front's only door is the session's socket, 0600, and the harness sees it at the box's port; close removes it", async (t) => {
   const dir = scratch();
-  const run = join(scratch(), 'run');
+  const run = join(shortDir(), 'run');
   const machine = await machineAt(t, dir, { box: boxOf(fakeBox(), { runtimeDir: run }) });
   const socket = join(run, 'model.sock');
   assert.ok(lstatSync(socket).isSocket(), 'the front listens on the session socket');
@@ -304,7 +310,7 @@ test('one egress proxy per session: started on the session socket before any box
   const box = fakeBox();
   const egress = { port: 4101, starts: [], closed: 0 };
   egress.start = async (path) => { egress.starts.push(path); return { close: async () => { egress.closed += 1; } }; };
-  const run = join(scratch(), 'run');
+  const run = join(shortDir(), 'run');
   const machine = await machineAt(t, dir, { box: boxOf(box, { egress, runtimeDir: run }) });
   assert.deepEqual(egress.starts, [join(run, 'egress.sock')], 'started at open, at the session socket');
   await machine.start({ command: '/bin/true' }).exited;
@@ -324,15 +330,15 @@ test('one egress proxy per session: started on the session socket before any box
 });
 
 test('an egress proxy that cannot start fails the open, and leaves no model front behind', async () => {
-  const dir = scratch();
+  const run = join(shortDir(), 'run');
   const egress = { port: 4101, start: async () => { throw Object.assign(new Error('egress: a live listener is there'), { code: 'egress_socket_in_use' }); } };
-  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir, dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: join(dir, 'run') }) }), /a live listener is there/);
-  assert.equal(existsSync(join(dir, 'run', 'model.sock')), false);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: run }) }), /a live listener is there/);
+  assert.equal(existsSync(join(run, 'model.sock')), false);
 });
 
 test("a session socket a dead machine left is replaced; a live one is another machine's, and the open is refused by name", async (t) => {
   const dir = scratch();
-  const run = join(scratch(), 'run');
+  const run = join(shortDir(), 'run');
   mkdirSync(run, { recursive: true, mode: 0o700 });
   // A dead machine's socket: a listener in a process killed outright, which leaves the file and nothing behind it.
   const path = join(run, 'model.sock');
@@ -349,7 +355,7 @@ test("a session socket a dead machine left is replaced; a live one is another ma
 });
 
 test("a socket directory that is not this user's own, 0700, is refused before any socket is made", async () => {
-  const run = join(scratch(), 'open');
+  const run = join(shortDir(), 'open');
   mkdirSync(run, { recursive: true });
   chmodSync(run, 0o755);
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: run }) }), /^Error: agentrun-test: the session's socket directory .* must be this user's own, 0700, and not a link$/);
@@ -359,7 +365,7 @@ test("a socket directory that is not this user's own, 0700, is refused before an
 test("the session's socket directory on FUSE or a filesystem shared between hosts is refused by name, before any socket", { skip: process.platform !== 'linux' && 'the check is Linux only' }, async () => {
   // The machine module's own seam (dist/host/machine.js), not the package's exports: no host can pass it.
   const { socketDir } = await import('../dist/host/machine.js');
-  const dir = join(scratch(), 'run');
+  const dir = join(shortDir(), 'run');
   for (const [type, kind] of [[0x65735546, 'fuse'], [0x6969, 'nfs'], [0xff534d42, 'cifs'], [0xfe534d42, 'smb2'], [0x517b, 'smb'], [0x01021997, '9p'], [0x00c36400, 'ceph']]) {
     assert.throws(() => socketDir(dir, 'agentrun-test', () => ({ type })), new RegExp(`^Error: agentrun-test: runtime_dir_not_local: the session's socket directory .* is on ${kind}, not a local filesystem$`), kind);
   }
@@ -383,7 +389,7 @@ test("an abort kills a boxed child: it exits, its box is reaped, and only then d
 });
 
 test("anything at the front's socket path that is not a socket is refused by name, and left as it was", async () => {
-  const run = join(scratch(), 'run');
+  const run = join(shortDir(), 'run');
   mkdirSync(run, { recursive: true, mode: 0o700 });
   writeFileSync(join(run, 'model.sock'), 'not a socket');
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: run }) }), /^Error: agentrun-kernel: the model proxy: .*model\.sock is there and is not a socket: it is not replaced$/);
@@ -391,9 +397,9 @@ test("anything at the front's socket path that is not a socket is refused by nam
 });
 
 test("a socket directory that is a link, even to a 0700 directory of this user's, is refused before any socket is made", async () => {
-  const real = join(scratch(), 'real');
+  const real = join(shortDir(), 'real');
   mkdirSync(real, { recursive: true, mode: 0o700 });
-  const parent = scratch();
+  const parent = shortDir();
   mkdirSync(parent, { recursive: true });
   const link = join(parent, 'link');
   symlinkSync(real, link);
@@ -403,21 +409,21 @@ test("a socket directory that is a link, even to a 0700 directory of this user's
 
 test("a socket directory too long for the egress proxy's socket names is refused by name, before any socket", async () => {
   // The egress proxy binds a 25-byte temporary name in the directory before it links its socket: a path holds 107 bytes.
-  const long = join(scratch(), 'r'.repeat(90));
+  const long = join(shortDir(), 'r'.repeat(90));
   assert.ok(Buffer.byteLength(long) > 81);
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: long }) }), /^Error: agentrun-test: runtime_dir_too_long: the session's socket directory .* is \d+ bytes; a socket path in it must fit 107$/);
   assert.equal(existsSync(long), false, 'nothing was made: the name alone was refused');
   // One byte past the bound is refused too: 107 less the egress proxy's 26 is 81.
-  const base = scratch();
-  const over = join(base, 'r'.repeat(82 - Buffer.byteLength(base) - 1));
+  const base = shortDir();
+  const over = join(base, 'r'.repeat(Math.max(0, 82 - Buffer.byteLength(base) - 1)));
   assert.equal(Buffer.byteLength(over), 82);
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: over }) }), /runtime_dir_too_long: .* is 82 bytes/);
   assert.equal(existsSync(over), false);
 });
 
 test("a socket directory exactly at the bound (81 bytes) is taken", async (t) => {
-  const base = scratch();
-  const at = join(base, 'r'.repeat(81 - Buffer.byteLength(base) - 1));
+  const base = shortDir();
+  const at = join(base, 'r'.repeat(Math.max(0, 81 - Buffer.byteLength(base) - 1)));
   assert.equal(Buffer.byteLength(at), 81);
   const machine = await machineAt(t, scratch(), { box: boxOf(fakeBox(), { runtimeDir: at }) });
   assert.ok(lstatSync(join(at, 'model.sock')).isSocket());
@@ -425,7 +431,7 @@ test("a socket directory exactly at the bound (81 bytes) is taken", async (t) =>
 });
 
 test("an egress proxy whose close throws still lets the model front close, and the error goes up", async (t) => {
-  const run = join(scratch(), 'run');
+  const run = join(shortDir(), 'run');
   const egress = { port: 4101, start: async () => ({ close: async () => { throw new Error('egress: the socket could not be read'); } }) };
   const machine = await openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: run }) });
   await assert.rejects(machine.close(), /the socket could not be read/);
@@ -434,8 +440,8 @@ test("an egress proxy whose close throws still lets the model front close, and t
 });
 
 test("the default socket directory is short: under a 64-byte TMPDIR it still fits the bound", async (t) => {
-  const base = scratch();
-  const longTmp = join(base, 't'.repeat(64 - Buffer.byteLength(base) - 1));
+  const base = shortDir();
+  const longTmp = join(base, 't'.repeat(Math.max(0, 64 - Buffer.byteLength(base) - 1)));
   mkdirSync(longTmp, { recursive: true });
   assert.equal(Buffer.byteLength(longTmp), 64);
   const before = process.env.TMPDIR;
