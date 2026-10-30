@@ -5,7 +5,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { capModels } from "../dist/cap.js";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { REQUEST_COST } from "@parcha/pi-durable-agent/timeline";
+import { capModels, spentIn } from "../dist/cap.js";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
 const model = (cost, maxTokens = 1_000) => ({ id: "m", name: "m", api: "fake", provider: "fake", baseUrl: "", reasoning: true, input: ["text"], cost, contextWindow: 128_000, maxTokens });
@@ -81,3 +86,66 @@ test("the worst case is the model's full output ceiling, not the max tokens a re
     await answer.result();
   }
 });
+
+/** The refusal a request on `m` gets; a request the cap lets through is answered at once, so a test reads it, never hangs. */
+const refusedFor = async (capped, m, sent) => {
+  const before = sent.length;
+  const answer = capped.completeSimple(m, context);
+  for (const request of sent.slice(before)) request.end(0);
+  return (await answer).errorMessage ?? "";
+};
+
+test("under a cap, a model with no price is refused by name and never asked: its requests are not read as $0", async () => {
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1_000_000, 0);
+  assert.match(await refusedFor(capped, model({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }), sent), /^spend_cap_reached: .*\(no price\)/);
+  assert.equal(sent.length, 0);
+});
+
+test("under a cap, a model with no output ceiling to price a request by is refused by name and never asked", async () => {
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1_000_000, 0);
+  const bounded = { ...model({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }), maxTokens: 0, contextWindow: 0 };
+  assert.match(await refusedFor(capped, bounded, sent), /^spend_cap_reached: .*\(no output ceiling\)/);
+  assert.equal(sent.length, 0);
+});
+
+test("a spend that is not a number refuses: the cap's comparison never admits a NaN", async () => {
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1, Number.NaN);
+  assert.match(await refusedFor(capped, model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 }), sent), /^spend_cap_reached: /);
+  assert.equal(sent.length, 0);
+});
+
+test("a run whose spend is unknown refuses its next request by name; so does one after an answer whose cost is unknown", async () => {
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const unknown = fakeModels();
+  assert.match(await refusedFor(await capModels(unknown.models, 1, null), priced, unknown.sent), /^spend_cap_reached: .*spent is unknown/);
+  assert.equal(unknown.sent.length, 0);
+  const { models, sent } = fakeModels();
+  const capped = await capModels(models, 1, 0);
+  const first = capped.completeSimple(priced, context);
+  sent[0].end(undefined);
+  await first;
+  assert.match(await refusedFor(capped, priced, sent), /^spend_cap_reached: .*spent is unknown/, "the unpriced answer is never added as $0");
+  assert.equal(sent.length, 1);
+});
+
+test("spent so far, read back from a run's store: a response or a booked request whose cost is not a number makes it unknown (null), never $0", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "spent-in-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const storeOf = (name, records) => {
+    const file = join(dir, `${name}.sqlite`);
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE entries (record TEXT)");
+    for (const record of records) db.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify(record));
+    db.close();
+    return file;
+  };
+  const answer = (total) => ({ kind: "pi.assistant", model: [{ usage: { cost: total === undefined ? {} : { total } } }] });
+  assert.equal(spentIn(join(dir, "none.sqlite")), 0, "no store yet: nothing spent");
+  assert.equal(spentIn(storeOf("priced", [answer(0.25), answer(0.5), { kind: "other" }])), 0.75);
+  assert.equal(spentIn(storeOf("unpriced", [answer(0.25), answer(undefined)])), null, "a response that reported no price");
+  assert.equal(spentIn(storeOf("cut", [answer(0.25), { kind: REQUEST_COST, data: { usd: null } }])), null, "a request a crash cut, booked at an unknown price");
+});
+

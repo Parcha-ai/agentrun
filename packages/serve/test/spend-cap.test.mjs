@@ -38,6 +38,17 @@ const ended = async (api, runId, until = ["completed", "failed", "cancelled"]) =
   return (await api("GET", `/runs/${runId}`)).body;
 };
 
+test("a capped pi run on a gateway model with no price is refused before any request, by name: an unpriced model is never read as $0 under a cap", async (t) => {
+  const endpoint = await responsesEndpoint(t, "42", 10);
+  // No AGENT_MODEL_PRICE, and a model id the catalog does not list: the gateway's model has no price.
+  withEnv(t, { AGENT_MODEL_BASE_URL: endpoint.url, AGENT_MODEL: "unpriced-cap-model" }, GATEWAY_VARS);
+  const { api } = await serve(t, { faux: undefined });
+  const run = await ended(api, (await start(api, "unpriced", "What is six times seven?", { max_cost_usd: 5 })).run_id);
+  assert.deepEqual([run.status, run.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(run));
+  assert.match(run.error.message, /no price/);
+  assert.equal(endpoint.asked.filter((line) => line.startsWith("POST ")).length, 0, "no request reached the model");
+});
+
 test("a request whose worst case alone passes max_cost_usd is never sent: the run ends failed with spend_cap_reached at $0", async (t) => {
   // $1 per million each way: the request's 32k max output tokens alone are $0.032, over a $0.01 cap.
   const { api, posts } = await gateway(t, { price: "1,1" });
