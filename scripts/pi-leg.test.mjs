@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { accepts, buildOf, checkResolved, companionDependencies, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom } from './pi-leg.mjs';
+import { accepts, buildOf, checkResolved, companionDependencies, extraCopies, legOf, lsProblems, parseRange, readWorkspaces, resolvedFrom, testedOf } from './pi-leg.mjs';
 
 const script = fileURLToPath(new URL('./pi-leg.mjs', import.meta.url));
 const repo = dirname(dirname(script));
@@ -75,6 +75,15 @@ test('--only narrows the leg to named pi workspaces and refuses a name that is n
   assert.throws(() => legOf(all, '1.0.4', ['@parcha/agentrun-dsl']), /is not a workspace with a pi-family peer/);
 });
 
+test('--tests and --tests-except with the same names split the leg in two: each suite in one half, a new one in the second', () => {
+  const leg = ['@parcha/agentrun-pi', '@parcha/pi-transport', '@parcha/pi-vision'];
+  const named = { names: ['@parcha/pi-transport'] };
+  assert.deepEqual(testedOf(leg, undefined), leg);
+  assert.deepEqual(testedOf(leg, named), ['@parcha/pi-transport']);
+  assert.deepEqual(testedOf(leg, { ...named, except: true }), ['@parcha/agentrun-pi', '@parcha/pi-vision']);
+  assert.throws(() => testedOf(leg, { names: ['@parcha/pi-transprot'] }), /@parcha\/pi-transprot is not in the leg/);
+});
+
 test('a module loads the nearest copy above its real directory, as a bare import resolves', () => {
   const root = join(scratch, 'resolve');
   write(join(root, 'node_modules/@earendil-works/chord/package.json'), { name: '@earendil-works/chord', version: '1.1.0' });
@@ -111,6 +120,30 @@ test('the plan names what runs and what does not; --require-all fails while any 
   const out = leg(refused, '--pi', '1.2.0', '--plan');
   assert.equal(out.status, 1);
   assert.match(out.stdout, /REFUSED: @parcha\/agentrun-pi depends on @parcha\/pi-durable-disk, which is not in the leg/);
+});
+
+test('a run type-checks and tests only the suites of its half, and says which run elsewhere', () => {
+  const suite = (name) => ws(name, WIDE, {}, { typecheck: `node -e "require('fs').appendFileSync('../../ran.log', 'typecheck ${name}\\n')"`, test: `node -e "require('fs').appendFileSync('../../ran.log', 'test ${name}\\n')"` });
+  const root = repoOf('halves', [suite('@parcha/agentrun-pi'), suite('@parcha/pi-transport'), suite('@parcha/pi-vision')]);
+  const npm = join(root, 'fake-npm.mjs');
+  write(npm, "if (process.argv.includes('--version')) console.log('11.21.0'); else if (process.argv[2] === 'ls') console.log('workspace@0.0.0');");
+  const half = (flag) => {
+    rmSync(join(root, 'ran.log'), { force: true });
+    const out = leg(root, '--pi', '1.2.0', '--scratch', '--require-all', flag, '@parcha/pi-transport', '--npm', `${process.execPath} ${npm}`);
+    assert.equal(out.status, 0, out.stdout + out.stderr);
+    return { out: out.stdout, ran: readFileSync(join(root, 'ran.log'), 'utf8').trim().split('\n') };
+  };
+  const first = half('--tests');
+  assert.deepEqual(first.ran, ['typecheck @parcha/pi-transport', 'test @parcha/pi-transport']);
+  assert.match(first.out, /^pi 1\.2\.0: tests here: @parcha\/pi-transport; tests not here: @parcha\/agentrun-pi, @parcha\/pi-vision$/m);
+  const rest = half('--tests-except');
+  assert.deepEqual(rest.ran, ['typecheck @parcha/agentrun-pi', 'test @parcha/agentrun-pi', 'typecheck @parcha/pi-vision', 'test @parcha/pi-vision']);
+  const both = leg(root, '--pi', '1.2.0', '--plan', '--tests', '@parcha/pi-transport', '--tests-except', '@parcha/pi-vision');
+  assert.equal(both.status, 2);
+  assert.match(both.stderr, /give --tests or --tests-except, once/);
+  const misspelt = leg(root, '--pi', '1.2.0', '--plan', '--tests', '@parcha/pi-transprot');
+  assert.equal(misspelt.status, 2);
+  assert.match(misspelt.stderr, /@parcha\/pi-transprot is not in the leg/);
 });
 
 test('an empty leg installs nothing and passes, saying so; an unread range shape, a missing version or no mode stops the script', () => {
