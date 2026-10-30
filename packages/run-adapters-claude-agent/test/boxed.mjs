@@ -31,9 +31,11 @@ const SOCKETS = BOXED ? mkdtempSync('/tmp/cbx-') : undefined;
 if (SOCKETS) after(() => rmSync(SOCKETS, { recursive: true, force: true }));
 let n = 0;
 
+const LOOPBACK = '127.0.0.1'; // key-gate: loopback-rule a free port is found on host loopback
+
 async function freePort() {
   const server = createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve)); // key-gate: loopback-rule a free port on host loopback
+  await new Promise((resolve) => server.listen(0, LOOPBACK, resolve));
   const { port } = server.address();
   await new Promise((resolve) => server.close(resolve));
   return port;
