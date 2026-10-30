@@ -5,9 +5,9 @@
 //
 // The TypeSafe and Parallel keys never enter a run's environment, which the run's tools and its model's provider read
 // (`ToolHost.env`, a call node's effect). The server drops the variables from the run's process and hands their values
-// over once, by name, on an inherited pipe (`DECISION_KEY_FD`), at each launch of a workflow run. The run's process reads
-// them into its providers and nowhere else. On the OpenRouter route the Jev key is also the model gateway's key, which
-// the run's process already holds in its environment for its model nodes. That route keeps it there.
+// over once, by name, on an inherited pipe (`DECISION_KEY_FD_ENV` names it), at each launch of a workflow run. The run's
+// process reads them into its providers and nowhere else. On the OpenRouter route the Jev key is also the model gateway's
+// key, which the run's process already holds in its environment for its model nodes. That route keeps it there.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
@@ -16,17 +16,16 @@ import { FAUX_ENV } from "./model.js";
 export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
 export const PARALLEL_KEY_ENV = "PARALLEL_API_KEY";
-/** The keys the server hands a workflow run's process on `DECISION_KEY_FD`, never in its environment. */
+/** The keys the server hands a workflow run's process on the descriptor `DECISION_KEY_FD_ENV` names, never in its
+ *  environment. */
 export const HANDED_KEYS = [JEV_KEY_ENV, PARALLEL_KEY_ENV] as const;
 /** The provider a decision node that names none is answered by. */
 export const DEFAULT_DECISION_PROVIDER = "jev";
 /** The adapter a workflow's typed questions run through. */
 export const DECISION_ADAPTER = "runJudge";
-/** The descriptor a run's process reads the handed keys from, as one JSON object of variable name to value. Node takes 3 to about 20 for itself at start, and a
- *  low number is handed out again as soon as it is closed. A high one stays free, so "closed once read" holds and
- *  can be checked. */
-export const DECISION_KEY_FD = 63;
-/** Set on a run's process the server hands decision keys: the descriptor's number, never a key. */
+/** Set on a run's process the server hands decision keys: the descriptor's number, never a key. The keys come as one
+ *  JSON object of variable name to value, on the first descriptor after the process's stdio and its secrets pipe:
+ *  macOS aborts the parent of a spawn with a pipe at 16 or above. */
 export const DECISION_KEY_FD_ENV = "AGENTRUN_SERVE_DECISION_KEY_FD";
 /** Under --faux only: a module whose default export is the fetch Jev's runner sends through, in place of TypeSafe's
  *  API (the tests' fake). */
@@ -88,9 +87,9 @@ export function providersNamed(nodes: readonly Record<string, unknown>[]): strin
 }
 
 /** The keys the server handed the run's process, by name, read once and the descriptor closed; empty when none were. */
-function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
+export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
   const fd = Number(env[DECISION_KEY_FD_ENV]);
-  if (!Number.isSafeInteger(fd) || fd < DECISION_KEY_FD) return {};
+  if (!Number.isSafeInteger(fd) || fd < 3) return {};
   try {
     const keys: unknown = JSON.parse(readFileSync(fd, "utf8"));
     return Object.fromEntries(HANDED_KEYS.flatMap((name) => (typeof (keys as Record<string, unknown>)?.[name] === "string" ? [[name, (keys as Record<string, string>)[name]]] : [])));

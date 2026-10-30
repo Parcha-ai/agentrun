@@ -4,13 +4,12 @@
 // tests' fake fetch (fixtures/faux-jev.mjs, fixtures/faux-parallel.mjs): no network, no real key.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, readlink, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
-import { DECISION_KEY_FD } from "../dist/decisions.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
@@ -20,6 +19,16 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_COST", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The descriptor a run's process is handed the keys on: the first one after its stdio and its secrets pipe (3). */
+const KEY_FD = "4";
+/** The descriptor `environ` names for the keys, without printing the rest of it. */
+const keyFdIn = (environ) => /(?:^|\0)AGENTRUN_SERVE_DECISION_KEY_FD=([^\0]*)/.exec(environ)?.[1];
+/** Whether `pid`'s descriptor `fd` is a Unix socket, as the handed one is (one end of a socket pair). A run's process
+ *  opens no other, and a closed low number is soon open again for something else, so "not open" would prove nothing. */
+async function handedSocket(pid, fd) {
+  const inode = /^socket:\[(\d+)\]$/.exec(await readlink(`/proc/${pid}/fd/${fd}`).catch(() => ""))?.[1];
+  return inode !== undefined && (await readFile(`/proc/${pid}/net/unix`, "utf8")).split("\n").some((line) => line.trim().split(/\s+/)[6] === inode);
+}
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
 /** The same question, put to Parallel. */
@@ -116,8 +125,8 @@ test("the decision key never reaches a run's tools, model or programs: not in it
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
   assert.equal(environ.includes(CANARY), false, "the run's process environment holds no copy of the key");
-  assert.match(environ, new RegExp(`(^|\\0)AGENTRUN_SERVE_DECISION_KEY_FD=${DECISION_KEY_FD}(\\0|$)`), "it was handed the key on the documented descriptor");
-  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and closed it once read");
+  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio and secrets");
+  assert.equal(await handedSocket(pid, KEY_FD), false, "and closed it once read");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
@@ -149,7 +158,8 @@ test("a run resumed by the next server is handed the key again: its judge gets i
   const api = client(next.baseUrl, next.token);
   const after = await processOf(data, runId, before);
   assert.equal((await readFile(`/proc/${after}/environ`, "utf8")).includes(CANARY), false);
-  assert.equal(existsSync(`/proc/${after}/fd/${DECISION_KEY_FD}`), false);
+  assert.equal(keyFdIn(await readFile(`/proc/${after}/environ`, "utf8")), KEY_FD);
+  assert.equal(await handedSocket(after, KEY_FD), false);
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
@@ -166,7 +176,7 @@ test("with no decision key, a run's process gets no key descriptor at all", asyn
   const runId = await startFlow(api, [probe(gate)]);
   const pid = await processOf(data, runId);
   assert.equal((await readFile(`/proc/${pid}/environ`, "utf8")).includes("AGENTRUN_SERVE_DECISION_KEY_FD"), false, "no descriptor is named");
-  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and none is open");
+  assert.equal(await handedSocket(pid, KEY_FD), false, "and none is open");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   assert.equal(last.status, "completed");
@@ -349,8 +359,8 @@ test("the Parallel key never reaches a run's tools, model or programs: not in it
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
   assert.equal(environ.includes(PARALLEL_CANARY), false, "the run's process environment holds no copy of the key");
-  assert.match(environ, new RegExp(`(^|\\0)AGENTRUN_SERVE_DECISION_KEY_FD=${DECISION_KEY_FD}(\\0|$)`), "it was handed the key on the documented descriptor");
-  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and closed it once read");
+  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio and secrets");
+  assert.equal(await handedSocket(pid, KEY_FD), false, "and closed it once read");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;

@@ -21,7 +21,7 @@ import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD, DECISION_KEY_FD_ENV, FAUX_JEV_ENV, FAUX_PARALLEL_ENV, HANDED_KEYS } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, FAUX_JEV_ENV, FAUX_PARALLEL_ENV, HANDED_KEYS } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -745,21 +745,27 @@ export class Runs {
     delete env[DECISION_KEY_FD_ENV];
     const decisionKeys = Object.fromEntries(run.kind === "workflow" ? HANDED_KEYS.flatMap((name) => { const value = process.env[name]; return typeof value === "string" && value.trim() !== "" ? [[name, value]] : []; }) : []);
     const handsKey = Object.keys(decisionKeys).length > 0;
-    if (handsKey) env[DECISION_KEY_FD_ENV] = String(DECISION_KEY_FD);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
+    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];
+    // The first descriptor after the others: macOS aborts the parent of a spawn with a pipe at 16 or above.
+    const keyFd = stdio.length;
+    if (handsKey) {
+      stdio.push("pipe");
+      env[DECISION_KEY_FD_ENV] = String(keyFd);
+    }
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
-    ], { stdio: ["ignore", "ignore", log, "pipe", ...(handsKey ? [...Array<"ignore">(DECISION_KEY_FD - 4).fill("ignore"), "pipe" as const] : [])], env });
+    ], { stdio, env });
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;
     pipe?.on("error", () => {});
     pipe?.end(secrets);
     if (handsKey) {
-      const keyPipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[DECISION_KEY_FD];
+      const keyPipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[keyFd];
       // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
       keyPipe?.on("error", () => undefined);
       keyPipe?.end(JSON.stringify(decisionKeys));

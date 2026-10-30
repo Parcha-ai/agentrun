@@ -323,9 +323,9 @@ typed answers and their probabilities.
   failed after it may have been sent) keeps its receipt's cost `null`, and the run's reads `null`, never `0`.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands the values to a workflow
-  run's process once, by name, on an inherited pipe (descriptor 63), at each launch, a resume after a restart included.
-  The process reads them into its decision providers, closes the descriptor before anything else runs, and keeps the
-  keys nowhere else. It is never in an environment, an
+  run's process once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS
+  refuses a high one), at each launch, a resume after a restart included. The process reads them into its decision
+  providers, closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an environment, an
   argument list or a file, and no program the run starts inherits it. With no key, no descriptor is opened. On the OpenRouter route the key is also the model gateway's key, which a run's
   process already holds in its environment for its model nodes, and it stays there.
 
