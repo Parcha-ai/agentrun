@@ -142,3 +142,10 @@ describe("tools by default (tools on, Miguel's rule), and whether the agent reac
     expect(reachesWeb(["read", "write"])).toBe(false);
   });
 });
+
+describe("toolOffers, a tool object that doesn't say whether it's available", () => {
+  it("reads it as available: only an explicit false makes a tool unavailable", () => {
+    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
+    expect(toolOffers([{ name: "read", available: false }])).toEqual([{ name: "read", available: false }]);
+  });
+});
