@@ -22,7 +22,6 @@ function scripted(listing: string, environments: Record<number, string> = {}, bo
     if (args.includes("-A")) return listing;
     const pid = Number(args[args.indexOf("-p") + 1]);
     if (environments[pid] === undefined) throw new Error(`no process ${pid}`);
-    if (args.includes("ruid=")) return `${process.getuid!()}\n`;
     if (args.includes("-E")) return environments[pid]!;
     const words = environments[pid]!.trim().split(/\s+/);
     const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
@@ -147,6 +146,12 @@ describe("a mark through /proc, when an environment reads empty or unreadable", 
     assert.ok(took < 500, `took ${took} ms`);
     assert.equal(reads.environ, 6, "the first read and the five of the window");
     assert.equal(oneProcess(4802, "S", uid, () => "").table.snapshot().marked(4802, MARK, "tok"), false, "the recorder's read too");
+  });
+
+  it("the recorder's read (marked) of an environment of this uid that stays empty is one read, never the window: its next walk reads it again", () => {
+    const { table, reads } = oneProcess(4805, "S", uid, () => "");
+    assert.equal(table.snapshot().marked(4805, MARK, "tok"), false);
+    assert.equal(reads.environ, 1);
   });
 
   it("(3) a real zombie of a marked command carries nothing: its state is read first and its environment never", { skip: !linux && "Linux only" }, async () => {

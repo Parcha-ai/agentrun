@@ -478,7 +478,6 @@ describe("command records, from a scripted ps (macOS)", () => {
       const pid = Number(args[args.indexOf("-p") + 1]);
       const text = environments[pid];
       if (text === undefined) throw new Error("no such process");
-      if (args.includes("ruid=")) return `${ruidOf(pid)}\n`;
       return args.includes("-E") ? eOf(pid)! : `${argvOf(pid, text)}\n`;
     };
   }
@@ -592,6 +591,17 @@ describe("command records, from a scripted ps (macOS)", () => {
     const other = countingEnvironments(scriptedPs(() => [[4911, 1, 4911, 6]], { 4911: "daemon\n" }, { ruids: { 4911: process.getuid!() + 1 } }));
     assert.deepEqual(psTable(other.run).snapshot().withMark(COMMANDS_MARK, token), []);
     assert.equal(other.counted.reads, 1, "another uid's no-environment line is not read again");
+  });
+
+  it("the recorder's read (marked) of a -E line of this uid with no environment is one read, never the window: its next walk reads it again", () => {
+    const counted = { reads: 0 };
+    const ps = scriptedPs(() => [[4920, 1, 4920, 5]], { 4920: "worker\n" });
+    const run: CommandRunner = (file, args) => {
+      if (args.includes("-E") && args.includes("-p")) counted.reads++;
+      return ps(file, args);
+    };
+    assert.equal(psTable(run).snapshot().marked(4920, COMMANDS_MARK, randomUUID()), false);
+    assert.equal(counted.reads, 1);
   });
 
   it("a listing of marks that fails stops the reap and keeps the mark: no command is taken for gone on a failed read", async () => {

@@ -22,8 +22,9 @@ export interface ProcessSnapshot {
   children(pid: number): number[];
   /** The live processes of the process group `pgrp`, a zombie not among them: what a killed group still has running. */
   group(pgrp: number): number[];
-  /** Whether `pid` was started with `name=value` in its environment: false when it is gone or a zombie, when another
-   *  user's cannot be read, and when one of this uid still reads empty or unreadable after the re-read window. */
+  /** Whether `pid` was started with `name=value` in its environment, from one read: false when it is gone or a zombie, or
+   *  when its environment reads empty or cannot be read (a caller that polls, as the recorder does, reads it again on its
+   *  next walk). */
   marked(pid: number, name: string, value: string): boolean;
   /** Every live process started with `name=value` in its environment, one look at all of them. A zombie or a gone process
    *  carries nothing, nor does another user's whose environment cannot be read. One of this uid whose environment reads
@@ -84,8 +85,8 @@ export function procTable(proc = "/proc", readText: (path: string) => string = (
   /** Which of `pids` carry `word`. A zombie (checked first) or a gone process carries nothing; one of another user whose
    *  environment cannot be read is no command of this server's. A process of this uid whose environment reads empty or
    *  unreadable (it is inside an exec: the kernel shows no environment until the new program's is in place) is read
-   *  again in the window, all such processes together, and decided by its first environment that reads. */
-  const carrying = (pids: readonly number[], word: string): number[] => {
+   *  again after each wait of `window`, all such processes together, and decided by its first environment that reads. */
+  const carrying = (pids: readonly number[], word: string, window: readonly number[]): number[] => {
     const marked: number[] = [];
     let unread: number[] = [];
     for (const pid of pids) {
@@ -96,7 +97,7 @@ export function procTable(proc = "/proc", readText: (path: string) => string = (
         if (words.includes(word)) marked.push(pid);
       } else if (s.ruid === uid) unread.push(pid);
     }
-    for (const ms of MARK_WINDOW_MS) {
+    for (const ms of window) {
       if (unread.length === 0) break;
       pause(ms);
       const still: number[] = [];
@@ -150,12 +151,14 @@ export function procTable(proc = "/proc", readText: (path: string) => string = (
       }
       return pids.map(Number).filter((pid) => snapshot.info(pid)?.pgrp === pgrp);
     },
+    // One read, no window: the recorder calls this on every walk, which is its read again, and a command that stays
+    // unreadable (a setuid program it exec'd) must not hold the walk's thread for the window each time.
     marked(pid, name, value) {
-      return carrying([pid], `${name}=${value}`).length === 1;
+      return carrying([pid], `${name}=${value}`, []).length === 1;
     },
     withMark(name, value) {
       const pids = readdirSync(proc).filter((entry) => /^\d+$/.test(entry));
-      return carrying(pids.map(Number), `${name}=${value}`);
+      return carrying(pids.map(Number), `${name}=${value}`, MARK_WINDOW_MS);
     },
     commandLine(pid) {
       try {
@@ -248,19 +251,10 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         marked(pid, name, value) {
           try {
             const argsOf = () => run(PS, ["-ww", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
-            for (let read = 0; ; read++) {
-              const before = argsOf();
-              const all = run(PS, ["-ww", "-E", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
-              const after = argsOf();
-              const env = environmentOf(before, all, after);
-              if (env.length > 0) return env.includes(`${name}=${value}`);
-              // It exec'd between the reads: not marked yet (the recorder looks again on its next walk).
-              if (after !== before || !all.startsWith(before)) return false;
-              // No environment after its arguments: one of this uid is read again in the window, as withMark does.
-              if (Number(run(PS, ["-p", String(pid), "-o", "ruid="]).trim()) !== process.getuid?.()) return false;
-              if (read >= MARK_WINDOW_MS.length) return AFTER_WINDOW_MARKED;
-              pause(MARK_WINDOW_MS[read]!);
-            }
+            // One read, no window, as on Linux: the recorder's next walk reads it again.
+            const before = argsOf();
+            const all = run(PS, ["-ww", "-E", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
+            return environmentOf(before, all, argsOf()).includes(`${name}=${value}`);
           } catch {
             return false;
           }
