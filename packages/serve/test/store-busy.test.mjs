@@ -11,6 +11,9 @@ import { AgentHomeError, openStore } from "@parcha/pi-durable-agent";
 import { agent, answerFlow, flowAgent, follow, scratch, serve } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** How long a reader holds the store while an edit's commit waits for it. A wait that blocked the event loop would hold
+ *  every other request for about all of it, so half of it is the line between waiting aside and blocking. */
+const HOLD_MS = 1_000;
 
 /** `method path` on a connection of its own, with how long its answer took. */
 function timed(port, token, method, path, body) {
@@ -104,13 +107,14 @@ test("an edit whose commit meets a reader of the agent store waits for it, then 
   assert.equal((await api("POST", "/agents", agent("edited"))).status, 201);
   const release = hold(t, data, "READ");
   const edited = timed(port, token, "PUT", "/agents/edited/definition", agent("edited", { instructions: "Answer briefly.", version: 2 }));
-  const slowest = await slowestWhile(port, token, sleep(1_000));
+  const slowest = await slowestWhile(port, token, sleep(HOLD_MS));
   release();
+  t.diagnostic(`slowest GET /capabilities while the edit waited: ${slowest} ms`);
+  assert.ok(slowest < HOLD_MS / 2, `GET /capabilities took ${slowest} ms while the edit waited: an edit whose wait blocks the event loop holds every other request for about the whole ${HOLD_MS} ms hold`);
   const answer = await edited;
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   assert.equal(answer.body.definition.instructions, "Answer briefly.");
-  assert.ok(answer.took >= 900, `it waited for the reader: ${answer.took} ms`);
-  assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the edit waited`);
+  assert.ok(answer.took >= HOLD_MS - 100, `it waited for the reader: ${answer.took} ms`);
 });
 
 test("the agent home's own busy (a home held past its deadline) answers 409 home_busy with retry_after_ms, never 500", async (t) => {
