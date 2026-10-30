@@ -11,9 +11,11 @@
 //  - where the host gives it a box (./box.ts), every child starts in one, one at a time, through the session's slot
 //    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { FileTail } from "../process/tail.js";
 import type { Box, BoxedChild, BoxRecord, BoxRecorder, BoxSpec, Isolation } from "./box.js";
 import { boxSlot } from "./box-slot.js";
@@ -145,6 +147,46 @@ function inside(base: string, rel: string, name: string): string {
   return path;
 }
 
+/** Where the box finds the host's sockets: the paths the host's box binds them at. */
+export const BOX_MODEL_SOCKET = "/run/agentrun/model.sock";
+export const BOX_EGRESS_SOCKET = "/run/agentrun/egress.sock";
+/** The box's first command (./box-forward.ts), bound into the box read-only with node. */
+const BOX_FORWARD = fileURLToPath(new URL("./box-forward.js", import.meta.url));
+
+/** Filesystems the socket directory may not be on (statfs's f_type, Linux's magic.h): FUSE, and those shared between
+ *  hosts. On them a socket cannot be made, or another host's live one reads as dead here and is taken over. A backstop
+ *  only: the list names what is known, and the guarantee is that the directory is meant to be local (the OS's temp
+ *  directory, which TMPDIR can point anywhere, is exactly why it is checked). Linux only: elsewhere statfs's type is not
+ *  these numbers, and placement is the rule. */
+const NOT_LOCAL: Readonly<Record<number, string>> = {
+  0x65735546: "fuse", 0x6969: "nfs", 0xff534d42: "cifs", 0xfe534d42: "smb2", 0x517b: "smb", 0x01021997: "9p", 0x00c36400: "ceph",
+};
+
+/** The session's socket directory: made 0700 if missing, and refused unless it is a directory of this process's user,
+ *  0700, not a link, and on a local filesystem, so nothing else can put a socket where the box's front is looked for.
+ *  `statfs` is this module's test seam, never a host's option. */
+export function socketDir(dir: string, name: string, statfs: (dir: string) => { type: number } = statfsSync): string {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+    throw new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`);
+  }
+  const kind = process.platform === "linux" ? NOT_LOCAL[statfs(dir).type] : undefined;
+  if (kind) throw new Error(`${name}: runtime_dir_not_local: the session's socket directory ${dir} is on ${kind}, not a local filesystem`);
+  return dir;
+}
+
+/** A box's way out, for the clients in it that ask for a proxy: the session's egress proxy, at the port the box serves it
+ *  on. The model's own port is left out (NO_PROXY), so the harness reaches its front directly. */
+function proxyEnv(port: number): Record<string, string> {
+  const http = `http://127.0.0.1:${port}`;
+  const socks = `socks5h://127.0.0.1:${port}`;
+  return {
+    HTTPS_PROXY: http, https_proxy: http, HTTP_PROXY: http, http_proxy: http, ALL_PROXY: socks, all_proxy: socks,
+    NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost", NODE_USE_ENV_PROXY: "1",
+  };
+}
+
 /** The host's box for a session's children, and where it records them. */
 export interface MachineBox {
   box: Box;
@@ -152,14 +194,18 @@ export interface MachineBox {
   recorder: BoxRecorder;
   /** Bound read-only beyond the box's own system allowlist: node and the harness's pinned binary. */
   readOnly: readonly string[];
-  /** The model front's Unix socket, and the port the box serves it on. */
-  modelSocket: string;
+  /** The port the box serves the session's model front on, at its own loopback. The front listens on a socket of its
+   *  own, in the session's directory, and nowhere else. */
   modelPort: number;
-  /** The egress proxy's socket and port; absent, the box reaches nothing but the model. */
-  egressSocket?: string;
-  egressPort?: number;
+  /** The session's egress: the host's proxy (an egress proxy started on the socket path it is given, one per session),
+   *  and the port the box serves it on. Absent: the box reaches nothing but the model. */
+  egress?: { port: number; start(socketPath: string): Promise<{ close(): Promise<void> }> };
   /** A shared server's cgroup for the run. */
   cgroup?: string;
+  /** A local directory for the session's sockets: never on a disk shared between hosts or a FUSE mount, where a socket
+   *  either cannot be made or reads as dead while another host's is live. Default: one per session under the OS's temp
+   *  directory, named by the session's directory. A short path also keeps a socket's within the 108 bytes one allows. */
+  runtimeDir?: string;
   /** The record the session's last box left (a relaunch, a woken run): reaped, and counted empty, before anything
    *  starts. */
   previous?: BoxRecord;
@@ -233,7 +279,21 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   if (slot && boxing?.previous) await slot.adopt(boxing.previous);
 
   const key = randomBytes(32).toString("base64url");
-  const proxy = await startModelProxy(spec.proxy, key);
+  // In a box, the front's only door is a socket of the session's own, which the box is given; outside one, loopback.
+  const sockets = boxing ? socketDir(boxing.runtimeDir ?? join(tmpdir(), `agentrun-box-${createHash("sha256").update(base).digest("hex").slice(0, 16)}`), name) : "";
+  const modelSocket = join(sockets, "model.sock");
+  const egressSocket = join(sockets, "egress.sock");
+  const proxy = await startModelProxy(boxing ? { ...spec.proxy, socketPath: modelSocket } : spec.proxy, key);
+  // One egress proxy per session: its boxes, one at a time, share it and its caps; another session has its own.
+  let egress: { close(): Promise<void> } | undefined;
+  if (boxing?.egress) {
+    try {
+      egress = await boxing.egress.start(egressSocket);
+    } catch (error) {
+      await proxy.close();
+      throw error;
+    }
+  }
   const lost = new AbortController();
   const children = new Set<MachineChild>();
   const reaps = new Set<Promise<void>>();
@@ -241,15 +301,18 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   const inBox = (options: MachineSpawn, box: MachineBox): MachineChild => {
     // The box's working directory is the session's: a child that asks for another is refused, not moved.
     if (options.cwd !== undefined && normalize(options.cwd) !== root) throw new Error(`${name}: a child in a box runs in the session's working directory, not ${options.cwd}`);
-    const child = confined({ command: options.command, args: options.args ?? [] }, spec.confine, name);
+    const harness = confined({ command: options.command, args: options.args ?? [] }, spec.confine, name);
+    // The box's first command serves its sockets on its own loopback, then runs the harness (./box-forward.ts).
+    const listen = [`${box.modelPort}=${BOX_MODEL_SOCKET}`, ...(box.egress ? [`${box.egress.port}=${BOX_EGRESS_SOCKET}`] : [])];
+    const child: ChildCommand = { command: process.execPath, args: [BOX_FORWARD, ...listen.flatMap((l) => ["--listen", l]), "--", harness.command, ...harness.args] };
     const boxSpec: BoxSpec = {
       workspace: root,
       homes: { ...dirs },
-      readOnly: [...box.readOnly],
-      modelSocket: box.modelSocket,
+      readOnly: [...box.readOnly, process.execPath, BOX_FORWARD],
+      modelSocket,
       modelPort: box.modelPort,
-      ...(box.egressSocket === undefined ? {} : { egressSocket: box.egressSocket, egressPort: box.egressPort }),
-      env: { ...childEnv(from, options.env), GIT_CEILING_DIRECTORIES: base },
+      ...(box.egress ? { egressSocket, egressPort: box.egress.port } : {}),
+      env: { ...childEnv(from, options.env), GIT_CEILING_DIRECTORIES: base, ...(box.egress ? proxyEnv(box.egress.port) : {}) },
       ...(box.cgroup === undefined ? {} : { cgroup: box.cgroup }),
     };
     const { process: proc, reaped } = slot!.start((recorder) => box.box.start(boxSpec, child, recorder), box.recorder);
@@ -273,7 +336,8 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
     root,
     dirs,
     signal: lost.signal,
-    modelUrl: proxy.url,
+    // The harness's view: in a box, the front at the port the box serves it on.
+    modelUrl: boxing ? `http://127.0.0.1:${boxing.modelPort}` : proxy.url,
     modelKey: key,
     notes: [],
     from,
@@ -323,7 +387,10 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
       // Closed means counted empty: every box's reap gave its verdict, and one that found a process left fails the close.
       const verdicts = await Promise.allSettled(reaps);
       lost.abort();
+      await egress?.close();
       await proxy.close();
+      // The session's socket directory, once its sockets are gone; a directory holding anything else stays.
+      if (boxing) try { rmdirSync(sockets); } catch { /* not empty, or gone */ }
       const left = verdicts.find((v): v is PromiseRejectedResult => v.status === "rejected");
       if (left) throw left.reason;
     },
