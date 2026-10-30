@@ -8,7 +8,9 @@ export type ApiError = { code: string; message: string; retryable: boolean; requ
 /** `kind` and `node` are null on a run escalated before serve named them; `reason` then comes from the escalation. */
 export type RunReview = { kind: string | null; node: string | null; reason: string; at: string };
 
-export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null };
+/** `source` (a serve extension): "reported" when every part of the cost is a provider's own report, else "estimate".
+ *  An older server leaves it out, and then `basis` says whether the number is an estimate. */
+export type Cost = { usd: number | null; basis: string; source?: "reported" | "estimate"; charge_state: string | null; cap_usd: number | null };
 
 export type Run = {
   run_id: string;

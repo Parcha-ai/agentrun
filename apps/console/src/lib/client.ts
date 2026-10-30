@@ -1,3 +1,4 @@
+import type { Stats } from "./mission";
 import type { Agent, Definition } from "./agentForm";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
@@ -55,6 +56,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
     setup: (password: string, code?: string) => call<{ signed_in: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}) } }),
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
+    stats: () => call<Stats>("GET", "/stats"),
     listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
     listAgentRuns: (id: string, limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
     listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
