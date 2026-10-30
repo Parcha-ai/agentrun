@@ -19,7 +19,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
-import { DECISION_KEY_FD, DECISION_KEY_FD_ENV, FAUX_JEV_ENV, handedJev, JEV_KEY_ENV, jevKey } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, FAUX_JEV_ENV, handedJev, JEV_KEY_ENV, jevKey } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -663,17 +663,23 @@ export class Runs {
     delete env[DECISION_KEY_FD_ENV];
     const decision = run.kind === "workflow" ? jevKey(process.env) : undefined;
     const handsKey = decision !== undefined;
-    if (handsKey) env[DECISION_KEY_FD_ENV] = String(DECISION_KEY_FD);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
+    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log];
+    // The first descriptor after the others: macOS aborts the parent of a spawn with a pipe at 16 or above.
+    const keyFd = stdio.length;
+    if (handsKey) {
+      stdio.push("pipe");
+      env[DECISION_KEY_FD_ENV] = String(keyFd);
+    }
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
       "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
-    ], { stdio: ["ignore", "ignore", log, ...(handsKey ? [...Array<"ignore">(DECISION_KEY_FD - 3).fill("ignore"), "pipe" as const] : [])], env });
+    ], { stdio, env });
     closeSync(log);
     if (handsKey) {
-      const pipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[DECISION_KEY_FD];
+      const pipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[keyFd];
       // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
       pipe?.on("error", () => undefined);
       pipe?.end(handedJev(decision));

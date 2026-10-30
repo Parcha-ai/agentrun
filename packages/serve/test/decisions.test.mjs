@@ -4,12 +4,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, readlink, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
-import { DECISION_KEY_FD, DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
+import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
@@ -18,6 +18,16 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
 const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The descriptor a run's process is handed the key on: the first one after its stdio. */
+const KEY_FD = "3";
+/** The descriptor `environ` names for the key, without printing the rest of it. */
+const keyFdIn = (environ) => /(?:^|\0)AGENTRUN_SERVE_DECISION_KEY_FD=([^\0]*)/.exec(environ)?.[1];
+/** Whether `pid`'s descriptor `fd` is a Unix socket, as the handed one is (one end of a socket pair). A run's process
+ *  opens no other, and a closed low number is soon open again for something else, so "not open" would prove nothing. */
+async function handedSocket(pid, fd) {
+  const inode = /^socket:\[(\d+)\]$/.exec(await readlink(`/proc/${pid}/fd/${fd}`).catch(() => ""))?.[1];
+  return inode !== undefined && (await readFile(`/proc/${pid}/net/unix`, "utf8")).split("\n").some((line) => line.trim().split(/\s+/)[6] === inode);
+}
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
 /** A model node that reports where the decision key is, once `gate` exists when one is given. */
@@ -90,8 +100,8 @@ test("the decision key never reaches a run's tools, model or programs: not in it
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
   assert.equal(environ.includes(CANARY), false, "the run's process environment holds no copy of the key");
-  assert.match(environ, new RegExp(`(^|\\0)AGENTRUN_SERVE_DECISION_KEY_FD=${DECISION_KEY_FD}(\\0|$)`), "it was handed the key on the documented descriptor");
-  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and closed it once read");
+  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio");
+  assert.equal(await handedSocket(pid, KEY_FD), false, "and closed it once read");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
@@ -123,7 +133,8 @@ test("a run resumed by the next server is handed the key again: its judge gets i
   const api = client(next.baseUrl, next.token);
   const after = await processOf(data, runId, before);
   assert.equal((await readFile(`/proc/${after}/environ`, "utf8")).includes(CANARY), false);
-  assert.equal(existsSync(`/proc/${after}/fd/${DECISION_KEY_FD}`), false);
+  assert.equal(keyFdIn(await readFile(`/proc/${after}/environ`, "utf8")), KEY_FD);
+  assert.equal(await handedSocket(after, KEY_FD), false);
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
@@ -140,7 +151,7 @@ test("with no decision key, a run's process gets no key descriptor at all", asyn
   const runId = await startFlow(api, [probe(gate)]);
   const pid = await processOf(data, runId);
   assert.equal((await readFile(`/proc/${pid}/environ`, "utf8")).includes("AGENTRUN_SERVE_DECISION_KEY_FD"), false, "no descriptor is named");
-  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and none is open");
+  assert.equal(await handedSocket(pid, KEY_FD), false, "and none is open");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   assert.equal(last.status, "completed");
@@ -268,8 +279,8 @@ test("on the four gateway variables alone, the run's process is handed AGENT_MOD
   const runId = await startFlow(api, [judge, probe(gate)]);
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
-  assert.equal(environ.split("\0").includes(`${DECISION_KEY_FD_ENV}=${DECISION_KEY_FD}`), true, "the gateway's key was handed on the decision descriptor");
-  assert.equal(existsSync(`/proc/${pid}/fd/${DECISION_KEY_FD}`), false, "and the descriptor closed once read");
+  assert.equal(keyFdIn(environ), KEY_FD, "the gateway's key was handed on the decision descriptor");
+  assert.equal(await handedSocket(pid, KEY_FD), false, "and the descriptor closed once read");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
@@ -287,11 +298,11 @@ const judge = await jevJudgeOf(process.env);
 const answer = judge && await judge({ label: "coi", kind: "judge", state: { doc: "x" }, questions: { is_coi: { type: "noul", instructions: "Is doc a certificate of incorporation?" } } });
 process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answers?.is_coi?.noul ?? null }));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
-    env: { HOME: process.env.HOME, [FAUX_ENV]: FAUX, [FAUX_JEV_ENV]: FAUX_JEV, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, ...env, ...(handed ? { [DECISION_KEY_FD_ENV]: String(DECISION_KEY_FD) } : {}) },
-    stdio: ["ignore", "pipe", "pipe", ...(handed ? [...Array(DECISION_KEY_FD - 3).fill("ignore"), "pipe"] : [])],
+    env: { HOME: process.env.HOME, [FAUX_ENV]: FAUX, [FAUX_JEV_ENV]: FAUX_JEV, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, ...env, ...(handed ? { [DECISION_KEY_FD_ENV]: KEY_FD } : {}) },
+    stdio: ["ignore", "pipe", "pipe", ...(handed ? ["pipe"] : [])],
   });
   // What the server writes there: the route, a newline, the key.
-  if (handed) child.stdio[DECISION_KEY_FD].end(`${handed.route}\n${handed.key}`);
+  if (handed) child.stdio[Number(KEY_FD)].end(`${handed.route}\n${handed.key}`);
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));
