@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/rollout.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, patches: 004-names, 006-comments, 011-exec-by-kind
+// Changed by Parcha, patches: 004-names, 006-comments, 009-rollout-call-type
 /**
  * Codex's rollout, as the run's log holds it. Pure functions, no Node
  * imports.
@@ -45,7 +45,7 @@ export interface RolloutLine {
 export interface RolloutCall {
   callId: string;
   name: string;
-  /** `function_call` (a model tool, or a host tool) or `custom_tool_call` (code mode's `exec`). */
+  /** `function_call` (a model tool, or a host tool) or `custom_tool_call` (code mode's `exec`, Codex's `apply_patch`). */
   type: string;
   arguments: string;
   /** Whether a `function_call_output` for it follows. */

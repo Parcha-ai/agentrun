@@ -5,7 +5,9 @@
 //    and the per-session proxy key). Nothing else is inherited, so no provider key, token or host secret reaches it.
 //  - A child's git stops at the session's directory (GIT_CEILING_DIRECTORIES), and the host may start every child under its
 //    own confinement, in front of the command.
-//  - Each child runs in its own process group, which kill() and close() end whole.
+//  - Each child runs in its own process group, which kill() and close() end whole, and dies with this process: started
+//    with a watch on its parent (./host's parentWatched, inside the host's confinement), so a host that is SIGKILLed,
+//    and runs no close, leaves no Codex behind.
 //  - The model proxy (@parcha/agentrun-adapters/host, with the Codex policy) starts with the machine and stops with it.
 import { spawn as spawnChild } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -15,7 +17,7 @@ import { createInterface } from "node:readline";
 import { FileTail } from "@parcha/agentrun-adapters/process";
 import type { AcquireMachine, CacheDir, CacheFile, KillSignal, MachineSpawn, MachineTail, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
-import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
+import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
 import { codexPolicy } from "./policy.js";
 import { UNWATCHED } from "../scripts.js";
 
@@ -29,6 +31,8 @@ export interface LocalMachineOptions {
   dir: string;
   /** Start every child of the session (Codex) under the host's confinement. */
   confine?: ConfineChild;
+  /** How a child is tied to this process (default what the machine supports; tests force the shim). */
+  parentWatch?: ParentWatch;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
    *  from the harness. */
   proxy: {
@@ -51,7 +55,9 @@ export interface ChildCommand {
 
 /** The host's confinement of a child: the same command and arguments, started under the host's own (a
  *  `setpriv --no-new-privs` prefix, say). It may only add in front: what it returns must end with the command and its
- *  arguments unchanged, and it never sees or changes the child's environment. */
+ *  arguments unchanged, and it never sees or changes the child's environment. The prefix must exec the child in place
+ *  (as setpriv does): a wrapper that forks and stays as the child's parent defeats the parent watch, since the death
+ *  signal then follows the wrapper, not this process. */
 export type ConfineChild = (child: Readonly<ChildCommand>) => ChildCommand;
 
 /** The command `confine` makes of `child`, refused unless it ends with the child's command and arguments unchanged. */
@@ -83,10 +89,11 @@ function inside(base: string, rel: string): string {
   return path;
 }
 
-/** Start a child of the session. Its git stops at `ceiling` (the session's directory): it never looks for a repository
+/** Start a child of the session, ended when this process ends. Its git stops at `ceiling` (the session's directory): it never looks for a repository
  *  above the session, in a parent the model could write, whose branch and remote would otherwise reach the records. */
-function start(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling: string, confine?: ConfineChild): SessionProcess {
-  const run = confined({ command: options.command, args: options.args ?? [] }, confine);
+function start(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling: string, confine?: ConfineChild, watch?: ParentWatch): SessionProcess {
+  // The watch is inside the confinement, so it is set after any switch of user the prefix makes.
+  const run = confined(parentWatched({ command: options.command, args: options.args ?? [] }, watch), confine);
   const child = spawnChild(run.command, run.args, {
     cwd: options.cwd ?? cwd,
     env: { ...childEnv(from, options.env), GIT_CEILING_DIRECTORIES: ceiling },
@@ -155,6 +162,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
     let announced: string | undefined;
     let open = 0;
+    const rolloutListeners: ((line: string) => void)[] = [];
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
@@ -194,10 +202,11 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelUrl: proxy.url,
       modelKey: key,
       announcedExec: () => announced,
+      onRolloutLine: (listener) => void rolloutListeners.push(listener),
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-codex: the session machine is closed");
-        const proc = start(spawnOptions, from, root, base, options.confine);
+        const proc = start(spawnOptions, from, root, base, options.confine, options.parentWatch);
         children.add(proc);
         void proc.exited.then(() => children.delete(proc));
         return proc;
@@ -229,7 +238,9 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
             } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             }
-            return tail.read();
+            const fresh = tail.read();
+            for (const line of fresh) for (const listener of rolloutListeners) listener(line);
+            return fresh;
           },
           // A local file is read to its end on every read.
           sync: async () => {},

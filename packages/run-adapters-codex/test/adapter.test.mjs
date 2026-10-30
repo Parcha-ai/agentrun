@@ -13,7 +13,7 @@ import { NativeJournal } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
-import { repairItem } from '../dist/harness.js';
+import { withOutputKind } from '../dist/code-mode.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 
 process.env.AGENTRUN_CODEX_STANDIN = '1';
@@ -352,13 +352,10 @@ test("a model Codex runs in code mode is checked like any other: the check refus
   assert.deepEqual(tiered.check({ ...spec, tier: 'strong' }), []);
 });
 
-test('a dangling custom tool call that is not exec, such as apply_patch, is answered with a custom tool call output', async () => {
-  const state = foldSession('s', []);
-  const call = (type, name) => ({ callId: `c-${name}`, name, type, arguments: '', answered: false, line: 0 });
+test('a dangling custom tool call that is not exec, such as apply_patch, is answered with a custom tool call output', () => {
+  const call = (type, name) => ({ callId: `c-${name}`, name, type });
   // Codex's own apply_patch is a freeform custom tool: a crash inside it leaves a custom_tool_call, which only a custom output answers.
-  assert.equal(repairItem(state, call('custom_tool_call', 'apply_patch')).type, 'custom_tool_call_output');
-  assert.equal(repairItem(state, call('function_call', 'shell')).type, 'function_call_output');
-  const item = repairItem(state, call('custom_tool_call', 'apply_patch'));
-  assert.equal(item.call_id, 'c-apply_patch');
-  assert.match(item.output, /Not executed: the session stopped before this call started/, 'the same text as for any other call');
+  const item = withOutputKind({ call_id: 'c-apply_patch', output: 'Not executed: the session stopped before this call started.' }, call('custom_tool_call', 'apply_patch'));
+  assert.deepEqual(item, { type: 'custom_tool_call_output', call_id: 'c-apply_patch', output: 'Not executed: the session stopped before this call started.' });
+  assert.equal(withOutputKind({ call_id: 'c-shell', output: 'x' }, call('function_call', 'shell')).type, 'function_call_output');
 });

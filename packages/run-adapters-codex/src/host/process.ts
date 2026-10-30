@@ -73,6 +73,8 @@ export interface SessionMachine {
    *  The code-mode `exec` call the model proxy's latest answer carried, read before Codex could act on it (none when that
    *  answer held none): what a nested call of a script is tied to, even before the `exec`'s line is in the rollout. */
   announcedExec?(): string | undefined;
+  /** Told each line the rollout's tail reads, as it reads it: the harness's view of code mode follows the log from here. */
+  onRolloutLine?(listener: (line: string) => void): void;
   fsync(): Promise<void>;
   close(): Promise<void>;
 }
