@@ -13,6 +13,7 @@ import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
 const answer = async (api, runId) => (await api("GET", `/runs/${runId}`)).body.result?.final_answer;
 
@@ -217,6 +218,29 @@ test("a run on another harness gets pi's own file tools: a write then a read of 
   const results = toolResults(rows);
   assert.equal(results.length, 2, JSON.stringify(results));
   assert.match(results[1][0], /hello from the tool/, "the read returned what the write wrote");
+});
+
+for (const harness of ["claude-agent", "codex"]) {
+  test(`fetch_page runs on ${harness}: the definition saves with no warning, its run is not refused, and the tool reads the page`, { timeout: 60_000 }, async (t) => {
+    const { api } = await serve(t, { fauxHarness: FAUX_HARNESS, fauxWeb: FAUX_WEB });
+    const saved = await api("POST", "/agents", agent(`web-${harness}`, { harness, instructions: "Fetch http://public.example/ and say its title.", tools: ["fetch_page"] }));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.doesNotMatch(JSON.stringify(saved.body), /not bound yet/, "no warning that the tool is pi's only");
+    const run = await api("POST", `/agents/web-${harness}/runs`, { input: { content: "hi" } });
+    assert.equal(run.status, 202, JSON.stringify(run.body));
+    const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 55_000 });
+    const results = toolResults(rows);
+    assert.equal(results.length, 1, JSON.stringify(results));
+    assert.match(results[0][0], /Public page/, "the page's title, read through the guarded fetch");
+  });
+}
+
+test("capabilities say which harnesses run each tool: the file tools and fetch_page on every harness, the rest on pi", async (t) => {
+  const { api } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const tools = Object.fromEntries((await api("GET", "/capabilities")).body.tools.map((tool) => [tool.name, tool.harnesses]));
+  const every = ["pi", "claude-agent", "codex"];
+  for (const name of ["read", "write", "edit", "fetch_page"]) assert.deepEqual(tools[name], every, name);
+  for (const [name, harnesses] of Object.entries(tools)) if (!["read", "write", "edit", "fetch_page"].includes(name)) assert.deepEqual(harnesses, ["pi"], name);
 });
 
 test("pi's confinement holds for another harness's read: a link out of the workspace is refused with pi's words", { timeout: 90_000 }, async (t) => {
