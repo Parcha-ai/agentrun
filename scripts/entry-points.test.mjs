@@ -36,6 +36,7 @@ const reviewed = new Map([
   ['packages/pi-vision/test/durable-providers.test.mjs', childScript],
   ['packages/pi-vision/test/node-env.test.mjs', childScript],
   ['packages/pi/test/signin-entry.test.mjs', childScript],
+  ['packages/serve/test/secret-custody.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
 ]);
 
