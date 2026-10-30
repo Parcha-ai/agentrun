@@ -161,6 +161,32 @@ test("no working copy is no harvest: a missing copy throws, and the repository i
   assert.equal(git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
 });
 
+test("a working copy that is a file or a link is no working copy: the harvest throws and commits nothing", async (t) => {
+  const s = await seeded(t);
+  const runs = () => git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]);
+  await rm(s.work, { recursive: true, force: true });
+  await writeFile(s.work, "not a directory\n");
+  await assert.rejects(harvest(s, "host"), /no working copy/);
+  assert.equal(runs(), "");
+  // A link to a directory with an empty learnings/: read through, every seed note would read as deleted.
+  const elsewhere = join(s.root, "elsewhere");
+  await mkdir(join(elsewhere, "memos"), { recursive: true });
+  await mkdir(join(elsewhere, "learnings"));
+  await writeFile(join(elsewhere, MEMO), `---\nrun: ${RUN}\n---\n${memoBody}`);
+  await rm(s.work);
+  await symlink(elsewhere, s.work);
+  await assert.rejects(harvest(s, "host-two"), /no working copy/);
+  assert.equal(runs(), "");
+});
+
+test("the memo's front matter on the branch is the host's whole: the agent's own front matter never reaches it", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: another-run\nbase: ${"0".repeat(40)}\nharness: codex\noutcome: completed\nuntrusted: false\nreviewed: true\n---\n${memoBody}`);
+  const result = await harvest(s, "host", { head: { harness: "pi", outcome: "failed", untrusted: true } });
+  assert.equal(result.status, "proposed");
+  assert.equal(show(s.bare, `runs/${RUN}`, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\nharness: pi\noutcome: failed\nuntrusted: true\n---\n${memoBody}`.trimEnd());
+});
+
 test("a directory the harvest cannot read stops it: nothing is committed, and its seed files are never read as deleted", async (t) => {
   const s = await seeded(t);
   await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
