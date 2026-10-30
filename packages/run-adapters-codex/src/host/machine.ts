@@ -1,13 +1,13 @@
 // The local session machine, written for AgentRun: where a session's Codex runs when the host runs it on its own box.
 // The machine itself is the kernel's (@parcha/agentrun-kernel/host, `openLocalMachine`): private directories, the
-// allowlisted environment, the git ceiling, the host's confinement, process groups ended whole, and the model proxy.
+// allowlisted environment, the git ceiling, the host's confinement, process groups ended whole, the parent watch (a child dies with this process, so a SIGKILLed host leaves none behind), and the model proxy.
 // What is Codex's own here:
 //  - its private directories: home, config, codex-home, tmp, cache (mode 0700), and an empty working directory (`work`),
 //    never the host's workspace: a tool-less Codex has nothing to read there;
 //  - its children speak app-server's line protocol, one JSON value per line;
 //  - the proxy serves the Codex policy.
 import { createInterface } from "node:readline";
-import { confined as kernelConfined, openLocalMachine, type ChildCommand, type ConfineChild, type MachineChild, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { confined as kernelConfined, openLocalMachine, type ChildCommand, type ConfineChild, type MachineChild, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import type { AcquireMachine, CacheDir, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { codexPolicy } from "./policy.js";
@@ -23,6 +23,8 @@ export interface LocalMachineOptions {
   dir: string;
   /** Start every child of the session (Codex) under the host's confinement. */
   confine?: ConfineChild;
+  /** How a child is tied to this process (default what the machine supports; tests force the shim). */
+  parentWatch?: ParentWatch;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
    *  from the harness. */
   proxy: {
@@ -71,6 +73,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       sessionId: ctx.runId,
       from,
       ...(options.confine ? { confine: options.confine } : {}),
+      ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
       proxy: {
         policy: codexPolicy({ model: route.models.model, tools: options.proxy.tools, ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}) }),
         hooks: options.proxy.hooks,

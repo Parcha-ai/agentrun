@@ -1,0 +1,75 @@
+Patch: 005-fake-app-server-script
+Reason: the stand-in app-server could only echo; FAKE_CODEX_SCRIPT scripts each turn and `twice` delivers one call twice, so the duplicate-delivery path is tested
+Upstream: ours
+Pins: a DSL agent node runs on Codex: the host tool, then submit, through the proxy to the provider
+Pins: the same call delivered twice runs its tool once, and both deliveries are answered with the one result
+---
+diff --git a/packages/harness-codex/test/fake-app-server.mjs b/packages/harness-codex/test/fake-app-server.mjs
+index 2b907d5..832051d 100644
+--- a/packages/harness-codex/test/fake-app-server.mjs
++++ b/packages/harness-codex/test/fake-app-server.mjs
+@@ -69,7 +69,7 @@
+  *   ("the code word is …") named, from the rollout it resumed.
+  */
+ import { randomUUID } from 'node:crypto';
+-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
++import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+ import { dirname, join } from 'node:path';
+ import { createInterface } from 'node:readline';
+ 
+@@ -178,7 +178,7 @@ async function stream(text, onPiece) {
+     method: 'POST',
+     // What Codex sends on a Responses call (P0.7): its own protocol headers, the provider key as the bearer.
+     headers: { 'content-type': 'application/json', accept: 'text/event-stream', authorization: `Bearer ${modelKey()}`, originator: 'codex_cli_rs', version: '0.160.0', session_id: thread?.id ?? '' },
+-    body: JSON.stringify({ model: modelId(), instructions: 'fake', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }], stream: true, store: false }),
++    body: JSON.stringify({ model: modelId(), input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }], stream: true, store: false }),
+   });
+   if (!res.ok || !res.body) throw new Error(`the model answered ${res.status}`);
+   const decoder = new TextDecoder();
+@@ -215,13 +215,22 @@ function userMessage(turnId, clientId, text) {
+   write('event_msg', { type: 'item_completed', thread_id: thread.id, turn_id: turnId, item: { type: 'UserMessage', id: randomUUID(), ...(clientId ? { client_id: clientId } : {}), content: [{ type: 'text', text }] } });
+ }
+ 
++/** `FAKE_CODEX_SCRIPT`: a file holding a JSON list of what the "model" does in each turn, in order across processes (the count is kept beside it), in place of the turn's text (a DSL node's text is its state). */
++const scripted = () => {
++  const file = process.env.FAKE_CODEX_SCRIPT;
++  if (!file) return undefined;
++  const at = existsSync(`${file}.at`) ? Number(readFileSync(`${file}.at`, 'utf8')) : 0;
++  writeFileSync(`${file}.at`, String(at + 1));
++  return JSON.parse(readFileSync(file, 'utf8'))[at];
++};
++
+ async function runTurn(turnId, clientId, text) {
+   ensureMeta();
+   write('event_msg', { type: 'task_started', turn_id: turnId });
+   userMessage(turnId, clientId, text);
+   notify('turn/started', { threadId: thread.id, turn: { id: turnId, status: 'inProgress', items: [] } });
+   let last;
+-  const trimmed = text.trim().replace(/^\[Environment\][^\n]*\n\n/, '');
++  const trimmed = (scripted() ?? text).trim().replace(/^\[Environment\][^\n]*\n\n/, '');
+   const escalate = /^escalate\s+([\s\S]+)$/.exec(trimmed);
+   const stdin = /^stdin\s+([\s\S]+)$/.exec(trimmed);
+   const shell = /^shell\s+([\s\S]+)$/.exec(trimmed) ?? escalate ?? stdin;
+@@ -325,9 +334,9 @@ async function runTurn(turnId, clientId, text) {
+     last = 'Recovered from the log. I will check the actual state before repeating anything.';
+     await say(turnId, last);
+   } else {
+-    const call = /^call\s+(\w+)\s*([\s\S]*)$/.exec(trimmed);
++    const call = /^(call|twice)\s+(\w+)\s*([\s\S]*)$/.exec(trimmed);
+     if (call) {
+-      const [, tool, rawArgs] = call;
++      const [, verb, tool, rawArgs] = call;
+       let args = {};
+       try {
+         args = rawArgs ? JSON.parse(rawArgs) : {};
+@@ -337,7 +346,9 @@ async function runTurn(turnId, clientId, text) {
+       const callLine = () => write('response_item', { type: 'function_call', name: tool, arguments: JSON.stringify(args), call_id: callId });
+       if (!lag) callLine();
+       notify('item/started', { threadId: thread.id, turnId, item: { type: 'dynamicToolCall', id: callId, tool } });
+-      const result = await request('item/tool/call', { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args });
++      const params = { threadId: thread.id, turnId, callId, namespace: null, tool, arguments: args };
++      // `twice`: the same call asked again at once, as a redelivery does; both are answered, and the tool answers one.
++      const result = verb === 'twice' ? (await Promise.all([request('item/tool/call', params), request('item/tool/call', params)]))[0] : await request('item/tool/call', params);
+       if (lag) callLine();
+       const out = result.contentItems?.map((c) => c.text).join('') ?? '';
+       write('response_item', { type: 'function_call_output', call_id: callId, output: out });

@@ -10,7 +10,8 @@ import { after, test } from 'node:test';
 import { request } from 'node:http';
 import { ProxyRefusal, startModelProxy } from '@parcha/agentrun-kernel/host';
 import { anthropicPolicy } from '@parcha/agentrun-harness-claude';
-import { childEnv, confined, localMachine } from '../dist/host/machine.js';
+import { childEnv, confined, launchCommand, localMachine } from '../dist/host/machine.js';
+import { PARENT_WATCH_SHIM, parentWatched, SETPRIV } from '@parcha/agentrun-kernel/host';
 import { CLAUDE_BETAS } from '../dist/host/policy.js';
 import { gatewayHandler, isBrandedMachine, journalLedger, ModelSteps, settleAbandonedModelSteps } from '../dist/host/process.js';
 import { isResumeDir, spawnProblem } from '../dist/spawn.js';
@@ -167,8 +168,11 @@ test('a capability beta the allowlist lacks refuses the request through the prox
         assert.equal(res.status, 403, value);
       }
     }
+    // The probe a shared machine's service sends each new loopback listener: refused without the key, and not counted.
+    assert.equal((await fetch(`${proxy.url}/`)).status, 401);
     assert.equal(sent.length, 0, 'nothing was forwarded');
-    assert.equal(logged.filter((l) => /refused/.test(l.message)).length, CAPABILITY_BETAS.length * 3);
+    // Each request here carries the session's key: a keyless refusal is a local prober's (tool-off.test), not counted.
+    assert.equal(logged.filter((l) => /refused/.test(l.message) && l.reason !== "this session's key is required").length, CAPABILITY_BETAS.length * 3);
     // The CLI's own values, all nine at once, still pass.
     const ok = await post([...CLAUDE_BETAS].join(','));
     await ok.text();
@@ -408,13 +412,22 @@ test("the host's confinement wraps a child's command and arguments, never its en
   const { run } = await machineAt(t, scratch(), (c) => { seen.push(c); return { command: '/usr/bin/env', args: ['--', c.command, ...c.args] }; });
   const out = await run(process.execPath, ['-e', 'process.stdout.write(JSON.stringify([process.argv.length, Object.keys(process.env).sort()]))']);
   assert.equal(out.code, 0);
-  assert.deepEqual(seen, [{ command: process.execPath, args: ['-e', 'process.stdout.write(JSON.stringify([process.argv.length, Object.keys(process.env).sort()]))'] }]);
+  // The confinement wraps the child as the machine launches it: watched by this process (it dies with it).
+  assert.deepEqual(seen, [parentWatched({ command: process.execPath, args: ['-e', 'process.stdout.write(JSON.stringify([process.argv.length, Object.keys(process.env).sort()]))'] })]);
   assert.deepEqual(JSON.parse(out.out)[1], ['GIT_CEILING_DIRECTORIES', 'PATH'], 'the environment is the machine\'s, untouched by the confinement');
   const child = { command: '/pinned/claude', args: ['--x', 'y'] };
   assert.deepEqual(confined(child, (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] })), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', '/pinned/claude', '--x', 'y'] });
   for (const bad of [(c) => ({ command: c.command, args: c.args }), () => ({ command: '/usr/bin/env', args: [] }), (c) => ({ command: '/bin/sh', args: ['-c', 'x', '/other', ...c.args] }), (c) => ({ command: '/usr/bin/env', args: [c.command, ...c.args, '--more'] }), () => undefined]) {
     assert.throws(() => confined(child, bad), /confinement must start the child's own command/);
   }
+});
+
+test("a child is launched with the host's confinement outermost, then the parent watch, then the child: the watch is set after any switch of user", () => {
+  const child = { command: '/pinned/claude', args: ['--x', 'y'] };
+  const confine = (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] });
+  assert.deepEqual(launchCommand(child, confine, 'pdeathsig'), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', SETPRIV, '--pdeathsig', 'KILL', '--', '/pinned/claude', '--x', 'y'] });
+  assert.deepEqual(launchCommand(child, confine, 'shim'), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', process.execPath, PARENT_WATCH_SHIM, String(process.pid), '--', '/pinned/claude', '--x', 'y'] });
+  assert.deepEqual(launchCommand(child, undefined, 'pdeathsig'), { command: SETPRIV, args: ['--pdeathsig', 'KILL', '--', '/pinned/claude', '--x', 'y'] }, 'with no confinement, still watched');
 });
 
 test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs set', { skip: !existsSync('/usr/bin/setpriv') && 'no setpriv here' }, async (t) => {

@@ -4,3 +4,7 @@
 export { createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, unmountClaim } from "./claim.ts";
 export { LABEL_FLEET, LABEL_RUN, sandboxName, sandboxStatus, sweepSandboxes } from "./hosts/daytona.ts";
 export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
+// The workspace confinement, for a host that reads a run's files itself (agentrun-serve), and its process-wide TEST seam
+// (confineTestHooks: runs after a path is checked and before it is opened; tests only, never a production hook).
+export { Confinement, confineHooks as confineTestHooks } from "./confine.ts";
+export type { Pin, PinSpec, RootName } from "./confine.ts";

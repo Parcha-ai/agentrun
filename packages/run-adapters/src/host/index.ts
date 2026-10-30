@@ -4,5 +4,7 @@ export { hostHeaderProblems, matchRoute, parseStrict, providerIdsOf, ProxyRefusa
 export type { ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRoute, ProxyUsage } from "./proxy.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
-export { childEnv, confined, INHERITED_ENV, openLocalMachine, startChild } from "./machine.js";
+export { childEnv, confined, INHERITED_ENV, launchCommand, openLocalMachine, startChild } from "./machine.js";
 export type { CacheFile, ChildCommand, ConfineChild, KillSignal, LocalMachine, LocalMachineSpec, MachineChild, MachineSpawn, MachineTail } from "./machine.js";
+export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from "./parent-death.js";
+export type { LaunchCommand, ParentWatch } from "./parent-death.js";

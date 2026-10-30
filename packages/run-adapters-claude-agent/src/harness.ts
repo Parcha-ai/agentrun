@@ -666,6 +666,11 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const sdkEnv = { ...vmEnv, CLAUDE_CONFIG_DIR: configDir };
         const disallowed = [...CLAUDE_BUILTINS_OFF, ...(providerTools.includes('web_search') ? [] : ['WebSearch']), ...(options.disallowedTools ?? [])].filter((name) => !(skills && name === 'Skill'));
         const sessionId = uuidFrom(ctx.runId);
+        // A turn a crash cut off: the harness's own account of it (which calls completed, which may have half-run) goes
+        // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
+        // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this
+        // drive alone renders its own (`snapshot: false`, which records nothing: the next drive's is the recorded one).
+        const recovered = recoverySystemNote(ctx.state());
         const queryOptions: QueryOptions = {
           model,
           cwd: machine.root,
@@ -692,8 +697,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions].filter(Boolean).join('\n\n'),
-            snapshot: true,
+            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
+            snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
           ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
@@ -853,12 +858,12 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           // An earlier invocation that ended before its snapshot: the manifest catches up first.
           await driveFiles?.catchUp();
           const open = openTurn(ctx.state());
-          const note = recoveryNote(ctx.state(), { prompts: !!open && lostPrompts(ctx.state(), open.placed, store).length > 0 });
+          const note = recovered && recoveryNote(ctx.state());
           if (note) {
             if (open) ledger.turn(open.placed[0] ?? `open:${open.since}`);
             // The CLI answers again from the interrupted step: what a reader saw of its reply is replaced by what the log kept.
             ctx.live(restartEvent(note.turn));
-            await send(note.text, note.pending, { synthetic: 'recovery' });
+            await send(recoveryUserTurn(ctx.state(), store, note.pending), note.pending, { synthetic: 'recovery' });
             await runTurn();
           }
           // The inbox, one submission per turn.
@@ -951,6 +956,54 @@ function mirrorUnmapped(why: string): Unavailable {
 function outOfTime(limitMs: number, output: string): string {
   return `Ran out of time in this invocation of the session (its timeout was cut to ${Math.round(limitMs / 1000)} s); partial effects may exist. Output so far:\n${output}`;
 }
+
+/** The user's turn that resumes a cut-off turn when the user has said nothing new: no recovery text in it. */
+export const RECOVERY_NUDGE = 'Continue.';
+
+/**
+ * The user's turn that resumes a cut-off turn: only the user's words, the prompts of that turn the transcript never got
+ * (`lostPrompts`), then the messages sent since (`pending`), each whole, in that order. With none, the bare nudge: a
+ * resumed session moves only on a user message. The harness's own account of the turn goes in the system prompt.
+ */
+export function recoveryUserTurn(state: SessionState, store: Pick<JournalSessionStore, 'hasUser'>, pending: readonly Submission[]): string {
+  const open = openTurn(state);
+  const lost = open ? lostPrompts(state, open.placed, store) : [];
+  const words = [...lost.map((id) => state.submissions.find((x) => x.id === id)?.text), ...pending.map((x) => x.text)].filter((t): t is string => !!t);
+  return words.length ? words.join('\n\n') : RECOVERY_NUDGE;
+}
+
+/**
+ * The harness's recovery note, as the resuming drive's system prompt carries it, or undefined with no turn to recover:
+ * only the harness's own words. Each tool call of the cut-off turn by its name, its id and its status, and never its
+ * input, output or error text: those can hold what a file or a web page said, and the system prompt would give that the
+ * harness's authority. Nor do they go in the user's turn, which would give it the user's.
+ */
+export function recoverySystemNote(state: SessionState): string | undefined {
+  const note = recoveryNote(state, { pending: [] });
+  if (!note) return undefined;
+  const lines = [
+    'The harness, not the user, adds this about the turn before this one:',
+    '[Recovery] Your previous turn was interrupted: the process running it stopped, and this session was resumed from its durable log.',
+    '',
+  ];
+  if (note.calls.length === 0) lines.push('No tool call had started in that turn.');
+  else {
+    lines.push('What the log records about the tool calls since that turn began (none was run again):');
+    for (const c of note.calls) lines.push(`- ${c.name}, call ${c.callId}: ${RECOVERY_STATUS[c.status]}`);
+    lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
+  }
+  lines.push('', 'Check the actual state before repeating anything that may have taken effect, then carry on with the task.');
+  return lines.join('\n');
+}
+
+/** What the note says of a call in each status the log can give it (the shared note's words, harness-process 010). */
+const RECOVERY_STATUS: Record<NonNullable<ReturnType<typeof recoveryNote>>['calls'][number]['status'], string> = {
+  completed: 'completed.',
+  failed: 'failed.',
+  interrupted: 'interrupted before it reported a result. It is not safe to repeat, and it may have taken effect.',
+  retryable: 'interrupted before it reported a result. It is safe to repeat.',
+  running: 'interrupted, and it may still be running. It may have taken effect.',
+};
 
 /**
  * The prompts among `placed` that never reached the transcript: neither the

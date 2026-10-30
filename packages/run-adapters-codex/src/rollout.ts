@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/rollout.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: message prefixes; comments.
+// Changed by Parcha, patches: 004-names, 006-comments
 /**
  * Codex's rollout, as the run's log holds it. Pure functions, no Node
  * imports.

@@ -6,13 +6,16 @@
 //    and the per-session proxy key). Nothing else is inherited, so no provider key, token or host secret reaches it;
 //  - a child's git stops at the session's directory (GIT_CEILING_DIRECTORIES), and the host may start every child under
 //    its own confinement, in front of the command;
-//  - each child runs in its own process group, which kill() and close() end whole;
+//  - each child runs in its own process group, which kill() and close() end whole, and dies with this process: started
+//    with a watch on its parent (./parent-death.ts, inside the host's confinement), so a host that is SIGKILLed, and runs
+//    no close, leaves no child behind;
 //  - the model proxy (./proxy.ts, with the harness's policy) starts with the machine and stops with it.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
+import { parentWatched, type ParentWatch } from "./parent-death.js";
 import { startModelProxy, type ModelProxyOptions } from "./proxy.js";
 
 /** The variables a child takes from this process, when they are set. */
@@ -89,11 +92,17 @@ export function childEnv(from: Readonly<Record<string, string | undefined>>, ext
   return { ...env, ...extra };
 }
 
-/** Start a child of the session: `env` beyond the allowlist, in its own process group, killed whole. Its git stops at
- *  `ceiling` (the session's directory): it never looks for a repository above the session, in a parent the model
- *  could write, whose branch and remote would otherwise reach the records. */
-export function startChild(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling?: string, confine?: ConfineChild, name?: string): MachineChild {
-  const run = confined({ command: options.command, args: options.args ?? [] }, confine, name);
+/** The command a child is started with: the child, watched by this process (it dies with it), under the host's
+ *  confinement. The watch is inside the confinement, so it is set after any switch of user the prefix makes. */
+export function launchCommand(child: ChildCommand, confine: ConfineChild | undefined, watch?: ParentWatch, name?: string): ChildCommand {
+  return confined(parentWatched(child, watch), confine, name);
+}
+
+/** Start a child of the session: `env` beyond the allowlist, in its own process group, killed whole, and ended when this
+ *  process ends. Its git stops at `ceiling` (the session's directory): it never looks for a repository above the
+ *  session, in a parent the model could write, whose branch and remote would otherwise reach the records. */
+export function startChild(options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling?: string, confine?: ConfineChild, name?: string, watch?: ParentWatch): MachineChild {
+  const run = launchCommand({ command: options.command, args: options.args ?? [] }, confine, watch, name);
   const child = spawnChild(run.command, run.args, {
     cwd: options.cwd ?? cwd,
     env: { ...childEnv(from, options.env), ...(ceiling ? { GIT_CEILING_DIRECTORIES: ceiling } : {}) },
@@ -152,6 +161,8 @@ export interface LocalMachineSpec<D extends string> {
   sessionId: string;
   /** Start every child of the session under the host's confinement. */
   confine?: ConfineChild;
+  /** How a child is tied to this process (default what this machine supports; tests force the shim). */
+  parentWatch?: ParentWatch;
   /** The process environment the allowlist reads. */
   from: Readonly<Record<string, string | undefined>>;
   /** The model proxy's options, its policy included; the machine makes the session's key. */
@@ -199,7 +210,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   let closed = false;
   const start = (options: MachineSpawn): MachineChild => {
     if (closed) throw new Error(`${name}: the session machine is closed`);
-    const proc = startChild(options, from, root, base, spec.confine, name);
+    const proc = startChild(options, from, root, base, spec.confine, name, spec.parentWatch);
     children.add(proc);
     void proc.exited.then(() => children.delete(proc));
     return proc;

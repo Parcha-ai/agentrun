@@ -2,12 +2,12 @@
 // own box (an operator's machine, or a sandbox box the host runs in). Nothing here assumes where that is. The machine
 // itself is the kernel's (@parcha/agentrun-kernel/host, `openLocalMachine`): private directories, the allowlisted
 // environment (so no provider key, token, sign-in or another session's state reaches a child), the git ceiling, the
-// host's confinement, process groups ended whole, and the model proxy. What is the Claude Agent CLI's own here:
+// host's confinement, process groups ended whole, the parent watch (a child dies with this process, so a SIGKILLed host leaves none behind), and the model proxy. What is the Claude Agent CLI's own here:
 //  - its private directories: home, config, tmp, cache (mode 0700), and an empty working directory (`work`), never the
 //    host's workspace;
 //  - the SDK's spawn hook adopts the child it starts (`start`), its raw streams, not a line protocol;
 //  - the proxy serves the Anthropic policy, and says once per session what the provider did with a token count.
-import { confined as kernelConfined, openLocalMachine, startChild as kernelStartChild, type ChildCommand, type ConfineChild, type MachineChild, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { confined as kernelConfined, launchCommand as kernelLaunchCommand, openLocalMachine, startChild as kernelStartChild, type ChildCommand, type ConfineChild, type MachineChild, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import type { AcquireMachine, CacheDir, MachineSpawn, SessionMachine } from "./process.js";
 import { brandMachine } from "./process.js";
 import { anthropicPolicy, type AnthropicPolicyOptions } from "./policy.js";
@@ -23,6 +23,8 @@ export interface LocalMachineOptions {
   dir: string;
   /** Start every child of the session (the CLI) under the host's confinement. */
   confine?: ConfineChild;
+  /** How a child is tied to this process (default what the machine supports; tests force the shim). */
+  parentWatch?: ParentWatch;
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits. */
   proxy: {
     hooks: ModelProxyHooks;
@@ -46,8 +48,12 @@ export const confined = (child: ChildCommand, confine: ConfineChild | undefined)
 
 /** Start a child of the session: `env` beyond the allowlist, in its own process group, killed whole. Its git stops at
  *  `ceiling` (the session's directory). */
-export const startChild = (options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling?: string, confine?: ConfineChild): MachineChild =>
-  kernelStartChild(options, from, cwd, ceiling, confine, NAME);
+/** The command a child is started with: the child, watched by this process (it dies with it), under the host's
+ *  confinement (the kernel's launchCommand). */
+export const launchCommand = (child: ChildCommand, confine: ConfineChild | undefined, watch?: ParentWatch): ChildCommand => kernelLaunchCommand(child, confine, watch, NAME);
+
+export const startChild = (options: MachineSpawn, from: Readonly<Record<string, string | undefined>>, cwd: string, ceiling?: string, confine?: ConfineChild, watch?: ParentWatch): MachineChild =>
+  kernelStartChild(options, from, cwd, ceiling, confine, NAME, watch);
 
 /** A local machine also lets its spawner adopt a child it started itself (the CLI, through the SDK's spawn hook). */
 export interface LocalSessionMachine extends SessionMachine {
@@ -72,6 +78,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       sessionId: ctx.runId,
       from,
       ...(options.confine ? { confine: options.confine } : {}),
+      ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
       proxy: {
         policy: anthropicPolicy({
           model: route.models.model,
