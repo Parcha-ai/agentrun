@@ -432,13 +432,11 @@ async function startAs(api, id, definition) {
 }
 /** A flow of decisions alone, whose output is the first judge's: a run of it makes no model request. */
 const decisionsOnly = (steps) => ({ ...flow(steps), output: { schemaId: "Coi", path: "coi" } });
-/** The run's cost.source on the run, in the runs list and on its timeline page. */
+/** The run's cost.source on the run, in the runs list and on its timeline page. The list is read first: after a restart,
+ *  a run the server has not opened yet is summarized from its row and serve.json alone. */
 async function sourcesOf(api, runId) {
-  return [
-    (await api("GET", `/runs/${runId}`)).body.cost.source,
-    (await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).cost.source,
-    (await api("GET", `/runs/${runId}/timeline`)).body.cost.source,
-  ];
+  const listed = (await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).cost.source;
+  return [(await api("GET", `/runs/${runId}`)).body.cost.source, listed, (await api("GET", `/runs/${runId}/timeline`)).body.cost.source];
 }
 
 test("a run whose every decision's cost Jev reports, and that makes no model request, is cost.source reported: its row keeps cost_basis reported, and the run, the list and the timeline say so, before and after a restart", async (t) => {
