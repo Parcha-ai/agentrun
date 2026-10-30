@@ -174,6 +174,30 @@ async function hold(
 	return handle;
 }
 
+/**
+ * What stopped the runner's session, once pi has stopped it: from a failed commit on, its harness refuses every call,
+ * with the commit's error as the cause. A wait on that, not on a time; it ends early, with nothing, once `ran` says a
+ * tool started, and fails after `withinMs`, a limit only a runner that never gives up reaches.
+ */
+async function stoppedBy(runner: Runner, ran: () => boolean, withinMs = 20_000): Promise<unknown> {
+	const deadline = performance.now() + withinMs;
+	const late = Symbol("late");
+	while (!ran()) {
+		// A call waits while a commit is in flight: the wait for the host's acknowledgement too.
+		const refused = await Promise.race([
+			runner.home?.harness?.inspect(context).then(
+				() => undefined,
+				(error: unknown) => error ?? null,
+			),
+			sleep(Math.max(0, deadline - performance.now())).then(() => late),
+		]);
+		if (refused === late) throw new Error(`the session did not stop in ${withinMs} ms`);
+		if (refused !== undefined) return (refused as { cause?: unknown } | null)?.cause;
+		await sleep(10);
+	}
+	return undefined;
+}
+
 /** The store's head: the sequence its next commit takes. */
 function headOf(store: string): number {
 	const database = new DatabaseSync(store, { readOnly: true });
@@ -451,21 +475,28 @@ describe("the record stream", () => {
 			const runner = createRunner(made.options);
 			(await hold(made, runner, 1, kept.sink, server)).close("gone");
 			// A host that does not take the stream: no commit of this runner is acknowledged.
-			const blind = await hold(made, runner, 1, undefined, server);
-			getOrThrow(await blind.resume({ epoch: 1 }, context));
-			getOrThrow(await blind.submit("go", undefined, context));
-			// Longer than the runner waits for an acknowledgement (1.5 s).
-			await sleep(2_500);
-			expect(made.starts).toEqual([]);
-			expect(made.effects()).toEqual([]);
-			blind.close("gone");
-			// A host that takes the stream gets the admission, late: the call still does not run.
-			const back = await hold(made, runner, 1, kept.sink, server);
-			await sleep(300);
-			expect(kept.log.some((one) => admitsTool(one.writes))).toBe(true);
-			expect(made.starts).toEqual([]);
-			back.close("done");
-			await runner.home?.close(context).catch(() => {});
+			try {
+				const blind = await hold(made, runner, 1, undefined, server);
+				getOrThrow(await blind.resume({ epoch: 1 }, context));
+				getOrThrow(await blind.submit("go", undefined, context));
+				// The runner waits 1.5 s from the admitting commit, which a busy machine makes late: wait for the stop itself.
+				const stopped = await stoppedBy(runner, () => made.starts.length > 0);
+				expect(made.starts).toEqual([]);
+				expect(String(stopped)).toContain("the host did not acknowledge commit");
+				expect(made.effects()).toEqual([]);
+				blind.close("gone");
+				// A host that takes the stream gets the admission, late: the call still does not run.
+				const back = await hold(made, runner, 1, kept.sink, server);
+				try {
+					await expect.poll(() => kept.log.some((one) => admitsTool(one.writes)), { timeout: 10_000 }).toBe(true);
+					await sleep(300);
+					expect(made.starts).toEqual([]);
+				} finally {
+					back.close("done");
+				}
+			} finally {
+				await runner.home?.close(context).catch(() => {});
+			}
 		});
 	}, 30_000);
 

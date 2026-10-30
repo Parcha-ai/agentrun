@@ -428,15 +428,19 @@ describe("a command when the process that started it dies", () => {
     }
   };
 
-  it("dies with it (setpriv --pdeathsig KILL): a pi command under the run's env does not outlive a SIGKILLed run process", { skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async () => {
+  for (const recorded of [false, true])
+  it(`dies with it (setpriv --pdeathsig KILL): a pi command under the run's env does not outlive a SIGKILLed run process${recorded ? ", when the run's recorder cannot write its mark (nothing would name the command at the next open)" : ""}`, { skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async () => {
     await withRun(async ({ root, work }) => {
+      // A file where the recorder's directory would be: its mark cannot be written.
+      const commands = join(root, "commands-blocked");
+      if (recorded) writeFileSync(commands, "not a directory");
       // The run's process, as pi starts commands from it: archilEnv's env, a command through its exec.
       const spawner = join(root, "spawner.ts");
       const pidFile = join(root, "sleep.pid");
       writeFileSync(spawner, [
         `import { archilEnv } from ${JSON.stringify(new URL("../src/env.ts", import.meta.url).pathname)};`,
         `import { BACKGROUND_CONTEXT } from ${JSON.stringify(import.meta.resolve("@earendil-works/chord/context"))};`,
-        `const env = await archilEnv({ root: ${JSON.stringify(root)}, work: ${JSON.stringify(work)} })({});`,
+        `const env = await archilEnv({ root: ${JSON.stringify(root)}, work: ${JSON.stringify(work)}${recorded ? `, commands: ${JSON.stringify(commands)}` : ""} })({});`,
         `await env.exec(${JSON.stringify(`echo $$ > ${pidFile}; exec sleep 300`)}, {}, BACKGROUND_CONTEXT);`,
       ].join("\n"));
       const child = spawn(process.execPath, [spawner], { stdio: ["ignore", "ignore", "pipe"] });

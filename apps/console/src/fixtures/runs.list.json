@@ -1,0 +1,707 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs?limit=100"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "runs": [
+      {
+        "run_id": "01a18401-0443-72bd-94e2-dae039885e58",
+        "agent_id": "lead-scorer",
+        "agent_version": 1,
+        "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Sample Freight Cooperative",
+        "created_at": "2026-10-28T19:33:42.195Z",
+        "ended_at": "2026-10-28T19:33:45.922Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004338,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18401-01ea-7eed-84d2-1963c61165fe",
+        "agent_id": "lead-scorer",
+        "agent_version": 1,
+        "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Example Tutoring Club",
+        "created_at": "2026-10-28T19:33:41.746Z",
+        "ended_at": "2026-10-28T19:33:45.626Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004257,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18401-01e5-751d-b30d-a49f4281b698",
+        "agent_id": "lead-scorer",
+        "agent_version": 1,
+        "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Acme Outdoor Supply",
+        "created_at": "2026-10-28T19:33:41.636Z",
+        "ended_at": "2026-10-28T19:33:45.460Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004325,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-fe83-7710-9bea-43fb832f30ea",
+        "agent_id": "support-triage",
+        "agent_version": 2,
+        "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+        "kind": "workflow",
+        "sha": null,
+        "status": "cancelled",
+        "state": "idle",
+        "title": "Second bulk import takes a while",
+        "created_at": "2026-10-28T19:33:40.640Z",
+        "ended_at": "2026-10-28T19:33:42.696Z",
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-fb34-7e15-b661-ccce2e884118",
+        "agent_id": "support-triage",
+        "agent_version": 2,
+        "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+        "kind": "workflow",
+        "sha": null,
+        "status": "working",
+        "state": "working",
+        "title": "Bulk import takes a while",
+        "created_at": "2026-10-28T19:33:39.746Z",
+        "ended_at": null,
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-f81e-7e1c-948f-425dc50a231f",
+        "agent_id": "support-triage",
+        "agent_version": 2,
+        "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+        "kind": "workflow",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Data loss after the update",
+        "created_at": "2026-10-28T19:33:38.990Z",
+        "ended_at": "2026-10-28T19:33:41.748Z",
+        "error": {
+          "code": "escalated",
+          "message": "classify; escalated at urgent",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0.002588,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-f12e-74b5-a4da-9614bb1bd978",
+        "agent_id": "support-triage",
+        "agent_version": 2,
+        "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+        "kind": "workflow",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Everything is down",
+        "created_at": "2026-10-28T19:33:37.660Z",
+        "ended_at": "2026-10-28T19:33:40.650Z",
+        "error": {
+          "code": "escalated",
+          "message": "classify; escalated at urgent",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0.002556,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-ef11-7671-95eb-f8c9245976cd",
+        "agent_id": "support-triage",
+        "agent_version": 2,
+        "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Feature question",
+        "created_at": "2026-10-28T19:33:36.775Z",
+        "ended_at": "2026-10-28T19:33:40.793Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004955,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-edec-754a-b6a2-070d78b68fd4",
+        "agent_id": "support-triage",
+        "agent_version": 2,
+        "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Password reset email never arrives",
+        "created_at": "2026-10-28T19:33:36.292Z",
+        "ended_at": "2026-10-28T19:33:39.899Z",
+        "error": null,
+        "cost": {
+          "usd": 0.005043,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-ebef-7fe2-baef-27e90ef3df4f",
+        "agent_id": "support-triage",
+        "agent_version": 1,
+        "revision": "18bedb90108096c4259baf9f350b3865e5f7abcc0fb137baf8d4b2e6ac0c8243",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "How do I export my data?",
+        "created_at": "2026-10-28T19:33:35.719Z",
+        "ended_at": "2026-10-28T19:33:39.094Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004989,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-e7cb-7607-8c0d-d74f9c550808",
+        "agent_id": "support-triage",
+        "agent_version": 1,
+        "revision": "18bedb90108096c4259baf9f350b3865e5f7abcc0fb137baf8d4b2e6ac0c8243",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Invoice shows the wrong plan",
+        "created_at": "2026-10-28T19:33:34.810Z",
+        "ended_at": "2026-10-28T19:33:38.302Z",
+        "error": null,
+        "cost": {
+          "usd": 0.005083,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-e68c-78e2-8dfe-5c45ed442cb2",
+        "agent_id": "meeting-notes",
+        "agent_version": 1,
+        "revision": "de808d53a519354cd685e0280867779a8b282f7161ea8f9ac08da85a02a46655",
+        "kind": "agentic",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Summarize the garbled meeting recording from the call with bad audio.",
+        "created_at": "2026-10-28T19:33:34.395Z",
+        "ended_at": "2026-10-28T19:33:36.777Z",
+        "error": {
+          "code": "run_failed",
+          "message": "The model's response was cut off and could not be read (sample failure).",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0.000351,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-dfa2-7cbd-8443-2751c510828c",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the design workshop whiteboard photos.",
+        "created_at": "2026-10-28T19:33:33.479Z",
+        "ended_at": "2026-10-28T19:33:37.276Z",
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-df8e-7a80-bf2a-a38bdc9bbb84",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "input_required",
+        "state": "idle",
+        "title": "Summarize the design workshop notes from the offsite.",
+        "created_at": "2026-10-28T19:33:33.066Z",
+        "ended_at": null,
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-d741-7860-b234-1b65692d0f7b",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "cancelled",
+        "state": "idle",
+        "title": "Summarize the design workshop recording from Tuesday.",
+        "created_at": "2026-10-28T19:33:32.338Z",
+        "ended_at": "2026-10-28T19:33:35.235Z",
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-d1e5-7756-8d33-056d03807248",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "working",
+        "state": "working",
+        "title": "Summarize the design workshop transcript (all four hours of it).",
+        "created_at": "2026-10-28T19:33:32.153Z",
+        "ended_at": null,
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-d1e3-7858-aa6f-94808acad514",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the launch meeting: the waitlist email is due Friday and the usage ch…",
+        "created_at": "2026-10-28T19:33:32.014Z",
+        "ended_at": "2026-10-28T19:33:34.818Z",
+        "error": null,
+        "cost": {
+          "usd": 0.002141,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-cbdf-776f-bab7-20536bb30c38",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the pricing meeting: the free tier stays, the FAQ needs a draft, and …",
+        "created_at": "2026-10-28T19:33:30.035Z",
+        "ended_at": "2026-10-28T19:33:33.243Z",
+        "error": null,
+        "cost": {
+          "usd": 0.002161,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-cbdb-7bca-9dee-ac3d186b5185",
+        "agent_id": "meeting-notes",
+        "agent_version": 1,
+        "revision": "de808d53a519354cd685e0280867779a8b282f7161ea8f9ac08da85a02a46655",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the weekly product meeting: we agreed to ship the beta on the 3rd and…",
+        "created_at": "2026-10-28T19:33:29.001Z",
+        "ended_at": "2026-10-28T19:33:33.068Z",
+        "error": null,
+        "cost": {
+          "usd": 0.00212,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-c634-739d-b555-94046b6f0dbc",
+        "agent_id": "release-notes",
+        "agent_version": 2,
+        "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+        "kind": "agentic",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Write the release notes for 2.5.0 (expect a provider outage) from: #440 audit l…",
+        "created_at": "2026-10-28T19:33:26.784Z",
+        "ended_at": "2026-10-28T19:33:44.244Z",
+        "error": {
+          "code": "run_failed",
+          "message": "The model provider returned 503 Service Unavailable (sample failure).",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0.003664,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-b447-731e-85f0-e0f68eae3fb7",
+        "agent_id": "release-notes",
+        "agent_version": 2,
+        "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Write the release notes for 2.4.1 from: #430 fix the sign-in page on phones, #4…",
+        "created_at": "2026-10-28T19:33:24.718Z",
+        "ended_at": "2026-10-28T19:33:31.403Z",
+        "error": null,
+        "cost": {
+          "usd": 0.011977,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-89d9-76d5-9e3d-4213ee493a7d",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Check invoice INV-1049 from the hosting vendor: hosting 440.00, 6 support hours…",
+        "created_at": "2026-10-28T19:33:22.579Z",
+        "ended_at": "2026-10-28T19:33:26.803Z",
+        "error": {
+          "code": "spend_cap_reached",
+          "message": "the next model request was not sent. It could cost up to $0.247957, and with $0.000000 spent the run would pass its cap of $0.000001: the run is out of budget.",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": 0.000001
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-87cc-7679-a63f-6e94f0c04778",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1048 from the hosting vendor: hosting 440.00, total 440.00.",
+        "created_at": "2026-10-28T19:33:21.091Z",
+        "ended_at": "2026-10-28T19:33:29.324Z",
+        "error": null,
+        "cost": {
+          "usd": 0.00884,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-8399-7f9c-9a53-70c59dd75c58",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1047 (the currency is missing): licenses 12 at 30.00, total 3…",
+        "created_at": "2026-10-28T19:33:20.486Z",
+        "ended_at": "2026-10-28T19:33:29.008Z",
+        "error": null,
+        "cost": {
+          "usd": 0.010088,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-89e3-70f5-9853-aa269988814b",
+        "agent_id": "release-notes",
+        "agent_version": 2,
+        "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Write the release notes for 2.4.0 from: #412 incremental search, #418 typo tole…",
+        "created_at": "2026-10-28T19:33:20.080Z",
+        "ended_at": "2026-10-28T19:33:30.050Z",
+        "error": null,
+        "cost": {
+          "usd": 0.012017,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-89e0-70ed-8905-7c251c837826",
+        "agent_id": "release-notes",
+        "agent_version": 1,
+        "revision": "1a7abad3ca7965d94e0561845d525536f1ebe644219e6aaeaa5df75d5d20269d",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Write the release notes for 2.3.1 from: #401 fix export encoding, #402 faster s…",
+        "created_at": "2026-10-28T19:33:19.644Z",
+        "ended_at": "2026-10-28T19:33:29.598Z",
+        "error": null,
+        "cost": {
+          "usd": 0.011789,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-7f56-797d-bbae-fb855c2c9d2d",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "input_required",
+        "state": "waiting",
+        "title": "Check invoice INV-1046 (the currency is missing): consulting 2,400.00, travel 3…",
+        "created_at": "2026-10-28T19:33:09.695Z",
+        "ended_at": null,
+        "error": null,
+        "cost": {
+          "usd": 0.004043,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5ebe-7302-898c-19883f13e572",
+        "agent_id": "invoice-checker",
+        "agent_version": 2,
+        "revision": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1044 from the design studio: 3 days at 650.00, total 1,950.00.",
+        "created_at": "2026-10-28T19:33:05.364Z",
+        "ended_at": "2026-10-28T19:33:22.981Z",
+        "error": null,
+        "cost": {
+          "usd": 0.00802,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5ebf-7ad7-af75-2e0fb3b41961",
+        "agent_id": "invoice-checker",
+        "agent_version": 2,
+        "revision": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1045 from the cleaning service: 4 visits at 95.00, supplies 3…",
+        "created_at": "2026-10-28T19:33:05.015Z",
+        "ended_at": "2026-10-28T19:33:22.609Z",
+        "error": null,
+        "cost": {
+          "usd": 0.008048,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5ebc-7f67-abfb-192c6264ecde",
+        "agent_id": "invoice-checker",
+        "agent_version": 2,
+        "revision": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1043 from the hosting vendor: hosting 420.00, 10 support hour…",
+        "created_at": "2026-10-28T19:33:04.695Z",
+        "ended_at": "2026-10-28T19:33:23.383Z",
+        "error": null,
+        "cost": {
+          "usd": 0.008062,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5eb8-7ffa-8cb1-6e28d6473434",
+        "agent_id": "invoice-checker",
+        "agent_version": 1,
+        "revision": "1c9bdb3393edc2277443bbd496b36658c0ed186864b9b37040fb2e0645ee73da",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1042: hosting 420.00, total 420.00.",
+        "created_at": "2026-10-28T19:33:02.956Z",
+        "ended_at": "2026-10-28T19:33:21.569Z",
+        "error": null,
+        "cost": {
+          "usd": 0.007329,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5eb3-75d3-ac8a-6221af97f975",
+        "agent_id": "invoice-checker",
+        "agent_version": 1,
+        "revision": "1c9bdb3393edc2277443bbd496b36658c0ed186864b9b37040fb2e0645ee73da",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1041 from the hosting vendor: hosting 420.00, 12 support hour…",
+        "created_at": "2026-10-28T19:33:01.877Z",
+        "ended_at": "2026-10-28T19:33:09.712Z",
+        "error": null,
+        "cost": {
+          "usd": 0.007459,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      }
+    ],
+    "next_cursor": null
+  }
+}

@@ -130,7 +130,7 @@ const firstClosed = closed(first);
 // The long command has started once the file it writes first has a line in it, and the package has recorded it (the instance
 // notes the commands it runs a tenth of a second after they start; a kill before that could miss one).
 const progress = join(work, "progress.log");
-const recorded = () => existsSync(join(root, "commands")) && readdirSync(join(root, "commands")).some((name) => name.endsWith(".json"));
+const recorded = () => existsSync(join(root, "commands")) && readdirSync(join(root, "commands")).some((name) => /^\d+-\d+\.json$/.test(name));
 for (let waited = 0; !(existsSync(progress) && readFileSync(progress, "utf8").includes("started") && recorded()); waited += 25) {
   if (waited > 30_000) fail("the long command never started");
   await new Promise((resolve) => setTimeout(resolve, 25));

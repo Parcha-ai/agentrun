@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
-import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
@@ -147,6 +148,8 @@ export type Run = {
 
 const ASKED = "Asked you: ";
 registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`);
+// ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
+registerTurnEnding(ASK_TOOL);
 
 /** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
  *  from the call's row, whose label this module registers. */
@@ -262,15 +265,53 @@ function inWords(line: string): string {
   return [text("event"), text("message") ?? text("error")].filter(Boolean).join(": ") || "the run's process left no message";
 }
 
+/** The line of the run process's log a failure's message is made of: its last, past any harness's own lines (a proxy's
+ *  refusal just before a crash says nothing of why the process went). */
+export function failureLine(log: string): string {
+  const lines = log.trim().split("\n");
+  return ownLine(lines) ?? lines.at(-1) ?? "";
+}
+
+/** The last of `lines` that is not a harness's own line, if any. */
+function ownLine(lines: readonly string[]): string | undefined {
+  return lines.findLast((line) => {
+    if (line.trim() === "") return false;
+    try {
+      return (JSON.parse(line) as { event?: unknown } | null)?.event !== HARNESS_LOG_EVENT;
+    } catch {
+      return true;
+    }
+  });
+}
+
+/** How far back from its end a failure's message is looked for in the run's log, in steps of LOG_STEP. */
+const LOG_STEP = 4096;
+const LOG_REACH = 1 << 20;
+
 /** The last line of the run process's log, in words, for a failure's message. */
-async function lastLogLine(run: Run): Promise<string> {
+export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
   try {
+    // Backward until a whole line is the process's own: harness lines after it may run past any one read, and a read
+    // that starts inside a line has only its tail, which is no line at all. Each step looks only at the lines it
+    // completes; what was read is joined once, and failureLine, the one rule, picks the line from it.
     const { size } = await file.stat();
-    const length = Math.min(size, 4096);
-    const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
-    return clip(inWords(buffer.toString("utf8").trim().split("\n").at(-1) ?? ""), 300);
+    const chunks: Buffer[] = [];
+    let start = size;
+    // The oldest line read so far, torn at the read's start unless that is the file's start.
+    let head = Buffer.alloc(0);
+    while (start > 0 && size - start < LOG_REACH) {
+      const from = Math.max(0, start - LOG_STEP);
+      const { buffer } = await file.read(Buffer.alloc(start - from), 0, start - from, from);
+      start = from;
+      chunks.unshift(buffer);
+      const newline = buffer.indexOf(0x0a);
+      const completed = start === 0 ? Buffer.concat([buffer, head]) : newline < 0 ? Buffer.alloc(0) : Buffer.concat([buffer.subarray(newline + 1), head]);
+      head = start === 0 ? Buffer.alloc(0) : newline < 0 ? Buffer.concat([buffer, head]) : buffer.subarray(0, newline);
+      if (ownLine(completed.toString("utf8").split("\n")) !== undefined) break;
+    }
+    return clip(inWords(failureLine(Buffer.concat(chunks).subarray(head.length).toString("utf8"))), 300);
   } finally {
     await file.close();
   }

@@ -1,0 +1,136 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-c634-739d-b555-94046b6f0dbc/timeline"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-c634-739d-b555-94046b6f0dbc",
+    "status": "failed",
+    "state": "idle",
+    "reset": true,
+    "rows": [
+      {
+        "id": "1:7",
+        "timestamp": "2026-10-28T19:33:28.916Z",
+        "created_at": "2026-10-28T19:33:28.916Z",
+        "kind": "user_message",
+        "summary": "You: Write the release notes for 2.5.0 (expect a provider outage) from: #440 audit log, #441 roles.",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "Write the release notes for 2.5.0 (expect a provider outage) from: #440 audit log, #441 roles.",
+        "conversation_id": 1,
+        "seq": 0
+      },
+      {
+        "id": "1:12",
+        "timestamp": "2026-10-28T19:33:29.448Z",
+        "created_at": "2026-10-28T19:33:29.448Z",
+        "kind": "error",
+        "summary": "Model request failed: The model provider returned 503 Service Unavailable (sample failure).",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "The model provider returned 503 Service Unavailable (sample failure).",
+        "conversation_id": 1,
+        "seq": 1
+      },
+      {
+        "id": "1:14",
+        "timestamp": "2026-10-28T19:33:31.569Z",
+        "created_at": "2026-10-28T19:33:31.569Z",
+        "kind": "error",
+        "summary": "Model request failed: The model provider returned 503 Service Unavailable (sample failure).",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "The model provider returned 503 Service Unavailable (sample failure).",
+        "conversation_id": 1,
+        "seq": 2
+      },
+      {
+        "id": "1:16",
+        "timestamp": "2026-10-28T19:33:35.735Z",
+        "created_at": "2026-10-28T19:33:35.735Z",
+        "kind": "error",
+        "summary": "Model request failed: The model provider returned 503 Service Unavailable (sample failure).",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "The model provider returned 503 Service Unavailable (sample failure).",
+        "conversation_id": 1,
+        "seq": 3
+      },
+      {
+        "id": "1:18",
+        "timestamp": "2026-10-28T19:33:43.866Z",
+        "created_at": "2026-10-28T19:33:43.866Z",
+        "kind": "error",
+        "summary": "Model request failed: The model provider returned 503 Service Unavailable (sample failure).",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "The model provider returned 503 Service Unavailable (sample failure).",
+        "conversation_id": 1,
+        "seq": 4
+      },
+      {
+        "id": "1:usage",
+        "timestamp": "2026-10-28T19:33:43.866Z",
+        "created_at": "2026-10-28T19:33:43.866Z",
+        "kind": "usage",
+        "summary": "Cost so far: $0.0037 over 4 model requests",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 1,
+        "usage": {
+          "usd": 0.003664,
+          "requests": 4
+        },
+        "seq": 5
+      }
+    ],
+    "drop": [],
+    "next_after": 1793222378904088,
+    "unchanged": false,
+    "has_more": false,
+    "final": true,
+    "cost": {
+      "usd": 0.003664,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "poll_after_ms": 0
+  }
+}
