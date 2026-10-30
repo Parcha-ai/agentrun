@@ -1,5 +1,5 @@
 // A box's egress proxy, written for AgentRun: the one way out of a box whose network namespace has only its own loopback.
-// It listens on a Unix socket (0600) in the run's directory, bound into the box, and speaks HTTP CONNECT, plain HTTP
+// It listens on a Unix socket (0600) in the session's local runtime directory, bound into the box, and speaks HTTP CONNECT, plain HTTP
 // forwarding and SOCKS5 CONNECT (told apart by the first byte), each to the public internet only (egress-table.ts):
 //  - a host is resolved once, every address in the answer is checked, and the connection goes to exactly the address
 //    that was checked, so a name cannot point elsewhere between the check and the dial; an IP literal is checked the
@@ -31,10 +31,10 @@ export type EgressLookup = (
 ) => void;
 
 export interface EgressProxyOptions {
-  /** Where the socket is made: a path in the run's directory, which must be on a local file system (never a disk other
-   *  hosts mount, as a network or FUSE file system). A socket there that refuses a connection (its proxy died without
-   *  removing it) is replaced; one that answers is a live proxy's, and the start is refused (`egress_socket_in_use`);
-   *  anything else there is refused and left as it is (`egress_socket_path_taken`). */
+  /** Where the socket is made: a path in the session's LOCAL runtime directory (the machine's runtimeDir), never the
+   *  run's directory, which may sit on a disk other hosts mount. A socket there that refuses a connection (its proxy died
+   *  without removing it) is replaced; one that answers is a live proxy's, and the start is refused
+   *  (`egress_socket_in_use`); anything else there is refused and left as it is (`egress_socket_path_taken`). */
   socketPath: string;
   /** Connections open at once (tunnels and forwarded requests), past which a new one is refused. */
   maxTunnels: number;
@@ -288,10 +288,11 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
     });
   });
 
-  // A socket already at the path belongs to another proxy while it answers, and is never taken from it. Only one that
-  // refuses a connection is removed; anything that is not a socket is left where it is. That test holds only on a local
-  // file system, which is why the path must be on one: on a disk shared between hosts, a live proxy's socket on another
-  // host refuses a connection from this one and would be removed.
+  // A socket already at the path belongs to another proxy while it answers, and is never taken from it. The socket's
+  // directory is local; a connect refused there means nothing listens. So only a socket that refuses a connection is
+  // removed; any other failure of the probe (EACCES, say) is thrown and the socket left, and anything that is not a socket
+  // is left where it is. (On a disk shared between hosts, a live proxy's socket on another host would refuse this host's
+  // connection: that is why the directory must be local.)
   const taken = (code: string, what: string) => Object.assign(new Error(`egress proxy: ${socketPath} ${what}`), { code });
   let found: Stats | undefined;
   try {
@@ -314,8 +315,9 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
     await unlink(socketPath);
   }
   // Made under a name of its own and made 0600 before it gets its path, so it is never reachable there with a wider
-  // mode. The path is a hard link, never a rename: a link fails if anything reached the path since the check above,
-  // where a rename would replace it.
+  // mode. The path is a hard link, never a rename. Between the check above and this link, another start can put a socket
+  // at the path: a link then fails (EEXIST, refused as egress_socket_in_use), where a rename would replace that socket
+  // silently. No test can hold that window open, so this comment is its record. The temporary name is removed once linked.
   const making = join(dirname(socketPath), `.egress-${randomBytes(6).toString("hex")}.sock`);
   await new Promise<void>((ok, fail) => {
     server.once("error", fail);

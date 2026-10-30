@@ -3,7 +3,7 @@
 // origin. The dialer only ever gets an address the table passed, so it never widens what the proxy reaches.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
@@ -441,8 +441,9 @@ test("a live proxy's socket is never taken: a second start at its path is refuse
   }
 });
 
-test('a socket its proxy left behind when it died (a connect is refused) is replaced, and the new proxy serves', async () => {
-  // A listener killed with SIGKILL leaves its socket file, and a connect to it is refused: a session machine that crashed.
+/** A socket file at a fresh path whose listener was killed with SIGKILL: what a crashed session machine leaves. A connect
+ *  to it is refused. */
+async function deadSocket() {
   const path = socketPath();
   mkdirSync(join(path, '..'), { recursive: true });
   const child = spawn(process.execPath, ['-e', 'require("node:net").createServer().listen(process.argv[1], () => console.log("up"))', path], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -454,18 +455,43 @@ test('a socket its proxy left behind when it died (a connect is refused) is repl
     const gone = new Promise((ok) => child.once('exit', ok));
     child.kill('SIGKILL');
     await gone;
-    assert.ok(statSync(path).isSocket(), 'the dead listener left its socket');
-    const t = await proxy({ options: { socketPath: path } });
-    try {
-      const { got, socket } = await talk(path, CONNECT('origin.test:443'), ended);
-      assert.equal(head(got).status, 200);
-      socket.destroy();
-    } finally {
-      await t.close();
-    }
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
+  assert.ok(statSync(path).isSocket(), 'the dead listener left its socket');
+  return path;
+}
+
+test('a socket its proxy left behind when it died (a connect is refused) is replaced, and the new proxy serves', async () => {
+  const path = await deadSocket();
+  const t = await proxy({ options: { socketPath: path } });
+  try {
+    const { got, socket } = await talk(path, CONNECT('origin.test:443'), ended);
+    assert.equal(head(got).status, 200);
+    socket.destroy();
+  } finally {
+    await t.close();
+  }
+});
+
+test('a socket the probe cannot reach for another reason than a refusal (EACCES) is never removed: the start fails with that error', { skip: process.getuid?.() === 0 ? 'root connects to a mode-000 socket, so EACCES cannot happen' : false }, async () => {
+  const path = await deadSocket();
+  chmodSync(path, 0o000);
+  const before = statSync(path).ino;
+  await assert.rejects(startEgressProxy({ socketPath: path, maxTunnels: 1, maxConnections: 1, log: () => {} }), { code: 'EACCES' });
+  assert.ok(statSync(path).isSocket(), 'the socket is still there');
+  assert.equal(statSync(path).ino, before, 'the same socket, not a new one');
+});
+
+test('the temporary name the socket is made under is gone once it is in place, and close leaves nothing', async () => {
+  const t = await proxy();
+  const dir = join(t.path, '..');
+  try {
+    assert.deepEqual(readdirSync(dir), ['egress.sock']);
+  } finally {
+    await t.close();
+  }
+  assert.deepEqual(readdirSync(dir), []);
 });
 
 test('anything at the path that is not a socket is refused by name and left as it is', async () => {
