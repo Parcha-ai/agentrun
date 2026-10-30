@@ -23,8 +23,10 @@ import { described, judge, type Seen } from "./survivors.ts";
 const root = join(process.cwd(), "kill-9-run");
 const work = join(root, "work");
 const TASK = "Write the plan and the notes, then run the long job and report how it went.";
-// The long command: it notes its pid, logs that it started, sleeps far longer than this example runs, and would log that it finished.
-const LONG_JOB = "echo $$ > job.pid; echo started >> progress.log; sleep 120; echo finished >> progress.log";
+// The long command: it notes its pid, starts its sleep (far longer than this example runs) and only then logs that it
+// started, waits, and would log that it finished. Every process of it exists before `started` is written, so before the
+// supervisor, which waits for that line, takes the instant the check measures from (see survivors.ts).
+const LONG_JOB = "echo $$ > job.pid; sleep 120 & echo started >> progress.log; wait; echo finished >> progress.log";
 const FINISHED = "The job was cut and never rerun; the plan and the notes are intact.";
 
 const textOf = (content: unknown): string =>

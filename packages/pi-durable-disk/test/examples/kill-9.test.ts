@@ -35,7 +35,7 @@ it("the example's check: a process of the command's group that started before th
 });
 
 it("the example's check: while a process of the command's group from before the next open lives, the group never ended, so a child it forked after that instant is the command's too, a survivor", () => {
-  // The command pauses between `echo started` and starting `sleep` while the instant is taken: its sleep starts after it.
+  // A process of the group from before the instant lives, so the group never ended and its number was never free.
   const leader = seen(4300, 4300, 500, "S", "bash -c ...");
   const late = seen(4310, 4300, 1500, "S", "sleep 120");
   assert.deepEqual(judge([leader, late], 4300, before), { survivors: [leader, late], reused: [] });
@@ -43,4 +43,12 @@ it("the example's check: while a process of the command's group from before the 
 
 it("the example's check: a zombie of the group, and a live process of another group, are neither survivors nor reused numbers", () => {
   assert.deepEqual(judge([seen(4310, 4300, 600, "Z"), seen(4400, 4400, 600), seen(4401, 4400, 1500)], 4300, before), { survivors: [], reused: [] });
+});
+
+it("the example's check: with the command's leader gone, a holder of its group number that started after the next open began is another group's, by the command's own order", () => {
+  // The long job starts its sleep before it writes `started`, and the instant is taken only after that line: every
+  // process of the command started before the instant. So once none of those lives, a holder that started after it took
+  // the number again.
+  const holder = seen(4300, 4300, 1500, "S", "node another-test.js");
+  assert.deepEqual(judge([holder], 4300, before), { survivors: [], reused: [holder] });
 });
