@@ -91,7 +91,8 @@ test('a pause DURING a paid call: it runs on to its recorded outcome, and the re
   assert.deepEqual((await kernelRecords(store)).filter((r) => r.kind === 'kernel.retry'), [], 'no kernel.retry');
   assert.equal((await searchEnd(store)).length, 1, 'one outcome for the search');
   // The resumed CLI is told the recorded result, in the system prompt its resuming drive sends; no user message carries it.
-  assert.match(next.systems[0]?.sent ?? '', /\[Recovery\][\s\S]*search\(\{"q":"x"\}\), call \S+: completed\. Its result:\s+results for x/, `the CLI was told: ${(next.systems[0]?.sent ?? '').slice(-400)}`);
+  assert.match(next.systems[0]?.sent ?? '', /\[Recovery\][\s\S]*- search, call \S+: completed\./, `the CLI was told: ${(next.systems[0]?.sent ?? '').slice(-400)}`);
+  assert.ok(!(next.systems[0]?.sent ?? '').includes('results for x'), 'the note names the call and its status, never its output');
   const told = (await store.read('step:pause')).flatMap((r) => r.data?.input?.streams?.claude?.entries ?? [])
     .map((e) => e.data?.message).filter((m) => m?.role === 'user' && typeof m.content === 'string');
   assert.ok(!told.some((m) => /\[Recovery\]/.test(m.content)), `no user message carries the note: ${JSON.stringify(told).slice(0, 400)}`);
@@ -186,7 +187,7 @@ test('a call that outlives the drain is cut at the bound: the pause ends, and th
   const steps = new Set(records.filter((r) => r.kind === 'kernel.start' && r.data.name === 'tool.charge').map((r) => r.data.stepId));
   const ends = records.filter((r) => r.kind === 'kernel.end' && steps.has(r.data.stepId)).map((r) => r.data);
   assert.ok(ends.length === 1 && ends[0].status === 'failed' && ends[0].error?.interrupted === true, `the call is recorded interrupted: ${JSON.stringify(ends)}`);
-  assert.match(next.systems[0]?.sent ?? '', /\[Recovery\][\s\S]*charge\(\{\}\), call \S+: interrupted/, `the resumed CLI is told the call was interrupted: ${(next.systems[0]?.sent ?? '').slice(-400)}`);
+  assert.match(next.systems[0]?.sent ?? '', /\[Recovery\][\s\S]*- charge, call \S+: interrupted/, `the resumed CLI is told the call was interrupted: ${(next.systems[0]?.sent ?? '').slice(-400)}`);
   const told = records.flatMap((r) => r.data?.input?.streams?.claude?.entries ?? []).map((e) => e.data?.message).filter((m) => m?.role === 'user' && typeof m.content === 'string');
   assert.ok(!told.some((m) => /\[Recovery\]/.test(m.content)), `no user message carries the note: ${JSON.stringify(told).slice(0, 400)}`);
 });

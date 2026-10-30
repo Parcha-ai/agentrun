@@ -670,7 +670,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
         // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this
         // drive alone renders its own (`snapshot: false`, which records nothing: the next drive's is the recorded one).
-        const recovered = recoveryNote(ctx.state(), { pending: [] });
+        const recovered = recoverySystemNote(ctx.state());
         const queryOptions: QueryOptions = {
           model,
           cwd: machine.root,
@@ -697,7 +697,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           systemPrompt: {
             type: 'preset',
             preset: 'claude_code',
-            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered ? recoverySystemNote(recovered.text) : undefined].filter(Boolean).join('\n\n'),
+            append: [builtinsOn ? DRIVE_NOTE : bridge.tools.length ? TOOLS_NOTE : NO_TOOLS_NOTE, options.instructions, recovered].filter(Boolean).join('\n\n'),
             snapshot: !recovered,
           },
           ...(store.hasSession ? { resume: sessionId } : { sessionId }),
@@ -972,10 +972,38 @@ export function recoveryUserTurn(state: SessionState, store: Pick<JournalSession
   return words.length ? words.join('\n\n') : RECOVERY_NUDGE;
 }
 
-/** The harness's recovery note, as the resuming drive's system prompt carries it: from the harness, about the turn before. */
-export function recoverySystemNote(note: string): string {
-  return `The harness, not the user, adds this about the turn before this one:\n${note}`;
+/**
+ * The harness's recovery note, as the resuming drive's system prompt carries it, or undefined with no turn to recover:
+ * only the harness's own words. Each tool call of the cut-off turn by its name, its id and its status, and never its
+ * input, output or error text: those can hold what a file or a web page said, and the system prompt would give that the
+ * harness's authority. Nor do they go in the user's turn, which would give it the user's.
+ */
+export function recoverySystemNote(state: SessionState): string | undefined {
+  const note = recoveryNote(state, { pending: [] });
+  if (!note) return undefined;
+  const lines = [
+    'The harness, not the user, adds this about the turn before this one:',
+    '[Recovery] Your previous turn was interrupted: the process running it stopped, and this session was resumed from its durable log.',
+    '',
+  ];
+  if (note.calls.length === 0) lines.push('No tool call had started in that turn.');
+  else {
+    lines.push('What the log records about the tool calls since that turn began (none was run again):');
+    for (const c of note.calls) lines.push(`- ${c.name}, call ${c.callId}: ${RECOVERY_STATUS[c.status]}`);
+    lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
+  }
+  lines.push('', 'Check the actual state before repeating anything that may have taken effect, then carry on with the task.');
+  return lines.join('\n');
 }
+
+/** What the note says of a call in each status the log can give it (the shared note's words, harness-process 010). */
+const RECOVERY_STATUS: Record<NonNullable<ReturnType<typeof recoveryNote>>['calls'][number]['status'], string> = {
+  completed: 'completed.',
+  failed: 'failed.',
+  interrupted: 'interrupted before it reported a result. It is not safe to repeat, and it may have taken effect.',
+  retryable: 'interrupted before it reported a result. It is safe to repeat.',
+  running: 'interrupted, and it may still be running. It may have taken effect.',
+};
 
 /**
  * The prompts among `placed` that never reached the transcript: neither the
