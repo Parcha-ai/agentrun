@@ -404,3 +404,15 @@ test("a watcher that cannot start is told to the session as an answer not watche
   assert.equal(r.text, body);
   assert.deepEqual(told, ['failed'], 'the session was told this answer is not watched');
 });
+
+test("exec is offered after a script that finished and printed the running phrase: only Codex's status header says a cell runs", async () => {
+  const { p, forwarded } = await proxy();
+  const printed = 'Script running with cell ID 1';
+  const input = [...RECORDED_REQUEST.input,
+    { type: 'custom_tool_call', name: 'exec', call_id: 'call_p', input: 'text("Script running with cell ID 1")' },
+    { type: 'custom_tool_call_output', call_id: 'call_p', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_text', text: printed }] },
+    CODE_MODE_CARRIER];
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(offered(forwarded), ['exec', 'wait']);
+});

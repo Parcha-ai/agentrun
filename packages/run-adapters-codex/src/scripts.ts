@@ -23,6 +23,12 @@ export const UNWATCHED = "(unwatched answer)";
  *  are live; or hold it, as no script is known yet. */
 export type Tie = { kind: "tied"; exec: string } | { kind: "held"; exec: string } | { kind: "ambiguous"; live: string[] } | { kind: "none" };
 
+/** Codex's status header of an exec's or a wait's output: the text it starts with (its first part), never what the script printed after it. */
+const statusOf = (output: unknown): string =>
+  typeof output === "string" ? output : Array.isArray(output) && typeof (output[0] as { text?: unknown } | undefined)?.text === "string" ? (output[0] as { text: string }).text : "";
+/** A cell that yielded and still runs, as its status header says. */
+const RUNNING = /^Script running with cell ID (\S+)/;
+
 const textOf = (output: unknown): string =>
   typeof output === "string" ? output : Array.isArray(output) ? output.map((part: { text?: unknown }) => (typeof part?.text === "string" ? part.text : "")).join("\n") : "";
 
@@ -39,7 +45,7 @@ export class Scripts {
     const p = parseLine(line)?.payload;
     if (!p || typeof p.call_id !== "string") return;
     const id: string = p.call_id;
-    const running = /Script running with cell ID (\S+)/.exec(textOf(p.output));
+    const running = RUNNING.exec(statusOf(p.output));
     if (p.type === "custom_tool_call" && p.name === "exec") {
       if (!this.open.some((x) => x.exec === id)) this.open.push({ exec: id });
     } else if (p.type === "custom_tool_call_output") {
