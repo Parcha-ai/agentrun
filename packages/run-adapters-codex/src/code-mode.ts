@@ -67,6 +67,19 @@ export function withOutputKind<T extends { call_id?: unknown; output?: unknown }
   return { ...item, type: call.type === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output" };
 }
 
+type Tie = { callId: string; exec: string | null; since?: number };
+
+/** What the log holds of one nested call: the session's record, and the rollout's completion line. */
+function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string }): NestedFact {
+  const e = state.effects.get(toolKey(tie.callId));
+  return {
+    callId: tie.callId,
+    tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? "a tool"),
+    ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
+    ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
+  };
+}
+
 export function codeMode(deps: CodeModeDeps) {
   const { ctx, machine, journal, logged, synced } = deps;
   const scripts = new Scripts();
@@ -102,6 +115,26 @@ export function codeMode(deps: CodeModeDeps) {
     return false;
   };
 
+  /** After a recovery: every `never` call of the interrupted turn the log holds a completed outcome for (the session's record or, when it
+   *  lost the end, the rollout's: Codex writes that line only after our tool answered, so the effect happened), each answering one
+   *  re-issue. Read from the turn's tie records, not from the outputs a recovery repairs: a turn recovered once already has its exec
+   *  answered, and a script that yielded has its exec answered by the running-cell output, yet their calls ran. */
+  const arm = async (since: number): Promise<void> => {
+    recovered.clear();
+    const state: SessionState = ctx.state();
+    const rolled = completedNested(deps.lines);
+    for (const tie of (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data)) {
+      if (tie.since !== since) continue;
+      const e = state.effects.get(toolKey(tie.callId));
+      if (e?.replay !== "never") continue;
+      const fact = factOf(state, rolled, tie);
+      const settled = settle(fact);
+      if (settled.kind !== "completed") continue;
+      const key = callKey(fact.tool, e.input);
+      recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text }]);
+    }
+  };
+
   const declined = { contentItems: [{ type: "inputText", text: deps.declined }], success: false };
 
   return {
@@ -133,48 +166,29 @@ export function codeMode(deps: CodeModeDeps) {
     },
 
     /** The outputs injected for the calls the rollout left dangling: a cut-off `exec` gets a custom tool call output from the log, in place of `items`';
-     *  any other custom tool call gets an output of its kind. `since`: the interrupted turn a recovery note resumes; `NaN` when no note resumes
-     *  one (a new turn after a turn that ended without them), where nothing is armed for a re-issue and no call is listed apart. */
+     *  any other call keeps its generic output, as an item of its own kind. `since`: the
+     *  interrupted turn a recovery note resumes, or `NaN` when none does (then no unattributed call is listed). */
     async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number): Promise<void> {
       const state: SessionState = ctx.state();
-      const ties = (await journal.read<{ callId: string; exec: string | null; since?: number }>(NESTED_STREAM)).map((r) => r.data);
+      const ties = (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data);
       const execs = dangling.filter(isExec).map((d) => d.callId);
       const rolled = completedNested(lines);
-      const factOf = (tie: { callId: string }): NestedFact => {
-        const e = state.effects.get(toolKey(tie.callId));
-        return {
-          callId: tie.callId,
-          tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? "a tool"),
-          ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
-          ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
-        };
-      };
       // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its end)
       // is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
-      const listed = recoveryFacts(execs, ties, since, factOf);
+      const listed = recoveryFacts(execs, ties, since, (tie) => factOf(state, rolled, tie));
       dangling.forEach((c, i) => {
         if (!isExec(c)) {
           items[i] = withOutputKind(items[i] as { call_id?: unknown; output?: unknown }, c);
           return;
         }
         const { own, loose } = listed.get(c.callId)!;
-        // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes that
-        // line only after our tool answered, so the effect happened).
-        for (const fact of [...own, ...loose]) {
-          const e = state.effects.get(toolKey(fact.callId));
-          const settled = settle(fact);
-          // Only a recovery note resumes the interrupted turn: on a new turn, a call the ended one completed is not "earlier in this turn".
-          if (!Number.isNaN(since) && settled.kind === "completed" && e?.replay === "never") {
-            const key = callKey(fact.tool, e.input);
-            recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text }]);
-          }
-        }
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: execRecoveryOutput(own, loose) };
       });
     },
 
     /** With no recovery note, the calls the rollout has no output for get theirs from the log before any turn is sent: a turn that ended without
-     *  them (one interrupted mid-call, or settled instead of resumed) left them dangling, and the provider refuses a history with a call unanswered. */
+     *  them (one interrupted mid-call, or settled instead of resumed) left them dangling, and the provider refuses a history with a call unanswered.
+     *  Nothing is armed here: a new turn that calls a `never` call the ended turn completed runs it. */
     async repairUnnoted(lines: readonly string[]): Promise<void> {
       const dangling = summarizeRollout(lines).dangling;
       if (dangling.length === 0) return;
@@ -188,6 +202,7 @@ export function codeMode(deps: CodeModeDeps) {
      *  the model as a developer message, injected once for this interrupted turn (every turn opens with `thread/resume`, so injecting on each
      *  would repeat it). With no statuses-only note to give, nothing is injected: the full note carries tool outputs and goes in no slot of the model's. */
     async resumeTurn(note: { turn: { since: number }; pending: { text?: string }[] }, owed: { text?: string }[]): Promise<string> {
+      await arm(note.turn.since);
       const system = recoverySystemNote(ctx.state());
       const noted = (await journal.read<{ since: number }>(RECOVERY_NOTE_STREAM)).some((r) => r.data.since === note.turn.since);
       if (system !== undefined && !noted) {
