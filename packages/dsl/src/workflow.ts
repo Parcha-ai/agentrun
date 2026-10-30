@@ -2199,8 +2199,8 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   const set = questionSetOf(workflow, node);
   const ids = Object.keys(set.questions);
   const [keepId, keepTail] = node.keep ? node.keep.path.split(".") : [];
-  const values: Record<string, unknown>[] = []; const sidecars: AnswersSidecar[] = []; const kept: number[] = [];
-  let metering: { model: string | null; cost_usd: number | null; requests?: number; replayed?: true } | null = null;
+  const values: Record<string, unknown>[] = []; const sidecars: (AnswersSidecar & { evidence?: DecisionEvidence[] })[] = []; const kept: number[] = [];
+  let metering: { model: string | null; cost_usd: number | null; requests?: number; replayed?: true; provider?: string; evidence?: DecisionEvidence[] } | null = null;
   const decisionIds: string[] = [];
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
@@ -2254,14 +2254,22 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
       if (failure) throw failure.error;
     }
     const models = new Set(results.map((r) => r.model));
+    const providers = new Set(results.map((r) => r.provider));
+    const evidence = results.flatMap((r) => r.evidence ?? []);
     metering = {
       model: models.size === 1 ? results[0].model : null,
       cost_usd: results.every((r) => r.cost_usd !== null) ? results.reduce((sum, r) => sum + (r.cost_usd as number), 0) : null,
       ...(chunks.length > 1 ? { requests: chunks.length } : {}),
       ...(results.every((r) => r.replayed) ? { replayed: true as const } : {}),
+      ...(providers.size === 1 && results[0].provider ? { provider: results[0].provider } : {}),
+      ...(evidence.length ? { evidence } : {}),
     };
-    // Chunks cover the list in order, so their results concatenate into list order.
-    for (const r of results) { values.push(...r.value.values); sidecars.push(...r.value.sidecars); kept.push(...r.value.kept); decisionIds.push(r.id); }
+    // Chunks cover the list in order, so their results concatenate into list order. An item's sidecar carries the
+    // evidence of the request that answered it.
+    for (const r of results) {
+      values.push(...r.value.values); kept.push(...r.value.kept); decisionIds.push(r.id);
+      sidecars.push(...r.value.sidecars.map((sidecar) => r.evidence ? { ...sidecar, evidence: r.evidence } : sidecar));
+    }
   }
   const value = { items: kept.map((i) => items[i]), values, answers: sidecars, kept };
   deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "sift", as: node.as, value, count: items.length, kept: kept.length, ...(metering ?? {}), decision_ids: decisionIds } });
