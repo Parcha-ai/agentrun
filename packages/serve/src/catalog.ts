@@ -9,8 +9,9 @@ import { createHash } from "node:crypto";
 export const WIRE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** A catalog name's wire name: itself when it already is one, else `:` and `/` to `__`, `.` to `_`, any other character
- *  to `_`, and a `-<8 hex of the catalog name>` suffix (prefix trimmed to keep 64) when the result is too long or would
- *  collide. The suffix makes a long or clashing name unique; the reverse is a lookup, never a parse. */
+ *  to `_`, and a `-<8 hex of the catalog name>` suffix (prefix trimmed to keep 64) when the result is too long. The
+ *  suffix makes a long name unique; a collision between two names is refused at the save (collisions, reverseOf), never
+ *  suffixed away. The reverse is a lookup, never a parse. */
 export function wireName(catalog: string): string {
   if (WIRE_NAME.test(catalog)) return catalog;
   const base = catalog.replace(/[:/]+/g, "__").replace(/[^A-Za-z0-9_-]/g, "_");
