@@ -22,6 +22,7 @@ import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./ru
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
+import { type ServerLock, takeServerLock } from "./server-lock.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -235,6 +236,18 @@ async function oldHomes(data: string): Promise<string[]> {
 export async function startServe(options: ServeOptions): Promise<Serve> {
   const data = resolve(options.data);
   await mkdir(data, { recursive: true, mode: 0o700 });
+  // One server per data root, before anything else reads or writes it: a refused second server opens no store, adopts
+  // or sweeps no run, binds no port and prints no address (server-lock.ts).
+  const lock = takeServerLock(data);
+  try {
+    return await startHolding(options, data, lock);
+  } catch (error) {
+    lock.release();
+    throw error;
+  }
+}
+
+async function startHolding(options: ServeOptions, data: string, lock: ServerLock): Promise<Serve> {
   const homes = await oldHomes(data);
   if (homes.length) {
     const named = homes.length > 5 ? [...homes.slice(0, 5), `and ${homes.length - 5} more`] : homes;
@@ -819,6 +832,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();
+      lock.release();
     },
   };
 }
