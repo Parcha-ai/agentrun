@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -188,4 +188,47 @@ test('bwrap is started with only PATH in its environment, never the run process\
   } finally {
     delete process.env.BOX_TEST_CANARY;
   }
+});
+
+test('a box\'s cgroup is refused by name before anything is made, spawned or recorded unless it is normalized and strictly under the delegated root', () => {
+  const { spec, marker } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'box-cgroot-'));
+  for (const [cgroup, why, cgroupRoot = root] of [
+    [`${root}/runs/a/../b`, /not an absolute, normalized path/],
+    [`${root}/runs/a/`, /not an absolute, normalized path/],
+    ['runs/a', /not an absolute, normalized path/],
+    [root, /the delegated root itself/],
+    [`${root}x/runs/a`, /not under the delegated root/],
+    [`${root}/runs/a`, /no delegated cgroup root is configured/, undefined],
+  ]) {
+    const { spawnFake, calls } = fakeBwrap({ marker });
+    let aheads = 0;
+    assert.throws(() => bwrapBox({ spawn: spawnFake, cgroupRoot }).start({ ...spec, cgroup }, boxChild(spec, harness), { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused' && why.test(e.message), cgroup);
+    assert.equal(calls.length, 0, `spawned for ${cgroup}`);
+    assert.equal(aheads, 0, `recorded for ${cgroup}`);
+    assert.equal(existsSync(`${root}x/runs/a`) || existsSync(join(root, 'b')), false, `made for ${cgroup}`);
+  }
+});
+
+test('a box cgroup that already exists (another run\'s) is refused before the spawn and never recorded; parents are made, the leaf is not adopted', () => {
+  const { spec, marker } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'box-cgroot-'));
+  const theirs = join(root, 'runs', 'a');
+  mkdirSync(theirs, { recursive: true });
+  const { spawnFake, calls } = fakeBwrap({ marker });
+  let aheads = 0;
+  assert.throws(() => bwrapBox({ spawn: spawnFake, cgroupRoot: root }).start({ ...spec, cgroup: theirs }, boxChild(spec, harness), { ahead: () => aheads++, started: async () => {} }), (e) => e instanceof BoxError && e.code === 'box_refused' && /already exists/.test(e.message));
+  assert.equal(calls.length, 0);
+  assert.equal(aheads, 0, 'a record named a cgroup this box did not make');
+});
+
+test('an ahead that throws removes the box cgroup it made, and nothing is spawned', () => {
+  const { spec, marker } = setup();
+  const root = mkdtempSync(join(tmpdir(), 'box-cgroot-'));
+  const mine = join(root, 'runs', 'b');
+  const { spawnFake, calls } = fakeBwrap({ marker });
+  assert.throws(() => bwrapBox({ spawn: spawnFake, cgroupRoot: root }).start({ ...spec, cgroup: mine }, boxChild(spec, harness), { ahead: () => { throw new Error('no disk'); }, started: async () => {} }), /no disk/);
+  assert.equal(calls.length, 0);
+  assert.equal(existsSync(mine), false, 'the unrecorded cgroup was left behind');
+  assert.ok(existsSync(join(root, 'runs')), 'its parent, made recursively, stays');
 });

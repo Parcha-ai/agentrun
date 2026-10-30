@@ -55,9 +55,50 @@ test('the recorded pid 1 (start time and namespace matching) is SIGKILLed, and t
   assert.ok(reaped.left > 0);
 });
 
-test('a cgroup that is gone was emptied (rmdir succeeds only on an empty cgroup): by cgroup, empty', async () => {
-  const gone = join(mkdtempSync(join(tmpdir(), 'box-reap-')), 'cg');
-  assert.deepEqual(await bwrapBox().reap({ id: 'x', cgroup: gone, writer: { pid: process.pid, startTime: '1' } }), { empty: true, left: 0, by: 'cgroup' });
+/** A delegated root as the reap reads it: a directory with a readable cgroup.procs. */
+function liveRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'box-cgroot-'));
+  writeFileSync(join(root, 'cgroup.procs'), '');
+  return root;
+}
+
+test('a cgroup that is gone was emptied (rmdir succeeds only on an empty cgroup), while the delegated root reads: by cgroup, empty', async () => {
+  const root = liveRoot();
+  assert.deepEqual(await bwrapBox({ cgroupRoot: root }).reap({ id: 'x', cgroup: join(root, 'cg'), writer: { pid: process.pid, startTime: '1' } }), { empty: true, left: 0, by: 'cgroup' });
+});
+
+test('a missing box cgroup proves nothing when the delegated root is missing, unreadable, or not configured: not empty', async () => {
+  const record = (cgroup) => ({ id: 'x', cgroup, writer: { pid: process.pid, startTime: '1' } });
+  // The root moved or unmounted: every box's cgroup is missing.
+  const moved = join(tmpdir(), `box-cgroot-gone-${process.pid}-${Date.now()}`);
+  let reaped = await bwrapBox({ cgroupRoot: moved, reapMs: 50 }).reap(record(join(moved, 'cg')));
+  assert.equal(reaped.empty, false, 'a missing root read as an emptied box');
+  assert.equal(reaped.by, 'cgroup');
+  // The root unreadable.
+  const root = liveRoot();
+  chmodSync(join(root, 'cgroup.procs'), 0o000);
+  try {
+    reaped = await bwrapBox({ cgroupRoot: root, reapMs: 50 }).reap(record(join(root, 'cg')));
+    assert.equal(reaped.empty, false, 'an unreadable root read as an emptied box');
+  } finally {
+    chmodSync(join(root, 'cgroup.procs'), 0o644);
+  }
+  // No root configured.
+  reaped = await bwrapBox({ reapMs: 50 }).reap(record(join(root, 'cg')));
+  assert.equal(reaped.empty, false, 'no root configured, and a missing cgroup read as emptied');
+});
+
+test('populated is read from its own line of cgroup.events: "populated 0" is empty, "populated 1" is not, anything else is unknown', async () => {
+  const root = liveRoot();
+  const cg = join(root, 'cg');
+  mkdirSync(cg);
+  writeFileSync(join(cg, 'cgroup.kill'), '');
+  writeFileSync(join(cg, 'cgroup.procs'), '');
+  const reap = () => bwrapBox({ cgroupRoot: root, reapMs: 50 }).reap({ id: 'x', cgroup: cg, writer: { pid: process.pid, startTime: '1' } });
+  for (const [events, empty] of [['frozen 0\npopulated 1\n', false], ['xpopulated 0\npopulated 1\n', false], ['frozen 0\n', false], ['populated 0\nfrozen 0\n', true]]) {
+    writeFileSync(join(cg, 'cgroup.events'), events);
+    assert.equal((await reap()).empty, empty, JSON.stringify(events));
+  }
 });
 
 test('a cgroup whose population cannot be read is not empty: unknown is never gone, and only a missing cgroup counts as emptied', async () => {

@@ -16,7 +16,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:c
 import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve, sep } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Writable, Readable } from "node:stream";
 import { type Box, type BoxedChild, BoxError, type BoxRecord, type BoxRecorder, type BoxSpec, type Isolation, type Reaped } from "./box.js";
@@ -301,14 +301,37 @@ export function countInPidns(pidns: string, pid1?: { pid: number; startTime?: st
   return n;
 }
 
-/** The cgroup's population, from cgroup.events (its descendants' processes included): "gone" only when the cgroup does
- *  not exist (rmdir succeeds only on an empty one), "unknown" on any other failed read, which is never taken for empty. */
-function populated(cgroup: string): boolean | "gone" | "unknown" {
+/** The cgroup's population, from its cgroup.events line `populated 0|1` (its descendants' processes included). "gone"
+ *  only when the cgroup does not exist (rmdir succeeds only on an empty one) while the delegated root still reads: a
+ *  root unmounted, moved or misnamed makes every box's cgroup missing, which proves nothing. Anything else that cannot
+ *  be read is "unknown", never taken for empty. */
+function populated(cgroup: string, root: string | undefined): boolean | "gone" | "unknown" {
+  let text: string;
   try {
-    return /^populated 1$/m.test(readFileSync(`${cgroup}/cgroup.events`, "utf8"));
+    text = readFileSync(`${cgroup}/cgroup.events`, "utf8");
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "gone" : "unknown";
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" || root === undefined) return "unknown";
+    try {
+      readFileSync(`${root}/cgroup.procs`, "utf8");
+    } catch {
+      return "unknown";
+    }
+    return "gone";
   }
+  const line = text.split("\n").find((l) => l.startsWith("populated "));
+  return line === "populated 1" ? true : line === "populated 0" ? false : "unknown";
+}
+
+/** A box's cgroup, refused by name unless it is an absolute, normalized path strictly under the delegated root (at a
+ *  "/" boundary: "<root>x/a" is not under "<root>"), and not the root itself. */
+function checkCgroup(cgroup: string, root: string | undefined): void {
+  const refuse = (why: string): never => {
+    throw new BoxError("box_refused", `the box's cgroup ${JSON.stringify(cgroup)} is refused: ${why}`);
+  };
+  if (root === undefined) refuse("no delegated cgroup root is configured");
+  if (!cgroup.startsWith("/") || resolve(cgroup) !== cgroup) refuse("not an absolute, normalized path");
+  if (cgroup === root) refuse("it is the delegated root itself");
+  if (!cgroup.startsWith(`${root}/`)) refuse(`it is not under the delegated root ${root}`);
 }
 
 export interface BwrapBoxOptions {
@@ -316,6 +339,9 @@ export interface BwrapBoxOptions {
   bwrap?: string;
   /** pids.max for a run's cgroup. */
   pidsMax?: number;
+  /** The delegated cgroup v2 subtree (the operator's), under which every box's cgroup is made. A spec with a cgroup is
+   *  refused without it, and a reap reads a missing box cgroup as emptied only while this root itself reads. */
+  cgroupRoot?: string;
   /** How long a reap waits for the kernel to empty the box. */
   reapMs?: number;
   /** For tests: the spawn (node's by default). */
@@ -374,15 +400,16 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
 
   async function reap(record: BoxRecord): Promise<Reaped> {
     if (record.cgroup !== undefined) {
-      if (populated(record.cgroup) === "gone") return { empty: true, left: 0, by: "cgroup" };
+      const root = options.cgroupRoot;
+      if (populated(record.cgroup, root) === "gone") return { empty: true, left: 0, by: "cgroup" };
       try {
         writeFileSync(`${record.cgroup}/cgroup.kill`, "1");
       } catch {
         // the kill is retried below by the population check's timeout; an unwritable cgroup.kill leaves it populated
       }
       const until = Date.now() + reapMs;
-      while (populated(record.cgroup) !== false && populated(record.cgroup) !== "gone" && Date.now() < until) await sleep(10);
-      const last = populated(record.cgroup);
+      while (populated(record.cgroup, root) !== false && populated(record.cgroup, root) !== "gone" && Date.now() < until) await sleep(10);
+      const last = populated(record.cgroup, root);
       if (last === "gone") return { empty: true, left: 0, by: "cgroup" };
       // Populated, or a population that cannot be read: not empty. Unknown is never gone, and nothing is signalled by pid.
       if (last !== false) {
@@ -430,11 +457,32 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
       ...(spec.cgroup !== undefined ? { cgroup: spec.cgroup } : {}),
       writer: writer(),
     };
-    // Before the spawn, with nothing awaited in between: the box is on disk before it exists.
-    recorder.ahead({ ...record });
+    // The cgroup is made before the record names it: a record must never name a cgroup this box did not make (another
+    // run's), since a reap of that record would kill whatever is in it. The parents between the delegated root and the
+    // box's own cgroup may be made recursively; the box's own cgroup (the leaf) is made NON-recursively, so one that
+    // already exists is refused (EEXIST), never adopted. A crash between the two leaves an empty cgroup, the sweep's.
     if (spec.cgroup !== undefined) {
-      mkdirSync(spec.cgroup, { recursive: false });
+      checkCgroup(spec.cgroup, options.cgroupRoot);
+      mkdirSync(dirname(spec.cgroup), { recursive: true });
+      try {
+        mkdirSync(spec.cgroup, { recursive: false });
+      } catch (error) {
+        throw new BoxError("box_refused", `the box's cgroup ${spec.cgroup} could not be made${(error as NodeJS.ErrnoException).code === "EEXIST" ? ": it already exists" : ""}`, { cause: error });
+      }
       if (options.pidsMax !== undefined) writeFileSync(`${spec.cgroup}/pids.max`, String(options.pidsMax));
+    }
+    // Before the spawn, with nothing awaited in between: the box is on disk before it exists.
+    try {
+      recorder.ahead({ ...record });
+    } catch (error) {
+      if (spec.cgroup !== undefined) {
+        try {
+          rmdirSync(spec.cgroup);
+        } catch {
+          // empty and unrecorded: the sweep's
+        }
+      }
+      throw error;
     }
     // With a cgroup, the box's first process joins it before it execs bwrap, so every process of the box is born in it.
     const [command, args] =
