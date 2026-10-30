@@ -2,7 +2,7 @@
 // runs the harness on its own stdio, passes the harness's signals on, and exits as the harness did.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,10 +33,11 @@ async function echoSocket(t, name) {
   return path;
 }
 
-/** The forwarder with `args`, in a process group of its own, which the test ends whole when it is done: a harness this
- *  host's sh leaves behind must not hold the test's pipes open. `up` resolves on the harness's first line of output. */
-function run(t, args, input) {
-  const child = spawn(process.execPath, [FORWARD, ...args], { stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+/** The forwarder with `args` (and `node`'s own options before it), in a process group of its own, which the test ends
+ *  whole when it is done: a harness this host's sh leaves behind must not hold the test's pipes open. `up` resolves on the
+ *  harness's first line of output. */
+function run(t, args, input, node = []) {
+  const child = spawn(process.execPath, [...node, FORWARD, ...args], { stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   t.after(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } });
   let out = '';
   let err = '';
@@ -111,7 +112,7 @@ test('each port reaches its own socket, and nothing else', async (t) => {
 });
 
 test("TERM reaches the harness, and it exits by the harness's signal", async (t) => {
-  // The harness says it runs once its trap is set; by then the forwarder relays (its handlers are set as it spawns).
+  // The harness says it runs once its trap is set; by then the forwarder relays (its handlers are set before it spawns).
   const { child, exited, up } = run(t, ['--', '/bin/sh', '-c', 'trap "exit 9" TERM; echo up; while :; do sleep 0.05; done']);
   await up;
   child.kill('SIGTERM');
@@ -120,6 +121,24 @@ test("TERM reaches the harness, and it exits by the harness's signal", async (t)
   await killed.up;
   killed.child.kill('SIGTERM');
   assert.equal((await killed.exited).signal, 'SIGTERM', 'a harness ended by the signal ends the forwarder by it too');
+});
+
+test("a TERM that reaches the forwarder as the harness starts, before spawn has returned to it, still reaches the harness", async (t) => {
+  // The harness runs before spawn returns to the forwarder: here spawn is held 300 ms after the harness starts, and the
+  // TERM is sent inside that hold. A forwarder whose handlers are set only after spawn returns dies by it, with no code.
+  const hold = join(ROOT, 'hold-spawn.mjs');
+  writeFileSync(hold, [
+    "import cp from 'node:child_process';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    "const spawn = cp.spawn;",
+    "cp.spawn = (...a) => { const child = spawn(...a); const until = Date.now() + 300; while (Date.now() < until); return child; };",
+    "syncBuiltinESMExports();",
+  ].join('\n'));
+  const { child, exited, up } = run(t, ['--', '/bin/sh', '-c', 'trap "exit 9" TERM; echo up; while :; do sleep 0.05; done'], undefined, ['--import', hold]);
+  await up;
+  child.kill('SIGTERM');
+  const { code, signal } = await exited;
+  assert.deepEqual({ code, signal }, { code: 9, signal: null }, 'the forwarder relayed the TERM and exited with the harness\'s code');
 });
 
 test('a socket with nothing behind it gives the box a closed connection, never a way past it', async (t) => {
