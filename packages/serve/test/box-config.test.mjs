@@ -76,9 +76,9 @@ test("a box whose probe passed: its mode as proved, no error, no detail; the ans
   assert.deepEqual(caps.box, { mode: "bwrap", cgroup: false, egress: "open" });
   assert.deepEqual(seen, [{ provider: "local", egress: "open" }], "the factory is given the settings");
   assert.deepEqual(meets(doc, caps), []);
-  // In a box whose probe passed, a new claude-agent run gets its harness's own tools (native-tools.ts); pi's are pi's own,
-  // and Codex's adapter takes no such option yet.
-  assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", true], ["codex", false]]);
+  // In a box whose probe passed, still no harness's own tools: claude-agent's wait for a boxed resume
+  // (native-tools.ts's BOXED_CLAUDE_RESUME); pi's are pi's own, and Codex's adapter takes no such option yet.
+  assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", false], ["codex", false]]);
 });
 
 test("a probe that failed reads as unavailable with its named error, never bwrap and never unsandboxed; native tools off on every harness", async (t) => {

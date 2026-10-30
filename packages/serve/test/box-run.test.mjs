@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { BOX_FORWARD, boxListens, buildBoxArgv, checkBoxArgv, forwardChild, probeBox } from "@parcha/agentrun-kernel/host";
 import { checkUnderData, hiddenFor, RUN_BOX_ENV, runBox, runBoxOf } from "../dist/box/run-box.js";
-import { nativeTools, UNSANDBOXED_NATIVE_TOOLS } from "../dist/native-tools.js";
+import { BOXED_CLAUDE_RESUME, nativeTools, nativeToolsEligible, UNSANDBOXED_NATIVE_TOOLS } from "../dist/native-tools.js";
 import { agent, follow, serve } from "./support.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
@@ -60,12 +60,20 @@ function dataRoot() {
   return { data, runs, spec, remove: () => (rmSync(root, { recursive: true, force: true }), rmSync(sockets, { recursive: true, force: true })) };
 }
 
-test("native tools: only claude-agent, only in a box whose probe passed, only on a run whose workspace is its harness's; unsandboxed keeps them off", () => {
+const HARNESS_IDS = ["pi", "claude-agent", "codex"];
+const MODES = [undefined, "bwrap", "seatbelt", "provider", "unsandboxed", "unavailable"];
+
+test("eligible for native tools: only claude-agent, only in a box whose probe passed, only on a run whose workspace is its harness's; unsandboxed keeps them off", () => {
   assert.equal(UNSANDBOXED_NATIVE_TOOLS, false);
   const table = [];
-  for (const harness of ["pi", "claude-agent", "codex"]) for (const mode of [undefined, "bwrap", "seatbelt", "provider", "unsandboxed", "unavailable"]) if (nativeTools(harness, mode)) table.push(`${harness}:${mode}`);
+  for (const harness of HARNESS_IDS) for (const mode of MODES) if (nativeToolsEligible(harness, mode)) table.push(`${harness}:${mode}`);
   assert.deepEqual(table, ["claude-agent:bwrap", "claude-agent:seatbelt", "claude-agent:provider"]);
-  assert.equal(nativeTools("claude-agent", "bwrap", "work"), false, "a run on work/ keeps them off: its harness's tools would write a second tree");
+  assert.equal(nativeToolsEligible("claude-agent", "bwrap", "work"), false, "a run on work/ keeps them off: its harness's tools would write a second tree");
+});
+
+test("no harness's own tools are on today, a boxed run's included: claude-agent waits for a boxed resume (BOXED_CLAUDE_RESUME)", () => {
+  assert.equal(BOXED_CLAUDE_RESUME, false);
+  for (const harness of HARNESS_IDS) for (const mode of MODES) for (const workspace of ["harness/work", "work"]) assert.equal(nativeTools(harness, mode, workspace), false, `${harness} in ${mode} on ${workspace}`);
 });
 
 test("the launch settings are read strictly: none is no box; no data root, a relative one, or a malformed value is refused by name", () => {
@@ -191,7 +199,7 @@ test("serve hands a harness run's process its box settings in one non-secret var
     const environ = Object.fromEntries((await readFile(`/proc/${holder.pid}/environ`, "utf8")).split("\0").filter(Boolean).map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]));
     assert.deepEqual(environ[RUN_BOX_ENV] === undefined ? undefined : JSON.parse(environ[RUN_BOX_ENV]), expected(data));
     const caps = (await api("GET", "/capabilities")).body;
-    assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", factory !== undefined], ["codex", false]], "capabilities say it from the same function");
+    assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", false], ["codex", false]], "capabilities say it from the same function: off, in a box too");
     assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status, 202);
     await follow(api, run.body.run_id, ["cancelled"], { deadlineMs: 30_000 });
   }
