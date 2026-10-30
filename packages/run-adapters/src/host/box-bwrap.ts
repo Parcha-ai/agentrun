@@ -306,6 +306,16 @@ export function pidnsMembers(pidns: string, pid1?: { pid: number; startTime?: st
   };
   for (const entry of readdirSync(proc)) {
     if (!/^\d+$/.test(entry)) continue;
+    // A zombie runs nothing, whatever its namespace link still says (a box's bwrap waiting on a pid 1 that is slow to
+    // reap it): its state is read first, and it is never counted, on any path.
+    try {
+      const stat = readFileSync(`${proc}/${entry}/stat`, "utf8");
+      const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0];
+      if (state === "Z" || state === "X") continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; // gone between the listing and the read
+      // Its state cannot be read: not known to be a zombie, so it is judged as below (unknown is never gone).
+    }
     try {
       if (readlinkSync(`${proc}/${entry}/ns/pid`) === pidns) add(Number(entry), "ns");
     } catch (error) {

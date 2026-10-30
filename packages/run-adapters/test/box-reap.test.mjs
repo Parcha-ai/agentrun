@@ -147,7 +147,7 @@ function fakeProc(processes) {
     const dir = join(root, String(p.pid));
     mkdirSync(join(dir, 'ns'), { recursive: true });
     symlinkSync(p.pidns, join(dir, 'ns', 'pid'));
-    const fields = ['S', String(p.parent), ...Array(17).fill('0'), String(p.start)];
+    const fields = [p.state ?? 'S', String(p.parent), ...Array(17).fill('0'), String(p.start)];
     writeFileSync(join(dir, 'stat'), `${p.pid} (proc) ${fields.join(' ')} 0 0\n`);
     writeFileSync(join(dir, 'status'), `Name:\tproc\nUid:\t${p.uid ?? uid}\t${p.uid ?? uid}\t${p.uid ?? uid}\t${p.uid ?? uid}\nNSpid:\t${p.nested === false ? p.pid : `${p.pid}\t7`}\n`);
     if (p.nostat) chmodSync(join(dir, 'stat'), 0o000);
@@ -192,4 +192,16 @@ test('another user\'s unreadable process, or one in this process\'s own namespac
     { pid: 500, parent: 1, start: 1000, pidns: BOX },
   ]);
   assert.equal(countInPidns(BOX, { pid: 500, startTime: '1000' }, proc), 1, 'pid 1 alone');
+});
+
+test("a zombie is never counted, whatever its namespace link still says: a box's bwrap waiting on a slow reaper leaves the box empty", () => {
+  // Its only process matching the box's namespace is a zombie (a bwrap reparented to a pid 1 that has not reaped it yet),
+  // and an unreadable zombie whose chain reaches pid 1 is none either.
+  const proc = fakeProc([
+    { pid: 1784, parent: 1, start: 900, pidns: BOX, state: 'Z' },
+    { pid: 520, parent: 500, start: 1002, pidns: 'x', hidden: true, state: 'Z' },
+    { pid: 500, parent: 1, start: 1000, pidns: 'pid:[1]', nested: false },
+  ]);
+  assert.equal(countInPidns(BOX, { pid: 500, startTime: '1000' }, proc), 0);
+  assert.deepEqual(pidnsMembers(BOX, { pid: 500, startTime: '1000' }, proc), []);
 });
