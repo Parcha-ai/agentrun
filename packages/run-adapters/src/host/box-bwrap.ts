@@ -301,12 +301,13 @@ export function countInPidns(pidns: string, pid1?: { pid: number; startTime?: st
   return n;
 }
 
-/** The cgroup's population, from cgroup.events; undefined when the cgroup is gone (rmdir succeeds only when empty). */
-function populated(cgroup: string): boolean | undefined {
+/** The cgroup's population, from cgroup.events (its descendants' processes included): "gone" only when the cgroup does
+ *  not exist (rmdir succeeds only on an empty one), "unknown" on any other failed read, which is never taken for empty. */
+function populated(cgroup: string): boolean | "gone" | "unknown" {
   try {
     return /^populated 1$/m.test(readFileSync(`${cgroup}/cgroup.events`, "utf8"));
-  } catch {
-    return undefined;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "gone" : "unknown";
   }
 }
 
@@ -373,17 +374,25 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
 
   async function reap(record: BoxRecord): Promise<Reaped> {
     if (record.cgroup !== undefined) {
-      if (populated(record.cgroup) === undefined) return { empty: true, left: 0, by: "cgroup" };
+      if (populated(record.cgroup) === "gone") return { empty: true, left: 0, by: "cgroup" };
       try {
         writeFileSync(`${record.cgroup}/cgroup.kill`, "1");
       } catch {
         // the kill is retried below by the population check's timeout; an unwritable cgroup.kill leaves it populated
       }
       const until = Date.now() + reapMs;
-      while (populated(record.cgroup) === true && Date.now() < until) await sleep(10);
-      if (populated(record.cgroup) === true) {
-        const left = readFileSync(`${record.cgroup}/cgroup.procs`, "utf8").split("\n").filter(Boolean).length;
-        return { empty: false, left: Math.max(left, 1), by: "cgroup" };
+      while (populated(record.cgroup) !== false && populated(record.cgroup) !== "gone" && Date.now() < until) await sleep(10);
+      const last = populated(record.cgroup);
+      if (last === "gone") return { empty: true, left: 0, by: "cgroup" };
+      // Populated, or a population that cannot be read: not empty. Unknown is never gone, and nothing is signalled by pid.
+      if (last !== false) {
+        let left = 1;
+        try {
+          left = Math.max(readFileSync(`${record.cgroup}/cgroup.procs`, "utf8").split("\n").filter(Boolean).length, 1);
+        } catch {
+          // its processes cannot be listed either: at least one
+        }
+        return { empty: false, left, by: "cgroup" };
       }
       try {
         rmdirSync(record.cgroup);

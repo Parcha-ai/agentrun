@@ -60,6 +60,25 @@ test('a cgroup that is gone was emptied (rmdir succeeds only on an empty cgroup)
   assert.deepEqual(await bwrapBox().reap({ id: 'x', cgroup: gone, writer: { pid: process.pid, startTime: '1' } }), { empty: true, left: 0, by: 'cgroup' });
 });
 
+test('a cgroup whose population cannot be read is not empty: unknown is never gone, and only a missing cgroup counts as emptied', async () => {
+  const cg = join(mkdtempSync(join(tmpdir(), 'box-reap-')), 'cg');
+  mkdirSync(cg);
+  writeFileSync(join(cg, 'cgroup.events'), 'populated 0\nfrozen 0\n');
+  writeFileSync(join(cg, 'cgroup.kill'), '');
+  writeFileSync(join(cg, 'cgroup.procs'), '');
+  chmodSync(join(cg, 'cgroup.events'), 0o000);
+  try {
+    const reaped = await bwrapBox({ reapMs: 50 }).reap({ id: 'x', cgroup: cg, writer: { pid: process.pid, startTime: '1' } });
+    assert.equal(reaped.empty, false, 'an unreadable cgroup.events was taken for an empty box');
+    assert.equal(reaped.by, 'cgroup');
+    assert.ok(reaped.left >= 1);
+  } finally {
+    chmodSync(join(cg, 'cgroup.events'), 0o644);
+  }
+  // Readable and unpopulated: empty.
+  assert.deepEqual(await bwrapBox({ reapMs: 50 }).reap({ id: 'x', cgroup: cg, writer: { pid: process.pid, startTime: '1' } }), { empty: true, left: 0, by: 'cgroup' });
+});
+
 test('the count reads the kernel: this process is in its own namespace, and a made-up namespace whose pid 1 is not ours holds nothing', () => {
   assert.ok(countInPidns(pidnsOf(process.pid)) >= 1);
   // A pid 1 no process descends from (pid 2 is kthreadd): an unreadable process of another sandbox on this host (a
