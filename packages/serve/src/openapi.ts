@@ -3,6 +3,7 @@
 // not changed: an operation answered 501 here carries `x-agentrun-serve-unsupported` with the reason, and this server's
 // own routes are added as operations marked `x-agentrun-serve: true`, listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
+import { LAUNCH_LOST } from "./files.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
@@ -123,6 +124,14 @@ let vendored: Json | undefined;
  *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
  *  are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  RunError: {
+    details: {
+      type: "object", additionalProperties: false, required: ["reason"],
+      properties: { reason: { enum: [LAUNCH_LOST] } },
+      description: `Why the run failed, when its code alone does not say: \`${LAUNCH_LOST}\`, the server went down while it started the run's process, which never came up, so the next start failed the run rather than start it again.`,
+      "x-agentrun-serve": "launch/1",
+    },
+  },
   RunFile: {
     unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file: a tool in the run's box created it private (owner-only). Reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`.", "x-agentrun-serve": "unreadable/1" },
   },
