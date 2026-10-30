@@ -47,10 +47,11 @@ function countedRefusals(t, logged) {
   return refused.filter((l) => !PROBER(l));
 }
 
-/** A keyless GET / to a server's own address, as another local process that found its port would send: its status. */
-function probe({ address, port }, userAgent) {
+/** A keyless call (GET / unless given) to a server's own address, as another local process that found its port would
+ *  send: its status. */
+function probe({ address, port }, userAgent, method = 'GET', path = '/') {
   return new Promise((resolve, reject) => {
-    const req = request({ host: address, port, method: 'GET', path: '/', headers: { 'user-agent': userAgent, connection: 'close' } }, (res) => {
+    const req = request({ host: address, port, method, path, headers: { 'user-agent': userAgent, connection: 'close', ...(method === 'POST' ? { 'content-type': 'application/json' } : {}) } }, (res) => {
       res.resume();
       res.on('end', () => resolve(res.statusCode));
     });
@@ -298,10 +299,18 @@ test("the machine's port prober's keyless call to the session proxy is refused a
   const statuses = [];
   const { logged } = await oneNode(t, 'claude-sonnet-5-5', {}, {
     // The prober, the CLI's own user-agent, and one the CLI might call under one day: only the prober's fails nothing.
-    during: async (address) => { for (const agent of ['Go-http-client/1.1', 'claude-cli/0.0.0 (probe)', 'claude-code/9.9.9']) statuses.push(await probe(address, agent)); },
-    cliRefused: [{ status: 401, method: 'GET', path: '/', userAgent: 'claude-cli/0.0.0 (probe)' }, { status: 401, method: 'GET', path: '/', userAgent: 'claude-code/9.9.9' }],
+    // Nor does the prober's user-agent excuse a call of another shape: a keyless call to a real route counts.
+    during: async (address) => {
+      for (const agent of ['Go-http-client/1.1', 'claude-cli/0.0.0 (probe)', 'claude-code/9.9.9']) statuses.push(await probe(address, agent));
+      statuses.push(await probe(address, 'Go-http-client/1.1', 'POST', '/v1/messages'));
+    },
+    cliRefused: [
+      { status: 401, method: 'GET', path: '/', userAgent: 'claude-cli/0.0.0 (probe)' },
+      { status: 401, method: 'GET', path: '/', userAgent: 'claude-code/9.9.9' },
+      { status: 401, method: 'POST', path: '/v1/messages', userAgent: 'Go-http-client/1.1' },
+    ],
   });
-  assert.deepEqual(statuses, [401, 401, 401], 'all are refused: none carries the key');
+  assert.deepEqual(statuses, [401, 401, 401, 401], 'all are refused: none carries the key');
   // The other client's refusal is reported, by its user-agent, not dropped.
   assert.ok(logged.some((l) => /refused/.test(l.message) && l.status === 401 && l.path === '/' && l.userAgent === 'Go-http-client/1.1'), "the other client's refusal is in the log, named");
 });
