@@ -1,7 +1,7 @@
 // Under --faux only: the fetch serve's Jev runner sends System One requests through, in place of TypeSafe's API (the
 // tests' fake). It answers every question, counts as authorized only the canary key, and files one line per call (with the
 // process that made it and the descriptor it was handed the key on) in the file AGENTRUN_TEST_FAUX_JEV_CALLS names. It
-// reports no cost, as TypeSafe's API reports none.
+// reports no cost unless a test sets one.
 import { appendFileSync } from "node:fs";
 
 /** The decision key the tests set: a value a run's tools and model must never be able to read. */
@@ -20,5 +20,7 @@ export default async function fakeJev(url, init = {}) {
     if (q.type === "score") return [id, { type: "score", score: 0, confidence: 0.8, legend: Object.fromEntries(q.criteria.map((v, i) => [i, v])), probabilities: Object.fromEntries(q.criteria.map((_, i) => [i, i === 0 ? 1 : 0])) }];
     return [id, { type: "noul", noul: 0.92 }];
   }));
-  return new Response(JSON.stringify({ model: "jev-1.14.0", answers, usage: { input_tokens: 120, output_tokens: 0 } }), { status: 200, headers: { "content-type": "application/json", "x-typesafe-request-id": "req-faux-1" } });
+  // AGENTRUN_TEST_FAUX_JEV_COST: a cost the provider reports for each call, in USD (live Jev reports about $0.00003).
+  const cost = process.env.AGENTRUN_TEST_FAUX_JEV_COST ? { cost: Number(process.env.AGENTRUN_TEST_FAUX_JEV_COST) } : {};
+  return new Response(JSON.stringify({ model: "jev-1.14.0", answers, usage: { input_tokens: 120, output_tokens: 0, ...cost } }), { status: 200, headers: { "content-type": "application/json", "x-typesafe-request-id": "req-faux-1" } });
 }
