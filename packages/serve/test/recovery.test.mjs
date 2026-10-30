@@ -7,18 +7,13 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, flowAgent, follow, scratch, startRun, storeRun } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const alive = (pid) => {
-  try {
-    return process.kill(pid, 0), true;
-  } catch {
-    return false;
-  }
-};
+const alive = processAlive;
 
 /** A server in a process of its own, so a test can kill it the way a crash does and leave its runs behind. */
 async function serverProcess(data) {

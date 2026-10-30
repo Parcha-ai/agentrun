@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/recovery.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; comments name Codex only.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 003-comments-name-this-host
 import { type EffectRecord, pendingSubmissions, type ReplayPolicy, type SessionState, type Submission } from '../kernel/index.js';
 import { type OpenTurn, openTurn } from './records.js';
 

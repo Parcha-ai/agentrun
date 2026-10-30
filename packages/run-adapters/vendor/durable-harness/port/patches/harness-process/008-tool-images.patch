@@ -1,0 +1,54 @@
+Patch: 008-tool-images
+Reason: AgentRun's tools answer in text or in text with images (a screenshot), and a failed call's tool_end carries the text recorded, as a completed one's does; upstream's bridge returns text only
+Upstream: ours
+Pins: the tool bridge returns a tool's images as recorded
+Pins: a call that fails is heard as failed, after its outcome is recorded, with the failure's text
+---
+diff --git a/packages/harness-process/src/tools.ts b/packages/harness-process/src/tools.ts
+index f701639..b6e640b 100644
+--- a/packages/harness-process/src/tools.ts
++++ b/packages/harness-process/src/tools.ts
+@@ -1,4 +1,5 @@
+-import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy } from 'harness-world';
++import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from 'harness-world';
++import type { ToolImage } from './types.ts';
+ 
+ /**
+  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
+@@ -21,6 +22,8 @@ export interface ToolResult {
+   isError: boolean;
+   /** The call's intent was committed and its outcome lost (see `EffectError.interrupted`). */
+   interrupted?: boolean;
++  /** Images the tool answered with, as it gave them (recorded with its outcome). */
++  images?: readonly ToolImage[];
+ }
+ 
+ /** One tool, harness-neutral. */
+@@ -95,7 +98,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
+       if (fresh && tool.replay === 'never') await options.beforeNever?.({ name: tool.name, callId, args });
+       if (fresh && live) ctx.live({ type: 'tool_start', name: tool.name, args, callId });
+       try {
+-        const text = await ctx.effect(
++        const output = await ctx.effect(
+           key,
+           {
+             name: `tool.${tool.name}`,
+@@ -106,12 +109,15 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
+           },
+           (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
+         );
++        // A tool answers in text, or in text with images (a screenshot): the images come back as recorded.
++        const { text, images } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined };
+         if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text });
+-        return { text: String(text), isError: false };
++        return { text: String(text), isError: false, ...(images?.length ? { images } : {}) };
+       } catch (err) {
+         if (err instanceof EffectFailure) {
+-          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true });
+-          return { text: failureText(err.error, options.partialChars), isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
++          const text = failureText(err.error, options.partialChars);
++          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text });
++          return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
+         }
+         ctx.halt?.(err);
+         throw err;
