@@ -1,12 +1,12 @@
-import { Bot, ChevronRight, History, LogOut, Menu, Terminal } from "lucide-react";
+import { Bot, History, LayoutDashboard, LogOut, Menu, Terminal } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { cn } from "@/lib/utils";
 
-export type Section = "operator" | "playground" | "agents" | "runs";
+export type Section = "mission" | "playground" | "agents" | "runs";
 
-// v1's navigation only. Mission Control, deployments, runners, swarms, teams and billing are not part of this console.
+// v1's navigation only. Deployments, runners, swarms, teams and billing are not part of this console.
 const NAV: { id: Section; label: string; Icon: typeof Bot }[] = [
-  { id: "operator", label: "Operator", Icon: ChevronRight },
+  { id: "mission", label: "Mission Control", Icon: LayoutDashboard },
   { id: "playground", label: "Playground", Icon: Terminal },
   { id: "agents", label: "Agents", Icon: Bot },
   { id: "runs", label: "Runs", Icon: History },
