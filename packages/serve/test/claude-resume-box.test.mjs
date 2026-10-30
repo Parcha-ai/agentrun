@@ -102,13 +102,15 @@ test("a child's binds must be real directories directly under this launch's temp
   const elsewhere = join(root, "elsewhere");
   mkdirSync(elsewhere);
   symlinkSync(elsewhere, join(launch, "claude-resume-link"));
+  // A link to a directory that is itself directly under the launch's: refused for being a link, never followed.
+  symlinkSync(own, join(launch, "claude-resume-alias"));
   mkdirSync(join(own, "nested"));
   const { started, box } = recordingBox();
   const checked = bindsChecked(box, () => launch);
   const spec = (bind) => ({ homes: { HOME: join(root, "harness", "home"), "bind:0": bind } });
   checked.start(spec(own), {}, {});
   assert.equal(started.length, 1, "its own directory, directly under the launch's: started");
-  for (const [bind, why] of [[join(launch, "claude-resume-link"), "a link"], [join(launch, "missing"), "missing"], [join(own, "nested"), "nested deeper"], [elsewhere, "outside it"], [launch, "the launch's directory itself"]]) {
+  for (const [bind, why] of [[join(launch, "claude-resume-alias"), "a link to a directory beside it"], [join(launch, "claude-resume-link"), "a link"], [join(launch, "missing"), "missing"], [join(own, "nested"), "nested deeper"], [elsewhere, "outside it"], [launch, "the launch's directory itself"]]) {
     assert.throws(() => checked.start(spec(bind), {}, {}), (error) => error.code === "box_refused" && error.message === `this run's box is refused: a child's bind ${bind} is not a directory directly under this launch's temporary directory ${launch} (a link, missing, or elsewhere)`, why);
   }
   assert.equal(started.length, 1, "nothing refused reached the box");
