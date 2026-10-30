@@ -368,6 +368,11 @@ jobs:
           HOME: /tmp/box-home
           AGENTRUN_BOX_REAL: '1'
         run: node --test --test-timeout=120000 packages/run-adapters/test/box-real.test.mjs
+      - name: A serve run's own box on a real bwrap
+        env:
+          HOME: /tmp/box-home
+          AGENTRUN_BOX_REAL: '1'
+        run: node --test --test-timeout=120000 packages/serve/test/box-run.test.mjs
   stranger:
     # A package installed from its packed tarball into an empty directory, with an empty environment and home, runs the one command
     # its README gives with no key (scripts/stranger/<name>.json). Each spec runs on its own runner. A spec that says the package has

@@ -9,7 +9,7 @@
 //     it back once this process has exited: this process holds the run's store until then.
 import { mkdir, readFile } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@parcha/pi-durable-agent";
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
@@ -18,6 +18,9 @@ import { cancelledIn, markRequests } from "./request-start.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
+import { nativeTools } from "./native-tools.js";
+import { isWorkspace } from "./run-workspace.js";
+import { runBox, runBoxOf } from "./box/run-box.js";
 import { adapterRun } from "./harness-app.js";
 import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
@@ -73,12 +76,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const spec = { key: `run:${run.id}`, label: run.agent, system: [instructions], context: "fresh" as const, thinking: thinkingFor(revision.body.harness, thinkingLevel) };
     // ask_person stays pi's (runnable.ts refuses a run that names it here); the file tools are pi's own.
     const named = revision.body.tools.filter((name) => name !== ASK_TOOL);
-    // The harness's own files (its homes, its working state) go in a private directory beside the workspace, never in it.
+    // The directory the harness is lent: its homes and its working state, and (a run started since its one workspace is
+    // there, run-workspace.ts) that workspace, harness/work, which pi's door tools write too. Never a second tree.
     const dir = join(where.root, "harness");
     await mkdir(dir, { recursive: true, mode: 0o700 });
-    // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
+    const workspace = relative(where.root, where.work);
+    if (workspace === "harness/work" && where.work !== join(dir, "work")) throw new Error(`the run's workspace ${where.work} is not its harness's ${join(dir, "work")}`);
     const harness = revision.body.harness;
-    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}) });
+    // Its own tools only in the box serve's launch settings name (native-tools.ts decides, box/run-box.ts builds it once).
+    const settings = runBoxOf(process.env);
+    const box = settings && nativeTools(harness, settings.isolation.mode, isWorkspace(workspace) ? workspace : "work") ? await runBox(settings, { id: run.id, dir: where.root }, process.env) : undefined;
+    // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
+    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(box ? { box } : {}) });
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never);
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard);

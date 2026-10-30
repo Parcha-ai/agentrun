@@ -76,7 +76,9 @@ test("a box whose probe passed: its mode as proved, no error, no detail; the ans
   assert.deepEqual(caps.box, { mode: "bwrap", cgroup: false, egress: "open" });
   assert.deepEqual(seen, [{ provider: "local", egress: "open" }], "the factory is given the settings");
   assert.deepEqual(meets(doc, caps), []);
-  for (const h of caps.harnesses) assert.equal(h.native_tools, false, `${h.id}: native tools stay off in this change`);
+  // In a box whose probe passed, a new claude-agent run gets its harness's own tools (native-tools.ts); pi's are pi's own,
+  // and Codex's adapter takes no such option yet.
+  assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", true], ["codex", false]]);
 });
 
 test("a probe that failed reads as unavailable with its named error, never bwrap and never unsandboxed; native tools off on every harness", async (t) => {
@@ -145,6 +147,8 @@ test("unsandboxed only from the setting: the banner at start, a line at each run
   assert.ok(text.includes(UNSANDBOXED_BANNER), "the banner, at start");
   assert.deepEqual(seen, [], "no box is made or probed");
   assert.deepEqual(server.caps.box, { mode: "unsandboxed", cgroup: false, egress: "open" });
+  // No box is no harness tools: UNSANDBOXED_NATIVE_TOOLS (native-tools.ts) keeps them off until that is decided otherwise.
+  for (const h of server.caps.harnesses) assert.equal(h.native_tools, false, `${h.id}: no native tools unsandboxed`);
   assert.equal((await server.api("POST", "/agents", agent("plain"))).status, 201);
   const id = (await server.api("POST", "/agents/plain/runs", { input: { content: "What is 2 + 2?" } })).body.run_id;
   await follow(server.api, id, ["completed"]);

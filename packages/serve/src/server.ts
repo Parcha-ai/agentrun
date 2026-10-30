@@ -24,6 +24,7 @@ import { type BoxFactory, type BoxView, boxConfig, cgroupDelegation, NO_BOX, res
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { workspaceOf } from "./run-workspace.js";
+import { nativeTools } from "./native-tools.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -164,8 +165,9 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
-    /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses,
+    /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and whether a new run of
+     *  it gets the harness's own tools here (native-tools.ts, from the box below). */
+    harnesses: harnesses.map((offer) => ({ ...offer, native_tools: nativeTools(offer.id, box.mode) })),
     /** Where runs' harness tools would run: the box's mode as its probe proved it (unavailable with a named error when
      *  it failed), whether each run gets its own cgroup, and where the box may reach. */
     box,
@@ -272,12 +274,14 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const boxSettings = boxConfig(process.env);
   const undelegated = boxSettings.cgroup === undefined ? undefined : await cgroupDelegation(boxSettings.cgroup);
   if (undelegated) throw new Error(`AGENTRUN_BOX_CGROUP names a cgroup subtree this server cannot use (${undelegated}): a shared server never runs runs uncapped. Delegate the subtree to this server's user, or unset it to run single-user.`);
-  const { view: boxView } = await resolveBox(boxSettings, options.boxFactory, boxSettings.cgroup !== undefined);
+  const { box: madeBox, view: boxView } = await resolveBox(boxSettings, options.boxFactory, boxSettings.cgroup !== undefined);
+  // The boxes runs leave are swept by the reap of the box this server made, unless one was given.
+  const boxHost: BoxHost | undefined = options.box ?? (madeBox && boxView.mode !== "unavailable" && boxView.mode !== "unsandboxed" ? { reap: (record) => madeBox.reap(record) } : undefined);
   if (boxView.mode === "unsandboxed") process.stderr.write(`${UNSANDBOXED_BANNER}\n`);
   const caps = capabilities(env, maxRuns, await harnessOffers(env), boxView);
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, boxView, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, boxView, ...(boxSettings.cgroup !== undefined ? { boxCgroupRoot: boxSettings.cgroup } : {}), ...(boxHost ? { box: { host: boxHost, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.

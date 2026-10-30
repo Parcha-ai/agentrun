@@ -17,6 +17,8 @@ import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { type BoxView, UNSANDBOXED_RUN_LINE } from "./box/config.js";
+import { RUN_BOX_ENV, type RunBoxSettings } from "./box/run-box.js";
+import type { Isolation } from "@parcha/agentrun-kernel/host";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
@@ -248,7 +250,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; boxView?: BoxView; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; boxView?: BoxView; boxCgroupRoot?: string; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -707,6 +709,11 @@ export class Runs {
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // The box the run's process builds for its harness, as plain launch settings (box/run-box.ts): never a secret, so
+    // never the secrets pipe. Only from this server's own box; a box that is unavailable gives none.
+    delete env[RUN_BOX_ENV];
+    const settings = this.runBoxSettings();
+    if (settings) env[RUN_BOX_ENV] = JSON.stringify(settings);
     // The box this open runs in, recorded before its process starts: every launch's own (a relaunch after the operator
     // changed AGENTRUN_BOX records the new mode), so the record always tells the truth about the latest open.
     if (this.options.boxView) {
@@ -748,6 +755,15 @@ export class Runs {
     if (boxed(before) && now.mode === "unsandboxed") return { code: "box_downgrade", message: "box_downgrade: this run started in a box; start a new run to run it unsandboxed" };
     if (before !== "unavailable" && now.mode === "unavailable") return { code: "box_unavailable", message: `box_unavailable: this run ran with ${before === "unsandboxed" ? "no box, by the operator's setting" : `a ${before} box`}, and this server has no box (${now.error}); it is held, and opens again on a server whose box is back` };
     return undefined;
+  }
+
+  /** The settings a run's process builds its box from: this server's data root, what its box's probe proved, and on a
+   *  shared server its delegated cgroup subtree. None when this server has no box to give. */
+  private runBoxSettings(): RunBoxSettings | undefined {
+    const view = this.options.boxView;
+    if (!view || view.mode === "unavailable") return undefined;
+    const isolation: Isolation = view.mode === "unsandboxed" ? { mode: "unsandboxed" } : { mode: view.mode, cgroup: view.cgroup };
+    return { data: this.options.agents.dir, isolation, ...(view.cgroup && this.options.boxCgroupRoot !== undefined ? { cgroupRoot: this.options.boxCgroupRoot } : {}) };
   }
 
   private relaunch(run: Run): void {
