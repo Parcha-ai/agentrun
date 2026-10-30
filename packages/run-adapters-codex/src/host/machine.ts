@@ -155,6 +155,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
     let announced: string | undefined;
     let open = 0;
+    const rolloutListeners: ((line: string) => void)[] = [];
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
@@ -194,6 +195,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelUrl: proxy.url,
       modelKey: key,
       announcedExec: () => announced,
+      onRolloutLine: (listener) => void rolloutListeners.push(listener),
       notes: [],
       spawn: async (spawnOptions) => {
         if (closed) throw new Error("agentrun-codex: the session machine is closed");
@@ -229,7 +231,9 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
             } catch (err) {
               if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
             }
-            return tail.read();
+            const fresh = tail.read();
+            for (const line of fresh) for (const listener of rolloutListeners) listener(line);
+            return fresh;
           },
           // A local file is read to its end on every read.
           sync: async () => {},

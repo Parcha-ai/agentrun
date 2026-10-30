@@ -14,6 +14,9 @@
       },
       "packages/harness-codex/src/scripts.ts": {
         "harness-codex": "src/scripts.ts"
+      },
+      "packages/harness-codex/src/code-mode.ts": {
+        "harness-codex": "src/code-mode.ts"
       }
     }
   },
