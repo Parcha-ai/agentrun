@@ -4,8 +4,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import type { RouteNode, Workflow, WorkflowDeps, WorkflowNode } from "../workflow.js";
-import { desugarWorkflow, isItemFailure } from "../workflow.js";
+import type { CallNode, RouteNode, Workflow, WorkflowDeps, WorkflowNode } from "../workflow.js";
+import { desugarWorkflow, interpolateValue, isItemFailure } from "../workflow.js";
 import { setLongTimeout, type LongTimer } from "../long-timer.js";
 import { chainStep, childrenOf, completedIteration, enclosingChains, enclosingIterations, isWithin, mapItemOf, nodeAt, topLevelCompletion } from "./execution-path.js";
 import { bindingDigests, LEDGER_FORMAT } from "./binding.js";
@@ -578,6 +578,19 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
     // answer whole: the branch taken, the choice and the flag are derived from it by the
     // interpreter's rule, and the commit below stores them.
     completeRouteDecisions(snapshot.pin, view);
+    // The files a call declares, as its dispatch named them: interpolated against the state the call started from. That
+    // state is the kept value whose digest the frame bound when the call started (`inputs`, bound at its resume, before the
+    // call ran): a chain frontier's, a finished branch's or item's, or a value the host bound. Never the current state,
+    // never a guess: with no kept value of that digest the settlement is refused, naming the template.
+    const producedBy = (node: CallNode, at: string, id: string): string[] => {
+      const declared = node.produces ?? [];
+      if (!declared.some((entry) => entry.includes("{"))) return declared;
+      const started = snapshot.pin.inputs[at];
+      const candidates = [...Object.values(snapshot.pin.states), ...Object.values(options.bind ?? {})];
+      const state = started === undefined ? undefined : candidates.find((value) => isRecord(value) && hash(value) === started);
+      if (!isRecord(state)) throw failure("RECOVERY_RECONCILE_FAILED", `Reconcile ${id}: the state the call at ${at} started from is not kept, so its produces (${declared.join(", ")}) cannot be named`);
+      return declared.map((entry) => String(interpolateValue(entry, state, node.label)));
+    };
     const left = journal.effects().filter((effect) => effect.status === "unknown");
     if (options.reconcile && left.length > 0) {
       let reconciling = true;
@@ -589,7 +602,7 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
           // settlement, and a later resume refuses an output that changed.
           const at = frozenEffectPath(id)?.path;
           const declared = at === undefined ? undefined : nodeAt(view, at);
-          const files = reader.hashes(declared?.node === "call" ? declared.produces ?? [] : []);
+          const files = reader.hashes(declared?.node === "call" && at !== undefined ? producedBy(declared, at, id) : []);
           keepFiles(files, at);
           // The calls an earlier process kept stay: the host's re-send is added after them, so a call that applied before the kill is still on record.
           if (receipt?.calls?.length) await journal.called(id, [...(journal.effect(id)?.calls ?? []), ...receipt.calls]);
