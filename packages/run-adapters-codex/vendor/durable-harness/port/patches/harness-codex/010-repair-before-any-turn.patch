@@ -6,7 +6,7 @@ Pins: a cut-off code-mode exec is answered with a custom tool output holding the
 Pins: a settled turn whose exec dangles with a completed never call does not answer a new turn's same call as recorded earlier: the new call runs
 ---
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index c4fcc39..5608923 100644
+index 0736141..29c6169 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
 @@ -1104,47 +1104,52 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {

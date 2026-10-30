@@ -4,7 +4,7 @@ Upstream: ours
 Pins: a host tool named exec is a function call: the repair answers it with the generic output, never as code mode's exec
 ---
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index 5608923..8af5953 100644
+index 29c6169..3915040 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
 @@ -1113,7 +1113,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {

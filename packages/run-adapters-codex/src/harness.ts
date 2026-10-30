@@ -1173,14 +1173,16 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           // injected once for this interrupted turn (every turn opens with `thread/resume`, so injecting on each would repeat it), and the
           // resumed turn's user input is the user's own words, or a bare nudge. That holds on a new thread too (`resume` is unset when the
           // rollout was not mirrored yet, which a crash in a turn's first seconds leaves): the thread exists by here, so it is injected the same.
-          const system = recoverySystemNote(ctx.state()) ?? note.text;
+          // Only the harness's own words (statuses) go in a developer item: with none to give, nothing is injected. The full note carries
+          // tool outputs and never goes in a slot of the model's.
+          const system = recoverySystemNote(ctx.state());
           const words = recoveryUserTurn(
             owed.map((s) => s.text ?? ''),
             note.pending.map((s) => s.text ?? '')
           );
           const noted = (await journal.read<{ since: number }>(RECOVERY_NOTE_STREAM)).some((r) => r.data.since === note.turn.since);
           const text = words;
-          if (!noted) {
+          if (system !== undefined && !noted) {
             await guard(rpc.request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: system }] }] }));
             // The injected item is in the log before it is recorded as injected: a record without it would leave the note out of every later resume.
             await guard(synced());
