@@ -24,10 +24,12 @@ export const followUpKey = (session: string, name: string): string => `${session
 /** The session as a follow-up drives it: an adapter's session, and how a turn a crash cut off is closed unsent. */
 export interface FollowUpTarget {
   readonly state: AdapterSessionState;
-  send(text: string): Promise<void>;
+  /** Send `text` as a new turn, its submission under `id`. */
+  send(text: string, options?: { id?: string }): Promise<void>;
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
-  /** Record the open turn as ended, interrupted, and send nothing. */
-  settleOpenTurn(): Promise<void>;
+  /** Record the open turn as ended, interrupted, and send nothing. It withdraws only the submission it is named
+   *  (`opening`), while that is unplaced and the oldest pending. */
+  settleOpenTurn(options?: { opening?: string }): Promise<void>;
   /** Stop the turn in flight. */
   interrupt(): Promise<void>;
 }
@@ -74,6 +76,9 @@ export function followUpOnce(options: FollowUpOptions): FollowUp {
   if (typeof reserveUsd !== "number" || !Number.isFinite(reserveUsd) || reserveUsd <= 0) throw new Error("reserveUsd must be a number of dollars above 0");
   if (typeof worstUsd !== "number" || !Number.isFinite(worstUsd) || worstUsd < 0) throw new Error("worstUsd must be given, a number of dollars, 0 or more");
   const key = followUpKey(options.session, options.name);
+  // The id of the prompt's submission in the session: the follow-up's own, so a later run names it to the settle and a
+  // settle never withdraws input that is not the follow-up's.
+  const submission = `follow-up:${key}`;
   let active = false;
   let signalNow: AbortSignal | undefined;
   // The session's spentUsd when the follow-up's first request asks: the reserve counts from there. Whatever the session
@@ -126,7 +131,7 @@ export function followUpOnce(options: FollowUpOptions): FollowUp {
       // Its own turn may still be open in the session: closed unsent, never resumed, and once. An open turn after that
       // is another's, and is left alone.
       if (drive.state().effects.get(SETTLED_EFFECT)?.status !== "completed") {
-        if (target.state === "open_turn") await target.settleOpenTurn();
+        if (target.state === "open_turn") await target.settleOpenTurn({ opening: submission });
         await drive.effect(SETTLED_EFFECT, { name: SETTLED_EFFECT, replay: "safe", input: null }, async () => null);
       }
       return { status: "interrupted" };
@@ -149,7 +154,9 @@ export function followUpOnce(options: FollowUpOptions): FollowUp {
         });
         aborted.catch(() => undefined);
         try {
-          await Promise.race([target.send(prompt), aborted]);
+          // A send the session refuses because it holds the id already cannot strand the follow-up: the effect is
+          // `never`, so a crash after the submission landed is recovered interrupted, and the prompt is never sent again.
+          await Promise.race([target.send(prompt, { id: submission }), aborted]);
           const end = await Promise.race([target.turnEnd(), aborted]);
           if (signal.aborted) throw signal.reason;
           if (end.status === "interrupted") throw new EffectInterrupted(end.error ?? "the follow-up's turn was interrupted");
