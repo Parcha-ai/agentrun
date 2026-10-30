@@ -501,10 +501,13 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   async function walk(base: string): Promise<{ path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[]> {
     const out: { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[] = [];
     if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
+    // work/ unreadable as a whole lists nothing; what the walk could not read in it is left out.
     await walkWork(base, (path, st, readable) => {
       if (st.isFile()) out.push({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null, ...(readable ? {} : { unreadable: true }) });
       return out.length <= FILE_LIST_CAP;
-    }, { skip: (name) => name.startsWith(".") });
+    }, { skip: (name) => name.startsWith(".") }).catch((error) => {
+      if (!(error instanceof WorkRefused)) throw error;
+    });
     return out;
   }
 

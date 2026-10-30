@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
@@ -252,4 +252,33 @@ test("the CLI's --dry-run lists each project and writes nothing; the import itse
   assert.equal(real.status, 0, real.stderr);
   assert.match(real.stdout, /runs imported into/);
   assert.ok(!real.stdout.includes(CANARY));
+});
+
+test("a skill folder this user cannot read, or a skills directory it cannot read, is named unreadable, never dropped silently; the rest still imports", { skip: process.getuid?.() === 0 ? "root reads a mode 000 folder" : false }, async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const locked = join(h.site, ".claude", "skills", "locked");
+  mkdirSync(locked);
+  writeFileSync(join(locked, "SKILL.md"), "---\nname: locked\n---\nUnseen.\n");
+  const codexSkills = join(h.site, ".codex", "skills");
+  mkdirSync(join(codexSkills, "triage"), { recursive: true });
+  writeFileSync(join(codexSkills, "triage", "SKILL.md"), "---\nname: triage\n---\nUnseen.\n");
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  // Given back before the test ends: the scratch directory's removal runs first among the after hooks.
+  chmodSync(locked, 0o000);
+  chmodSync(codexSkills, 0o000);
+  let report;
+  try {
+    report = await runImport(store, await planImport(options(h)), options(h));
+  } finally {
+    chmodSync(locked, 0o700);
+    chmodSync(codexSkills, 0o700);
+  }
+  const why = Object.fromEntries(report.skipped.map((s) => [s.what, s.why]));
+  assert.equal(why[locked], "unreadable", "a skill folder at mode 000");
+  assert.equal(why[codexSkills], "unreadable", "a skills directory at mode 000");
+  const kept = store.readAgent(report.agents[0].id).revisions[0].body.skills;
+  assert.deepEqual(Object.keys(kept).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"], "the readable skills still import");
 });
