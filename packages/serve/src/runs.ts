@@ -13,6 +13,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
 import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
@@ -25,6 +26,7 @@ import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
+import { handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "./secrets.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -246,11 +248,16 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
 export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
-/** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
- *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
+/** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
+/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own. */
+export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name));
+/** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
+const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
+/** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
+ *  variables and the rest pass, and the door token goes by file. */
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
+  Object.fromEntries(Object.entries(withoutSecrets(env)).filter(([, value]) => value !== token));
 
 /** One line of the run process's log in words: pi-durable-disk writes JSON lines (`{at, event, message, ...}`). */
 function inWords(line: string): string {
@@ -265,15 +272,53 @@ function inWords(line: string): string {
   return [text("event"), text("message") ?? text("error")].filter(Boolean).join(": ") || "the run's process left no message";
 }
 
+/** The line of the run process's log a failure's message is made of: its last, past any harness's own lines (a proxy's
+ *  refusal just before a crash says nothing of why the process went). */
+export function failureLine(log: string): string {
+  const lines = log.trim().split("\n");
+  return ownLine(lines) ?? lines.at(-1) ?? "";
+}
+
+/** The last of `lines` that is not a harness's own line, if any. */
+function ownLine(lines: readonly string[]): string | undefined {
+  return lines.findLast((line) => {
+    if (line.trim() === "") return false;
+    try {
+      return (JSON.parse(line) as { event?: unknown } | null)?.event !== HARNESS_LOG_EVENT;
+    } catch {
+      return true;
+    }
+  });
+}
+
+/** How far back from its end a failure's message is looked for in the run's log, in steps of LOG_STEP. */
+const LOG_STEP = 4096;
+const LOG_REACH = 1 << 20;
+
 /** The last line of the run process's log, in words, for a failure's message. */
-async function lastLogLine(run: Run): Promise<string> {
+export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
   try {
+    // Backward until a whole line is the process's own: harness lines after it may run past any one read, and a read
+    // that starts inside a line has only its tail, which is no line at all. Each step looks only at the lines it
+    // completes; what was read is joined once, and failureLine, the one rule, picks the line from it.
     const { size } = await file.stat();
-    const length = Math.min(size, 4096);
-    const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
-    return clip(inWords(buffer.toString("utf8").trim().split("\n").at(-1) ?? ""), 300);
+    const chunks: Buffer[] = [];
+    let start = size;
+    // The oldest line read so far, torn at the read's start unless that is the file's start.
+    let head = Buffer.alloc(0);
+    while (start > 0 && size - start < LOG_REACH) {
+      const from = Math.max(0, start - LOG_STEP);
+      const { buffer } = await file.read(Buffer.alloc(start - from), 0, start - from, from);
+      start = from;
+      chunks.unshift(buffer);
+      const newline = buffer.indexOf(0x0a);
+      const completed = start === 0 ? Buffer.concat([buffer, head]) : newline < 0 ? Buffer.alloc(0) : Buffer.concat([buffer.subarray(newline + 1), head]);
+      head = start === 0 ? Buffer.alloc(0) : newline < 0 ? Buffer.concat([buffer, head]) : buffer.subarray(0, newline);
+      if (ownLine(completed.toString("utf8").split("\n")) !== undefined) break;
+    }
+    return clip(inWords(failureLine(Buffer.concat(chunks).subarray(head.length).toString("utf8"))), 300);
   } finally {
     await file.close();
   }
@@ -689,8 +734,12 @@ export class Runs {
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
+    // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
+    const secrets = handover(RUN_SECRETS);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
+      [SECRETS_FD_ENV]: "3",
+      [SECRETS_LEN_ENV]: String(secrets.length),
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
@@ -701,10 +750,14 @@ export class Runs {
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
-      "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
+      // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
+      "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
-    ], { stdio: ["ignore", "ignore", log], env });
+    ], { stdio: ["ignore", "ignore", log, "pipe"], env });
     closeSync(log);
+    const pipe = child.stdio[3] as import("node:stream").Writable | null;
+    pipe?.on("error", () => {});
+    pipe?.end(secrets);
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;

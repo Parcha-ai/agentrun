@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { parentWatched, processAlive } from '@parcha/agentrun-adapters/host';
 import { CODEX_ROUTES, gatewayHandler, isBrandedMachine } from '../dist/host/process.js';
 import { childEnv, confined, localMachine } from '../dist/host/machine.js';
 
@@ -92,7 +93,8 @@ test("the host's confinement wraps a child's command and arguments, never its en
   const code = 'process.stdout.write(JSON.stringify(Object.keys(process.env).sort()))';
   const out = await run(process.execPath, ['-e', code]);
   assert.equal(out.code, 0);
-  assert.deepEqual(seen, [{ command: process.execPath, args: ['-e', code] }]);
+  // The confinement wraps the child as the machine launches it: watched by this process (it dies with it).
+  assert.deepEqual(seen, [parentWatched({ command: process.execPath, args: ['-e', code] })]);
   assert.deepEqual(JSON.parse(out.out), ['GIT_CEILING_DIRECTORIES', 'PATH'], "the environment is the machine's, untouched by the confinement");
   const child = { command: '/pinned/codex', args: ['--x', 'y'] };
   assert.deepEqual(confined(child, (c) => ({ command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', c.command, ...c.args] })), { command: '/usr/bin/setpriv', args: ['--no-new-privs', '--', '/pinned/codex', '--x', 'y'] });
@@ -107,18 +109,7 @@ test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs 
   assert.equal(out.out, '1');
 });
 
-/** Whether `pid` is a live process: signalable and, on Linux, not a zombie (under a PID 1 that does not reap orphans, a
- *  killed grandchild stays a zombie, and kill(pid, 0) succeeds on it). */
-const alive = (pid) => {
-  try { process.kill(pid, 0); } catch { return false; }
-  if (process.platform !== 'linux') return true;
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
-  } catch (error) {
-    return error?.code !== 'ENOENT';
-  }
-};
+const alive = processAlive;
 const gone = async (pid) => { for (let i = 0; i < 200 && alive(pid); i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); return !alive(pid); };
 /** Start a child that forks a grandchild (a sleep in the background) and reports its pid; returns both pids. */
 async function forking(machine, signal) {
