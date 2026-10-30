@@ -115,7 +115,6 @@ jobs:
     # verify (22.x) too, and so does a pi leg that failed, was cancelled or was skipped.
     name: verify (${{ matrix.node }})
     needs: [test, console, pi-1-2]
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
