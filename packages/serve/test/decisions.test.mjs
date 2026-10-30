@@ -8,18 +8,19 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
-import { DECISION_KEY_FD } from "../dist/decisions.js";
+import { DECISION_KEY_FD, decisionsOf, jevRoute } from "../dist/decisions.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
+const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const judge = { node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" };
 /** A model node that reports where the decision key is, once `gate` exists when one is given. */
 const probe = (gate) => ({ node: "extract", label: "probe", instructions: gate ? `Report the canary once ${gate} exists.` : "Report the canary.", out: "Probe", as: "probe" });
-const flow = (steps) => ({
+const flow = (steps, output = { schemaId: "Probe", path: "probe" }) => ({
   v: 2, name: "coi-check",
   schemas: {
     In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
@@ -33,7 +34,7 @@ const flow = (steps) => ({
     },
   },
   input: { schemaId: "In" },
-  output: { schemaId: "Probe", path: "probe" },
+  output,
   root: { node: "chain", steps },
 });
 /** What a run that cannot reach the key reports. */
@@ -47,8 +48,8 @@ async function withCanary(t) {
   return async () => (await readFile(calls, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
 
-async function startFlow(api, steps) {
-  const made = await api("POST", "/agents", flowAgent("coi", flow(steps)));
+async function startFlow(api, steps, output) {
+  const made = await api("POST", "/agents", flowAgent("coi", flow(steps, output)));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const started = await api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -208,4 +209,81 @@ test("capabilities lists the decision providers: jev available where its key is 
   assert.deepEqual([routed.id, routed.available, routed.reason], ["jev", true, undefined]);
   assert.match(routed.note ?? "", /model gateway/, "on the OpenRouter route the Jev key is the gateway's, and capabilities says so");
   assert.match(routed.note ?? "", /TYPESAFE_API_KEY/);
+});
+
+/** A server on the decision variables `vars`, what its capabilities offer of jev, and a judge workflow's run on it: the
+ *  run's end and the System One requests the fake Jev took, each as [path, sent with the canary]. */
+async function jevOn(t, vars) {
+  const calls = join(await scratch(t), "jev-calls.jsonl");
+  withEnv(t, { ...vars, AGENTRUN_TEST_FAUX_JEV_CALLS: calls }, KEYS);
+  const { api } = await serve(t, { fauxJev: FAUX_JEV });
+  const { adapters, decisions } = (await api("GET", "/capabilities")).body.workflows;
+  const judged = async () => {
+    const runId = await startFlow(api, [judge], { schemaId: "Coi", path: "coi" });
+    const { last } = await follow(api, runId, ["completed", "failed"]);
+    const run = (await api("GET", `/runs/${runId}`)).body;
+    const sent = (await readFile(calls, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    return { status: last.status, error: run.error, sent: sent.map((c) => [c.path, c.authorized]) };
+  };
+  return { api, adapters, offer: decisions.providers.find((p) => p.id === "jev"), judged };
+}
+
+test("TYPESAFE_API_KEY wins over OPENROUTER_API_KEY and an OpenRouter gateway's key: the judge sends it to TypeSafe, and capabilities has no note", async (t) => {
+  const jev = await jevOn(t, { TYPESAFE_API_KEY: CANARY, OPENROUTER_API_KEY: "openrouter-key-not-jevs", AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: "gateway-key-not-jevs" });
+  assert.deepEqual(jev.offer, { id: "jev", available: true }, "no note: the decision key stays out of a run's processes");
+  const run = await jev.judged();
+  assert.equal(run.status, "completed", JSON.stringify(run.error));
+  assert.deepEqual(run.sent, [["/v1/systemone", true]], "one request, to TypeSafe, with the TypeSafe key");
+});
+
+test("OPENROUTER_API_KEY wins over an OpenRouter gateway's key: the judge sends it to OpenRouter, and the note names it", async (t) => {
+  const jev = await jevOn(t, { OPENROUTER_API_KEY: CANARY, AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: "gateway-key-not-jevs" });
+  assert.deepEqual([jev.offer.available, jev.offer.reason], [true, undefined]);
+  assert.match(jev.offer.note ?? "", /^Jev runs on OPENROUTER_API_KEY, /, JSON.stringify(jev.offer));
+  assert.doesNotMatch(jev.offer.note, /AGENT_MODEL_API_KEY/);
+  const run = await jev.judged();
+  assert.equal(run.status, "completed", JSON.stringify(run.error));
+  assert.deepEqual(run.sent, [["/api/v1/systemone", true]], "one request, to OpenRouter, with OPENROUTER_API_KEY");
+});
+
+test("on an OpenRouter gateway alone, Jev runs on AGENT_MODEL_API_KEY: capabilities names it, and the judge sends it to OpenRouter", async (t) => {
+  const jev = await jevOn(t, { AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: CANARY });
+  assert.deepEqual([jev.offer?.available, jev.offer?.reason], [true, undefined], JSON.stringify(jev.offer));
+  assert.match(jev.offer.note ?? "", /^Jev runs on AGENT_MODEL_API_KEY, the model gateway key/, JSON.stringify(jev.offer));
+  assert.match(jev.offer.note, /hold in their environment/, "the note says a run's processes hold the key");
+  assert.match(jev.offer.note, /Set TYPESAFE_API_KEY to keep the decision key out of them/);
+  assert.ok(jev.adapters.includes("runJudge"));
+  const run = await jev.judged();
+  assert.equal(run.status, "completed", JSON.stringify(run.error));
+  assert.deepEqual(run.sent, [["/api/v1/systemone", true]], "one request, to OpenRouter, with the gateway's key");
+});
+
+test("a gateway whose host is not exactly openrouter.ai, or no gateway key, leaves Jev unavailable: capabilities says why and a judge run is 409", async (t) => {
+  const others = [
+    "https://openrouter.ai.example.com/v1", "https://example.com/openrouter.ai/v1", "https://notopenrouter.ai/api/v1",
+    "https://api.openai.com/v1", "http://127.0.0.1:9/openrouter.ai", "openrouter.ai/api/v1", "not a url",
+  ];
+  for (const base of others) {
+    const env = { AGENT_MODEL_BASE_URL: base, AGENT_MODEL_API_KEY: "gateway-key" };
+    assert.equal(jevRoute(env), undefined, base);
+    assert.equal(decisionsOf(env)[0].available, false, base);
+  }
+  for (const key of [undefined, " "]) assert.equal(jevRoute({ AGENT_MODEL_BASE_URL: OPENROUTER_GATEWAY, AGENT_MODEL_API_KEY: key }), undefined, "OpenRouter's gateway with no key of its own");
+  const jev = await jevOn(t, { AGENT_MODEL_BASE_URL: "https://openrouter.ai.example.com/v1", AGENT_MODEL_API_KEY: CANARY });
+  assert.deepEqual([jev.offer.available, jev.offer.note], [false, undefined]);
+  assert.match(jev.offer.reason, /AGENT_MODEL_API_KEY/, "the reason names the gateway route too");
+  assert.equal(jev.adapters.includes("runJudge"), false);
+  assert.equal((await jev.api("POST", "/agents", flowAgent("coi", flow([judge], { schemaId: "Coi", path: "coi" })))).status, 201);
+  const refused = await jev.api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
+});
+
+test("with no decision key, Jev is unavailable and the reason names each way to run it: TYPESAFE_API_KEY, OPENROUTER_API_KEY, or an OpenRouter gateway's AGENT_MODEL_API_KEY", async (t) => {
+  withEnv(t, {}, KEYS);
+  const { api } = await serve(t);
+  const [offer] = (await api("GET", "/capabilities")).body.workflows.decisions.providers;
+  assert.deepEqual([offer.id, offer.available, offer.note], ["jev", false, undefined]);
+  for (const name of ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL"]) assert.match(offer.reason, new RegExp(name), offer.reason);
+  assert.match(offer.reason, /openrouter\.ai/, offer.reason);
 });
