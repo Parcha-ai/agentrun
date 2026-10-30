@@ -4,7 +4,7 @@
 // The server's home is never bound into a box, so the job runs them with a HOME outside the checkout.
 import assert from 'node:assert/strict';
 import { chmodSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { BOX_FORWARD, boxListens, bwrapBox, countInPidns, forwardChild, probeBox } from '@parcha/agentrun-kernel/host';
@@ -55,18 +55,43 @@ test('the probe passes on this host: pid 1 inside is bwrap, /data is absent, the
   assert.equal(probed.mode, 'bwrap', `the probe found ${JSON.stringify(probed)}`);
 });
 
-test('nothing of the host leaks in: an environment variable of the server, a file beside the run, the host root', { skip }, async () => {
+test("nothing of the host leaks in: an environment variable of the server, a file beside the run, a file in the server user's real home and beside node's install, a host root nothing is bound under", { skip }, async () => {
   const r = run('canary');
   const beside = join(r.root, 'canary.txt'); // in the run's own directory, but not in its workspace
   writeFileSync(beside, 'host secret');
+  // The server user's real home (not this job's HOME): a file there must not reach the box. It holds the box only as the
+  // empty parents of what the box binds under it (the forwarder's file, when the checkout is there).
+  const home = userInfo().homedir;
+  const inHome = join(home, `.agentrun-box-canary-${process.pid}`);
+  writeFileSync(inHome, 'host secret');
+  // Beside node's install (bound read-only at its own path): its siblings stay the host's.
+  const nodePrefix = dirname(dirname(process.execPath));
+  const besideNode = join(dirname(nodePrefix), `.agentrun-box-canary-${process.pid}`);
+  writeFileSync(besideNode, 'host secret');
+  const shown = [home, '/opt'];
+  /** A host directory's first segment toward each path the box binds under it: what the box may show of it. */
+  const bound = [r.spec.workspace, ...r.spec.readOnly];
+  const firstUnder = (dir) => [...new Set(bound.filter((b) => b.startsWith(`${dir}/`)).map((b) => b.slice(dir.length + 1).split('/')[0]))].sort();
   process.env.AGENTRUN_BOX_CANARY = 'host secret';
   try {
-    const { out } = await inBox(r.spec, `printf 'env=[%s]\\n' "$AGENTRUN_BOX_CANARY"; if [ -e '${beside}' ]; then echo file=seen; else echo file=absent; fi; ls -A / | tr '\\n' ' '; echo`);
-    assert.match(out(), /^env=\[\]$/m, 'the server environment reached the box');
-    assert.match(out(), /^file=absent$/m, 'a host file beside the run reached the box');
-    for (const forbidden of ['home', 'root', 'srv', 'data', 'var', 'opt']) assert.doesNotMatch(out(), new RegExp(`(^| )${forbidden}( |$)`, 'm'), `/${forbidden} is in the box`);
+    const { out, said } = await inBox(
+      r.spec,
+      `printf 'env=[%s]\\n' "$AGENTRUN_BOX_CANARY"; for f in '${beside}' '${inHome}' '${besideNode}'; do if [ -e "$f" ]; then echo "seen=$f"; fi; done; ${shown.map((d, n) => `echo "ls${n}=[$(ls -A '${d}' 2>/dev/null | tr '\\n' ' ')]";`).join(' ')} echo "root=[$(ls -A / | tr '\\n' ' ')]"`,
+    );
+    assert.match(out(), /^env=\[\]$/m, `the server environment reached the box: ${said()}`);
+    assert.doesNotMatch(out(), /^seen=/m, `a host file reached the box: ${said()}`);
+    shown.forEach((dir, n) => {
+      const listed = (new RegExp(`^ls${n}=\\[(.*)\\]$`, 'm').exec(out())?.[1] ?? '').trim().split(/\s+/).filter(Boolean).sort();
+      assert.deepEqual(listed, firstUnder(dir), `the box shows more of ${dir} than the parents of what it binds: ${said()}`);
+    });
+    const root = (/^root=\[(.*)\]$/m.exec(out())?.[1] ?? '').trim().split(/\s+/);
+    for (const host of ['home', 'root', 'srv', 'data', 'var', 'opt']) {
+      if (root.includes(host)) assert.ok(bound.some((b) => b.startsWith(`/${host}/`)), `/${host} is in the box, and the box binds nothing under it: ${said()}`);
+    }
   } finally {
     delete process.env.AGENTRUN_BOX_CANARY;
+    rmSync(inHome, { force: true });
+    rmSync(besideNode, { force: true });
     r.remove();
   }
 });
