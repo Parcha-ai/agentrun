@@ -292,3 +292,71 @@ test("recovery note: a crash during the recovery turn is the same interrupted tu
   assert.equal(noteItems(last, 'user').length, 0);
   assert.equal(textsOf(((last.input ?? []).filter((item) => item.type === 'message' && item.role === 'user')).at(-1)).trim(), 'Continue.');
 });
+
+/** A fresh box on the same store: what a crashed process's successor sees. */
+async function successor(spec, store, fetch) {
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+}
+
+test("code mode: an unwatched answer's call in an earlier turn is not listed by a later turn's recovery", { skip, timeout: 300_000 }, async () => {
+  let held;
+  const holding = new Promise((resolve) => { held = resolve; });
+  const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => ({ text: 'found' }) };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { held(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:code-turns', label: 'two turns', system: [], tools: [lookup, hold], context: 'fresh' };
+  const store = memorySessionStore();
+  const seen = [];
+  const pad = { type: 'message', role: 'assistant', id: 'msg_pad', content: [{ type: 'output_text', text: 'x'.repeat(4 * 1024 * 1024 + 100) }] };
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const n = seen.length;
+    // Turn 1's first answer is too long to read to its end (so its script's call has no known exec); turn 2's is clean and holds.
+    const items = n === 1 ? [pad, exec('call_t1', `text(JSON.stringify(await tools.lookup({})));`)] : n === 3 ? [exec('call_t2', `await tools.hold({});`)] : [say(n)];
+    return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('first');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  await a.send('second');
+  await holding;
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  const before = seen.length;
+  await successor(spec, store, fetch);
+  const output = seen.slice(before).flatMap((b) => b.input ?? []).find((item) => item.call_id === 'call_t2' && /_output$/.test(item.type ?? ''));
+  const text = Array.isArray(output.output) ? output.output.map((o) => o.text ?? '').join('\n') : String(output.output);
+  assert.match(text, /1\. hold was started/, "turn 2's exec made one call, the one that was cut");
+  assert.ok(!/lookup/.test(text), 'the earlier turn\'s call is not listed');
+});
+
+test("recovery note: a crash before the rollout was mirrored (a new thread) still gets the note as a developer message, in no user message", { skip, timeout: 300_000 }, async () => {
+  const spec = { key: 'step:code-early', label: 'early', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const seen = [];
+  const died = new AbortController();
+  let crashed = false;
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    if (!crashed) {
+      // The first model request has just left: nothing of this turn is in the session's log but the prompt.
+      crashed = true;
+      died.abort(new Error('the process died'));
+      return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+    }
+    return new Response(sse(seen.length, [say(seen.length)]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('pay').catch(() => {});
+  await a.turnEnd().catch(() => {});
+  await a.close().catch(() => {});
+  const before = seen.length;
+  await successor(spec, store, fetch);
+  const recovered = seen.slice(before)[0];
+  assert.equal(noteItems(recovered, 'developer').length, 1, 'the note is a developer message');
+  assert.equal(noteItems(recovered, 'user').length, 0, 'and in no user message');
+});

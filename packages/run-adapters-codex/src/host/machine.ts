@@ -161,6 +161,8 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         tools: options.proxy.tools,
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
         announce: {
+          // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
+          // next wait or exec gives.
           // A second answer that starts while one is open (a background call beside the turn) makes every tie ambiguous until both have
           // ended: which of them carried which exec cannot be told. A failed watch, likewise, stands for an exec not seen.
           response: () => {

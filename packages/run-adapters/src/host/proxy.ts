@@ -60,7 +60,8 @@ export interface ProviderPolicy {
    *  observer. The observer is given each piece of the answer as text, BEFORE that piece is written to the client, so what it
    *  saw of an answer, the client has not yet acted on: the one thing the proxy can say causally about what a client does
    *  next. `end` is called when the answer is over, however it ended. It only reads; one that throws is reported, `failed` is
-   *  called (the answer was not watched to its end) and the answer goes on. */
+   *  called (the answer was not watched to its end) and the answer goes on. A `watch` must not throw after it has told its
+   *  sink the answer started (its sink counts open answers, and only `end` closes one): do that last. */
   watch?(): { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
   /** Called when `watch` threw: this answer is not watched, so nothing the policy knew of an earlier one may stand for it. */
   unwatched?(): void;
