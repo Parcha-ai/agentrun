@@ -1,0 +1,42 @@
+Patch: 004-comments-name-the-session-writer
+Reason: comments described another store's fence and chunk limit; they describe this package's session writer
+Upstream: ours
+Pins: comments only
+---
+diff --git a/packages/harness-process/src/journal.ts b/packages/harness-process/src/journal.ts
+index da75144..5b3da40 100644
+--- a/packages/harness-process/src/journal.ts
++++ b/packages/harness-process/src/journal.ts
+@@ -36,7 +36,7 @@ export interface NativeJournalOptions {
+    * a `ProcessHost` spawned with `ctx.signal`).
+    */
+   onPoison?: (err: unknown) => void;
+-  /** Characters per blob chunk. Default 2M (a stream chunk is at most 10 MB on Vercel). */
++  /** Characters per blob chunk. Default 2M. */
+   blobPieceChars?: number;
+ }
+ 
+@@ -65,7 +65,8 @@ const encoder = new TextEncoder();
+  * `flush()` before a `never` tool still means "in the log before the tool".
+  *
+  * The journal's writes are in-band writes of the drive: they go through
+- * `ctx.effect`, so the epoch fence, first-writer-wins per key and the
++ * `ctx.effect`, so the writer fence (once a newer drive opens the session,
++ * this drive's writes are refused: a `Restart`), first-writer-wins per key and the
+  * outcome rules apply. A failed or refused write poisons the journal
+  * (`append` becomes a no-op, `flush` rejects) and halts the drive. So does a
+  * batch number another writer took first (two drives of one session, the
+diff --git a/packages/harness-process/src/records.ts b/packages/harness-process/src/records.ts
+index 924b765..eee45cf 100644
+--- a/packages/harness-process/src/records.ts
++++ b/packages/harness-process/src/records.ts
+@@ -9,7 +9,8 @@ import type { EffectRecord, SessionState } from 'harness-world';
+  * the log as **journal batches**: record-only effects named `journal`, keyed
+  * `journal:<n>`, each carrying the records appended since the last batch,
+  * grouped by stream. The kernel's rules make the batches linear: the first
+- * committed step per key wins, a stale driver's step is fenced, and a batch
++ * committed step per key wins, a stale driver's step is fenced (its writer is
++ * refused once a newer drive opens the session), and a batch
+  * counts only once its outcome is committed. Every reader, the writer
+  * included, sees the same records in the same order.
+  *
