@@ -49,14 +49,14 @@ const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(statu
 const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
-async function claudeServe(t, fake) {
+async function claudeServe(t, fake, env = {}) {
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
   });
   delete process.env.AGENT_MODEL_BASE_URL;
-  Object.assign(process.env, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` });
+  Object.assign(process.env, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` }, env);
   const served = await serve(t, { faux: undefined });
   assert.equal((await served.api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   return served;
@@ -164,6 +164,20 @@ test("a claude-agent run whose process dies while a request is in flight resumes
 const PROBE_AGENT = "serve-log-test";
 /** A value no log may carry, sent as a bearer and in a query string. */
 const CANARY = `not-a-secret-${"canary"}-7b21e4`;
+
+test("one gateway for every harness: with ANTHROPIC_BASE_URL on AGENT_MODEL_BASE_URL's gateway, the run sends the gateway's whole name for the model and is still priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake, { AGENT_MODEL_BASE_URL: `${fake.url}/v1` });
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  const asked = fake.messages();
+  assert.ok(asked.length > 0 && asked.every((m) => m.path === "/v1/messages" && m.model === `anthropic/${MODEL}`), `the gateway's name, whole: ${asked.map((m) => m.model).join(", ")}`);
+  const usage = rows.findLast((r) => r.kind === "usage")?.usage;
+  const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * PRICE.input + 12 * PRICE.output, 0) / 1e6;
+  assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "priced as Anthropic's model, never unknown for the gateway's name");
+});
 
 test("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);

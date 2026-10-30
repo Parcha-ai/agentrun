@@ -75,7 +75,7 @@ export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
 }
 
 /** Hosts a gateway may be reached at over plain http: this machine. */
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]); // key-gate: loopback-rule names this machine only, the hosts a gateway may use plain http on; nothing connects here
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]); // key-gate: loopback-rule names this machine only, the hosts a gateway may use plain http on; an allow-list, the line dials nothing
 
 /**
  * The base `setting` (a gateway's URL) gives the model proxy: its origin and its path, one trailing `/v1` taken off, since
@@ -133,6 +133,23 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origi
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "" };
 }
 
+/** The model id claude-agent sends: Anthropic's own (`claude-sonnet-5.5`), to Anthropic or to an Anthropic-compatible
+ *  endpoint of its own. When ANTHROPIC_BASE_URL is the same gateway base as AGENT_MODEL_BASE_URL (one gateway for every
+ *  harness), it is that gateway's own name, sent as the other harnesses send theirs: `provider/model-id` whole, as
+ *  OpenRouter names its models, or Anthropic's id with AGENT_MODEL_GATEWAY_IDS=bare. The run is priced as `model` either way. */
+export function claudeModelId(env: NodeJS.ProcessEnv, model: ModelRef): string {
+  const base = (name: "ANTHROPIC_BASE_URL" | "AGENT_MODEL_BASE_URL") => {
+    try {
+      return env[name] ? gatewayBase(name, env[name]) : undefined;
+    } catch {
+      return undefined; // a setting its own harness refuses: never the same gateway
+    }
+  };
+  const claude = base("ANTHROPIC_BASE_URL");
+  const shared = claude !== undefined && claude === base("AGENT_MODEL_BASE_URL");
+  return shared && env.AGENT_MODEL_GATEWAY_IDS !== "bare" ? `${model.provider}/${model.modelId}` : model.modelId;
+}
+
 /** claude-agent's model: the revision's (or the server's default) as `provider/model-id`, its price from pi-ai's
  *  catalog. Never the gateway's model or price, which serve the other harnesses. Whether it is an Anthropic model is
  *  claudeProvider's to say. */
@@ -165,7 +182,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   }
   let adapter: AgentAdapter;
   try {
-    adapter = claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
+    adapter = claude.claudeAgentAdapter({ model: { default: claudeModelId(env, needs.model) }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
