@@ -120,6 +120,25 @@ test("each run's hidden list holds the data root and its own journal and log, ne
   }
 });
 
+test("the box the run's process builds refuses, before anything starts, a home at its own store, a session at its own directory and a read-only source under the data root", async () => {
+  const d = dataRoot();
+  try {
+    const a = d.runs["run-a"];
+    const made = await runBox({ data: d.data, isolation: { mode: "bwrap", cgroup: false } }, a, {});
+    mkdirSync(join(d.data, "shared"));
+    const recorded = [];
+    const start = (spec) => made.box.start(spec, forwardChild({ command: "/bin/true", args: [] }, boxListens(spec)), { ahead: (r) => recorded.push(r), started: async () => {} });
+    for (const [spec, why] of [
+      [d.spec(a, { homes: { HOME: join(a.dir, "store") } }), /store/],
+      [d.spec(a, { session: a.dir }), /the session .* is or holds .*store, which a box never sees/],
+      [d.spec(a, { readOnly: [...d.spec(a).readOnly, join(d.data, "shared")] }), /a read-only path .*agents\/shared is under .*agents, where a run's files live/],
+    ]) assert.throws(() => start(spec), (error) => error.code === "box_refused" && why.test(error.message));
+    assert.deepEqual(recorded, [], "nothing was recorded: no box was started");
+  } finally {
+    d.remove();
+  }
+});
+
 test("in the run's real box: its own workspace reads and writes; the server's tokens and store, another run's work, and its own journal, log, box.json and serve.json are not there", { skip }, async () => {
   const d = dataRoot();
   try {
