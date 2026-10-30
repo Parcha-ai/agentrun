@@ -9,7 +9,7 @@ import type { ChildProcess } from "node:child_process";
 
 /** What a box may reach. Everything else of the host is absent inside it. */
 export interface BoxSpec {
-  /** Bound read-write at /workspace, the box's working directory. */
+  /** Bound read-write at its own host path, which is the box's working directory (--chdir), and at /workspace too. */
   workspace: string;
   /** The harness's homes (per-run directories, never the server's $HOME), each bound read-write at its own path. */
   homes: Record<string, string>;
