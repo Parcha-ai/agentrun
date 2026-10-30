@@ -66,13 +66,39 @@ function privateRoots(home = homedir()): string[] {
   return [home, `${home}/.claude`, `${home}/.codex`, `${home}/.config`, "/etc/claude-code", "/etc/codex"];
 }
 
-/** A path a spec may bind: absolute and normalized, not a forbidden root nor an ancestor of one, not under the
- *  server's home or a CLI's config dir. (Under a forbidden root is allowed: a run's own directory under /data is.) */
+/** A path a spec may bind: absolute and normalized, not a forbidden root nor an ancestor of one, never the server's home
+ *  or a CLI's config dir nor anything that holds one. (Under a forbidden root is allowed: a run's own directory under
+ *  /data is. What may be bound under the server's home is checkBoxArgv's to judge, by the session and the runtime.) */
 function allowedSource(path: string, what: string): string {
   if (typeof path !== "string" || !path.startsWith("/") || resolve(path) !== path) throw new BoxError("box_refused", `${what} ${JSON.stringify(path)} is not an absolute, normalized path`);
   for (const root of FORBIDDEN_ROOTS) if (isUnder(root, path)) throw new BoxError("box_refused", `${what} ${path} is or holds ${root}, which a box never binds`);
-  for (const root of privateRoots()) if (isUnder(path, root) || isUnder(root, path)) throw new BoxError("box_refused", `${what} ${path} is or holds ${root}, the server's own`);
+  for (const root of privateRoots()) if (isUnder(root, path)) throw new BoxError("box_refused", `${what} ${path} is or holds ${root}, the server's own`);
   return path;
+}
+
+/**
+ * Where this server's runtime lies, computed here from this process and this kernel, never from a spec: the only places
+ * under the server's home a box may read.
+ *  - `prefix`: node's install prefix (realpath of process.execPath's grandparent); `npmrc` when it holds etc/npmrc, which
+ *    can hold registry tokens.
+ *  - `packages`: the node_modules DIRECTORY the kernel was installed from: the outermost one on realpath(BOX_FORWARD);
+ *    with none on it (a workspace link: a source checkout), the node_modules of the OUTERMOST ancestor of it that holds
+ *    one, strictly below the server's home (so a stray ~/node_modules is never one). npm makes packages/<x>/node_modules
+ *    as soon as one dependency cannot be hoisted, so the nearest one would miss the hoisted CLIs.
+ *  - `forward`: realpath(BOX_FORWARD), as a file.
+ */
+export function runtimeRoots(runtime: { execPath: string; forward: string }, home: string): { prefix: string; npmrc: boolean; packages?: string; forward: string } {
+  const prefix = resolvedSource(dirname(dirname(runtime.execPath)), "node's install prefix");
+  const forward = resolvedSource(runtime.forward, "the box's forwarder");
+  const parts = forward.split(sep);
+  const first = parts.indexOf("node_modules");
+  let packages = first > 0 ? parts.slice(0, first + 1).join(sep) : undefined;
+  if (packages === undefined) {
+    for (let at = dirname(forward); at !== dirname(at); at = dirname(at)) {
+      if (isUnder(at, home) && at !== home && hostFs.exists(join(at, "node_modules")) === "dir") packages = join(at, "node_modules");
+    }
+  }
+  return { prefix, npmrc: hostFs.exists(join(prefix, "etc", "npmrc")) !== null, ...(packages !== undefined ? { packages } : {}), forward };
 }
 
 /**
@@ -189,7 +215,17 @@ export function boxListens(spec: BoxSpec): ForwardListen[] {
  *  live under it, and pi-durable-disk forgets a record written in another pid namespace only by its rule that a reader
  *  whose PID 1 started after the record was written is a later incarnation, which holds only while no box (a child
  *  namespace whose PID 1 also starts later) can read those records. */
-export function checkBoxArgv(argv: readonly string[], spec: BoxSpec, options: { hidden?: readonly string[] } = {}): void {
+export function checkBoxArgv(
+  argv: readonly string[],
+  spec: BoxSpec,
+  options: {
+    hidden?: readonly string[];
+    /** For tests: the server's home (default: this process's). */
+    home?: string;
+    /** For tests: this server's node and forwarder (default: process.execPath and BOX_FORWARD). */
+    runtime?: { execPath: string; forward: string };
+  } = {},
+): void {
   const refuse = (why: string): never => {
     throw new BoxError("box_refused", `the box's argv is refused: ${why}`);
   };
@@ -241,7 +277,6 @@ export function checkBoxArgv(argv: readonly string[], spec: BoxSpec, options: { 
     for (const path of m[0] === "--ro-bind-data" || m[0] === "--symlink" ? m.slice(2) : m.slice(1)) {
       for (const root of FORBIDDEN_ROOTS) if (path === root && !(m[0] === "--proc" && path === "/proc") && !(m[0] === "--dev" && path === "/dev")) refuse(`${m[0]} names ${root}`);
       if (path === "/" || path === "") refuse(`${m[0]} binds the root`);
-      for (const root of privateRoots()) if (isUnder(path, root)) refuse(`${m[0]} ${path} is the server's own (${root})`);
     }
   }
   // A mount made after a bind under it hides that bind (a --tmpfs /tmp over a node or a workspace bound under /tmp).
@@ -250,19 +285,52 @@ export function checkBoxArgv(argv: readonly string[], spec: BoxSpec, options: { 
     const under = mounts.slice(0, n).find((earlier) => earlier[0] !== "--tmpfs" && earlier[0] !== "--proc" && earlier[0] !== "--dev" && isUnder(earlier.at(-1)!, m[1]!));
     if (under) refuse(`${m[0]} ${m[1]} comes after ${under[0]} to ${under.at(-1)}, which it would hide`);
   }
-  // A bind whose host source is a hidden path or holds one (its parent, or the root) shows it to the box. Only a bind's
-  // source is the host's: a --tmpfs, --proc or --dev, or a bind's destination, shows nothing of it. Under a hidden path
-  // only the run's own writable trees may be bound (the workspace, the homes, the sockets): a READ-ONLY source there is
-  // refused, since a run's files live there and one run could swap a link in what another run's box reads. The hidden
-  // paths are compared as resolved, as the sources are.
-  const hiddenRoots = (options.hidden ?? []).map((hidden) => resolvedSource(hidden, "the hidden path"));
+  // Where each bind may come from, every path compared as resolved, as the sources are (resolvedSource).
+  const home = resolvedSource(options.home ?? homedir(), "the server's home");
+  const configs = privateRoots(home).filter((root) => root !== home).map((root) => resolvedSource(root, "a CLI's config"));
+  const hidden = (options.hidden ?? []).map((path) => resolvedSource(path, "the hidden path"));
+  const session = resolvedSource(allowedSource(spec.session, "the session"), "the session");
+  const runtime = runtimeRoots(options.runtime ?? { execPath: process.execPath, forward: BOX_FORWARD }, home);
+  const shown = (path: string, real: string) => (real !== path ? `${path} (${real})` : path);
+  // The session is lent whole: it never is, nor holds, a hidden path (a run's store, its process log, another run).
+  for (const path of hidden) if (isUnder(path, session)) refuse(`the session ${session} is or holds ${path}, which a box never sees`);
+  // The workspace and every home lie at or under the session: never a sibling run's directory, a run's own files
+  // beside the session, or anything of the server's home outside it.
+  for (const [what, path] of [["the workspace", spec.workspace], ...Object.entries(spec.homes).map(([name, home]) => [`home ${name}`, home])] as const) {
+    const real = resolvedSource(path, what);
+    if (!isUnder(real, session)) refuse(`${what} ${shown(path, real)} is not under the session ${session}, the one directory lent to this run`);
+  }
+  // Under serve's data root (hidden), the server's home or a CLI's config, a writable bind is the session's (the
+  // workspace and the homes, under it by the rule above) or one of the spec's own sockets, and only while the session
+  // itself lies under the data root. A read-only bind is never under the data root (a run's files live there: one run
+  // could swap a link in what another run's box reads) nor a CLI's config, and under the server's home only node's
+  // install prefix, the kernel's packages and its forwarder (runtimeRoots).
+  const lent = hidden.some((root) => isUnder(session, root) && session !== root);
+  const sockets = [[BOX_MODEL_SOCKET, spec.modelSocket], ...(spec.egressSocket !== undefined ? [[BOX_EGRESS_SOCKET, spec.egressSocket]] : [])].map(([at, path]) => `${at}=${resolvedSource(path!, "a socket")}`);
   for (const m of mounts) {
     if (m[0] !== "--bind" && m[0] !== "--ro-bind") continue;
-    for (const hidden of hiddenRoots) {
-      if (isUnder(hidden, m[1]!)) refuse(`${m[0]} ${m[1]} shows ${hidden}, which a box never sees`);
-      if (m[0] === "--ro-bind" && isUnder(m[1]!, hidden)) {
-        refuse(`a read-only path ${m[2]}${m[1] !== m[2] ? ` (${m[1]})` : ""} is under ${hidden}, where a run's files live: put the data root outside node's prefix and the installed packages`);
+    const [option, source, at] = m as [string, string, string];
+    const named = `${option} ${shown(at, source)}`;
+    // A bind whose host source is a hidden path, the server's home or a CLI's config, or holds one, shows it.
+    for (const root of hidden) if (isUnder(root, source)) refuse(`${named} shows ${root}, which a box never sees`);
+    for (const root of [home, ...configs]) if (isUnder(root, source)) refuse(`${named} is or holds ${root}, the server's own`);
+    const data = hidden.find((root) => isUnder(source, root));
+    const config = configs.find((root) => isUnder(source, root));
+    if (option === "--ro-bind") {
+      if (data !== undefined) refuse(`a read-only path ${shown(at, source)} is under ${data}, where a run's files live: put the data root outside node's prefix and the installed packages`);
+      if (config !== undefined) refuse(`a read-only path ${shown(at, source)} is under ${config}, a CLI's config`);
+      if (!isUnder(source, home)) continue;
+      if (isUnder(source, runtime.prefix)) {
+        if (runtime.npmrc) refuse(`a read-only path ${shown(at, source)} is under node's install prefix ${runtime.prefix}, which holds etc/npmrc (it can hold registry tokens): install node outside the server's home, or remove that file`);
+        continue;
       }
+      if ((runtime.packages !== undefined && isUnder(source, runtime.packages)) || source === runtime.forward) continue;
+      refuse(`a read-only path ${shown(at, source)} is under the server's home ${home}, outside node's install prefix (${runtime.prefix}) and the kernel's packages (${runtime.packages ?? "none found"})`);
+    }
+    if (sockets.includes(`${at}=${source}`)) continue;
+    if (config !== undefined) refuse(`${named} is under ${config}, a CLI's config`);
+    if ((data !== undefined || isUnder(source, home)) && !lent) {
+      refuse(`${named} is under ${data ?? home}, and the session ${session} is not under the data root${hidden.length ? ` (${hidden.join(", ")})` : " (none given)"}`);
     }
   }
   // Exactly the allowlist: the same mounts, the same number of times, in any order.
@@ -713,8 +781,8 @@ const PROBE_HOST = "127.0.0.1"; // key-gate: loopback-rule the probe listens on 
 /** The start probe: a box built exactly as a harness's is, with node as its child, checked from inside by behaviour:
  *  pid 1 is the box's own (bwrap), /data is absent, and a listener on this host's loopback does not answer. Fails
  *  closed: any failure is `unavailable` with its named cause. `scratch` is a directory the probe may make a
- *  workspace in (it is removed after); node's install prefix is bound read-only, so a node under the server's home
- *  cannot be boxed and the probe says so. */
+ *  workspace in (it is removed after); node's install prefix is bound read-only, which under the server's home holds
+ *  only while it has no etc/npmrc (checkBoxArgv), and the probe says so otherwise. */
 export async function probeBox(options: { scratch: string; bwrap?: string; reapMs?: number; deadlineMs?: number }): Promise<Isolation> {
   const bwrap = options.bwrap ?? BWRAP;
   const state = bwrapState(bwrap);
@@ -731,6 +799,7 @@ export async function probeBox(options: { scratch: string; bwrap?: string; reapM
     const socket = join(dir, "model.sock");
     write(socket, "");
     const spec: BoxSpec = {
+      session: dir,
       workspace: join(dir, "work"),
       homes: {},
       readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD],

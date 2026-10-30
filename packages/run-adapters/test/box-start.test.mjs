@@ -20,7 +20,7 @@ function setup() {
   const run = mkdtempSync(join(tmpdir(), 'box-start-'));
   const socket = join(run, 'model.sock');
   writeFileSync(socket, '');
-  const spec = { workspace: join(run, 'work'), homes: { HOME: join(run, 'home') }, readOnly: [], modelSocket: socket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
+  const spec = { session: run, workspace: join(run, 'work'), homes: { HOME: join(run, 'home') }, readOnly: [], modelSocket: socket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
   const recordFile = join(run, 'box.json');
   const marker = join(run, 'harness-ran');
   /** The serve-side recorder: each write synced before it returns. */

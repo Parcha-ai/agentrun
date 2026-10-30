@@ -316,6 +316,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
     // The box's first command serves its sockets on its own loopback, then runs the harness (./box-forward.ts).
     const child: ChildCommand = forwardChild(harness, [{ port: box.modelPort, socket: BOX_MODEL_SOCKET }, ...(box.egress ? [{ port: box.egress.port, socket: BOX_EGRESS_SOCKET }] : [])]);
     const boxSpec: BoxSpec = {
+      session: base,
       workspace: root,
       homes: { ...dirs },
       readOnly: [...box.readOnly, process.execPath, BOX_FORWARD],

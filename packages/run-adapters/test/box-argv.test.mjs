@@ -11,7 +11,7 @@ function spec(extra = {}) {
   const run = mkdtempSync(join(tmpdir(), 'box-argv-'));
   const socket = join(run, 'model.sock');
   writeFileSync(socket, '');
-  return { workspace: join(run, 'work'), homes: { HOME: join(run, 'home') }, readOnly: ['/usr/local/lib/node-test'], modelSocket: socket, modelPort: 8123, env: { PATH: '/usr/bin:/bin', HOME: join(run, 'home'), KEY: 'session-key' }, ...extra };
+  return { session: run, workspace: join(run, 'work'), homes: { HOME: join(run, 'home') }, readOnly: ['/usr/local/lib/node-test'], modelSocket: socket, modelPort: 8123, env: { PATH: '/usr/bin:/bin', HOME: join(run, 'home'), KEY: 'session-key' }, ...extra };
 }
 const harness = { command: '/usr/bin/true', args: [] };
 const refused = (argv, s, why) => assert.throws(() => checkBoxArgv(argv, s), (e) => e instanceof BoxError && e.code === 'box_refused' && why.test(e.message), `not refused for ${why}: ${argv.join(' ')}`);
@@ -88,7 +88,6 @@ test('a spec that would bind the root, a forbidden tree, or anything of the serv
     ['readOnly', ['/'], /is or holds \//],
     ['readOnly', ['/etc'], /is or holds \/etc/],
     ['readOnly', ['/data'], /is or holds \/data/],
-    ['readOnly', [join(homedir(), '.npm')], /server's own/],
     ['workspace', homedir(), /server's own/],
     ['workspace', 'relative/work', /not an absolute, normalized path/],
     ['homes', { HOME: '/home' }, /is or holds \/home/],
@@ -97,8 +96,12 @@ test('a spec that would bind the root, a forbidden tree, or anything of the serv
     assert.throws(() => buildBoxArgv(s, forwardChild(harness, boxListens(s))), (e) => e instanceof BoxError && e.code === 'box_refused' && why.test(e.message), `${field}=${JSON.stringify(value)}`);
   }
   // A run's own directory under /data is a path a box may bind: only /data itself, or what holds it, is refused.
-  const s = spec({ workspace: '/data/runs/r1/work' });
+  const s = spec({ session: '/data/runs/r1', workspace: '/data/runs/r1/work', homes: {} });
   checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s);
+  // Under the server's home, a read-only path is refused by the argv's check, which knows node's prefix and the kernel's
+  // packages: anything else there is the server's own.
+  const npm = spec({ readOnly: [join(homedir(), '.npm')] });
+  refused(buildBoxArgv(npm, forwardChild(harness, boxListens(npm))), npm, /a read-only path .*\.npm is under the server's home .*, outside node's install prefix/);
 });
 
 test('the box\'s first command is this server\'s node running this kernel\'s forwarder on exactly the spec\'s sockets: one more --listen, another socket, a forwarder from elsewhere, or no harness is refused by name', () => {
@@ -142,7 +145,7 @@ test('serve\'s data root is never shown to a box: a bind of it, or of any parent
   const plain = spec();
   checkBoxArgv(buildBoxArgv(plain, forwardChild(harness, boxListens(plain))), plain, { hidden: [join('/tmp', 'a-data-root')] });
   // A run's own workspace under the data root shows only itself.
-  const s = spec({ workspace: join(dataRoot, 'runs', 'r1', 'work') });
+  const s = spec({ session: join(dataRoot, 'runs', 'r1'), workspace: join(dataRoot, 'runs', 'r1', 'work'), homes: {} });
   checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s, { hidden });
 });
 
@@ -159,7 +162,7 @@ test('the private /tmp is mounted before every bind, so a read-only source and a
   assert.ok(run.startsWith('/tmp/'), `this test needs a TMPDIR under /tmp, not ${run}`);
   const tool = join(run, 'node-prefix');
   mkdirSync(tool);
-  const s = spec({ readOnly: [tool], workspace: join(run, 'work') });
+  const s = spec({ readOnly: [tool], session: run, workspace: join(run, 'work'), homes: {} });
   const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
   checkBoxArgv(argv, s);
   const at = (option, operand) => argv.findIndex((a, i) => a === option && argv[i + 1] === operand);
@@ -208,6 +211,6 @@ test('no read-only source lies under serve\'s data root, where a run\'s files li
     const s = spec({ readOnly: ['/usr/local/lib/node-test', path] });
     assert.throws(() => checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s, { hidden }), (e) => e instanceof BoxError && e.code === 'box_refused' && why.test(e.message) && e.message.includes(path), `${path} under ${hidden}`);
   }
-  const w = spec({ workspace: join(dataRoot, 'runs', 'b', 'work') });
+  const w = spec({ session: join(dataRoot, 'runs', 'b'), workspace: join(dataRoot, 'runs', 'b', 'work'), homes: {} });
   checkBoxArgv(buildBoxArgv(w, forwardChild(harness, boxListens(w))), w, { hidden: [dataRoot] });
 });

@@ -28,7 +28,7 @@ function run(name) {
   mkdirSync(workspace, { recursive: true });
   const modelSocket = join(root, 'model.sock');
   writeFileSync(modelSocket, '');
-  const spec = { workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
+  const spec = { session: dirname(workspace), workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
   return { root, workspace, spec, remove: () => rmSync(root, { recursive: true, force: true }) };
 }
 
@@ -147,7 +147,7 @@ test('a run directory under a parent of this user, mode 700 (a per-user TMPDIR),
   writeFileSync(join(workspace, 'in.txt'), 'from the host');
   const modelSocket = join(parent, 'model.sock');
   writeFileSync(modelSocket, '');
-  const spec = { workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
+  const spec = { session: dirname(workspace), workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
   try {
     assert.equal(statSync(parent).mode & 0o777, 0o700);
     const { out, said } = await inBox(spec, `cat /workspace/in.txt; echo; echo 'from the box' > /workspace/out.txt`);
