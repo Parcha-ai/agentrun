@@ -38,6 +38,11 @@ const TRUSTED_TOOLS = new Set(["read", "write", "edit", "ask_person"]);
 export const LEARNING_TOOLS: readonly string[] = ["read", "write", "edit"];
 /** The run's working copy of its agent's repository, under its work. */
 export const WORKING_COPY = join(".agent", "repo");
+/** A name a learning revision could give before learning had file tools: accepted there, and binds nothing. */
+export const LEARN_NAME = "learn";
+/** Beside the run's work, written before its working copy is laid out: a run with it and no copy lost the copy, one
+ *  without it ended before working copies existed. */
+const COPY_MARK = "learning.copy";
 /** A skill the agent wrote, at `.agents/skills/<name>/SKILL.md` on main. */
 const LEARNED_SKILL = /^\.agents\/skills\/([a-z0-9][a-z0-9._-]{0,63})\/SKILL\.md$/;
 /** The variables whose values are this host's secrets, which no learning may hold. */
@@ -161,7 +166,7 @@ export async function readyToRun(data: string, entry: AgentEntry, current: () =>
 }
 
 /** What the server recorded for a run of a learning agent once it proposed it. D extends it with what review did. */
-export type RunState = { state: "proposed" | "empty" | "refused"; branch?: string; base?: string; sha?: string; reasons?: string[] };
+export type RunState = { state: "proposed" | "empty" | "refused"; branch?: string; base?: string; sha?: string; reasons?: string[]; reason?: string };
 
 const runStateFile = (data: string, agentId: string, runId: string) => join(agentDir(data, agentId), "learning", "runs", `${runId}.json`);
 
@@ -192,7 +197,8 @@ function releasedStore(file: string) {
 export type StoreAccess = { readonly store: Pick<AgentStoreReader, "readRun" | "readRevision" | "listRuns">; request<T>(act: () => T | Promise<T>): Promise<T> };
 
 /** Whether the process the run's record names (or, later, its box) is still alive: one that is may still write the
- *  working copy, which is then not read. */
+ *  working copy, which is then not read. A missing run.json reads not live only because a run writes it before any work.
+ *  TODO: the box record of the run's confinement replaces this pid check once runs have boxes. */
 function processLive(runDir: string): boolean {
   let record: unknown;
   try {
@@ -215,7 +221,7 @@ export async function harvestFor(data: string, agents: StoreAccess, runId: strin
   if (!row || learningOf(revision) === "off") return undefined;
   // Only an ended run is harvested: its outcome and cost are the carry back's. A call before the end is written is a
   // caller's mistake, said, never a silent no-op.
-  if (row.state === "running" || !row.endedAt) throw new Error(`the run ${runId} has not ended in the agent store yet, so it is not harvested`);
+  if (row.state === "running") throw new Error(`the run ${runId} has not ended in the agent store yet, so it is not harvested`);
   const dir = join(data, "runs", runId);
   if (processLive(dir)) throw new Error(`the run ${runId}'s process is still live, so its working copy is not harvested`);
   const storeFile = join(dir, "store", "run.sqlite");
@@ -228,13 +234,17 @@ export async function harvestFor(data: string, agents: StoreAccess, runId: strin
     await writeRunState(data, row.agent, runId, { state: "empty" });
     return { status: "empty", deleted: [], ignored: [] };
   }
+  if (!existsSync(copy) && !existsSync(join(dir, COPY_MARK))) {
+    await writeRunState(data, row.agent, runId, { state: "empty", reason: "the run ended before working copies" });
+    return { status: "empty", deleted: [], ignored: [] };
+  }
   const harness = revision?.kind === "agentic" ? (revision.body.harness ?? "pi") : "pi";
   // This host's secrets and the run's input values: a harvest that holds one is refused whole, so no ref holds it.
   const refuse = [...secretsOf(process.env), ...caseValuesOf((await readJson(join(dir, RUN_META)))?.input)];
   return withAgentRepo(data, row.agent, async () => {
     const repo = await openAgentRepo(data, row.agent, join(agentDir(data, row.agent), HOST_CLONE));
     const result = await harvestWorktree({
-      repo, runId, seed, dir: copy, date: new Date(row.endedAt!), refuse,
+      repo, runId, seed, dir: copy, date: new Date(row.endedAt ?? row.startedAt), refuse,
       head: { harness, outcome: outcomeOf(row.state), ...(row.costUsd === undefined ? {} : { costUsd: row.costUsd }), untrusted: externalUsed(storeFile) },
     });
     await writeRunState(data, row.agent, runId, result.status === "empty" ? { state: "empty" } : result.status === "refused" ? { state: "refused", reasons: result.refused ?? [] } : { state: "proposed", branch: `runs/${runId}`, base: seed, sha: result.sha! });
@@ -314,6 +324,7 @@ export async function runLearning(where: AppContext, agentId: string, ownSkills:
     beforeResume: async ({ harness }) => {
       await learn.seedLearning({ repo, ref: sha, target: harness as never, into: where.work });
       if (existsSync(copy)) return;
+      await writeFile(join(where.root, COPY_MARK), `${sha}\n`);
       // Laid out beside it and renamed: a process that dies part way leaves no half copy for the run to keep.
       const partial = `${copy}.partial`;
       await rm(partial, { recursive: true, force: true });

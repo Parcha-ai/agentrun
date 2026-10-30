@@ -6,7 +6,7 @@ import { WORKFLOW_ADAPTERS } from "./app.js";
 import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
-import { learningBlocker } from "./learning.js";
+import { LEARN_NAME, learningBlocker } from "./learning.js";
 import { chooseModel, nodeTiers, workflowNodes } from "./model.js";
 import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
 
@@ -37,6 +37,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     const learning = revision.learning !== undefined && revision.learning !== "off";
     (revision.tools ?? []).forEach((tool, index) => {
+      // A name a learning revision could give before learning had file tools: it binds nothing there.
+      if (tool === LEARN_NAME && learning) return;
       if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
       // Another harness gets the file tools only (host-tools.ts): any other tool this host binds, ask_person among them,
       // is pi's here and refuses the run, never runs without it.

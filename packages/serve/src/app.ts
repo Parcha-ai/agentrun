@@ -18,7 +18,7 @@ import { cancelledIn, markRequests } from "./request-start.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
-import { LEARNING_TOOLS, learningOf, runLearning } from "./learning.js";
+import { LEARN_NAME, LEARNING_TOOLS, learningOf, runLearning } from "./learning.js";
 import { adapterRun } from "./harness-app.js";
 import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
@@ -118,7 +118,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   if (revision.kind === "agentic") {
     const learns = learningOf(revision) !== "off";
     // A learning run writes what it learned into its working copy with the file tools, whatever its revision names.
-    const names = learns ? [...new Set([...revision.body.tools, ...LEARNING_TOOLS])] : revision.body.tools;
+    const names = learns ? [...new Set([...revision.body.tools.filter((name) => name !== LEARN_NAME), ...LEARNING_TOOLS])] : revision.body.tools;
     const tools = (await Promise.all(names.map((name) => bind(name)))).flatMap((binding) => binding.tools);
     // A learning run starts from its agent's repository at one commit: the notes and the skills the agent wrote there,
     // and a working copy of that commit for what it learns now.

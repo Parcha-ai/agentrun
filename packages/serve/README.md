@@ -410,8 +410,9 @@ agent does not learn.
   turns it off.
 - A revision saved before the field existed does not learn.
 - A workflow definition does not take it (`422 not_an_option`).
-- A learning run has the file tools (`read`, `write`, `edit`) whatever its revision names: it writes what it learned
-  with them. There is no `learn` tool; naming one is `422 not_an_option`.
+- Turning learning on adds the file tools: a learning run has `read`, `write` and `edit` whatever its revision names,
+  and writes what it learned with them. There is no `learn` tool. A learning revision may still name `learn`, as one
+  could before; the name binds nothing. On a revision that does not learn it is `422 not_an_option`.
 
 Learning needs git 2.40 or later on `PATH`. The container image is on Debian bookworm, which has git 2.39. On a host
 without it, a new agent does not learn. A definition that asks for learning saves with a `not_set_up_here` warning, and
@@ -448,7 +449,9 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   between a carry back and its proposal loses nothing. That pass waits for an agent store another writer holds, and
   says so in the log; if the store stays busy, the next start proposes what is left. The commit's `Run-Id` trailer makes a second proposal of the
   same run add nothing. A proposal that fails (a push the repository refuses) is logged; the run has ended as it would
-  have, and the next start proposes it. A run that learned nothing leaves no branch.
+  have, and the next start proposes it. A run that learned nothing leaves no branch. A run that ended before working
+  copies existed is recorded once as `empty`, with that reason; one that had a working copy and lost it is an error,
+  logged, and tried again at the next start.
 - A harvest that would hold the run's input values or a value of one of the server's secrets is refused whole, and
   nothing is committed. The secrets are the values of the variables whose names end in `KEY`, `TOKEN`, `SECRET` or
   `PASSWORD`. A credential inside a variable named otherwise (a `..._URL` such as
