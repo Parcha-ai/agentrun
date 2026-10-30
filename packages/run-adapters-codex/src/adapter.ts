@@ -17,7 +17,7 @@ import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
 import { type ConfineChild, localMachine, type MachineBox, type PreviousBox } from "./host/machine.js";
-import type { ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { type ModelProxyOptions, watchClose } from "@parcha/agentrun-kernel/host";
 
 /** A name app-server accepts for a dynamic tool. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -162,6 +162,21 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
 
       const calls = new CallsInFlight();
       const effort = spec.effort ?? spec.thinking;
+      // A close that found the box not empty fails the drive (watchClose): the harness reads no close's verdict.
+      const watched = watchClose(localMachine({
+        dir,
+        ...(options.confine ? { confine: options.confine } : {}),
+        ...(options.box ? { box: options.box } : {}),
+        ...(options.previousBox ? { previousBox: options.previousBox } : {}),
+        proxy: {
+          hooks: io.models,
+          tools: spec.tools.map((t) => t.name),
+          ...(options.log ? { log: options.log } : {}),
+          ...(options.price ? { price: options.price } : {}),
+          ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+          ...(options.fetch ? { fetch: options.fetch } : {}),
+        },
+      }));
       const harnessOptions: CodexHarnessOptions = {
         tools: spec.tools.map((tool) => kernelTool(tool, io, calls)),
         builtins: false,
@@ -175,20 +190,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         ...(options.standIn ? { test: { command: options.standIn.command, args: options.standIn.args ?? [] } } : {}),
         machine: {
           ...(options.standIn?.env ? { env: options.standIn.env } : {}),
-          acquire: localMachine({
-            dir,
-            ...(options.confine ? { confine: options.confine } : {}),
-            ...(options.box ? { box: options.box } : {}),
-            ...(options.previousBox ? { previousBox: options.previousBox } : {}),
-            proxy: {
-              hooks: io.models,
-              tools: spec.tools.map((t) => t.name),
-              ...(options.log ? { log: options.log } : {}),
-              ...(options.price ? { price: options.price } : {}),
-              ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-              ...(options.fetch ? { fetch: options.fetch } : {}),
-            },
-          }),
+          acquire: watched.acquire,
         },
       };
       const harness = checked === undefined ? codexHarness(harnessOptions) : withCheckedBinary(checked, () => codexHarness(harnessOptions));
@@ -200,7 +202,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         if (mapped.type === "tool_end") calls.end(mapped.callId);
         io.onEvent(mapped);
       };
-      return openAdapterSession({ name: "agentrun-harness-codex", io, drive: (drive) => harness.drive(drive), live, calls });
+      return openAdapterSession({ name: "agentrun-harness-codex", io, drive: (drive) => watched.drive(harness.drive(drive)), live, calls });
     },
   };
 }
