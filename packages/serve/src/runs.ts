@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, writeSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
+import { type BoxView, UNSANDBOXED_RUN_LINE } from "./box/config.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
@@ -70,6 +71,8 @@ function workflowEnding(record: Json | null): WorkflowEnding | undefined {
 }
 
 type RunMeta = {
+  /** The box as this run saw it at its start (capabilities.box then): its mode, cgroup and egress. */
+  box?: BoxView;
   title: string;
   created_at: string;
   /** The run's input: an agentic run's first message is its `content`, a workflow run's input is the whole of it. */
@@ -241,7 +244,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; boxView?: BoxView; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -328,6 +331,7 @@ export class Runs {
       ...(stored && "output" in stored ? { output: stored.output } : {}),
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
+      ...(isObject(stored?.box) && typeof stored.box.mode === "string" ? { box: stored.box as BoxView } : {}),
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
@@ -648,6 +652,8 @@ export class Runs {
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
+    // Loud, in the run's own log too: its harness's tools run with no box.
+    if (this.options.boxView?.mode === "unsandboxed") writeSync(log, `${UNSANDBOXED_RUN_LINE}\n`);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
@@ -866,6 +872,7 @@ export class Runs {
       input: options.input,
       ...(options.effort ? { effort: options.effort } : {}),
       ...(options.maxCostUsd !== undefined ? { max_cost_usd: options.maxCostUsd } : {}),
+      ...(this.options.boxView ? { box: this.options.boxView } : {}),
     };
     await writeWhole(join(started.dir, RUN_META), `${JSON.stringify(meta)}\n`);
     const run = this.blank({ id: started.runId, agent: entry.agent.id, revision: revision.id, kind: revision.kind }, started.dir, meta, version);

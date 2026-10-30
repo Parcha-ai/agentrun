@@ -3,6 +3,7 @@
 // not changed: an operation answered 501 here carries `x-agentrun-serve-unsupported` with the reason, and this server's
 // own routes are added as operations marked `x-agentrun-serve: true`, listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
+import { BOX_EGRESS, BOX_UNAVAILABLE } from "./box/config.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
@@ -135,6 +136,20 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    box: {
+      description: "Where runs' harness tools would run: the box's mode as its probe proved it, whether each run gets its own cgroup v2 (a shared server), and where the box may reach. `unavailable` (no box, or its probe failed, so native tools are off) carries a stable `error` code and a `detail` a person can act on, and only it does; `unsandboxed` is only the operator's AGENTRUN_BOX=unsandboxed.",
+      oneOf: [
+        {
+          type: "object", additionalProperties: false, required: ["mode", "cgroup", "egress"],
+          properties: { mode: { enum: ["bwrap", "seatbelt", "provider", "unsandboxed"] }, cgroup: { type: "boolean" }, egress: { enum: [...BOX_EGRESS] } },
+        },
+        {
+          type: "object", additionalProperties: false, required: ["mode", "cgroup", "egress", "error", "detail"],
+          properties: { mode: { const: "unavailable" }, cgroup: { const: false }, egress: { enum: [...BOX_EGRESS] }, error: { enum: [...BOX_UNAVAILABLE] }, detail: { type: "string" } },
+        },
+      ],
+      "x-agentrun-serve": "box/1",
+    },
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why.",
