@@ -205,6 +205,12 @@
         },
         "zodShapeFromJsonSchema": {
           "harness-claude-code": "zodShapeFromJsonSchema"
+        },
+        "recoverySystemNote": {
+          "harness-codex": "recoverySystemNote"
+        },
+        "recoveryUserTurn": {
+          "harness-codex": "recoveryUserTurn"
         }
       }
     },

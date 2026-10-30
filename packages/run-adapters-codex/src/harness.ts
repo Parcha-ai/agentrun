@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -21,6 +21,8 @@ import {
   NativeJournal,
   placeSubmissions,
   recoveryNote,
+  recoverySystemNote,
+  recoveryUserTurn,
   restartEvent,
   type SessionMachine,
   type SessionProcess,
@@ -231,6 +233,8 @@ export const KEY_ENV = 'HARNESS_CODEX_GATEWAY_KEY';
 
 /** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec }`, written before the call runs. */
 export const NESTED_STREAM = 'codex.nested';
+/** The stream that records the interrupted turns whose recovery note was injected: `{ since }`, once per interrupted turn. */
+export const RECOVERY_NOTE_STREAM = 'codex.recovery-note';
 /** How long the drive waits for a call's `function_call` line before it declines the call: `SYNC` and look again, this many times, with a growing pause. */
 const BARRIER_TRIES = 5;
 /** What the model is told when a call was declined because its line wasn't in the log yet. */
@@ -1153,9 +1157,25 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           if (last && !said) journal.message({ type: 'message', role: 'assistant', text: last });
           await endTurn({ status: 'completed' });
         } else {
-          let text = note.text;
-          if (owed.length) {
-            text += `\n\nMessages that may not have reached you before the interruption:\n${owed.map((s) => quote(s.text ?? '')).join('\n')}`;
+          // The harness's note about the interrupted turn is not the user's words: it goes to the model as a developer message,
+          // injected once for this interrupted turn (every turn opens with `thread/resume`, so injecting on each would repeat it), and the
+          // resumed turn's user input is the user's own words, or a bare nudge. Without a thread to inject into (a new one), the
+          // note leads the user's turn, as before.
+          const system = recoverySystemNote(ctx.state()) ?? note.text;
+          const words = recoveryUserTurn(
+            owed.map((s) => s.text ?? ''),
+            note.pending.map((s) => s.text ?? '')
+          );
+          const noted = (await journal.read<{ since: number }>(RECOVERY_NOTE_STREAM)).some((r) => r.data.since === note.turn.since);
+          let text = words;
+          if (resume && !noted) {
+            await guard(rpc.request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: system }] }] }));
+            // The injected item is in the log before it is recorded as injected: a record without it would leave the note out of every later resume.
+            await guard(synced());
+            journal.append(RECOVERY_NOTE_STREAM, { since: note.turn.since });
+            await guard(journal.flush());
+          } else if (!resume) {
+            text = `${system}\n\n${words}`;
           }
           const n = transcriptOf(ctx.state()).filter((r) => r.data.type === 'message' && r.data.role === 'user').length;
           journal.message({ type: 'message', role: 'user', text: notes ? `${notes}\n\n${text}` : text, synthetic: 'recovery' } satisfies TranscriptEntry);

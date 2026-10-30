@@ -163,7 +163,7 @@ test("code mode: a model that writes a new exec while a cell still runs: a never
 });
 
 /** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
-async function crashed(after, { pad = false, script } = {}) {
+async function crashed(after, { pad = false, script, then, again = false } = {}) {
   let charged = 0;
   let looked = 0;
   let holding;
@@ -175,9 +175,14 @@ async function crashed(after, { pad = false, script } = {}) {
   const store = memorySessionStore();
   const seen = [];
   let resumed = false;
+  let hung = false;
   const fetch = async (_url, init) => {
     seen.push(JSON.parse(init.body));
     const n = seen.length;
+    if (again && resumed && !hung) {
+      hung = true;
+      return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+    }
     const first = [...(pad ? [{ type: 'message', role: 'assistant', id: 'msg_pad', content: [{ type: 'output_text', text: 'x'.repeat(4 * 1024 * 1024 + 100) }] }] : []), exec('call_js', script ?? `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\ntext('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});\ntext('held');`)];
     const items = n === 1 ? first : resumed ? after(seen, n) : [say(n)];
     return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
@@ -193,9 +198,23 @@ async function crashed(after, { pad = false, script } = {}) {
   await a.close();
   const before = seen.length;
   resumed = true;
-  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  let live = new AbortController();
+  let b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: live.signal, onEvent: () => {} });
+  if (again) {
+    // The recovery turn itself is cut off, after the note was injected: the same interrupted turn, resumed once more.
+    const recovering = b.recover();
+    for (let i = 0; i < 600 && !hung; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(hung, 'the recovery turn reached the model');
+    live.abort(new Error('the process died again'));
+    await recovering.catch(() => {});
+    await b.turnEnd();
+    await b.close();
+    live = new AbortController();
+    b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: live.signal, onEvent: () => {} });
+  }
   await b.recover();
   assert.equal((await b.turnEnd()).status, 'completed');
+  if (then) await then(b);
   await b.close();
   return { charged: () => charged, looked: () => looked, seen, before };
 }
@@ -243,4 +262,33 @@ test("code mode: an answer the proxy could not read to its end: a call its scrip
   const text = Array.isArray(output.output) ? output.output.map((o) => o.text ?? '').join('\n') : String(output.output);
   assert.match(text, /1\. lookup completed: "found"/, 'the safe call made under an unwatched answer is listed');
   assert.ok(!/unwatched/i.test(text), 'the marker is not in what the model is told');
+});
+
+const NOTE = /The harness, not the user, adds this about the turn before this one/;
+const textsOf = (item) => (Array.isArray(item.content) ? item.content.map((c) => c.text ?? '').join('\n') : String(item.content ?? ''));
+const noteItems = (body, role) => (body.input ?? []).filter((item) => item.type === 'message' && item.role === role && NOTE.test(textsOf(item)));
+
+test("recovery note: after a resume the harness's note reaches the model once, as a developer message and in no user message, the resumed turn's user input is 'Continue.', and a later turn carries it once, as history", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed((seen, n) => [say(n)], { then: async (session) => { await session.send('And now?'); assert.equal((await session.turnEnd()).status, 'completed'); } });
+  const resumedRequests = r.seen.slice(r.before);
+  assert.ok(resumedRequests.length >= 2, 'the resumed turn and a later turn each made a request');
+  const first = resumedRequests[0];
+  assert.equal(noteItems(first, 'developer').length, 1, 'the note is in one developer message');
+  assert.equal(noteItems(first, 'user').length, 0, 'and in no user message');
+  const users = (first.input ?? []).filter((item) => item.type === 'message' && item.role === 'user');
+  assert.equal(textsOf(users.at(-1)).trim(), 'Continue.', 'the resumed turn\'s user input');
+  const later = resumedRequests.at(-1);
+  assert.equal(noteItems(later, 'developer').length, 1, 'a later turn carries it once, as history');
+  assert.equal(noteItems(later, 'user').length, 0);
+  assert.equal(textsOf(((later.input ?? []).filter((item) => item.type === 'message' && item.role === 'user')).at(-1)).trim(), 'And now?');
+});
+
+test("recovery note: a crash during the recovery turn is the same interrupted turn, so the resume that follows carries the note once and the user input is 'Continue.'", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed((seen, n) => [say(n)], { again: true });
+  const answered = r.seen.slice(r.before).filter((body) => noteItems(body, 'developer').length > 0 || noteItems(body, 'user').length > 0);
+  assert.ok(answered.length >= 1);
+  const last = r.seen.at(-1);
+  assert.equal(noteItems(last, 'developer').length, 1, 'once, not once per recovery attempt');
+  assert.equal(noteItems(last, 'user').length, 0);
+  assert.equal(textsOf(((last.input ?? []).filter((item) => item.type === 'message' && item.role === 'user')).at(-1)).trim(), 'Continue.');
 });

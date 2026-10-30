@@ -4,7 +4,7 @@
 import type { DriveContext } from "./kernel.js";
 
 export {
-  BuiltinCalls, failureText, Mutex, NativeJournal, placeSubmissions, recoveryNote, restartEvent, toolBridge, toolKey, transcriptOf,
+  BuiltinCalls, failureText, Mutex, NativeJournal, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, toolBridge, toolKey, transcriptOf,
 } from "@parcha/agentrun-adapters/process";
 export type { BuiltinStart, ToolResult, TranscriptEntry } from "@parcha/agentrun-adapters/process";
 
