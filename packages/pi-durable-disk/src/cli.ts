@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { ARCHIL_SCOPED, DEFAULT_MOUNT_ROOT, NO_TOKEN, runPath, TOKEN_PREFIX, unmountClaim, type Claim, type RunRef } from "./claim.ts";
 import { archilEnv } from "./env.ts";
-import { exitCodeFor, FencedError, PdaError } from "./errors.ts";
+import { BoxUnavailableError, exitCodeFor, FencedError, PdaError } from "./errors.ts";
 import { fork } from "./fork.ts";
 import { drain, recordWake, watchParking, type BusyState, type Parking } from "./park.ts";
 import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts";
@@ -260,6 +260,8 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   // The box this launch runs in, as the host resolved it: recorded in run.json as given (`boxMode`), never probed here.
   const boxMode = str(values["box-mode"]);
   if (boxMode !== undefined && !(BOX_MODES as readonly string[]).includes(boxMode)) throw new UsageError(`--box-mode is one of ${BOX_MODES.join(", ")}`);
+  // No box to run in: refused by name (exit 78) before anything here starts, as openDurableRun refuses it.
+  if (boxMode === "unavailable") throw new BoxUnavailableError();
   const ms = (name: string) => durationFlag(values, name);
   const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
   const parkMs = ms("park-threshold") || undefined;

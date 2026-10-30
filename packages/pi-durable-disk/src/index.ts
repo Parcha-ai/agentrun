@@ -21,7 +21,7 @@ export { listRunFiles, readRunFile, RunFileError } from "./run-files.ts";
 export type { RunFileControl, RunFileErrorCode } from "./run-files.ts";
 export { PathOutsideWorkError } from "./confine.ts";
 export type { RefusalReason } from "./confine.ts";
-export { ClaimError, FencedError, HeldError, PdaError } from "./errors.ts";
+export { BoxUnavailableError, ClaimError, FencedError, HeldError, PdaError } from "./errors.ts";
 export type { ClaimErrorCode, Holder } from "./errors.ts";
 // Store types the run's signatures name; the store's functions and classes are in `./lease`.
 export type { ArchilStore, Fence, FencedDatabase, Profile, StoreFencedError } from "./store.ts";

@@ -15,7 +15,7 @@ import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/
 import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
-import { EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
+import { BoxUnavailableError, EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
 import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
 import { LeaseWatchdog } from "./watchdog.ts";
 import {
@@ -956,6 +956,8 @@ class Lease implements RunLease {
 }
 
 async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, afterClaim?: AfterClaimHook): Promise<Lease> {
+  // No box to run in: nothing of the run is claimed, run or written (a host that launched it so has a bug; serve holds it).
+  if (options.boxMode === "unavailable") throw new BoxUnavailableError();
   const context = options.context ?? BACKGROUND_CONTEXT;
   leaseOf(options.lease);
   let holder: RunHolder;

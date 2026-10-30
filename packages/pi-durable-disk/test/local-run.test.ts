@@ -2,7 +2,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ import { readLocalRunStatus } from "../src/index.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON, type BoxMode } from "../src/status.ts";
 import { reapOrRefuse } from "../src/commands.ts";
-import { FencedError, HeldError } from "../src/errors.ts";
+import { BoxUnavailableError, FencedError, HeldError } from "../src/errors.ts";
 import { processTable } from "../src/process-table.ts";
 import { alive, ctx, killQuietly, scratchRoot, scriptedHarness, startCommand } from "./_run-support.ts";
 
@@ -93,6 +93,39 @@ describe("localRun", () => {
       }
       await (await open()).release();
       assert.equal(box(), undefined, "an open given no box records none");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("an open given an unavailable box is refused by name before anything is claimed, run or written; a boxed open then proceeds", { timeout: 60_000 }, async () => {
+    const dir = scratchRoot("local-box-unavailable");
+    const root = join(dir.root, "run");
+    const scripted = scriptedHarness();
+    const open = (boxMode: BoxMode) =>
+      openDurableRun({ disk: "dsk-local", region: "local", id: "unavailable" }, { ...localRun(root), boxMode, harness: { models: scripted.models, registry: scripted.registry } });
+    const refused = (error: unknown) => error instanceof BoxUnavailableError && error.code === "BOX_UNAVAILABLE" && error.exitCode === 78 && /held until a server with a box opens it/.test(error.message);
+    /** Every entry under the run's directory (the claim, owner.lock, the store, run.json, work/), its size, time and, for a
+     *  file, its bytes: what a refused open must leave as it was. */
+    const snapshot = (at: string): string[] =>
+      readdirSync(at, { withFileTypes: true }).flatMap((entry) => {
+        const path = join(at, entry.name);
+        const s = statSync(path);
+        return [`${path} ${s.size} ${s.mtimeMs} ${entry.isFile() ? readFileSync(path, "base64") : "dir"}`, ...(entry.isDirectory() ? snapshot(path) : [])];
+      });
+    try {
+      await assert.rejects(open("unavailable"), refused);
+      assert.equal(existsSync(root), false, "a new run's directory was made");
+      await (await open("bwrap")).release();
+      const before = snapshot(root);
+      const generation = JSON.parse(readFileSync(join(root, "run.json"), "utf8")).generation;
+      await assert.rejects(open("unavailable"), refused);
+      assert.deepEqual(snapshot(root), before, "the claim, the lease, the store or run.json changed");
+      const run = await open("bwrap");
+      const record = JSON.parse(readFileSync(join(root, "run.json"), "utf8"));
+      assert.equal(record.generation, generation + 1, "the refused open took no generation");
+      assert.deepEqual(record.box, { mode: "bwrap" });
+      await run.release();
     } finally {
       dir.remove();
     }
