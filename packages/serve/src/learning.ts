@@ -9,8 +9,9 @@
 // repository goes through one queue per agent in this process; a run's process only reads, through a clone of its own.
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { lstat } from "node:fs/promises";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import type { Extension, ToolRegistration } from "@earendil-works/pi-durable";
@@ -38,6 +39,36 @@ const TRUSTED_TOOLS = new Set(["read", "write", "edit", "ask_person"]);
 export const LEARNING_TOOLS: readonly string[] = ["read", "write", "edit"];
 /** The run's working copy of its agent's repository, under its work. */
 export const WORKING_COPY = join(".agent", "repo");
+/** Why a tool learning added (one the revision did not name) may not take `path`, or undefined: it works on the run's
+ *  working copy only. `path` is read as the tool reads it, against `work`; a link anywhere on the way is refused, never
+ *  followed, so a link inside the copy cannot lead out of it. */
+export async function copyRefusal(work: string, tool: string, path: string): Promise<string | undefined> {
+  const refusal = `${tool} is the learning copy's only here: ${path} is outside ${WORKING_COPY}`;
+  const target = resolve(work, path);
+  const rest = relative(work, target).split(sep);
+  const copy = WORKING_COPY.split(sep);
+  if (rest.length <= copy.length || copy.some((part, at) => rest[at] !== part)) return refusal;
+  for (let at = 1; at <= rest.length; at++) {
+    const step = await lstat(join(work, ...rest.slice(0, at))).catch(() => undefined);
+    if (!step) break;
+    if (step.isSymbolicLink()) return refusal;
+  }
+  return undefined;
+}
+
+/** `tool`, refusing by name any call whose path is outside the run's working copy (`copyRefusal`). */
+export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T {
+  return {
+    ...tool,
+    execute: async (args, api, context) => {
+      const path = isObject(args) && typeof args.path === "string" ? args.path : "";
+      const refused = await copyRefusal(work, tool.name, path);
+      if (refused) return { content: [{ type: "text", text: refused }], isError: true };
+      return tool.execute(args, api, context);
+    },
+  };
+}
+
 /** A name a learning revision could give before learning had file tools: accepted there, and binds nothing. */
 export const LEARN_NAME = "learn";
 /** Beside the run's work, written before its working copy is laid out: a run with it and no copy lost the copy, one
@@ -110,7 +141,13 @@ export const secretsOf = (env: NodeJS.ProcessEnv): string[] =>
   [...new Set(Object.entries(env).filter(([name]) => SECRET_NAME.test(name)).map(([, value]) => value ?? ""))].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 
 /** The run's input values: a learning states the rule, and never repeats the case. */
-export const caseValuesOf = (input: unknown): string[] => (isObject(input) ? Object.values(input).filter((value): value is string => typeof value === "string") : []);
+/** Input values too plain to be the case's own: a yes or a no. */
+const PLAIN = /^(?:yes|no|true|false)$/i;
+/** The run's input values: a learning states the rule, and never repeats the case. A value under 4 characters, or a bare
+ *  yes, no, true or false in any case, is no refused value: it would refuse every harvest. Every other value is, a number
+ *  of 4 or more digits included. */
+export const caseValuesOf = (input: unknown): string[] =>
+  isObject(input) ? Object.values(input).filter((value): value is string => typeof value === "string" && value.length >= 4 && !PLAIN.test(value.trim())) : [];
 
 const queues = new Map<string, Promise<unknown>>();
 
