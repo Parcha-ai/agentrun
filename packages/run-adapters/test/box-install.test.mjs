@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { BoxInstallError, installBox, profileText } from '@parcha/agentrun-adapters/host';
+import { BoxInstallError, installBox, profileText } from '@parcha/agentrun-kernel/host';
 
 function setup(stat = { uid: 0, mode: 0o100755 }) {
   const dir = mkdtempSync(join(tmpdir(), 'box-install-'));

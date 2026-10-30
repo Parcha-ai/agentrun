@@ -13,7 +13,7 @@ export { BoxError } from "./box.js";
 export type { Box, BoxedChild, BoxErrorCode, BoxRecord, BoxRecorder, BoxSpec, Isolation, Reaped } from "./box.js";
 export { boxSlot } from "./box-slot.js";
 export type { BoxSlot, BoxSlotState, BoxStart, SlotChild } from "./box-slot.js";
-export { boxChild, boxMounts, buildBoxArgv, BWRAP, bwrapBox, bwrapState, checkBoxArgv, countInPidns, pidnsOf, probeBox, startTimeOf } from "./box-bwrap.js";
+export { boxListens, boxMounts, buildBoxArgv, BWRAP, bwrapBox, bwrapState, checkBoxArgv, countInPidns, pidnsOf, probeBox, startTimeOf } from "./box-bwrap.js";
 export type { BwrapBoxOptions } from "./box-bwrap.js";
 export { APPARMOR_PROFILE, BoxInstallError, installBox, profileText } from "./box-install.js";
 export type { InstallOptions, InstallResult } from "./box-install.js";

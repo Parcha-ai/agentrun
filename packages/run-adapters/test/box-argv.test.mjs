@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { BOX_EGRESS_SOCKET, BOX_FORWARD, BOX_MODEL_SOCKET, BoxError, boxChild, boxMounts, buildBoxArgv, checkBoxArgv } from '@parcha/agentrun-adapters/host';
+import { BOX_EGRESS_SOCKET, BOX_FORWARD, BOX_MODEL_SOCKET, BoxError, boxListens, forwardChild, boxMounts, buildBoxArgv, checkBoxArgv } from '@parcha/agentrun-kernel/host';
 
 function spec(extra = {}) {
   const run = mkdtempSync(join(tmpdir(), 'box-argv-'));
@@ -18,7 +18,7 @@ const refused = (argv, s, why) => assert.throws(() => checkBoxArgv(argv, s), (e)
 
 test('the built argv carries every isolating flag, the allowlist, --clearenv then the spec\'s environment, the two fds, and passes the check', () => {
   const s = spec();
-  const argv = buildBoxArgv(s, boxChild(s, harness));
+  const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
   checkBoxArgv(argv, s);
   for (const flag of ['--unshare-user', '--unshare-pid', '--unshare-net', '--die-with-parent', '--new-session', '--disable-userns', '--clearenv']) assert.ok(argv.includes(flag), flag);
   assert.deepEqual(argv.slice(argv.indexOf('--proc'), argv.indexOf('--proc') + 2), ['--proc', '/proc']);
@@ -41,7 +41,7 @@ test('the allowlist binds nothing of the host but the system, /etc\'s named subs
 
 test('the check refuses an argv with any one isolating flag removed, each by name', () => {
   const s = spec();
-  const argv = buildBoxArgv(s, boxChild(s, harness));
+  const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
   for (const flag of ['--unshare-pid', '--unshare-net', '--die-with-parent', '--new-session', '--disable-userns', '--clearenv', '--unshare-user', '--unshare-ipc', '--unshare-uts']) {
     const without = argv.filter((a) => a !== flag);
     refused(without, s, flag === '--clearenv' ? /--setenv before --clearenv|--clearenv is missing/ : new RegExp(`${flag} is missing`));
@@ -56,7 +56,7 @@ test('the check refuses an argv with any one isolating flag removed, each by nam
 
 test('the check refuses an extra bind, the root, /etc whole, the server\'s home, a CLI\'s config, --share-net, and an option no box uses', () => {
   const s = spec();
-  const argv = buildBoxArgv(s, boxChild(s, harness));
+  const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
   const at = argv.indexOf('--chdir');
   const add = (...extra) => [...argv.slice(0, at), ...extra, ...argv.slice(at)];
   refused(add('--ro-bind', '/srv', '/srv'), s, /names \/srv/);
@@ -73,7 +73,7 @@ test('the check refuses an extra bind, the root, /etc whole, the server\'s home,
 
 test('the check refuses an environment that is not the spec\'s: one more pair, one changed, or a pair before --clearenv', () => {
   const s = spec();
-  const argv = buildBoxArgv(s, boxChild(s, harness));
+  const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
   const at = argv.indexOf('--info-fd');
   refused([...argv.slice(0, at), '--setenv', 'OPENAI_API_KEY', 'sk-x', ...argv.slice(at)], s, /--setenv pairs are not the spec's environment/);
   const changed = argv.map((a) => (a === 'session-key' ? 'other-key' : a));
@@ -94,16 +94,16 @@ test('a spec that would bind the root, a forbidden tree, or anything of the serv
     ['homes', { HOME: '/home' }, /is or holds \/home/],
   ]) {
     const s = spec({ [field]: value });
-    assert.throws(() => buildBoxArgv(s, boxChild(s, harness)), (e) => e instanceof BoxError && e.code === 'box_refused' && why.test(e.message), `${field}=${JSON.stringify(value)}`);
+    assert.throws(() => buildBoxArgv(s, forwardChild(harness, boxListens(s))), (e) => e instanceof BoxError && e.code === 'box_refused' && why.test(e.message), `${field}=${JSON.stringify(value)}`);
   }
   // A run's own directory under /data is a path a box may bind: only /data itself, or what holds it, is refused.
   const s = spec({ workspace: '/data/runs/r1/work' });
-  checkBoxArgv(buildBoxArgv(s, boxChild(s, harness)), s);
+  checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s);
 });
 
 test('the box\'s first command is this server\'s node running this kernel\'s forwarder on exactly the spec\'s sockets: one more --listen, another socket, a forwarder from elsewhere, or no harness is refused by name', () => {
   const s = spec();
-  const argv = buildBoxArgv(s, boxChild(s, harness));
+  const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
   const head = argv.slice(0, argv.indexOf('--') + 1);
   const at = (command) => [...head, ...command];
   const model = ['--listen', `8123=${BOX_MODEL_SOCKET}`];
@@ -115,18 +115,18 @@ test('the box\'s first command is this server\'s node running this kernel\'s for
   refused(at([process.execPath, join(tmpdir(), 'box-forward.js'), ...model, '--', '/usr/bin/true']), s, /not this kernel's box-forward\.js/);
   refused(at(['/usr/bin/node', BOX_FORWARD, ...model, '--', '/usr/bin/true']), s, /not this server's node/);
   refused(at(['/usr/bin/true']), s, /not this server's node/);
-  refused(at([process.execPath, BOX_FORWARD, ...model, '--']), s, /no harness after --/);
-  refused(at([process.execPath, BOX_FORWARD, ...model, '/usr/bin/true']), s, /no harness after --/);
+  refused(at([process.execPath, BOX_FORWARD, ...model, '--']), s, /the forwarder's arguments do not parse: box-forward: the harness's command goes after --/);
+  refused(at([process.execPath, BOX_FORWARD, ...model, '/usr/bin/true']), s, /the forwarder's arguments do not parse: box-forward: expected --listen/);
   // With an egress proxy: both sockets, the model's first; the model's alone is refused.
   const e = spec({ egressSocket: s.modelSocket, egressPort: 8124 });
-  const child = boxChild(e, harness);
+  const child = forwardChild(harness, boxListens(e));
   assert.deepEqual(child.args.slice(1, 6), ['--listen', `8123=${BOX_MODEL_SOCKET}`, '--listen', `8124=${BOX_EGRESS_SOCKET}`, '--']);
   const egressArgv = buildBoxArgv(e, child);
   checkBoxArgv(egressArgv, e);
   refused([...egressArgv.slice(0, egressArgv.indexOf('--') + 1), process.execPath, BOX_FORWARD, ...model, '--', '/usr/bin/true'], e, /--listen operands are not the spec's sockets/);
   // A port that is not one, or an egress socket without its port, never makes a command.
-  assert.throws(() => boxChild(spec({ modelPort: 0 }), harness), (err) => err instanceof BoxError && err.code === 'box_refused' && /the model port 0 is not a port/.test(err.message));
-  assert.throws(() => boxChild(spec({ egressSocket: s.modelSocket }), harness), (err) => err instanceof BoxError && /the egress port undefined is not a port/.test(err.message));
+  assert.throws(() => forwardChild(harness, boxListens(spec({ modelPort: 0 }))), (err) => err instanceof BoxError && err.code === 'box_refused' && /the model port 0 is not a port/.test(err.message));
+  assert.throws(() => forwardChild(harness, boxListens(spec({ egressSocket: s.modelSocket }))), (err) => err instanceof BoxError && /the egress port undefined is not a port/.test(err.message));
 });
 
 test('serve\'s data root is never shown to a box: a bind of it, or of any parent of it, is refused by name; one under it is not', () => {
@@ -135,10 +135,12 @@ test('serve\'s data root is never shown to a box: a bind of it, or of any parent
   const hidden = [dataRoot];
   for (const path of [dataRoot, base]) {
     const s = spec({ readOnly: ['/usr/local/lib/node-test', path] });
-    refused(buildBoxArgv(s, boxChild(s, harness)), s, /shows .* which a box never sees/);
-    assert.throws(() => checkBoxArgv(buildBoxArgv(s, boxChild(s, harness)), s, { hidden }), (e) => e instanceof BoxError && new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} shows`).test(e.message), path);
+    assert.throws(() => checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s, { hidden }), (e) => e instanceof BoxError && new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} shows`).test(e.message), path);
   }
+  // A tmpfs at /tmp is a new, empty filesystem: a data root under the host's /tmp is not shown by it.
+  const plain = spec();
+  checkBoxArgv(buildBoxArgv(plain, forwardChild(harness, boxListens(plain))), plain, { hidden: [join('/tmp', 'a-data-root')] });
   // A run's own workspace under the data root shows only itself.
   const s = spec({ workspace: join(dataRoot, 'runs', 'r1', 'work') });
-  checkBoxArgv(buildBoxArgv(s, boxChild(s, harness)), s, { hidden });
+  checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s, { hidden });
 });

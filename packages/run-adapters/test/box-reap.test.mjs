@@ -2,12 +2,12 @@
 // whose start time or namespace no longer matches the record is never signalled. A real pid namespace needs bwrap (the
 // CI job's box tests); these use this host's processes.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
-import { bwrapBox, countInPidns, pidnsOf, startTimeOf } from '@parcha/agentrun-adapters/host';
+import { after, test } from 'node:test';
+import { bwrapBox, countInPidns, pidnsOf, startTimeOf } from '@parcha/agentrun-kernel/host';
 
 const alive = (child) => child.exitCode === null && child.signalCode === null;
 const sleeper = async () => {
@@ -129,8 +129,18 @@ test('the count reads the kernel: this process is in its own namespace, and a ma
 
 /** A fake /proc: each process a directory with its stat, status and ns/pid link; `hidden` ones have an unreadable ns/ (as
  *  a non-dumpable process's is), `nostat` ones an unreadable stat. */
+/** Each fake /proc made here: its unreadable entries are made readable again and it is removed once the tests are done. */
+const made = [];
+after(() => {
+  for (const root of made) {
+    execFileSync('chmod', ['-R', 'u+rwx', root]);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function fakeProc(processes) {
   const root = mkdtempSync(join(tmpdir(), 'box-proc-'));
+  made.push(root);
   const uid = process.getuid();
   for (const p of processes) {
     const dir = join(root, String(p.pid));

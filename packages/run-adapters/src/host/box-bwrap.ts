@@ -17,16 +17,12 @@ import { randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Writable, Readable } from "node:stream";
 import { type Box, type BoxedChild, BoxError, type BoxRecord, type BoxRecorder, type BoxSpec, type Isolation, type Reaped } from "./box.js";
+import { BOX_FORWARD, BOX_LOOPBACK, forwardChild, type ForwardListen, parseForward } from "./box-forward.js";
+import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET } from "./machine.js";
 
 export const BWRAP = "/usr/bin/bwrap";
-/** Where the box's sockets are, inside it. */
-export const BOX_MODEL_SOCKET = "/run/agentrun/model.sock";
-export const BOX_EGRESS_SOCKET = "/run/agentrun/egress.sock";
-/** The box's first command: this kernel's forwarder (./box-forward.ts), run by this server's node. */
-export const BOX_FORWARD = fileURLToPath(new URL("./box-forward.js", import.meta.url));
 
 /** The system, read-only: these directories, or the links a merged-/usr system has in their place. */
 const SYSTEM = ["/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"] as const;
@@ -140,21 +136,18 @@ export function buildBoxArgv(spec: BoxSpec, child: { command: string; args: stri
  *  binding a forbidden root, the server's home or a CLI's config; --clearenv before every --setenv, and the --setenv pairs
  *  exactly the spec's environment; the two fds; and a child after `--`. */
 /** The forwarder's `--listen` operands for `spec`: the model socket's, then the egress proxy's when the box has one. */
-function forwardListens(spec: BoxSpec): string[] {
+/** The sockets the forwarder (./box-forward.ts) serves for `spec`, in the box at its own ports: the model front's, then the
+ *  egress proxy's when the box has one. A port that is not one, or an egress socket without its port, is refused. The
+ *  box's first command for a harness is `forwardChild(harness, boxListens(spec))`. */
+export function boxListens(spec: BoxSpec): ForwardListen[] {
   const port = (value: number | undefined, what: string) => {
     if (!Number.isInteger(value) || value! < 1 || value! > 65535) throw new BoxError("box_refused", `the ${what} port ${JSON.stringify(value)} is not a port`);
     return value!;
   };
   return [
-    `${port(spec.modelPort, "model")}=${BOX_MODEL_SOCKET}`,
-    ...(spec.egressSocket === undefined ? [] : [`${port(spec.egressPort, "egress")}=${BOX_EGRESS_SOCKET}`]),
+    { port: port(spec.modelPort, "model"), socket: BOX_MODEL_SOCKET },
+    ...(spec.egressSocket === undefined ? [] : [{ port: port(spec.egressPort, "egress"), socket: BOX_EGRESS_SOCKET }]),
   ];
-}
-
-/** The box's first command for a harness: this server's node running this kernel's forwarder, which serves exactly the
- *  spec's sockets on the box's loopback and then runs the harness, after `--`. */
-export function boxChild(spec: BoxSpec, harness: { command: string; args: readonly string[] }): { command: string; args: string[] } {
-  return { command: process.execPath, args: [BOX_FORWARD, ...forwardListens(spec).flatMap((listen) => ["--listen", listen]), "--", harness.command, ...harness.args] };
 }
 
 /** `hidden`: paths a box must never see, whatever it binds. Serve's data root is one: a run's mark and command records
@@ -194,15 +187,19 @@ export function checkBoxArgv(argv: readonly string[], spec: BoxSpec, options: { 
   if (argv[i] !== "--" || i + 1 >= argv.length) refuse("no child after --");
   // The command: this server's node running this kernel's forwarder, serving exactly the spec's sockets, then a harness.
   // Anything else as the box's first command (another script, one more socket, a socket of the host's) never runs.
+  // The forwarder's own arguments are read by its own parser (parseForward), never a second one here.
   const command = argv.slice(i + 1);
   if (command[0] !== process.execPath) refuse(`the box's first command is ${JSON.stringify(command[0])}, not this server's node`);
   if (command[1] !== BOX_FORWARD) refuse(`the box's first command runs ${JSON.stringify(command[1])}, not this kernel's box-forward.js`);
-  const listens: string[] = [];
-  let at = 2;
-  for (; command[at] === "--listen"; at += 2) listens.push(command[at + 1] ?? "");
-  const wanted = forwardListens(spec);
+  let forwarded: ReturnType<typeof parseForward>;
+  try {
+    forwarded = parseForward(command.slice(2));
+  } catch (error) {
+    return refuse(`the forwarder's arguments do not parse: ${(error as Error).message}`);
+  }
+  const listens = forwarded.listen.map((l) => `${l.port}=${l.socket}`);
+  const wanted = boxListens(spec).map((l) => `${l.port}=${l.socket}`);
   if (listens.length !== wanted.length || listens.some((listen, n) => listen !== wanted[n])) refuse(`the forwarder's --listen operands are not the spec's sockets: ${listens.join(" ") || "none"}`);
-  if (command[at] !== "--" || !command[at + 1]) refuse("the forwarder has no harness after --");
   for (const flag of [...FLAGS, "--clearenv", "--info-fd", "--block-fd"]) if (!seen.has(flag)) refuse(`${flag} is missing`);
   // Every bind's source and destination: never a forbidden root or anything holding one, never the server's own.
   for (const m of mounts) {
@@ -210,9 +207,13 @@ export function checkBoxArgv(argv: readonly string[], spec: BoxSpec, options: { 
       for (const root of FORBIDDEN_ROOTS) if (path === root && !(m[0] === "--proc" && path === "/proc") && !(m[0] === "--dev" && path === "/dev")) refuse(`${m[0]} names ${root}`);
       if (path === "/" || path === "") refuse(`${m[0]} binds the root`);
       for (const root of privateRoots()) if (isUnder(path, root)) refuse(`${m[0]} ${path} is the server's own (${root})`);
-      // A bind that is a hidden path or holds one (its parent, or the root) shows it to the box; one under it does not.
-      for (const hidden of options.hidden ?? []) if (isUnder(hidden, path)) refuse(`${m[0]} ${path} shows ${hidden}, which a box never sees`);
     }
+  }
+  // A bind whose host source is a hidden path or holds one (its parent, or the root) shows it to the box; one under it does
+  // not. Only a bind's source is the host's: a --tmpfs, --proc or --dev, or a bind's destination, shows nothing of it.
+  for (const m of mounts) {
+    if (m[0] !== "--bind" && m[0] !== "--ro-bind") continue;
+    for (const hidden of options.hidden ?? []) if (isUnder(hidden, m[1]!)) refuse(`${m[0]} ${m[1]} shows ${hidden}, which a box never sees`);
   }
   // Exactly the allowlist: the same mounts, the same number of times, in any order.
   const key = (m: readonly string[]) => JSON.stringify(m);
@@ -576,7 +577,8 @@ export function bwrapState(path = BWRAP): { ok: true } | { ok: false; error: "bw
 }
 
 
-/** Where the start probe listens on this host, and what the boxed node then tries to reach: the host's loopback. */
+/** Where the start probe listens on this host: the host's loopback. Inside the box the same address (BOX_LOOPBACK) is the
+ *  box's own loopback, which is what the probe proves: the host's listener does not answer there. */
 const PROBE_HOST = "127.0.0.1"; // key-gate: loopback-rule the probe listens on host loopback to prove the box cannot reach it
 
 /** The start probe: a box built exactly as a harness's is, with node as its child, checked from inside by behaviour:
@@ -610,12 +612,12 @@ export async function probeBox(options: { scratch: string; bwrap?: string; reapM
     mkdirSync(spec.workspace);
     const script = `const fs = require("node:fs"); const net = require("node:net");
 const out = { pid1: fs.readFileSync("/proc/1/comm", "utf8").trim(), data: fs.existsSync("/data") };
-const s = net.connect(${port}, ${JSON.stringify(PROBE_HOST)});
+const s = net.connect(${port}, ${JSON.stringify(BOX_LOOPBACK)});
 s.on("connect", () => { out.loopback = "answered"; console.log(JSON.stringify(out)); process.exit(0); });
 s.on("error", (e) => { out.loopback = e.code; console.log(JSON.stringify(out)); process.exit(0); });`;
     let boxed: BoxedChild;
     try {
-      boxed = box.start(spec, boxChild(spec, { command: process.execPath, args: ["-e", script] }), { ahead() {}, async started() {} });
+      boxed = box.start(spec, forwardChild({ command: process.execPath, args: ["-e", script] }, boxListens(spec)), { ahead() {}, async started() {} });
     } catch (error) {
       return { mode: "unavailable", error: error instanceof BoxError ? error.code : "box_probe_failed", detail: String((error as Error)?.message ?? error) };
     }
