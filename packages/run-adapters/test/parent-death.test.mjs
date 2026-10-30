@@ -45,8 +45,8 @@ function descendants(root) {
 }
 
 /** Start the host with `how`; resolves with the host, its first report, and a reader for the next ones. */
-async function host(t, how, { workers = 0, endWorker = false } = {}) {
-  const proc = spawn(process.execPath, [HOST, how, String(workers), endWorker ? 'yes' : 'no', JSON.stringify(STUBBORN)], { stdio: ['ignore', 'pipe', 'inherit'] });
+async function host(t, how, { workers = 0, endWorker = false, spawner = 'main' } = {}) {
+  const proc = spawn(process.execPath, [HOST, how, String(workers), endWorker ? 'yes' : 'no', JSON.stringify(STUBBORN), spawner], { stdio: ['ignore', 'pipe', 'inherit'] });
   const lines = createInterface({ input: proc.stdout })[Symbol.asyncIterator]();
   const next = async () => JSON.parse((await lines.next()).value);
   const first = await next();
@@ -96,6 +96,23 @@ test('the parent-death signal follows the thread that spawned the child, the eve
   assert.ok(tree.length === 1 && tree.every(alive), 'the child outlives the worker thread');
   h.proc.kill('SIGKILL');
   assert.deepEqual(await gone(tree, 2_000), []);
+});
+
+test('a worker thread is refused the parent-death signal by name, as its child would die when that worker ends, and spawns nothing; the shim it may use outlives the worker and dies with the host', { skip: !linux && 'needs /proc', timeout: 30_000 }, async (t) => {
+  for (const how of ['pdeathsig', ...(pdeathsig ? ['default'] : [])]) {
+    const h = await host(t, how, { spawner: 'worker' });
+    assert.deepEqual(h.first, { refused: 'PdeathsigOffMainThread' }, `${how}, asked for in a worker thread`);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(descendants(h.proc.pid), [], `${how}: nothing was spawned`);
+  }
+  const h = await host(t, 'shim', { spawner: 'worker', endWorker: true });
+  assert.ok(Number.isSafeInteger(h.first.child), 'the shim is spawned from the worker thread');
+  assert.deepEqual(await h.next(), { worker: 'exited' });
+  const tree = await h.settle();
+  await new Promise((r) => setTimeout(r, 500));
+  assert.ok(tree.length === 2 && tree.every(alive), `the shim and its child outlive the worker thread: ${tree}`);
+  h.proc.kill('SIGKILL');
+  assert.deepEqual(await gone(tree, 2_000), [], `still running 2 s after the host died: ${tree.filter(alive)}`);
 });
 
 test('the shim runs its child with the same stdio, passes TERM on, and exits as the child exits', { skip: !linux && 'needs /proc', timeout: 30_000 }, async () => {
