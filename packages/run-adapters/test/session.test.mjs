@@ -318,26 +318,29 @@ test('a turn cut after an earlier settle is a new cut turn: its unplaced prompt 
   assert.deepEqual(harness.given, ['next']);
 });
 
-test('a settle a crash cut after its record and before its withdraw is finished by the next one: the same prompt is withdrawn, the person\'s message stays', async () => {
+test('a settle is one write: the withdraw and the turn\'s end land together, so a retry after it withdraws nothing more', async () => {
   const store = memorySessionStore();
   const first = await openOn(store, () => new Promise(() => {}));
   await first.session.send('the cut turn\'s prompt');
   await turnSoon();
   first.kill();
   await submittedMeanwhile(store, 'a person\'s message');
-  // The settle's record is written, and the process dies before it withdraws the prompt it names.
-  const drive = await openDrive({ writer: await store.open('step:s'), signal: new AbortController().signal });
-  const state = drive.state();
-  const opening = state.submissions.find((s) => s.text === 'the cut turn\'s prompt');
-  const journal = new NativeJournal(drive);
-  journal.message({ type: 'turn', status: 'interrupted', error: SETTLED, settle: { opening: opening.id, seen: state.submissions.length } });
-  await journal.flush();
+  // The next process's writer, counting its appends.
+  const appends = [];
+  const counted = { ...store, open: async (key) => {
+    const writer = await store.open(key);
+    return { ...writer, append: (records) => (appends.push(records.map((r) => r.kind)), writer.append(records)) };
+  } };
+  const second = await openOn(counted, counting().drive);
+  await second.session.settleOpenTurn();
+  assert.deepEqual(appends, [['kernel.submission', 'kernel.start', 'kernel.end']], 'one append: the withdraw, then the turn end\'s batch');
+  // A process that dies right after that write finds the settle whole: a retry withdraws nothing more.
   const harness = counting();
-  const next = await openOn(store, harness.drive);
-  await next.session.settleOpenTurn();
-  await next.session.send('next');
-  await next.session.turnEnd();
-  assert.deepEqual(harness.given, ['a person\'s message', 'next']);
+  const third = await openOn(store, harness.drive);
+  await third.session.settleOpenTurn();
+  await third.session.recover();
+  await third.session.turnEnd();
+  assert.deepEqual(harness.given, ['a person\'s message']);
 });
 
 test('the faux harness says a settled turn ended, and refuses to settle a turn it recovered', async () => {
