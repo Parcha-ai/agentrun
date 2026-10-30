@@ -17,7 +17,7 @@ test("the config turns code mode's host on, allows no sub-agents, and reserves t
 
 test("the harness's messages and its model provider name this package", () => {
   assert.equal(codexConfig(base).model_providers.gateway.name, 'AgentRun model proxy');
-  assert.throws(() => codexHarness({ host: 1 }), /^TypeError: agentrun-codex: the host option is gone/);
-  assert.throws(() => checkConfig(5), /^TypeError: agentrun-codex: config must be an object/);
-  assert.throws(() => toToml({ n: Number.NaN }), /^TypeError: agentrun-codex: not a TOML number/);
+  assert.throws(() => codexHarness({ host: 1 }), /^TypeError: agentrun-harness-codex: the host option is gone/);
+  assert.throws(() => checkConfig(5), /^TypeError: agentrun-harness-codex: config must be an object/);
+  assert.throws(() => toToml({ n: Number.NaN }), /^TypeError: agentrun-harness-codex: not a TOML number/);
 });

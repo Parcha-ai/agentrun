@@ -7,7 +7,7 @@ revision it ran, so you can open any run of any agent and see what it did. Host 
 your machine or your own server, or with us when hosted AgentRun opens.
 
 1. **The platform.** Your agents, each one's revisions, and every run, behind one API (`/v2`) and one page. You run
-   it yourself today; hosted by us is coming. Agents run on pi today. Bring your own harness: Codex next, more later. Coming.
+   it yourself today; hosted by us is coming. Agents run on pi, Claude Agent or Codex; pick one per agent.
 2. **[AgentRun Server](packages/serve/README.md).** The part you host: one container, `ghcr.io/parcha-ai/agentrun-server`,
    that serves the `/v2` API and the page and keeps everything in one data directory. Apache-2.0.
 3. **[Building blocks](#building-blocks).** The open packages underneath, each usable on its own in your pi agent:
@@ -237,9 +237,9 @@ It plans subquestions, researches them in parallel, screens evidence, and writes
 | [`@parcha/agentrun-learn`](packages/learn/README.md) | The contract of an agent's own learning repository, and the checker of a run's branch |
 | [`@parcha/pi-durable-agent`](packages/pi-durable-agent/README.md) | An agent home for pi agents: its definition, skills, saved sign-ins and runs in one directory that also moves as one pack. An agent's sign-ins are saved in its home, so its next run starts signed in |
 | [`@parcha/agentrun-harness`](packages/harness/README.md) | A reference harness: the host we use to run AgentRun demos and tests, meant to be read and forked |
-| [`@parcha/agentrun-adapters`](packages/run-adapters/README.md) | Held, not on npm yet. The seam for agent harnesses other than Pi, starting with Codex: `createHarnessRunner` runs a DSL node on a harness adapter, durable in AgentRun's own store |
-| [`@parcha/agentrun-claude-agent`](packages/run-adapters-claude-agent/README.md) | Held, not on npm yet. The Claude Agent SDK as a harness: a DSL node runs on the Claude Agent CLI with the host's tools as its only tools, its model behind a per-session proxy |
-| [`@parcha/agentrun-codex`](packages/run-adapters-codex/README.md) | Held, not on npm yet. Codex as a harness: a DSL node runs on Codex's app-server with the host's tools as its only tools, its model behind a per-session proxy |
+| [`@parcha/agentrun-kernel`](packages/run-adapters/README.md) | The seam for agent harnesses other than Pi, which the Claude Agent and Codex harnesses run on: `createHarnessRunner` runs a DSL node on a harness adapter, durable in AgentRun's own store |
+| [`@parcha/agentrun-harness-claude`](packages/run-adapters-claude-agent/README.md) | The Claude Agent SDK as a harness: a DSL node runs on the Claude Agent CLI with the host's tools as its only tools, its model behind a per-session proxy |
+| [`@parcha/agentrun-harness-codex`](packages/run-adapters-codex/README.md) | Codex as a harness: a DSL node runs on Codex's app-server with the host's tools as its only tools, its model behind a per-session proxy |
 
 Every published package is at one version under npm's `beta` dist-tag; `npm view @parcha/agentrun-dsl dist-tags` prints it. The status column of [Use one piece](#use-one-piece) says which packages are published. See the [changelog](CHANGELOG.md) and [contracts and limits](docs/guide.md#contracts-and-limits).
 
@@ -261,4 +261,4 @@ AgentRun builds on these projects. Each keeps its own license.
 - The document readers in `@parcha/pi-vision`: [@hyzyla/pdfium](https://github.com/hyzyla/pdfium) (MIT, with Google's PDFium), [unpdf](https://github.com/unjs/unpdf) (MIT, with Mozilla's PDF.js), [Photon](https://github.com/silvia-odwyer/photon) (Apache-2.0), [xmldom](https://github.com/xmldom/xmldom) (MIT) and [fflate](https://github.com/101arrowz/fflate) (MIT).
 - [PDF.js](https://github.com/mozilla/pdf.js) by Mozilla (Apache-2.0), vendored in `apps/viewer` with the OpenJPEG decoder (BSD-2-Clause) and PDFium's JBIG2 decoder (BSD-3-Clause) it bundles.
 - [TypeBox](https://github.com/sinclairzx81/typebox), [Zod](https://github.com/colinhacks/zod), [undici](https://github.com/nodejs/undici), [node-html-parser](https://github.com/taoqf/node-fast-html-parser), [node-html-markdown](https://github.com/crosstype/node-html-markdown) and [htmlparser2](https://github.com/fb55/htmlparser2), all MIT.
-- [vercel-labs/durable-harness](https://github.com/vercel-labs/durable-harness) (Apache-2.0): AgentRun's durable harnesses build on its ideas and code. What `@parcha/agentrun-adapters` and `@parcha/agentrun-claude-agent` copy is listed in each package's `vendor/durable-harness/UPSTREAM.json` and credited in its NOTICE ([adapters](packages/run-adapters/NOTICE), [Claude Agent](packages/run-adapters-claude-agent/NOTICE)).
+- [vercel-labs/durable-harness](https://github.com/vercel-labs/durable-harness) (Apache-2.0): AgentRun's durable harnesses build on its ideas and code. What `@parcha/agentrun-kernel` and `@parcha/agentrun-harness-claude` copy is listed in each package's `vendor/durable-harness/UPSTREAM.json` and credited in its NOTICE ([adapters](packages/run-adapters/NOTICE), [Claude Agent](packages/run-adapters-claude-agent/NOTICE)).

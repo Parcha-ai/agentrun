@@ -5,7 +5,7 @@
 // commit refused, FencedError), and within one the newest `open` of a key, checked inside the commit that appends.
 import type { Context } from "@earendil-works/chord";
 import { type ConversationId, type Cursor, type Harness, ROOT_CONVERSATION_ID, type Tx } from "@earendil-works/pi-durable";
-import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-adapters";
+import { SessionFenced, type SessionRecord, type SessionStore, type SessionWriter } from "@parcha/agentrun-kernel";
 import { FencedError } from "@parcha/pi-durable-disk";
 
 const SESSION_KEY = "session.key";

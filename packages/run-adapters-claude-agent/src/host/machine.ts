@@ -8,12 +8,12 @@
 //  - each child runs in its own process group, which kill() and close() end whole, and dies with this process: started
 //    with a watch on its parent (./host's parentWatched, inside the host's confinement), so a host that is SIGKILLed,
 //    and runs no close, leaves no CLI behind;
-//  - the model proxy (@parcha/agentrun-adapters/host, with the Anthropic policy) starts with the machine and stops with it.
+//  - the model proxy (@parcha/agentrun-kernel/host, with the Anthropic policy) starts with the machine and stops with it.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
-import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-adapters/host";
+import { parentWatched, startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import type { AcquireMachine, CacheDir, KillSignal, MachineSpawn, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { anthropicPolicy, type AnthropicPolicyOptions } from "./policy.js";
@@ -83,7 +83,7 @@ export function confined(child: ChildCommand, confine: ConfineChild | undefined)
   const argv = [out?.command, ...(Array.isArray(out?.args) ? out.args : [])];
   const tail = argv.slice(argv.length - child.args.length - 1);
   const kept = argv.length > child.args.length + 1 && tail.length === child.args.length + 1 && tail.every((a, i) => a === (i === 0 ? child.command : child.args[i - 1]));
-  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-claude-agent: the host's confinement must start the child's own command and arguments, after its own");
+  if (typeof out?.command !== "string" || !argv.every((a) => typeof a === "string") || !kept) throw new Error("agentrun-harness-claude: the host's confinement must start the child's own command and arguments, after its own");
   return { command: out.command, args: out.args };
 }
 
@@ -149,9 +149,9 @@ export interface LocalSessionMachine extends SessionMachine {
 export function localMachine(options: LocalMachineOptions): AcquireMachine {
   const from = options.env ?? process.env;
   return async ({ ctx, model }) => {
-    if (!model) throw new Error("agentrun-claude-agent: the harness gave the machine no model route");
+    if (!model) throw new Error("agentrun-harness-claude: the harness gave the machine no model route");
     const base = normalize(options.dir);
-    if (!isAbsolute(base)) throw new Error("agentrun-claude-agent: the session directory must be an absolute path");
+    if (!isAbsolute(base)) throw new Error("agentrun-harness-claude: the session directory must be an absolute path");
     mkdirSync(base, { recursive: true, mode: 0o700 });
     const dirs = Object.fromEntries(DIRS.map((d) => [d, join(base, d)])) as Record<CacheDir, string>;
     const root = join(base, "work");
@@ -189,7 +189,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const children = new Set<MachineChild>();
     let closed = false;
     const start = (spawnOptions: MachineSpawn): MachineChild => {
-      if (closed) throw new Error("agentrun-claude-agent: the session machine is closed");
+      if (closed) throw new Error("agentrun-harness-claude: the session machine is closed");
       const proc = startChild(spawnOptions, from, root, base, options.confine, options.parentWatch);
       children.add(proc);
       void proc.exited.then(() => children.delete(proc));

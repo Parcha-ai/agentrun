@@ -12,7 +12,7 @@ index d0f3596..d129cab 100644
  /**
   * Where this machine's `codex` binary is, for the stand-in VM's tests and the
 - * live tests on a laptop (`harness-world-codex/binary`, never the package's
-+ * live tests on a laptop (`@parcha/agentrun-codex's binary.ts`, never the package's
++ * live tests on a laptop (`@parcha/agentrun-harness-codex's binary.ts`, never the package's
   * index: in a session, Codex is the pinned build in the sandbox's base image,
   * `CODEX_CLI`, and no Function looks a binary up). `@openai/codex` is a small
   * launcher plus one optional package per platform (`@openai/codex-<platform>`,
@@ -111,8 +111,8 @@ index 8c1b93b..068cb7a 100644
 -/** The stand-in's guard (`test`), the same as harness-world-sandbox's. */
 +/** The stand-in's guard (`test`): only a test run with AGENTRUN_CODEX_STANDIN=1 may speak app-server's protocol with another command. */
  function testGuard(): void {
-   if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
-   if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-codex: a stand-in app-server runs only under a test runner');
+   if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-harness-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
+   if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
 @@ -386,7 +385,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
  
    return {

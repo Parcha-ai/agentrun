@@ -9,10 +9,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { createHarnessRunner } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { CLAUDE_AGENT_CLI_SKILL_NAMES, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, skillProblems, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic } from '@parcha/agentrun-claude-agent/testing';
+import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { CLAUDE_AGENT_CLI_SKILL_NAMES, CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, skillProblems, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
+import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 
 let problem;
 try { verifyClaudeAgent({}); } catch (error) { problem = `${error.name}: ${error.message}`; }
@@ -202,7 +202,7 @@ test('the skills are checked when the adapter is made: a plain name, a SKILL.md 
   // A name the CLI keeps for itself is no problem: that skill is served by its qualified name alone.
   for (const name of ['simplify', 'help', 'review']) assert.deepEqual(skillProblems([{ name, files: { 'SKILL.md': md(name) } }]), [], name);
   assert.match(wrong({ name: 'a', files: { 'SKILL.md': md('a'), 'big.md': 'x'.repeat(1024 * 1024) } }), /more than 1048576/);
-  assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, skills: [{ name: 'a', files: {} }], sdk: {}, standIn: { command: process.execPath } }), /agentrun-claude-agent: the skill a has no SKILL.md/);
+  assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, skills: [{ name: 'a', files: {} }], sdk: {}, standIn: { command: process.execPath } }), /agentrun-harness-claude: the skill a has no SKILL.md/);
 });
 
 test('a loaded skill survives a crash: the next process, in a NEW session directory, recovers from the store and turn 3 still has the skill in its history, nothing re-sent', { skip, timeout: 240_000 }, async (t) => {
@@ -221,7 +221,7 @@ test('a loaded skill survives a crash: the next process, in a NEW session direct
   let charged = 0;
   const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
   const spec = { key: 'step:skill-resume', label: 'pay', system: ['Use the skill, then the tool.'], tools: [charge], context: 'fresh' };
-  const { memorySessionStore: stores } = await import('@parcha/agentrun-adapters/testing');
+  const { memorySessionStore: stores } = await import('@parcha/agentrun-kernel/testing');
   const store = stores();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
   const adapterIn = (dir) => claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir, skills: [SKILL] });

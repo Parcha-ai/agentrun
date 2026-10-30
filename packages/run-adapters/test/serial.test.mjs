@@ -3,9 +3,9 @@
 // halted drive's queued write. (The probe is shaped on an adapter's reopen after an interrupt.)
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { foldSession, openDrive } from '@parcha/agentrun-adapters/kernel';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { serialWriter } from '@parcha/agentrun-adapters/host';
+import { foldSession, openDrive } from '@parcha/agentrun-kernel/kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { serialWriter } from '@parcha/agentrun-kernel/host';
 
 /** A session writer whose first outcome append is held until the test releases it. */
 async function holdingWriter() {

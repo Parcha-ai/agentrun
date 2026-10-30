@@ -87,7 +87,7 @@ test('a patch applies exactly: a changed line of context fails the port, naming 
   // Exact context, not exact line numbers: upstream moving a hunk without changing it still applies.
   const shifted = await copyOf(edit('vendor/durable-harness/upstream/packages/harness-process/src/tail.ts', (text) => `// a new first line\n${text}`));
   const { files } = await portPackage(shifted, { cascade: false }).catch(() => ({ files: new Map() }));
-  assert.ok(files.get('src/process/tail.ts')?.includes('agentrun-adapters:'), 'a hunk that moved applies');
+  assert.ok(files.get('src/process/tail.ts')?.includes('agentrun-kernel:'), 'a hunk that moved applies');
 });
 
 test('a patch that changes nothing is named, and dropping a patch that others are written against fails loudly', async () => {

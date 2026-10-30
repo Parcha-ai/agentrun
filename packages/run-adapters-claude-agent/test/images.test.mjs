@@ -9,10 +9,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { createHarnessRunner } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter, toolImageProblems, verifyClaudeAgent } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-claude-agent/testing';
+import { createHarnessRunner } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter, toolImageProblems, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
+import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 
 const required = process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY === '1';
 let problem;

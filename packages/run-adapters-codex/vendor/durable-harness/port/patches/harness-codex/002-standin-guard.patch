@@ -16,9 +16,9 @@ index 3465484..15d7228 100644
 -  if (!process.env.VITEST && process.env.NODE_ENV !== 'test') throw new TypeError('harness-world-codex: codexHarness({ test }) runs only under a test runner');
 -  if (process.env.VERCEL) throw new TypeError('harness-world-codex: codexHarness({ test }) refuses to run with VERCEL set');
 -  if (process.env.NODE_ENV === 'production') throw new TypeError('harness-world-codex: codexHarness({ test }) refuses to run in production');
-+  if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
-+  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-codex: a stand-in app-server runs only under a test runner');
-+  if (process.env.NODE_ENV === 'production') throw new TypeError('agentrun-codex: a stand-in app-server refuses to run in production');
++  if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-harness-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
++  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-harness-codex: a stand-in app-server runs only under a test runner');
++  if (process.env.NODE_ENV === 'production') throw new TypeError('agentrun-harness-codex: a stand-in app-server refuses to run in production');
  }
  
  /** When this invocation ends: the World's runtime deadline if it reports one, at most the kernel's default bound away. */

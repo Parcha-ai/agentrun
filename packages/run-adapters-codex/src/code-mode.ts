@@ -14,10 +14,10 @@ export function codeModeModels(catalog: string): ReadonlySet<string> {
   try {
     parsed = JSON.parse(catalog);
   } catch {
-    throw new Error("agentrun-codex: the Codex model catalog is not JSON");
+    throw new Error("agentrun-harness-codex: the Codex model catalog is not JSON");
   }
   const models = (parsed as { models?: unknown } | null)?.models;
-  if (!Array.isArray(models)) throw new Error("agentrun-codex: the Codex model catalog has no models list");
+  if (!Array.isArray(models)) throw new Error("agentrun-harness-codex: the Codex model catalog has no models list");
   return new Set(models.flatMap((m: { slug?: unknown; tool_mode?: unknown }) => (m?.tool_mode === "code_mode_only" && typeof m.slug === "string" ? [m.slug] : [])));
 }
 

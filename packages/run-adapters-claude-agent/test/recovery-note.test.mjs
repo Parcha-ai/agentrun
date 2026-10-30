@@ -7,10 +7,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
-import { createHarnessRunner, HarnessRunError } from '@parcha/agentrun-adapters';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { claudeAgentAdapter } from '@parcha/agentrun-claude-agent';
-import { fakeAnthropic, fakeSdk, sentSystemPrompt } from '@parcha/agentrun-claude-agent/testing';
+import { createHarnessRunner, HarnessRunError } from '@parcha/agentrun-kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { claudeAgentAdapter } from '@parcha/agentrun-harness-claude';
+import { fakeAnthropic, fakeSdk, sentSystemPrompt } from '@parcha/agentrun-harness-claude/testing';
 import { EXPECTED_NO_CALLS_NOTE, EXPECTED_SYSTEM_NOTE, fiveStatusesState } from './recovery-fixture.mjs';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
@@ -114,8 +114,8 @@ test('a tool output that reads as instructions reaches no system prompt and no u
 });
 
 test('the system note is the shared note, word for word: each call by name, id and status, and none of its input or output', async () => {
-  const { openDrive } = await import('@parcha/agentrun-adapters/kernel');
-  const { placeSubmissions } = await import('@parcha/agentrun-adapters/process');
+  const { openDrive } = await import('@parcha/agentrun-kernel/kernel');
+  const { placeSubmissions } = await import('@parcha/agentrun-kernel/process');
   const { recoverySystemNote } = await import('../dist/harness.js');
   assert.equal(recoverySystemNote(await fiveStatusesState()), EXPECTED_SYSTEM_NOTE);
   const store = memorySessionStore();
@@ -149,8 +149,8 @@ test("the fake's snapshot rule is the real CLI's, case by case, as measured (Age
 });
 
 test('a turn a crash cut off before the transcript got its prompt, and a message sent during the outage: the resuming user turn is exactly that prompt, then that message, and none of the note', async () => {
-  const { openDrive } = await import('@parcha/agentrun-adapters/kernel');
-  const { placeSubmissions, recoveryNote } = await import('@parcha/agentrun-adapters/process');
+  const { openDrive } = await import('@parcha/agentrun-kernel/kernel');
+  const { placeSubmissions, recoveryNote } = await import('@parcha/agentrun-kernel/process');
   const { recoveryUserTurn } = await import('../dist/harness.js');
   const store = memorySessionStore();
   const open = async () => openDrive({ writer: await store.open('run-1'), signal: new AbortController().signal });
@@ -177,7 +177,7 @@ test('a turn a crash cut off before the transcript got its prompt, and a message
 });
 
 test('the DRIVE resumes with the message sent during the outage as its user turn, exactly, not the nudge', async (t) => {
-  const { openDrive } = await import('@parcha/agentrun-adapters/kernel');
+  const { openDrive } = await import('@parcha/agentrun-kernel/kernel');
   let inside;
   const reached = new Promise((resolve) => { inside = resolve; });
   const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };

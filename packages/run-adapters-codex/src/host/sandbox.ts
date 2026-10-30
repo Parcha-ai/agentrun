@@ -27,7 +27,7 @@ export function withCheckedBinary<T>(path: string, make: () => T): T {
 }
 /** The binary to run: the checked one (`withCheckedBinary`). A harness made any other way runs nothing unchecked. */
 export const cliPath = (_cli: PinnedCli): string => {
-  if (!checked) throw new Error("agentrun-codex: the Codex harness is made through the adapter, which checks its binary against the pins first");
+  if (!checked) throw new Error("agentrun-harness-codex: the Codex harness is made through the adapter, which checks its binary against the pins first");
   return checked;
 };
 

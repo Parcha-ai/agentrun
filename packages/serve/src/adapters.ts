@@ -1,20 +1,20 @@
 // The adapter a harness id runs on, and whether this server can run it. With a faux harness module (FAUX_HARNESS_ENV)
 // every id runs on run-adapters' faux harness, scripted by the module's `script(spec)`, as `--faux` runs pi on the
-// faux model. Otherwise codex runs on @parcha/agentrun-codex and claude-agent on @parcha/agentrun-claude-agent, each
+// faux model. Otherwise codex runs on @parcha/agentrun-harness-codex and claude-agent on @parcha/agentrun-harness-claude, each
 // with serve's own model, price and endpoint, under the run's confinement; a package or a pinned CLI that is missing
 // says so with the one line that installs it.
 import { pathToFileURL } from "node:url";
-import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-adapters";
+import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import type { ModelRef } from "./model.js";
 
 /** The one line that installs each harness beside serve. */
 export const INSTALL: Record<string, string> = {
-  "claude-agent": "npm install @parcha/agentrun-claude-agent @anthropic-ai/claude-agent-sdk@0.3.286 zod",
-  codex: "npm install @parcha/agentrun-codex @openai/codex@0.164.0",
+  "claude-agent": "npm install @parcha/agentrun-harness-claude @anthropic-ai/claude-agent-sdk@0.3.286 zod",
+  codex: "npm install @parcha/agentrun-harness-codex @openai/codex@0.164.0",
 };
 
-/** For tests: a JSON `{command, args?, env?}` that speaks Codex's app-server protocol in place of Codex. agentrun-codex
+/** For tests: a JSON `{command, args?, env?}` that speaks Codex's app-server protocol in place of Codex. agentrun-harness-codex
  *  takes it only under its own guard (AGENTRUN_CODEX_STANDIN=1, under a test runner). */
 export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
 
@@ -146,7 +146,7 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
 
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
  *  only by the person who wants it (its SDK is an optional peer). */
-const CLAUDE_PACKAGE = "@parcha/agentrun-claude-agent";
+const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
 
 async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const claude = (await import(CLAUDE_PACKAGE).catch(() => {
@@ -168,7 +168,7 @@ export const thinkingFor = (harness: string, level: string): SessionSpec["thinki
 /** The bare id Codex takes: serve's "openai/<id>" without its provider. */
 
 async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const codex = await import("@parcha/agentrun-codex").catch(() => {
+  const codex = await import("@parcha/agentrun-harness-codex").catch(() => {
     throw new HarnessUnavailable(`codex is not installed here: ${INSTALL.codex}`);
   });
   const standIn = env[CODEX_STANDIN_ENV] ? (JSON.parse(env[CODEX_STANDIN_ENV]) as { command: string; args?: string[]; env?: Record<string, string> }) : undefined;
@@ -188,7 +188,7 @@ async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Age
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const faux = env[FAUX_HARNESS_ENV];
   if (faux) {
-    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-adapters/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[] }>]);
+    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-kernel/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[] }>]);
     if (typeof module.script !== "function") throw new Error(`${FAUX_HARNESS_ENV} names ${faux}, which exports no script(spec)`);
     return fauxAdapter({ script: module.script });
   }

@@ -1,11 +1,11 @@
-# @parcha/agentrun-codex
+# @parcha/agentrun-harness-codex
 
-Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-adapters`, durable in AgentRun's
-own store, with the host's tools as its only tools. It is held: not on npm yet.
+Codex as an AgentRun harness: a DSL `agent` node runs on Codex through `@parcha/agentrun-kernel`, durable in AgentRun's
+own store, with the host's tools as its only tools.
 
 ```ts
-import { createHarnessRunner } from "@parcha/agentrun-adapters";
-import { codexAdapter } from "@parcha/agentrun-codex";
+import { createHarnessRunner } from "@parcha/agentrun-kernel";
+import { codexAdapter } from "@parcha/agentrun-harness-codex";
 
 const runNode = createHarnessRunner(
   codexAdapter({

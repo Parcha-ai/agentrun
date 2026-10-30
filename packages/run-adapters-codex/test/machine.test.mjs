@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { parentWatched, processAlive } from '@parcha/agentrun-adapters/host';
+import { parentWatched, processAlive } from '@parcha/agentrun-kernel/host';
 import { CODEX_ROUTES, gatewayHandler, isBrandedMachine } from '../dist/host/process.js';
 import { childEnv, confined, localMachine } from '../dist/host/machine.js';
 

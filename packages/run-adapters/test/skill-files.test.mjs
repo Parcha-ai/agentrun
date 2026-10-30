@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { READ_SKILL_FILE, readSkillFileTool } from '@parcha/agentrun-adapters';
+import { READ_SKILL_FILE, readSkillFileTool } from '@parcha/agentrun-kernel';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-skill-files-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));

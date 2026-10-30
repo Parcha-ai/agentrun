@@ -7,13 +7,13 @@ export type ClaudeAgentPin = "cli_sha256" | "cli_version" | "sdk_version";
 export class ClaudeAgentPinMismatch extends Error {
   readonly code = "CLAUDE_AGENT_PIN_MISMATCH";
   constructor(readonly pin: ClaudeAgentPin, readonly expected: string, readonly found: string, readonly path?: string) {
-    super(`agentrun-claude-agent: the Claude Agent ${pin === "sdk_version" ? "SDK" : "CLI"}${path ? ` at ${path}` : ""} is not the pinned build: its ${pin.replace("_", " ")} is ${found}, not ${expected}`);
+    super(`agentrun-harness-claude: the Claude Agent ${pin === "sdk_version" ? "SDK" : "CLI"}${path ? ` at ${path}` : ""} is not the pinned build: its ${pin.replace("_", " ")} is ${found}, not ${expected}`);
     this.name = "ClaudeAgentPinMismatch";
   }
 }
 
 /** This package's name on npm, as a message names it. */
-export const CLAUDE_AGENT_PACKAGE = "@parcha/agentrun-claude-agent";
+export const CLAUDE_AGENT_PACKAGE = "@parcha/agentrun-harness-claude";
 
 /** The host has not installed the Agent SDK (it is an optional peer dependency the host brings), or its CLI. The message
  *  is one line: what is missing, and, where installing the pinned SDK is the fix, the line that does it (`install`). */
@@ -29,7 +29,7 @@ export class ClaudeAgentNotInstalled extends Error {
 export class ClaudeAgentThinkingOff extends Error {
   readonly code = "CLAUDE_AGENT_THINKING_OFF";
   constructor(readonly level: string) {
-    super(`agentrun-claude-agent: thinking is never off; ${JSON.stringify(String(level).slice(0, 20))} is not a level (low, medium, high, xhigh or max)`);
+    super(`agentrun-harness-claude: thinking is never off; ${JSON.stringify(String(level).slice(0, 20))} is not a level (low, medium, high, xhigh or max)`);
     this.name = "ClaudeAgentThinkingOff";
   }
 }

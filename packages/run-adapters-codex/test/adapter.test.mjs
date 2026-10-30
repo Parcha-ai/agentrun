@@ -7,10 +7,10 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
-import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { foldSession } from '@parcha/agentrun-adapters/kernel';
-import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
-import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
+import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
+import { foldSession } from '@parcha/agentrun-kernel/kernel';
+import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
+import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
 import { verifyCodexBinary } from '../dist/verify.js';
 
