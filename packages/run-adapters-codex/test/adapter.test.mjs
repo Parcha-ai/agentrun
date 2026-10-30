@@ -346,3 +346,14 @@ test('the catalog reader is test-only: passed outside the stand-in guard, the ad
     if (saved.node === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved.node;
   }
 });
+
+test("the session's last box the host names is reaped before Codex starts: one that will not empty fails the node by name", async () => {
+  const reaped = [];
+  const previousBox = { record: { id: 'box-old', writer: { pid: 1, startTime: '1' } }, reap: async (record) => { reaped.push(record.id); return { empty: false, left: 1, by: 'cgroup' }; } };
+  const { adapter: codex } = adapter(['call submit {"value":{"answer":"x"}}'], { box: 'unsandboxed', previousBox });
+  const runNode = createHarnessRunner(codex, { store: memorySessionStore(), tools: [] });
+  const out = await runWorkflow(doc(agent()), {}, { runNode }).catch((error) => ({ status: 'threw', error: String(error?.message ?? error) }));
+  assert.notEqual(out.status, 'complete');
+  assert.match(JSON.stringify(out.error ?? out), /box_not_empty: the session's last box still holds 1 process \(counted by cgroup\)/);
+  assert.ok(reaped.length >= 1 && reaped.every((id) => id === 'box-old'), `the host's record was reaped: ${reaped}`);
+});

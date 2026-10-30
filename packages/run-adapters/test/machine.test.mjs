@@ -2,13 +2,14 @@
 // git ceiling, the host's confinement, the process group ended whole, the private directories and the tail. Each adapter
 // suite covers the same machine through its own harness; this one holds the shared code where it lives.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { connect, createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
-import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, openLocalMachine, processAlive, startChild } from '@parcha/agentrun-kernel/host';
+import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, listenSocket, openLocalMachine, processAlive, startChild } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'kernel-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -334,6 +335,35 @@ test('an egress proxy that cannot start fails the open, and leaves no model fron
   const egress = { port: 4101, start: async () => { throw Object.assign(new Error('egress: a live listener is there'), { code: 'egress_socket_in_use' }); } };
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: run }) }), /a live listener is there/);
   assert.equal(existsSync(join(run, 'model.sock')), false);
+  assert.equal(existsSync(run), false, 'nor the socket directory the open made: a failed open returns no machine to close it');
+});
+
+/** What a listener at the Unix socket `path` says to a connection, to its end. */
+const said = (path) => new Promise((resolve, reject) => {
+  let text = '';
+  connect(path).on('data', (d) => { text += d; }).on('end', () => resolve(text)).on('error', reject);
+});
+
+test("two opens racing for one socket path: one listens there, the other is refused by name, and neither removes a socket that is not its own", async (t) => {
+  const run = join(shortDir(), 'run');
+  mkdirSync(run, { recursive: true, mode: 0o700 });
+  const path = join(run, 'model.sock');
+  const servers = [0, 1].map((i) => createServer((c) => c.end(`front ${i}`)));
+  t.after(() => { for (const s of servers) s.close(); });
+  // Both find the path free before either has listened, as two opens of one session started together would.
+  const results = await Promise.allSettled(servers.map((s) => listenSocket(s, path, 'agentrun-test')));
+  assert.deepEqual(results.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
+  assert.match(String(results.find((r) => r.status === 'rejected').reason), /^Error: agentrun-test: a listener was published at .*model\.sock while this one started: it is not taken over$/);
+  const won = results.findIndex((r) => r.status === 'fulfilled');
+  assert.equal(await said(path), `front ${won}`, 'the path still reaches the one that published it');
+  assert.deepEqual(readdirSync(run), ['model.sock'], 'no temporary name is left behind');
+  // A socket another listener put at the path since is not this one's: releasing this one leaves it.
+  unlinkSync(path);
+  const other = createServer((c) => c.end('other'));
+  t.after(() => other.close());
+  await listenSocket(other, path, 'agentrun-test');
+  results[won].value.release();
+  assert.equal(await said(path), 'other');
 });
 
 test("a session socket a dead machine left is replaced; a live one is another machine's, and the open is refused by name", async (t) => {
