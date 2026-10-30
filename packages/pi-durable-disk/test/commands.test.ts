@@ -414,6 +414,44 @@ describe("command records, from a scripted /proc", () => {
     }
   });
 
+  it("a recorded pid the kernel gave to another process (its start time differs) is gone: the walk drops its record, and a reap never signals the stranger", async () => {
+    // 4300 is recorded with start 77, exits, and its number goes to a new process (start 99) whose environment reads
+    // non-empty and lacks the word. Only the start time tells the two apart.
+    const dir = scratchRoot("commands-recorded-pid-reused");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "commands");
+    const uid = process.getuid!();
+    const stat = (pid: number, ppid: number, pgrp: number, start: number) => `${pid} (cmd) ${["S", String(ppid), String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
+      writeFileSync(join(proc, "4200/stat"), stat(4200, 1, 4200, 10));
+      writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
+      mkdirSync(join(proc, "4300"));
+      writeFileSync(join(proc, "4300/status"), `Name:\tcmd\nState:\tS (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+      const recorder = new CommandRecorder(records, { proc, instance: 4200 });
+      writeFileSync(join(proc, "4300/stat"), stat(4300, 4200, 4300, 77));
+      writeFileSync(join(proc, "4300/environ"), `PATH=/usr/bin\0${COMMANDS_MARK}=${recorder.token}\0`);
+      recorder.scan();
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"]);
+      const recorded = readFileSync(join(records, "4300-77.json"), "utf8");
+      // The stranger: the same pid, leading its own group, started later, its environment without the word.
+      writeFileSync(join(proc, "4300/stat"), stat(4300, 4200, 4300, 99));
+      writeFileSync(join(proc, "4300/environ"), "PATH=/usr/bin\0HOME=/tmp\0");
+      recorder.scan();
+      recorder.close();
+      assert.deepEqual(readdirSync(records).filter(isRecord), [], "the walk drops a record whose pid now has another start time");
+      // An instance killed before that walk leaves the record behind: the reap at the next open must not signal 4300.
+      writeFileSync(join(records, "4300-77.json"), recorded);
+      const signals: number[] = [];
+      assert.deepEqual(await reapCommands(records, { proc, kill: (target) => void signals.push(target), timeoutMs: 50 }), { signalled: 0, survivors: [] });
+      assert.deepEqual(signals, [], "no SIGKILL to the process that took the recorded pid");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("an open refuses the run while a process a killed incarnation left is still alive, and keeps its record", async () => {
     const dir = scratchRoot("commands-refuse");
     const proc = join(dir.root, "proc");
