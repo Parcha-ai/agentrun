@@ -16,7 +16,7 @@ import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } fr
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_HANG"];
 const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 /** Keys that are not the canary, so a request sent with one is not authorized: held in names, as no key literal sits beside a key variable. */
 const OTHER_ROUTER_KEY = "openrouter-key-not-jevs";
@@ -88,6 +88,16 @@ function escalations(storePath) {
   const db = new DatabaseSync(storePath, { readOnly: true });
   try {
     return db.prepare("SELECT record FROM tasks").all().map((row) => JSON.parse(row.record).state?.outcome?.result?.escalation?.kind).filter(Boolean);
+  } finally {
+    db.close();
+  }
+}
+
+/** The failure messages the run's ended tasks hold, from its released store. */
+function failures(storePath) {
+  const db = new DatabaseSync(storePath, { readOnly: true });
+  try {
+    return db.prepare("SELECT record FROM tasks").all().map((row) => JSON.parse(row.record).state?.outcome?.error?.message).filter(Boolean);
   } finally {
     db.close();
   }
@@ -376,4 +386,59 @@ test("with no decision key, Jev is unavailable and the reason names each way to 
   assert.deepEqual([offer.id, offer.available, offer.note], ["jev", false, undefined]);
   for (const name of ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL"]) assert.match(offer.reason, new RegExp(name), offer.reason);
   assert.match(offer.reason, /openrouter\.ai/, offer.reason);
+});
+
+test("a node naming a decision provider this server does not run is refused before the run, by name, and never sent to Jev", async (t) => {
+  const seen = await withCanary(t);
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [{ ...judge, provider: "parallel" }, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "failed", JSON.stringify(run));
+  assert.match(failures(join(data, "runs", runId, "store", "run.sqlite")).join("\n"), /judge node "coi" names the decision provider parallel, which this host does not have/);
+  assert.deepEqual(await seen(), [], "Jev was never asked in its place");
+});
+
+test("a node's timeoutMs bounds its decision: with Jev never answering, the request is cut at the node's bound and the run escalates it as interrupted", async (t) => {
+  await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_HANG = "1";
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [{ ...judge, provider: "jev", timeoutMs: 200 }, probe()]);
+  // Jev's own deadline is 30 s: a run that ends well inside it ended on the node's bound.
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 20_000 });
+  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"]);
+});
+
+test("a decision's receipt names the provider that answered it", async (t) => {
+  await withCanary(t);
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${runId}`)).body.error));
+  assert.deepEqual(durableDecisions(join(data, "runs", runId, "store", "run.sqlite")).map((row) => row.provider), ["jev"]);
+});
+
+test("a workflow whose decision cost is unknown and whose model request is priced reads its cost unknown, before and after the server restarts", async (t) => {
+  await withCanary(t);
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const before = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(before.error));
+  assert.equal(durableDecisions(join(data, "runs", runId, "store", "run.sqlite"))[0].cost_usd, null, "Jev reports no cost: the decision's is unknown");
+  const usage = (await api("GET", `/runs/${runId}/timeline?limit=500`)).body.rows.findLast((row) => row.kind === "usage");
+  assert.ok(usage?.usage?.usd > 0, `the model node's request is priced: ${JSON.stringify(usage?.usage)}`);
+  assert.equal(before.cost.usd, null, "the decision's unknown cost is the run's");
+  await closeFirst();
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const after = (await client(next.baseUrl, next.token)("GET", `/runs/${runId}`)).body;
+  assert.equal(after.status, "completed");
+  assert.equal(after.cost.usd, null, "and still after a restart: never the model's cost alone");
 });

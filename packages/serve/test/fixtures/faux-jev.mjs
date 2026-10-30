@@ -11,6 +11,14 @@ export default async function fakeJev(url, init = {}) {
   const auth = new Headers(init.headers).get("authorization");
   const body = JSON.parse(typeof init.body === "string" ? init.body : new TextDecoder().decode(init.body));
   if (process.env.AGENTRUN_TEST_FAUX_JEV_CALLS) appendFileSync(process.env.AGENTRUN_TEST_FAUX_JEV_CALLS, `${JSON.stringify({ pid: process.pid, key_fd: process.env.AGENTRUN_SERVE_DECISION_KEY_FD, path: new URL(String(url)).pathname, authorized: auth === `Bearer ${CANARY}`, questions: Object.keys(body.questions ?? {}) })}\n`);
+  // AGENTRUN_TEST_FAUX_JEV_HANG: every call is received and never answered; it ends only when its request is aborted.
+  if (process.env.AGENTRUN_TEST_FAUX_JEV_HANG) {
+    return new Promise((_, reject) => {
+      const abort = () => reject(init.signal.reason ?? new DOMException("aborted", "AbortError"));
+      if (init.signal?.aborted) abort();
+      else init.signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
   // AGENTRUN_TEST_FAUX_JEV_STATUS: every call is received, then fails with that status (a 503 after sending).
   const failWith = Number(process.env.AGENTRUN_TEST_FAUX_JEV_STATUS);
   if (failWith) return new Response(JSON.stringify({ detail: "unavailable" }), { status: failWith, headers: { "content-type": "application/json" } });
