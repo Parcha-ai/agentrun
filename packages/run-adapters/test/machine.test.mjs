@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { childEnv, confined, INHERITED_ENV, openLocalMachine, processAlive, startChild } from '@parcha/agentrun-kernel/host';
+import { childEnv, confined, INHERITED_ENV, openLocalMachine, processAlive, startChild, watchClose } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'kernel-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -295,4 +295,20 @@ test("a box that fails to start after it was recorded is reaped, and the close w
   assert.throws(() => machine.start({ command: '/bin/true' }), /the spawn failed/);
   await assert.rejects(machine.close(), /box_not_empty: the box still holds 1 process after its reap \(counted by pidns\)/);
   assert.deepEqual(reaped, ['box-failed'], 'the close waited for the reap of the failed start');
+});
+
+test("watchClose fails a drive by its machine's failed close, never the next drive, and the close itself still rejects", async () => {
+  let fails = true;
+  const watched = watchClose(async () => ({ close: async () => { if (fails) throw new Error('box_not_empty: the box still holds 1 process'); } }));
+  // The harness closes in a finally and goes on; its drive returns as if clean.
+  const first = await watched.acquire();
+  await assert.rejects(watched.drive((async () => { await assert.rejects(first.close(), /box_not_empty/, 'the close still rejects'); return 'done'; })()), /box_not_empty/);
+  // The next drive, whose close is clean, is clean: the last one's failure is not carried over.
+  fails = false;
+  const second = await watched.acquire();
+  assert.equal(await watched.drive((async () => { await second.close(); return 'clean'; })()), 'clean');
+  // A drive that threw keeps its own error, though its close failed too.
+  fails = true;
+  const third = await watched.acquire();
+  await assert.rejects(watched.drive((async () => { await third.close().catch(() => {}); throw new Error('the drive failed'); })()), /the drive failed/);
 });
