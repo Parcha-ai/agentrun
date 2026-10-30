@@ -579,6 +579,35 @@ describe("a stop in progress", () => {
 		});
 
 		if (!setsid)
+			it("a stop that cannot record what it kills still kills the program, fails by name, and writes no stop.done", async () => {
+				const box = await boxOn(false, false);
+				try {
+					const started = getOrThrow(
+						await launch(
+							box,
+							"unrecorded",
+							{ argv: ["sh", "-c", "trap '' TERM; echo $$ > prog.pid; while :; do sleep 1; done"] },
+							context,
+						),
+					);
+					const at = (file: string) => join(started.directory, file);
+					const program = Number(await until("the program's id", async () => fileIn(box, "prog.pid")));
+					// A record the stop cannot write: a directory where its file goes (a mv onto it moves the file inside).
+					mkdirSync(at("stop.killed"));
+					const stopped = await launchStop(box, started.launch, { graceMs: 300 }, context);
+					expect(stopped.ok ? "stopped" : stopped.error.message).toMatch(
+						/the stop could not record what it killed/,
+					);
+					expect(existsSync(at("stop.done"))).toBe(false);
+					expect(readFileSync(at("state"), "utf8")).toContain('"phase":"stopping"');
+					// Gone, or a zombie its new parent has yet to reap: never frozen and left.
+					await until("the program killed", async () => (/^ [^Z]/.test(statOf(program)) ? undefined : true));
+				} finally {
+					await box.destroy(context);
+				}
+			});
+
+		if (!setsid)
 			it("a stop that takes over a failed one finds what it killed: it fails while a recorded process lives, ends once it is gone, and never touches an id another process has taken since", async () => {
 				const box = await boxOn(false, false);
 				// A process of the test's own, written down under another start: the id a recorded process left, taken since.

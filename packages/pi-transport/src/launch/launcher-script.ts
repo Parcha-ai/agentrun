@@ -361,8 +361,16 @@ end_program() {
     # once the runner is gone, and a process that has since taken one of the ids has another start and is never touched.
     if alive "$pid" "$(rd ticks.$n)"; then
       kill -s STOP "$pid" 2>/dev/null
-      for c in $pid $(descendants "$pid" STOP); do echo "$c $(started "$c")"; done > "$D/stop.killed.$$"
-      mv "$D/stop.killed.$$" "$D/stop.killed"
+      list=$(for c in $pid $(descendants "$pid" STOP); do echo "$c $(started "$c")"; done)
+      printf '%s\n' "$list" > "$D/stop.killed.$$" 2>/dev/null && mv "$D/stop.killed.$$" "$D/stop.killed" 2>/dev/null
+      # A record that does not read back (a full disk, a failed mv) would leave a later stop nothing to find: what was just
+      # read is killed all the same, and the stop fails.
+      if [ "$(cat "$D/stop.killed" 2>/dev/null)" != "$list" ]; then
+        rm -f "$D/stop.killed.$$"
+        printf '%s\n' "$list" | while read -r c t; do kill -s KILL "$c" 2>/dev/null; done
+        failed="the program's processes were killed, but the stop could not record what it killed in $D/stop.killed. The stop is not done; a later stop takes it over."
+        return 1
+      fi
     fi
     for c in $(recorded); do kill -s KILL "$c" 2>/dev/null; done
   fi
@@ -377,6 +385,7 @@ end_program() {
     [ -n "$left" ] || return 0
     sleep $STEP
   done
+  failed="the program did not end:$left still there after its kill. The stop is not done; a later stop takes it over."
   return 1
 }
 
@@ -394,7 +403,7 @@ recorded() {
 stop_end() {
   if ! end_program; then
     end_launcher
-    echo "the program did not end:$left still there after its kill. The stop is not done; a later stop takes it over."
+    echo "$failed"
     exit 1
   fi
   end_launcher
@@ -1065,6 +1074,8 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"nm",
 	"unended",
 	"killed",
+	"list",
+	"failed",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */
