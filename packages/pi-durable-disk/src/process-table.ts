@@ -229,10 +229,20 @@ function argumentsListing(run: CommandRunner): Map<number, string> {
 const MARK_READS = 3;
 
 /** The table on macOS: `ps` and `sysctl`, through `run` (for tests). */
-/** Whether a `ps -E` line shows an environment after one of the given readings of its process's arguments: false when
- *  it shows none after them, or starts with neither (it cannot be told, and is read again). */
+/** Whether a `ps -E` line shows an environment after its process's arguments, given the readings of those arguments taken
+ *  around it: what follows the LONGEST reading the line starts with (all of it, or up to a space) must be one or more
+ *  NAME=value words. False, so the line is read again, when nothing follows that reading (the line is a reading itself:
+ *  arguments an exec added are not an environment), when what follows is not all NAME=value words, and when the line
+ *  starts with neither reading (a second exec between the reads): none of those can be told. */
 function showsEnvironment(text: string, readings: readonly (string | undefined)[]): boolean {
-  return readings.some((args) => args !== undefined && text.startsWith(`${args} `) && text.slice(args.length + 1).trim() !== "");
+  let longest: string | undefined;
+  for (const args of readings) {
+    if (args === undefined || !(text === args || text.startsWith(`${args} `))) continue;
+    if (longest === undefined || args.length > longest.length) longest = args;
+  }
+  if (longest === undefined) return false;
+  const rest = text.slice(longest.length).split(/\s+/).filter(Boolean);
+  return rest.length > 0 && rest.every((word) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
 }
 
 export function psTable(run: CommandRunner = runCommand): ProcessTable {

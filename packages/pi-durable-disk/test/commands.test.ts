@@ -670,6 +670,29 @@ describe("command records, from a scripted ps (macOS)", () => {
     assert.equal(other.counted.reads, 1);
   });
 
+  it("arguments an exec added are never taken for an environment: a -E line that is a reading of its arguments, or shows more arguments after one, is read again in the window", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Each re-execs, so its arguments read differently before and after its first -E listing, which shows no environment
+    // yet; from the second read on the line is stable and shows the mark.
+    for (const [pid, argv, first] of [
+      // `worker` re-execs as `worker --child`, and its first -E line is the longer reading alone.
+      [4940, ["worker", "worker --child"], "worker --child"],
+      // The added argument looks like an environment word.
+      [4941, ["worker", "worker FOO=1"], "worker FOO=1"],
+      // The line holds a third reading, which ends in more arguments after the longer one.
+      [4942, ["worker", "worker x", "worker x --child"], "worker x --child"],
+      // The reverse order: the longer reading first, and the line is that reading.
+      [4943, ["worker --child", "worker"], "worker --child"],
+    ] as const) {
+      const last = argv[argv.length - 1]!;
+      const options = { argv: { [pid]: [...argv] }, envReads: { [pid]: [first, `${last} LANG=C ${word}`] } };
+      const { run, counted } = countingEnvironments(scriptedPs(() => [[pid, 1, pid, 5]], { [pid]: `${last} LANG=C ${word}\n` }, options));
+      assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [pid], first);
+      assert.equal(counted.reads, 2, first);
+    }
+  });
+
   it("a -E line of this uid that starts with neither reading of its arguments (a second exec between the reads) cannot be told: it is read again in the window, never taken for unmarked at once, even when it shows an environment", () => {
     const token = randomUUID();
     const word = `${COMMANDS_MARK}=${token}`;
