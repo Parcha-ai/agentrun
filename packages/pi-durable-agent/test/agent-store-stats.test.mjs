@@ -46,6 +46,23 @@ test("stats counts runs by state and sums only the known costs: an unknown cost 
   store.close();
 });
 
+test("a run opened again keeps its last cost on its row while it runs: that cost is out of date, so the run counts as unknown, never summed", async () => {
+  const dir = await scratch();
+  const store = openStore(dir);
+  store.createAgent({ name: "Chat", id: "chat" });
+  await store.commitRevision("chat", A, { setCurrent: true });
+  const first = await store.startRun({ agent: "chat" });
+  store.carryBack(first.runId, { state: "completed", costUsd: 0.4 });
+  const second = await store.startRun({ agent: "chat" });
+  store.carryBack(second.runId, { state: "completed", costUsd: 0.25 });
+  store.reopenRun(first.runId);
+  assert.deepEqual([store.readRun(first.runId).state, store.readRun(first.runId).costUsd], ["running", 0.4], "the row keeps the cost of its last end");
+  const stats = store.stats();
+  assert.deepEqual(stats.cost, { usd: 0.25, known: 1, unknown: 1 });
+  assert.deepEqual(stats.running, [first.runId]);
+  store.close();
+});
+
 test("a store where every cost is unknown answers null for the total, never 0", async () => {
   const { store } = await seeded(["alpha"], [["alpha", "completed", null], ["alpha", "running", null], ["alpha", "failed", null]]);
   assert.deepEqual(store.stats().cost, { usd: null, known: 0, unknown: 3 });
