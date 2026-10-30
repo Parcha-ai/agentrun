@@ -174,8 +174,11 @@ test("on a server whose box passed its probe, a claude-agent run's own process s
   assert.equal((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent").native_tools, false);
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
-  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  const ended = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 }).then(() => undefined, (error) => error);
+  // The property first, on every request the run's CLI made, so a run that gets that far fails on it by the tools' names;
+  // then that the run completed.
   const offered = [...new Set(fake.messages().flatMap((m) => (m.body?.tools ?? []).map((tool) => tool.name)))];
   assert.deepEqual(offered.filter((name) => !name.startsWith("mcp__")), [], `the run's CLI is offered none of its own tools: ${offered.join(", ")}`);
+  if (ended) throw ended;
   assert.equal(existsSync(join(data, "runs", run.body.run_id, "box.json")), false, "the run built no box for its CLI");
 });
