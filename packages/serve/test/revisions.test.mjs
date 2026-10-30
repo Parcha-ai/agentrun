@@ -81,6 +81,14 @@ test("PUT definition takes the contract's body too: the definition itself, with 
   const elsewhere = await api("PUT", "/agents/contract/definition", { ...body, id: "else", version: 3 }, { "if-match": etag });
   assert.deepEqual([elsewhere.status, elsewhere.body.error?.fields?.map((f) => f.field)], [422, ["definition.id"]]);
   assert.equal(await revisions(), 2, "only the one edit was written");
+  // Any version past the current one, as the contract allows: the same definition saved again is a new revision, and
+  // a version further on is taken, the revision numbered as this server numbers them (the next).
+  const resaved = await api("PUT", "/agents/contract/definition", { ...body, version: 3 }, { "if-match": etag });
+  assert.equal(resaved.status, 200, JSON.stringify(resaved.body));
+  assert.deepEqual([resaved.body.definition.version, await revisions()], [3, 3], "the same definition at a later version is written");
+  const jumped = await api("PUT", "/agents/contract/definition", { ...body, version: 9, instructions: "Further on." }, { "if-match": resaved.headers.get("etag") });
+  assert.equal(jumped.status, 200, JSON.stringify(jumped.body));
+  assert.deepEqual([jumped.body.definition.version, jumped.body.definition.instructions, await revisions()], [4, "Further on.", 4], "a version further on is taken, numbered as the next");
 });
 
 test("the served document takes exactly one of PUT definition's two bodies: the contract's, or this server's {definition, skills?, note?}; never both, never neither", async (t) => {
