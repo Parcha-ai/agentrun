@@ -111,10 +111,17 @@ test("the CLI drops node:sqlite's ExperimentalWarning only: another warning stil
     await sleep(50);
   }
   assert.doesNotMatch(server.seen.err, /ExperimentalWarning: SQLite/, "node:sqlite's warning printed");
-  // The library an embedder imports installs no filter: its process prints node:sqlite's warning as node does.
-  const library = spawn(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});`], { stdio: ["ignore", "ignore", "pipe"] });
-  let err = "";
-  library.stderr.on("data", (chunk) => (err += chunk));
-  await new Promise((resolve) => library.once("exit", resolve));
-  assert.match(err, /ExperimentalWarning: SQLite/);
+  // The library an embedder imports installs no filter: its process prints node:sqlite's warning exactly when node itself
+  // does (Node 22 prints one on import; Node 24 prints none), read against a control that imports node:sqlite alone.
+  const stderrOf = async (code) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "pipe"] });
+    let err = "";
+    child.stderr.on("data", (chunk) => (err += chunk));
+    await new Promise((resolve) => child.once("exit", resolve));
+    return err;
+  };
+  const control = await stderrOf('await import("node:sqlite");');
+  const library = await stderrOf(`await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});`);
+  const sqlite = /ExperimentalWarning: SQLite/;
+  assert.equal(sqlite.test(library), sqlite.test(control), `node:sqlite's warning: node alone ${sqlite.test(control) ? "prints" : "prints none"}, the library entry ${sqlite.test(library) ? "prints" : "prints none"}: ${JSON.stringify(library)}`);
 });
