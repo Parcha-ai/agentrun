@@ -74,9 +74,11 @@ function base64Cores(bytes: Buffer): string[] {
   return [0, 1, 2].map((lead) => Buffer.concat([Buffer.alloc(lead), bytes]).toString("base64").slice(Math.ceil((8 * lead) / 6), Math.floor((8 * (lead + bytes.length)) / 6)));
 }
 
-/** `bytes` percent-encoded as encodeURIComponent writes a string, lowercased: built from the bytes, so a string no URI
- *  encoder takes (a lone surrogate) never throws. */
-const uriComponent = (bytes: Buffer) => [...bytes].map((byte) => (/[A-Za-z0-9\-_.!~*'()]/.test(String.fromCharCode(byte)) && byte < 0x80 ? String.fromCharCode(byte) : `%${byte.toString(16).padStart(2, "0")}`)).join("").toLowerCase();
+/** The bytes encodeURIComponent leaves as they are: A-Z a-z 0-9 - _ . ! ~ * ' ( ). */
+const UNRESERVED = new Set(Buffer.from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"));
+/** `bytes` percent-encoded as encodeURIComponent writes a string, lowercased: built from the UTF-8 bytes, so a string no
+ *  URI encoder takes (a lone surrogate, read as U+FFFD) never throws. */
+const uriComponent = (bytes: Buffer) => [...bytes].map((byte) => (UNRESERVED.has(byte) ? String.fromCharCode(byte) : `%${byte.toString(16).padStart(2, "0")}`)).join("").toLowerCase();
 
 /** How `value` may be written down: `exact` as it is or JSON-escaped; from `MIN_ENCODED` bytes on, `folded` (hex and
  *  percent-encoding, matched in any case) and `base64` (base64 and base64url at every offset, matched with whitespace

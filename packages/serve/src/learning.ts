@@ -83,30 +83,15 @@ export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T
   };
 }
 
-/** What a learning run seeded from `base` is told about saving what it learned: where its working copy is, its memo,
- *  a note as pi-agent-learn's renderLearning writes one (so parseLearning reads it back), and the paths a harvest takes
- *  (agentrun-learn's layout). */
-export function learningInstructions(runId: string, base: string): string {
+/** What a learning run is told about saving what it learned: where its working copy is, its memo, `note` (a whole note
+ *  as the learning loop writes one: RunLearning's `note`), and the paths a harvest takes (agentrun-learn's layout). */
+export function learningInstructions(runId: string, note: string): string {
   return [
     "<saving-learning>",
     `Your learning repository is checked out at ${WORKING_COPY}. Save what you learned there with your file tools; a file tool your definition does not name works there only (read reaches ${SEEDED_NOTES} too). Once this run ends, the server commits what you changed there to the branch runs/${runId} for review; nothing else you write is kept.`,
     `- Your memo: ${WORKING_COPY}/memos/${runId}.md. Keep its front matter (the server writes it) and add, in this order, ## What happened, ## What I learned, ## What could be better, and ## Proposed changes, which lists every path you changed. A memo you leave as it is proposes nothing.`,
     `- A note: ${WORKING_COPY}/learnings/L-<id>.md, one general rule, where <id> is 12 lowercase hex digits of your choosing. Write it exactly in this form: type is lesson, fact or correction; scope is all or a short lowercase name of the inputs it applies to; untrusted is true when what it says came from outside this run (a web page); supersedes lists the notes it replaces, ["L-..."], or []. Then add one line for it to ${WORKING_COPY}/learnings/INDEX.md: - L-<id>: <the rule>.`,
-    "<note>",
-    "---",
-    "id: L-<id>",
-    "type: lesson",
-    "scope: all",
-    "status: active",
-    "provenance:",
-    `  runs: ${JSON.stringify([runId])}`,
-    `  sha: ${base}`,
-    "  untrusted: false",
-    "uses: 0",
-    "supersedes: []",
-    "---",
-    "<the rule, in one or two sentences>",
-    "</note>",
+    `<note>\n${note.trimEnd()}\n</note>`,
     `- A skill: ${WORKING_COPY}/.agents/skills/<name>/SKILL.md. A workflow draft: ${WORKING_COPY}/workflows/<name>/workflow.json with its README.md.`,
     "- AGENTS.md and agent.json are your rules and definition, never changed here; any other path is left out.",
     "Never put names, ids or data from this case, or any key, token or password, in these files: a change that holds one is refused whole.",
@@ -442,7 +427,11 @@ export async function catchUp(data: string, agents: StoreAccess, log: (line: str
 
 /** What a learning run's process adds: the `<learned>` section, the skills the agent wrote (their files, under the
  *  run's work), and the hook that journals the seed and lays out the working copy before the run resumes. */
-export type RunLearning = { extension: Extension; skillFiles: string[]; base: string; beforeResume(run: BeforeResume): Promise<void> };
+export type RunLearning = { extension: Extension; skillFiles: string[]; note: string; beforeResume(run: BeforeResume): Promise<void> };
+
+/** The id and the rule a note the instructions show holds in place of a run's own. */
+const NOTE_ID = "L-000000000000";
+const NOTE_RULE = "<the rule, in one or two sentences>";
 
 /**
  * For the run in `where`, of agent `agentId`: the commit it starts from, which is the one its store journaled when it
@@ -476,7 +465,8 @@ export async function runLearning(where: AppContext, agentId: string, ownSkills:
   return {
     extension,
     skillFiles,
-    base: sha,
+    // Rendered by the learning loop's own writer, so what a run is shown is what a later run reads back.
+    note: learn.renderLearning({ id: NOTE_ID, type: "lesson", scope: "all", status: "active", provenance: { runs: [runId], sha, untrusted: false }, uses: 0, supersedes: [], text: NOTE_RULE }).replace(`id: ${NOTE_ID}`, "id: L-<id>"),
     beforeResume: async ({ harness }) => {
       await learn.seedLearning({ repo, ref: sha, target: harness as never, into: where.work });
       if (existsSync(copy)) return;
