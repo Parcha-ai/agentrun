@@ -20,6 +20,7 @@ import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { type BoxFactory, type BoxView, boxConfig, cgroupDelegation, NO_BOX, resolveBox, UNSANDBOXED_BANNER } from "./box/config.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
@@ -88,6 +89,9 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** How the host's box is made (4a's bwrapBox, or a provider's), for AGENTRUN_BOX's setting. None: no box, so the box
+   *  reads as unavailable and runs get no tools of their harness's own. */
+  boxFactory?: BoxFactory;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
@@ -148,7 +152,7 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
+export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env), box: BoxView = NO_BOX) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -157,6 +161,9 @@ export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = max
     runtimes: ["pi-durable-disk"],
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
     harnesses,
+    /** Where runs' harness tools would run: the box's mode as its probe proved it (unavailable with a named error when
+     *  it failed), whether each run gets its own cgroup, and where the box may reach. */
+    box,
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
@@ -255,10 +262,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
-  const caps = capabilities(env, maxRuns, await harnessOffers(env));
+  // The box, before anything listens: a setting this server does not know, or a shared server's cgroup subtree not
+  // delegated to it, stops the start; a box that is missing or fails its probe does not, and reads as unavailable.
+  const boxSettings = boxConfig(process.env);
+  const undelegated = boxSettings.cgroup === undefined ? undefined : await cgroupDelegation(boxSettings.cgroup);
+  if (undelegated) throw new Error(`AGENTRUN_BOX_CGROUP names a cgroup subtree this server cannot use (${undelegated}): a shared server never runs runs uncapped. Delegate the subtree to this server's user, or unset it to run single-user.`);
+  const { view: boxView } = await resolveBox(boxSettings, options.boxFactory, boxSettings.cgroup !== undefined);
+  if (boxView.mode === "unsandboxed") process.stderr.write(`${UNSANDBOXED_BANNER}\n`);
+  const caps = capabilities(env, maxRuns, await harnessOffers(env), boxView);
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, boxView, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
