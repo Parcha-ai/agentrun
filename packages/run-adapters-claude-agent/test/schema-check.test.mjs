@@ -23,7 +23,7 @@ after(() => rmSync(ROOT, { recursive: true, force: true }));
 
 // The scripted SDK's "CLI" is a node child, a stand-in no pin is checked against (tests only): check() needs no CLI.
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
-const adapter = claudeAgentAdapter({ sdk: fakeSdk(), standIn: { command: process.execPath }, model: 'claude-sonnet-5-5', provider: { origin: 'https://x.invalid', credential: () => 'x' }, sessionsDir: ROOT });
+const adapter = claudeAgentAdapter({ builtins: false, sdk: fakeSdk(), standIn: { command: process.execPath }, model: 'claude-sonnet-5-5', provider: { origin: 'https://x.invalid', credential: () => 'x' }, sessionsDir: ROOT });
 const spec = (inputSchema) => ({ key: 'k', label: 'l', system: [], context: 'fresh', tools: [{ name: 'lookup', description: 'Look.', inputSchema, replay: 'safe', call: async () => ({ text: '' }) }] });
 const pointers = (problems) => problems.map((p) => (p.startsWith('lookup: ') ? p.slice('lookup: '.length).split(': ')[0] : `(not by tool) ${p}`));
 
@@ -51,7 +51,7 @@ test('the pinned CLI: a run with one tool whose root is not an object is refused
   let main = 0;
   const provider = await fakeAnthropic({ reply: (r) => (r.model === 'claude-sonnet-5-5' && main++ === 0 ? { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } } : { text: 'done' }) });
   t.after(() => provider.close());
-  const real = claudeAgentAdapter({ model: 'claude-sonnet-5-5', provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: mkdtempSync(join(ROOT, 'run-')) });
+  const real = claudeAgentAdapter({ builtins: false, model: 'claude-sonnet-5-5', provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: mkdtempSync(join(ROOT, 'run-')) });
   const good = { name: 'lookup', description: 'Look.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => ({ text: 'found' }) };
   const bad = { name: 'either', description: 'One of two.', inputSchema: { anyOf: [{ type: 'object', properties: { a: { type: 'string' } } }, { type: 'object', properties: { b: { type: 'string' } } }] }, replay: 'safe', call: async () => ({ text: 'ok' }) };
   const runNode = createHarnessRunner(real, { store: memorySessionStore(), tools: [good, bad], maxTurns: 6, timeoutMs: 100_000 });

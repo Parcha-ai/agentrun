@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-claude-code/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one; a tool's images go to the model with its text; a refusal the CLI made reaches the host only once its tool_result entry is in the log.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's seam; the PreToolUse hook is always installed and, with the built-ins off, denies every call but the session's own tools; message prefixes and log tags name the Claude Agent adapter; comments name no other product; its comments' references (docs/workspaces.md and its sections, the P0 findings, harness-world and its sandbox package) are durable-harness's own; comments that cite CLI 2.1.296 describe durable-harness's pin, and this copy runs 2.1.286, whose tool set test/tool-off.test.mjs pins; 2026-10-28: the session's tools are served by host/tool-server.ts (each JSON Schema as given, arguments as sent), not through the SDK's zod tool(), and the CLI is told the longest description so it cuts none; an optional `skills` (a local plugin and the names enabled in it) turns the Skill tool on for those skills alone; the PreToolUse hook takes a session skill by its bare name too (unless the CLI keeps that name), and rewrites it to the plugin-qualified one; a tool's images go to the model with its text; a refusal the CLI made reaches the host only once its tool_result entry is in the log.; 2026-10-29: a `builtinAround` option wraps each built-in call (BuiltinCalls' `around`), a call it refused is denied as not run, and a session skill's call is marked before it is allowed, as every other allowed call is.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -21,6 +21,7 @@ import {
   NativeJournal,
   openTurn,
   placeSubmissions,
+  type BuiltinCallsOptions,
   type ProviderTool,
   recoveryNote,
   restartEvent,
@@ -199,6 +200,11 @@ export interface ClaudeCodeHarnessOptions {
    * `claudeBuiltinReplay` (reads safe).
    */
   builtinReplay?: Record<string, ReplayPolicy> | ((name: string) => ReplayPolicy);
+  /**
+   * Run each built-in call inside this wrapper (BuiltinCalls' `around`): it may refuse the call before letting it go
+   * (the call is denied, as not run), or let it go with `run`. The host's adapter counts the call in flight here.
+   */
+  builtinAround?: BuiltinCallsOptions['around'];
   /** Provider-hosted tools the model may use (`web_search`, `web_fetch`); default none; refused with `network: 'deny-all'`. */
   providerTools?: readonly ProviderTool[];
   /**
@@ -510,7 +516,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           beforeNever: ({ callId }) => store.barrier(callId, barrierMs),
         });
         // The built-ins: each call an intent before it runs, its outcome after (the hooks below).
-        const builtins = new BuiltinCalls(ctx, { replay, beforeNever: ({ callId }) => store.barrier(callId, barrierMs), live: true });
+        const builtins = new BuiltinCalls(ctx, { replay, beforeNever: ({ callId }) => store.barrier(callId, barrierMs), live: true, ...(options.builtinAround ? { around: options.builtinAround } : {}) });
         /** Bash calls whose timeout the invocation clamped: their outcome, if it timed out, says so. */
         const clamped = new Map<string, number>();
         const bridged = (name: string) => name.startsWith(`mcp__${MCP_SERVER}__`);
@@ -577,6 +583,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                       const asked = input.skill;
                       const name = typeof asked === 'string' ? skills.names.find((n) => n === asked || (!CLAUDE_AGENT_CLI_SKILL_NAMES.has(asked) && n.slice(n.indexOf(':') + 1) === asked)) : undefined;
                       if (name === undefined) return deny(`Not run: ${JSON.stringify(String(asked).slice(0, 80))} is not one of this session's skills.`);
+                      // Marked before it is allowed, as every other allowed call is: its failure is its own, never the CLI's refusal.
+                      await transcript.beforeCall(hook.tool_use_id, hook.tool_name);
                       return name === asked ? allow() : allow({ ...input, skill: name });
                     }
                     if (!builtinsOn) return deny("Not run: this session's only tools are its own.");
@@ -603,6 +611,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
                     await transcript.beforeCall(hook.tool_use_id, hook.tool_name);
                     const start = await builtins.begin({ callId: hook.tool_use_id, name: hook.tool_name, input: updated ?? hook.tool_input });
                     if (start.run) return allow(updated);
+                    // Its wrapper refused it before it ran (the session is pausing): it never ran.
+                    if (start.refused) return deny(`Not run: ${start.result.text}`);
                     // The log already has this call's outcome (it ran before a crash): never again.
                     return deny(`Not run again: this call already ran in this session. Its recorded result: ${start.result.text}`);
                   } catch (err) {

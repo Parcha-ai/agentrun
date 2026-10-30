@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/builtins.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only; a call begun twice (the same execution delivered twice) is reserved before the first await, and the second begin waits for its outcome (or the drive's stop) instead of running it again.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only; a call begun twice (the same execution delivered twice) is reserved before the first await, and the second begin waits for its outcome (or the drive's stop) instead of running it again.; 2026-10-29: a call its wrapper failed before letting it run is answered `refused`, so a hook can tell it from one the log already has an outcome for.
 import { type DriveContext, EffectFailure, EffectInterrupted, Fatal, type HostToolIO, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
 import { clip, failureText, toolKey, type ToolResult } from './tools.js';
 
@@ -83,8 +83,9 @@ export interface BuiltinCallsOptions {
 export type BuiltinStart =
   /** The intent is committed: let the call run. */
   | { run: true }
-  /** The log already has an outcome for this call id: do not run it, answer with this. */
-  | { run: false; result: ToolResult };
+  /** The log already has an outcome for this call id: do not run it, answer with this. `refused`: the call never ran,
+   *  because its wrapper (`around`) failed it before letting it go. */
+  | { run: false; result: ToolResult; refused?: true };
 
 interface Open {
   settle: (outcome: { ok: true; text: string } | { ok: false; error: Error }) => void;
@@ -226,7 +227,7 @@ export class BuiltinCalls {
     // The wrapper failed the call before letting it run: answer with that failure.
     if (around && !ran) {
       const error = after?.status === 'failed' && after.error ? failureText(after.error) : 'the tool failed before it ran';
-      return { run: false, result: { text: error, isError: true } };
+      return { run: false, result: { text: error, isError: true }, refused: true };
     }
     return { run: true };
   }

@@ -35,6 +35,7 @@ async function claude(t, { script = [], sdk: sdkOptions = {}, ...extra } = {}) {
   t.after(() => provider.close());
   const sdk = fakeSdk({ remoteModel: true, mirrorLagMs: 10, script, ...sdkOptions });
   const adapter = claudeAgentAdapter({
+    builtins: false,
     model: 'claude-test',
     provider: { origin: provider.url, credential: () => 'provider-secret' },
     price: (_model, usage) => (usage.input + usage.output) / 1e6,
@@ -77,7 +78,8 @@ test('a DSL agent node runs on the Claude Agent adapter: the host tool, then sub
 
 test("the CLI is started with the host's tools only, no settings, no sign-in and no provider key", async (t) => {
   const seen = [];
-  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push(options) } });
+  // A session with the CLI's own tools off (they are on by default): its only tools are the host's.
+  const { adapter } = await claude(t, { script: ['call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push(options) }, builtins: false });
   const lookup = { name: 'lookup', description: 'Look.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'x' }) };
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [lookup] });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMAS.Out, tools: ['lookup'] }), { answer: 'ok' });
@@ -128,7 +130,7 @@ test("the Skill gate: a session skill by its qualified name is allowed as asked,
 });
 
 test("a host header the proxy would refuse is refused when the adapter is made, by the adapter, naming the header", () => {
-  const make = (headers) => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k', headers }, sdk: fakeSdk(), standIn: { command: process.execPath } });
+  const make = (headers) => claudeAgentAdapter({ builtins: false, model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k', headers }, sdk: fakeSdk(), standIn: { command: process.execPath } });
   assert.throws(() => make({ Authorization: 'x' }), /^Error: agentrun-harness-claude: provider\.headers: .*authorization/i);
   assert.throws(() => make({ 'x-tags': 'a\r\nb' }), /agentrun-harness-claude: provider\.headers: /);
   assert.doesNotThrow(() => make({ 'x-litellm-tags': 'job:1' }));
@@ -163,7 +165,8 @@ test("a call to anything but the session's own tools is denied by the gate and n
   const canary = (name) => join(dir, `canary-${name}`);
   const input = (name) => (name === 'Bash' ? { command: `touch ${canary(name)}` } : name === 'Write' ? { file_path: canary(name), content: 'x' } : { file_path: canary(name), url: 'https://example.com' });
   const script = [...names.map((name) => `builtin ${name} ${JSON.stringify(input(name))}`), 'call submit {"value":{"answer":"ok"}}'];
-  const { adapter } = await claude(t, { script, sdk: { onDecision: (d) => decided.push(d) } });
+  // A session with the CLI's own tools off (they are on by default).
+  const { adapter } = await claude(t, { script, sdk: { onDecision: (d) => decided.push(d) }, builtins: false });
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 40 });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: [], user: 'Go.', schema: SCHEMAS.Out, tools: [] }), { answer: 'ok' });
   assert.deepEqual(decided.map((d) => [d.name, d.decision]), names.map((name) => [name, 'deny']));

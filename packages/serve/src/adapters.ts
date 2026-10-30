@@ -85,6 +85,10 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
   return { model: { provider: named.slice(0, slash), modelId: named.slice(slash + 1) } };
 }
 
+/** What serve gives every harness session it opens: no tools of the harness's own (its shell, its file tools) until runs
+ *  get a confined box, since here they would run as serve's own user. Every adapter serve builds takes it, here only. */
+export const SERVE_SESSION_OPTIONS = Object.freeze({ builtins: false });
+
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
  *  only by the person who wants it (its SDK is an optional peer). */
 const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
@@ -96,7 +100,7 @@ async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Ag
   const provider = claudeProvider(env, needs.model);
   try {
     // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once).
-    return claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider, price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}) });
+    return claude.claudeAgentAdapter({ ...SERVE_SESSION_OPTIONS, model: { default: needs.model.modelId }, provider, price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);

@@ -42,7 +42,7 @@ async function node(t, { skills, call }) {
     return { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } };
   } });
   t.after(() => provider.close());
-  const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), ...(skills ? { skills } : {}) });
+  const adapter = claudeAgentAdapter({ builtins: false, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), ...(skills ? { skills } : {}) });
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
   const output = await runNode({ kind: 'agent', label: 'skills', system: ['Answer.'], user: 'Use the skill, then answer ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] });
   const main = provider.messages().filter((r) => r.model === MODEL);
@@ -113,7 +113,7 @@ test("the CLI's own skill names, pinned: each is the CLI's, and every command an
       return { next: async () => { const r = await it.next(); if (r.value?.type === 'system' && r.value?.subtype === 'init') init ??= r.value; return r; }, return: (v) => it.return?.(v) ?? { done: true, value: v } };
     } });
   } };
-  const adapter = claudeAgentAdapter({ sdk, sdkVersion: CLAUDE_AGENT_SDK_VERSION, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'owned-')), 'sessions'), skills: [SKILL] });
+  const adapter = claudeAgentAdapter({ builtins: false, sdk, sdkVersion: CLAUDE_AGENT_SDK_VERSION, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'owned-')), 'sessions'), skills: [SKILL] });
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: names.length + 10, timeoutMs: 220_000 });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'owned', system: ['Answer.'], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
   const last = provider.messages().filter((r) => r.model === MODEL).at(-1)?.body;
@@ -168,7 +168,7 @@ test("after loading a skill, the model reads one of its files with read_skill_fi
     return { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } };
   } });
   t.after(() => provider.close());
-  const adapter = claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), skills: [SKILL] });
+  const adapter = claudeAgentAdapter({ builtins: false, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), skills: [SKILL] });
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), maxTurns: 10, timeoutMs: 100_000 });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'skills', system: ['Answer.'], user: 'Use the skill and its reference, then answer ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] }), { answer: 'ok' });
   const main = provider.messages().filter((r) => r.model === MODEL);
@@ -224,7 +224,7 @@ test('a loaded skill survives a crash: the next process, in a NEW session direct
   const { memorySessionStore: stores } = await import('@parcha/agentrun-kernel/testing');
   const store = stores();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
-  const adapterIn = (dir) => claudeAgentAdapter({ model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir, skills: [SKILL] });
+  const adapterIn = (dir) => claudeAgentAdapter({ builtins: false, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir, skills: [SKILL] });
 
   const died = new AbortController();
   const a = await adapterIn(mkdtempSync(join(ROOT, 'skill-a-'))).open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {} });
