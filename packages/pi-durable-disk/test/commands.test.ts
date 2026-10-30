@@ -656,6 +656,20 @@ describe("command records, from a scripted ps (macOS)", () => {
     assert.equal(counted.reads, 2);
   });
 
+  it("a -E line of this uid whose arguments changed across the read (an exec) and that shows no environment yet is read again in the window, and the mark it then shows counts; another uid's is read once", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Its arguments read `sh -c held` before the -E listing and `sleep 600` after it; its first -E line holds the new
+    // arguments alone, its second its environment too.
+    const options = { argv: { 4910: ["sh -c held", "sleep 600"] }, envReads: { 4910: ["sleep 600", `sleep 600 LANG=C ${word}`] } };
+    const own = countingEnvironments(scriptedPs(() => [[4910, 1, 4910, 5]], { 4910: `sleep 600 LANG=C ${word}\n` }, options));
+    assert.deepEqual(psTable(own.run).snapshot().withMark(COMMANDS_MARK, token), [4910]);
+    assert.equal(own.counted.reads, 2);
+    const other = countingEnvironments(scriptedPs(() => [[4910, 1, 4910, 5]], { 4910: `sleep 600 LANG=C ${word}\n` }, { ...options, ruids: { 4910: process.getuid!() + 1 } }));
+    assert.deepEqual(psTable(other.run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.equal(other.counted.reads, 1);
+  });
+
   it("a -E line of this uid that stays without an environment is unmarked after the window; another uid's is read once", () => {
     const token = randomUUID();
     const rows = () => [[4910, 1, 4910, 5], [4911, 1, 4911, 6]];

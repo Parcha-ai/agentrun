@@ -1,9 +1,9 @@
 // The process table: /proc on Linux, ps and sysctl on macOS. The ps table is read here from a scripted ps, and on Linux
 // also from procps against real processes; only the macOS CI job runs it against a Mac's own ps.
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { procTable, processTable, psTable, type CommandRunner } from "../src/process-table.ts";
@@ -114,8 +114,15 @@ describe("a mark through /proc, when an environment reads empty or unreadable", 
   const MARK = "PI_DURABLE_DISK_COMMANDS";
   const uid = process.getuid?.() ?? 0;
   /** A fake /proc of one process: its status (state, real uid) and an environ answered by `environ()`; counts reads. */
+  /** Each fixture's directory, removed after its test whether it passed or not. */
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
   function oneProcess(pid: number, state: string, ruid: number, environ: () => string, euid = ruid) {
     const root = mkdtempSync(join(tmpdir(), "proc-env-"));
+    roots.push(root);
     mkdirSync(join(root, String(pid)));
     writeFileSync(join(root, String(pid), "status"), `Name:\tcmd\nState:\t${state} (x)\nUid:\t${ruid}\t${euid}\t${euid}\t${euid}\n`);
     writeFileSync(join(root, String(pid), "stat"), `${pid} (cmd) ${state} 1 ${pid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 100 0 0\n`);
@@ -188,8 +195,10 @@ describe("a mark through /proc, when an environment reads empty or unreadable", 
   });
 
   it("a setuid exec of this uid's command (its REAL uid ours, its effective uid another) is judged by the real uid: read in the window", () => {
-    const start = Date.now();
+    // The 20 ms run from the first read, as in (1).
+    let start = 0;
     const { table, reads } = oneProcess(4804, "S", uid, () => {
+      start ||= Date.now();
       if (Date.now() - start < 20) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
       return `${MARK}=tok\0`;
     }, uid + 1);

@@ -264,8 +264,9 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         // arguments changed between the reads (it exec'd) cannot be told marked or not: the three reads are taken again,
         // MARK_READS times in all, and if one still cannot be told this throws, as a failed listing does, so the reap
         // stops and keeps the mark. Unread is never unmarked: the mark would be dropped beside a live command. A process
-        // whose `-E` line does not hold the word is unmarked however its arguments read, so another program that keeps
-        // rewriting its title holds nothing up.
+        // whose arguments changed and whose `-E` line does not hold the word is, if it is another user's, unmarked; if it
+        // is this uid's, read again in the window (inside an exec its line can show the new arguments with no environment
+        // yet), so a program that keeps rewriting its title holds a reap up for the window, never longer.
         withMark(name, value) {
           const word = `${name}=${value}`;
           const uid = process.getuid?.();
@@ -289,6 +290,7 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
               const own = before.get(pid);
               if (own === undefined || after.get(pid) !== own || !text.startsWith(own)) {
                 if (text.includes(word)) unread.push(pid);
+                else if (Number(m[2]) === uid) empty.push(pid);
                 continue;
               }
               const env = environmentOf(own, text, own);
