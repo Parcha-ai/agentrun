@@ -122,7 +122,7 @@ const browserTool: ToolEntry = {
     ]);
     const faux = host.env[FAUX_ENV] ? host.env[FAUX_BROWSER_ENV] : undefined;
     const parts = faux
-      ? ((await import(pathToFileURL(faux).href)) as { default: () => { provider: unknown; driver: unknown } }).default()
+      ? ((await import(pathToFileURL(faux).href)) as { default: (env: NodeJS.ProcessEnv) => { provider: unknown; driver: unknown } }).default(host.env)
       : { provider: (await import("@parcha/pi-browser/providers/browserbase")).browserbaseProvider({ env: host.env }), driver: (await import("@parcha/pi-browser/driver/stagehand")).stagehandDriver() };
     const browser = createBrowserExtension({ provider: () => parts.provider as never, driver: parts.driver as never, evidence: evidenceIn(host.where.work) as never, workspace: () => host.where.work });
     const extension = browser.extension as unknown as Extension;

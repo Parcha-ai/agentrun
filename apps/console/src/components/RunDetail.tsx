@@ -24,7 +24,8 @@ export type RunDetailProps = {
   readFile?: (file: RunFile) => Promise<string>;
   openFile?: RunFile | null;
   actions?: RunActions;
-  onMessage?: (text: string) => void;
+  /** Sends a message; resolves false when it failed, so the composer keeps the draft. */
+  onMessage?: (text: string) => void | boolean | Promise<void | boolean>;
   tab?: Tab;
 };
 type Tab = "report" | "timeline" | "files";
