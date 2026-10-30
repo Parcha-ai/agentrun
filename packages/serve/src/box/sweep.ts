@@ -6,7 +6,7 @@
 // starting is never written off.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BoxRecord, Reaped } from "@parcha/agentrun-adapters/host";
+import type { BoxRecord, Reaped } from "@parcha/agentrun-kernel/host";
 import { readJson, writeDurable } from "../files.js";
 import { BOX_RECORD } from "./record.js";
 
