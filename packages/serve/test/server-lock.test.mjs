@@ -103,13 +103,14 @@ test("the CLI drops node:sqlite's ExperimentalWarning only: another warning stil
   const data = join(dir, "agents");
   // A warning raised once the CLI has loaded (its filter is its first import).
   const late = join(dir, "late-warning.mjs");
-  await writeFile(late, 'setTimeout(() => process.emitWarning("a warning of the test", "TestWarning"), 300);\n');
+  // Another kind of warning, and another ExperimentalWarning than SQLite's: the filter drops SQLite's alone.
+  await writeFile(late, 'setTimeout(() => { process.emitWarning("a warning of the test", "TestWarning"); process.emitWarning("a feature of the test", "ExperimentalWarning"); }, 300);\n');
   const server = await bin(t, data, { env: { NODE_OPTIONS: `--import=${late}` } });
-  for (let i = 0; !/TestWarning: a warning of the test/.test(server.seen.err); i++) {
-    assert.ok(i < 100, `the other warning was not printed: ${server.seen.err}`);
+  for (let i = 0; !(/TestWarning: a warning of the test/.test(server.seen.err) && /ExperimentalWarning: a feature of the test/.test(server.seen.err)); i++) {
+    assert.ok(i < 100, `the other warnings were not printed: ${server.seen.err}`);
     await sleep(50);
   }
-  assert.doesNotMatch(server.seen.err, /ExperimentalWarning/);
+  assert.doesNotMatch(server.seen.err, /ExperimentalWarning: SQLite/, "node:sqlite's warning printed");
   // The library an embedder imports installs no filter: its process prints node:sqlite's warning as node does.
   const library = spawn(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});`], { stdio: ["ignore", "ignore", "pipe"] });
   let err = "";
