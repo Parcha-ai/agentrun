@@ -71,6 +71,12 @@ test("a commit given a date is the same commit from any host: author and committ
   for (const bad of [new Date(Number.NaN), "2026-10-29", 1_700_000_000_000]) {
     await assert.rejects(twoRepo.commitTo("runs/r2", { ...options, date: bad }), (error) => error instanceof GitRemoteError && error.code === "refused" && error.message === "a commit's date must be a valid Date", String(bad));
   }
+  // git takes no date before 1970: one is refused by name, not left for git to fail on, and 1970 itself is a commit.
+  for (const early of [new Date(-1), new Date(-1000)]) {
+    await assert.rejects(twoRepo.commitTo("runs/r2", { ...options, date: early }), (error) => error instanceof GitRemoteError && error.code === "refused" && error.message === "a commit's date must not be before 1970", early.toISOString());
+  }
+  const epoch = await twoRepo.makeCommit({ parent: main, files: { "a.md": "a\n" }, message: "m", date: new Date(0) });
+  assert.match((await rawGit(["cat-file", "-p", epoch], { gitDir: path.join(root, "host-two") })).toString(), /^committer .* 0 \+0000$/m);
 });
 
 test("allowEmpty makes a commit that changes no file, so its message and trailers are the record", async () => {

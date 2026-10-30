@@ -62,8 +62,8 @@ export type CommitOptions = {
   readonly parent?: string;
   /** Make the commit even when `files` change nothing, for a commit whose message and trailers are the record. */
   readonly allowEmpty?: boolean;
-  /** The commit's author and committer date, to the second. Given, the same files, parent, message and trailers make the
-   *  same commit on any host at any time; absent, the clock's. */
+  /** The commit's author and committer date, to the second, from 1970 on (git takes no earlier one). Given, the same
+   *  files, parent, message and trailers make the same commit on any host at any time; absent, the clock's. */
   readonly date?: Date;
   /** A second parent: the commit is a merge of it into the branch, and its tree is still the base's with `files` applied,
    *  never the merged commit's tree. The commit must be here. */
@@ -426,6 +426,8 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
   function dateOf(date: unknown): string | undefined {
     if (date === undefined) return undefined;
     if (!(date instanceof Date) || !Number.isFinite(date.getTime())) throw refused("a commit's date must be a valid Date");
+    // git refuses a negative timestamp.
+    if (date.getTime() < 0) throw refused("a commit's date must not be before 1970");
     return `@${Math.floor(date.getTime() / 1000)} +0000`;
   }
 
