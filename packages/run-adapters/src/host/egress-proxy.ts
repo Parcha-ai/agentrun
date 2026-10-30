@@ -31,9 +31,10 @@ export type EgressLookup = (
 ) => void;
 
 export interface EgressProxyOptions {
-  /** Where the socket is made: a path in the run's directory. A socket there that refuses a connection (its proxy died
-   *  without removing it) is replaced; one that answers is a live proxy's, and the start is refused
-   *  (`egress_socket_in_use`); anything else there is refused and left as it is (`egress_socket_path_taken`). */
+  /** Where the socket is made: a path in the run's directory, which must be on a local file system (never a disk other
+   *  hosts mount, as a network or FUSE file system). A socket there that refuses a connection (its proxy died without
+   *  removing it) is replaced; one that answers is a live proxy's, and the start is refused (`egress_socket_in_use`);
+   *  anything else there is refused and left as it is (`egress_socket_path_taken`). */
   socketPath: string;
   /** Connections open at once (tunnels and forwarded requests), past which a new one is refused. */
   maxTunnels: number;
@@ -288,7 +289,9 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
   });
 
   // A socket already at the path belongs to another proxy while it answers, and is never taken from it. Only one that
-  // refuses a connection is removed; anything that is not a socket is left where it is.
+  // refuses a connection is removed; anything that is not a socket is left where it is. That test holds only on a local
+  // file system, which is why the path must be on one: on a disk shared between hosts, a live proxy's socket on another
+  // host refuses a connection from this one and would be removed.
   const taken = (code: string, what: string) => Object.assign(new Error(`egress proxy: ${socketPath} ${what}`), { code });
   let found: Stats | undefined;
   try {
