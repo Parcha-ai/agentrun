@@ -101,8 +101,14 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
         ignored.push({ path, reason: "the agent's own git directory: never read or run" });
         continue;
       }
-      const stat = await lstat(join(dir, path)).catch(() => undefined);
-      if (!stat) continue;
+      let stat;
+      try {
+        stat = await lstat(join(dir, path));
+      } catch (error) {
+        // Gone since its directory listed it: nothing to read. Anything else leaves what is there unknown.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw new Error(`the working copy's ${path} cannot be read (${(error as NodeJS.ErrnoException).code ?? "error"}): nothing is harvested`);
+      }
       if (stat.isSymbolicLink()) ignored.push({ path, reason: "a symbolic link: never followed" });
       else if (stat.isDirectory() && files.has(path)) throw swapped(path, "a directory", "a file");
       else if (stat.isFile() && dirs.has(path)) throw swapped(path, "a file", "a directory");
