@@ -9,7 +9,7 @@
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
 import { authContextOf, withSecrets } from "./secrets.js";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { BACKGROUND_CONTEXT as BACKGROUND } from "@earendil-works/chord/context";
 import { basename, join, resolve } from "node:path";
 import { createRegistry, type Extension, type Harness, type Tx } from "@earendil-works/pi-durable";
@@ -24,6 +24,7 @@ import { adapterRun } from "./harness-app.js";
 import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
+import { readWorkText } from "./workspace.js";
 
 /** The workflow adapters this host gives a run: model nodes, and calls `via: "tool"` to the table's tools. */
 export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
@@ -31,7 +32,8 @@ export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
 export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
   const skills = await Promise.all(
-    skillNames(skillFiles).map(async (name) => `<skill name="${name}">\n${(await readFile(join(work, ".agents", "skills", ...name.split("/"), "SKILL.md"), "utf8")).trim()}\n</skill>`),
+    // Through no link (workspace.ts): a skill directory, or its SKILL.md, linked out of the workspace is refused.
+    skillNames(skillFiles).map(async (name) => `<skill name="${name}">\n${(await readWorkText(work, [".agents", "skills", ...name.split("/"), "SKILL.md"].join("/"))).trim()}\n</skill>`),
   );
   return [instructions.trim(), ...(skills.length ? ["Your skills follow. Use the one that fits the step you are on.", ...skills] : [])].join("\n\n");
 }

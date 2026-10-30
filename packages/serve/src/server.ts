@@ -1,7 +1,6 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -23,6 +22,7 @@ import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./ru
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
+import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 
 export const CONTRACT = "agentrun.v2/0";
 export const DEFAULT_PORT = 7340;
@@ -479,16 +479,17 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // ---- files ----------------------------------------------------------------------------------------------------------
 
-  async function walk(base: string, dir = "", out: { path: string; size_bytes: number; modified_at: string; content_type: string | null }[] = [], depth = 0): Promise<typeof out> {
-    for (const d of await readdir(join(base, dir), { withFileTypes: true }).catch(() => [])) {
-      if (d.name.startsWith(".") || d.isSymbolicLink() || out.length > FILE_LIST_CAP) continue;
-      const rel = dir ? `${dir}/${d.name}` : d.name;
-      if (d.isDirectory()) depth < 16 && (await walk(base, rel, out, depth + 1));
-      else if (d.isFile()) {
-        const st = await stat(join(base, rel)).catch(() => null);
-        if (st) out.push({ path: rel, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(rel).slice(1).toLowerCase()] ?? null });
-      }
-    }
+  /** The run's files, through no link (workspace.ts): each regular file's own size and time, a dot-name left out. */
+  async function walk(base: string): Promise<{ path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[]> {
+    const out: { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true }[] = [];
+    if (!(await lstat(base).catch(() => null))?.isDirectory()) return out;
+    // work/ unreadable as a whole lists nothing; what the walk could not read in it is left out.
+    await walkWork(base, (path, st, readable) => {
+      if (st.isFile()) out.push({ path, size_bytes: st.size, modified_at: new Date(st.mtimeMs).toISOString(), content_type: TYPES[extname(path).slice(1).toLowerCase()] ?? null, ...(readable ? {} : { unreadable: true }) });
+      return out.length <= FILE_LIST_CAP;
+    }, { skip: (name) => name.startsWith(".") }).catch((error) => {
+      if (!(error instanceof WorkRefused)) throw error;
+    });
     return out;
   }
 
@@ -502,15 +503,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
     if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    let path = join(run.dir, "work");
-    if (!(await lstat(path).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
-    for (const part of parts) {
-      path = join(path, part);
-      const st = await lstat(path).catch(() => null);
-      if (!st || st.isSymbolicLink()) throw new ApiError("not_found", "no such file");
-    }
-    const st = await lstat(path);
-    if (!st.isFile()) throw new ApiError("not_found", "no such file");
+    const work = join(run.dir, "work");
+    if (!(await lstat(work).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
+    // Through no link, held from the open to the last byte (workspace.ts): a name swapped for one is refused, not followed.
+    const opened = await openWorkFile(work, rel).catch((error) => {
+      if (error instanceof WorkRefused && error.reason === "unreadable") throw new ApiError("system_file_forbidden", "This file was created private by a tool in the run's box: this server cannot read it.", { details: { reason: "unreadable" } });
+      return null;
+    });
+    if (!opened) throw new ApiError("not_found", "no such file");
+    const { handle, stats: st } = opened;
     const type = TYPES[extname(rel).slice(1).toLowerCase()] ?? "application/octet-stream";
     const download = url.searchParams.get("download") === "1" || !INLINE.has(type);
     const name = parts.at(-1)!.replace(/[^\w.-]/g, "_");
@@ -522,8 +523,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       ...(type.startsWith("text/html") ? { "content-security-policy": FILE_CSP } : {}),
       ...(download ? { "content-disposition": `attachment; filename="${name}"` } : {}),
     });
-    if (req.method === "HEAD" || st.size === 0) return void res.end();
-    await pipeline(createReadStream(path), res).catch(() => undefined);
+    if (req.method === "HEAD" || st.size === 0) {
+      await handle.close();
+      return void res.end();
+    }
+    await pipeline(handle.createReadStream(), res).catch(() => undefined);
+    await handle.close().catch(() => undefined);
   }
 
   // ---- usage ----------------------------------------------------------------------------------------------------------
