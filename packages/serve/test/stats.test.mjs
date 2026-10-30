@@ -1,0 +1,145 @@
+// GET /v2/stats, this server's own route: counts and cost over every agent and run from the agent store's aggregates.
+// Archived agents and runs are left out of every number but their own counts; an unknown cost is
+// counted, never read as $0; no run's files are opened.
+import assert from "node:assert/strict";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { test } from "node:test";
+import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
+import { schemaProblems } from "./schema-support.mjs";
+import { follow, scratch, serve, startRun } from "./support.mjs";
+
+const at = (i) => new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
+
+/** A data directory whose store holds `agents` (`[id, name]`, one revision each) and `runs` as rows
+ *  (`[agent, state, costUsd | null]`, the i-th started i seconds after the first); `archived` are archived. */
+async function seeded(t, agents, runs, archived = []) {
+  const data = join(await scratch(t), "agents");
+  const store = openStore(data);
+  const revisions = {};
+  for (const [id, name] of agents) {
+    store.createAgent({ name, id });
+    revisions[id] = (await store.commitRevision(id, { kind: "agentic", instructions: "Answer." }, { setCurrent: true })).id;
+  }
+  store.close();
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  db.exec("BEGIN");
+  const insert = db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at, ended_at, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  runs.forEach(([agent, state, cost], i) => insert.run(`run-${i}`, agent, revisions[agent], state, at(i), at(i + 1), cost));
+  db.exec("COMMIT");
+  db.close();
+  const writer = openStore(data);
+  for (const [kind, id] of archived) writer.setArchived(kind, id, true);
+  writer.close();
+  return { data, revisions };
+}
+
+/** The three running buckets partition the running runs not archived, as the store lists them. */
+function assertRunningPartitioned(data, body) {
+  const reader = openStoreReader(data);
+  const running = reader.listRuns().filter((r) => r.state === "running" && !r.archivedAt).length;
+  reader.close();
+  assert.equal(body.runs.active + body.runs.needs_input + body.runs.status_unknown, running, "each running run is in exactly one of active, needs_input and status_unknown");
+}
+
+/** The served document's schema for GET /stats's 200. */
+async function statsSchema(baseUrl) {
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const op = doc.paths["/stats"].get;
+  return { doc, op, schema: op.responses["200"].content["application/json"].schema };
+}
+
+test("GET /v2/stats counts by status, sums only known costs, leaves archived out, and meets the served document", async (t) => {
+  const { data } = await seeded(t, [["alpha", "Alpha"], ["beta", "Beta"], ["gone", "Gone"], ["idle", "Idle"]], [
+    ["alpha", "completed", 0.25], ["alpha", "completed", null], ["alpha", "escalated", 0.5],
+    ["beta", "failed", null], ["beta", "stopped", 1],
+    ["gone", "completed", 3],
+  ], [["run", "run-1"], ["agent", "gone"]]);
+  const { api, baseUrl } = await serve(t, { data });
+  const asking = await startRun(api, "regions", "Pick a region.", { tools: ["ask_person"] });
+  await follow(api, asking.run_id, ["input_required"]);
+  const working = await startRun(api, "slow", "Take your time.");
+  await follow(api, working.run_id, ["working"]);
+  const stats = await api("GET", "/stats");
+  assert.equal(stats.status, 200, JSON.stringify(stats.body));
+  assert.deepEqual(stats.body, {
+    agents: 5,
+    runs: { total: 6, active: 1, needs_input: 1, failed: 2, status_unknown: 0 },
+    per_agent: [
+      { agent_id: "alpha", name: "Alpha", runs: 2 },
+      { agent_id: "beta", name: "Beta", runs: 2 },
+      { agent_id: "idle", name: "Idle", runs: 0 },
+      { agent_id: "regions", name: "regions", runs: 1 },
+      { agent_id: "slow", name: "slow", runs: 1 },
+    ],
+    cost: { usd: 1.75, basis: "estimate", unknown_runs: 3 },
+    archived: { agents: 1, runs: 2 },
+  });
+  assertRunningPartitioned(data, stats.body);
+  const { doc, op, schema } = await statsSchema(baseUrl);
+  assert.equal(op["x-agentrun-serve"], "stats/1");
+  assert.deepEqual(schemaProblems(doc, schema, stats.body), []);
+  // The positive control: the closed shape refuses a field it does not name, at every level, and a basis but estimate.
+  assert.notDeepEqual(schemaProblems(doc, schema, { ...stats.body, recent: [] }), []);
+  assert.notDeepEqual(schemaProblems(doc, schema, { ...stats.body, runs: { ...stats.body.runs, completed: 1 } }), []);
+  assert.notDeepEqual(schemaProblems(doc, schema, { ...stats.body, per_agent: [{ ...stats.body.per_agent[0], cost: null }] }), []);
+  assert.notDeepEqual(schemaProblems(doc, schema, { ...stats.body, cost: { ...stats.body.cost, known_runs: 4 } }), []);
+  assert.notDeepEqual(schemaProblems(doc, schema, { ...stats.body, archived: { ...stats.body.archived, cost: 3 } }), []);
+  assert.notDeepEqual(schemaProblems(doc, schema, { ...stats.body, cost: { ...stats.body.cost, basis: "charge" } }), []);
+});
+
+test("GET /v2/stats answers null for the total when every cost is unknown, never 0", async (t) => {
+  const { data } = await seeded(t, [["alpha", "Alpha"]], [["alpha", "completed", null], ["alpha", "failed", null]]);
+  const { api, baseUrl } = await serve(t, { data });
+  const { body } = await api("GET", "/stats");
+  assert.deepEqual(body.cost, { usd: null, basis: null, unknown_runs: 2 });
+  const { doc, schema } = await statsSchema(baseUrl);
+  assert.deepEqual(schemaProblems(doc, schema, body), []);
+});
+
+test("a running run this server does not hold is status_unknown: never counted as active or as not waiting", async (t) => {
+  const { data, revisions } = await seeded(t, [["alpha", "Alpha"]], [["alpha", "completed", 0.5]]);
+  const { api, baseUrl } = await serve(t, { data });
+  // Another writer's run: its row is running, and this server never started or adopted it.
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  db.prepare("INSERT INTO runs (id, agent_id, revision_id, state, started_at) VALUES ('elsewhere', 'alpha', ?, 'running', ?)").run(revisions.alpha, new Date().toISOString());
+  db.close();
+  const { body } = await api("GET", "/stats");
+  assert.deepEqual(body.runs, { total: 2, active: 0, needs_input: 0, failed: 0, status_unknown: 1 });
+  assert.deepEqual(body.cost, { usd: 0.5, basis: "estimate", unknown_runs: 1 });
+  assertRunningPartitioned(data, body);
+  const { doc, schema } = await statsSchema(baseUrl);
+  assert.deepEqual(schemaProblems(doc, schema, body), []);
+});
+
+test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms, and opens nothing under runs/", async (t) => {
+  const agents = ["a1", "a2", "a3", "a4", "a5"].map((id) => [id, id.toUpperCase()]);
+  const { data } = await seeded(t, agents, Array.from({ length: 1_000 }, (_, i) => [agents[i % 5][0], ["completed", "failed", "stopped", "escalated"][i % 4], i % 2 ? 0.01 : null]), Array.from({ length: 20 }, (_, i) => ["run", `run-${i * 50}`]));
+  // The newest run's own file, which GET /runs reads for its title.
+  await mkdir(join(data, "runs", "run-999"), { recursive: true });
+  await writeFile(join(data, "runs", "run-999", "serve.json"), JSON.stringify({ title: "Seeded", created_at: at(999) }));
+  const { api } = await serve(t, { data });
+  assert.equal((await api("GET", "/runs?limit=1")).body.runs[0].title, "Seeded");
+  await chmod(join(data, "runs"), 0o000);
+  try {
+    // The positive control: with runs/ unreadable, a route that reads a run's file no longer sees it.
+    assert.equal((await api("GET", "/runs?limit=1")).body.runs[0].title, "");
+    const times = [];
+    let stats;
+    for (let i = 0; i < 5; i++) {
+      const start = performance.now();
+      stats = await api("GET", "/stats");
+      times.push(performance.now() - start);
+      assert.equal(stats.status, 200, JSON.stringify(stats.body));
+    }
+    t.diagnostic(`GET /v2/stats over 1,000 runs, 5 agents: first ${times[0].toFixed(1)} ms, slowest ${Math.max(...times).toFixed(1)} ms`);
+    assert.ok(Math.max(...times) < 500, `slowest ${Math.max(...times).toFixed(1)} ms`);
+    assert.deepEqual(stats.body.runs, { total: 980, active: 0, needs_input: 0, failed: 500, status_unknown: 0 });
+    assert.deepEqual(stats.body.cost, { usd: 5, basis: "estimate", unknown_runs: 480 });
+    assert.deepEqual(stats.body.per_agent.map((a) => a.runs), [180, 200, 200, 200, 200], "a1 lost its 20 archived runs");
+    assert.deepEqual(stats.body.archived, { agents: 0, runs: 20 });
+  } finally {
+    await chmod(join(data, "runs"), 0o700);
+  }
+});

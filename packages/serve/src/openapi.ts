@@ -1,7 +1,8 @@
 // The OpenAPI document this server serves at GET /v2/openapi.json: the agentrun.v2/0 contract as vendored in
 // src/openapi/agentrun-v2.openapi.json (its source is in its info), with this server's marks. The contract's operations are
 // not changed: an operation answered 501 here carries `x-agentrun-serve-unsupported` with the reason, and this server's
-// own routes are added as operations marked `x-agentrun-serve: true`, listed in `info.x-agentrun-serve`.
+// own routes are added as operations marked `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed
+// in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
@@ -30,6 +31,30 @@ const HEALTH = {
     checks: { type: "object", additionalProperties: false, required: ["store", "disk"], properties: { store: { enum: ["ok", "does_not_open"] }, disk: { enum: ["ok", "below_floor", "cannot_check"] } } },
   },
 };
+
+const COUNT = { type: "integer", minimum: 0 };
+const closed = (properties: Json, description?: string) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties, ...(description ? { description } : {}) });
+/** GET /stats's answer (stats.ts). */
+const STATS = closed({
+  agents: { ...COUNT, description: "Agents not archived." },
+  runs: closed(
+    { total: COUNT, active: COUNT, needs_input: COUNT, failed: COUNT, status_unknown: COUNT },
+    "Runs not archived. `total` counts them all; a completed or cancelled run is counted in `total` alone. `failed` includes escalated. Each running run is in exactly one of `active` (this server holds it, queued or working), `needs_input` (it holds it, input_required) and `status_unknown` (it does not hold it, or holds it as ended before its end is written).",
+  ),
+  per_agent: {
+    type: "array", description: "Each agent not archived, by name then id, with how many of its runs are not archived; an agent with no runs is listed with 0.",
+    items: closed({ agent_id: ref("schemas/Id"), name: { type: "string" }, runs: COUNT }),
+  },
+  cost: closed(
+    {
+      usd: { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." },
+      basis: { type: ["string", "null"], enum: ["estimate", null], description: "`estimate` (the model cost the runs report) when `usd` is a number; null when it is null." },
+      unknown_runs: COUNT,
+    },
+    "Over the runs not archived: `usd` sums the cost of each run that ended with one; every other run (running, or ended with no cost) is in `unknown_runs`.",
+  ),
+  archived: closed({ agents: COUNT, runs: COUNT }, "Agents archived, and runs archived or of an archived agent: counted here and in nothing else."),
+});
 
 /** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
 const archiving = (collection: string, noun: string, id: Json, answer: string): Record<string, Record<string, Json>> =>
@@ -111,6 +136,14 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [ref("parameters/AgentId")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["revision"], properties: { revision: { type: "string" } } } } } },
       responses: { "200": json(ref("schemas/Agent"), "The agent, its current revision the one named."), ...errors(401, 404, 415, 422, 429, 500) },
+    },
+  },
+  "/stats": {
+    get: {
+      operationId: "getStats", tags: ["runs"], summary: "Counts and cost over every agent and run",
+      description: "Read from the agent store's aggregates alone: no run's files are opened. Archived agents and runs are left out of every number but their own counts.",
+      responses: { "200": json(STATS, "The counts and the cost."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "stats/1",
     },
   },
   ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
@@ -250,7 +283,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {
     for (const [method, op] of Object.entries(item)) {
-      (doc.paths[path] ??= {})[method] = { ...op, "x-agentrun-serve": true };
+      (doc.paths[path] ??= {})[method] = { "x-agentrun-serve": true, ...op };
       extensions.push(`${method.toUpperCase()} ${path}`);
     }
   }

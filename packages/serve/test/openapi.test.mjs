@@ -63,7 +63,7 @@ test("the contract's operations are as vendored; this server's own are added and
   for (const { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
     if (!original) {
-      assert.equal(op["x-agentrun-serve"], true, `${method.toUpperCase()} ${path} is this server's own, and marked`);
+      assert.ok(op["x-agentrun-serve"] === true || /^[a-z]+\/\d+$/.test(op["x-agentrun-serve"]), `${method.toUpperCase()} ${path} is this server's own, and marked`);
       own.push(`${method.toUpperCase()} ${path}`);
       continue;
     }

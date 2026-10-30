@@ -22,6 +22,7 @@ import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
+import { statsView } from "./stats.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -148,6 +149,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/files\/([^/]+)$/, name: "uploadFile", capability: "files.upload" },
   { method: "POST", pattern: /^\/quotes$/, name: "createQuote", capability: "quotes" },
   { method: "GET", pattern: /^\/usage$/, name: "getUsage" },
+  { method: "GET", pattern: /^\/stats$/, name: "getStats" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -760,6 +762,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         return readFileRoute(req, res, url, await needRun(id), second!);
       case "getUsage":
         return send(res, 200, await usage(url));
+      case "getStats":
+        return send(res, 200, statsView(await agents.request(() => agents.store.stats()), runs));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
