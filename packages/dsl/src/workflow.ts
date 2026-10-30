@@ -986,7 +986,9 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
     const errors = predicateShapeErrors(pred as any);
     for (const e of errors) fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: ${e}`);
     if (name === "ask") checkStateMap((pred as any).state, label, path, `${field}.state`);
-    if (name === "not" && !errors.length) return checkPredicate((pred as { of: unknown }).of, label, path, `${field}.of`, "not");
+    // A predicate whose shape is wrong is refused: no caller reads inside it (a poll's path, a not's of).
+    if (errors.length) return false;
+    if (name === "not") return checkPredicate((pred as { of: unknown }).of, label, path, `${field}.of`, "not");
     return true;
   };
   const walk = (node: WorkflowNode, path: string, ptr: string): void => {
