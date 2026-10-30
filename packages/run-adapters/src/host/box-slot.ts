@@ -114,10 +114,10 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
         // Recorded, so something may run in it: reaped, and the slot says how that went. Unrecorded: nothing spawned.
         ended = true;
         if (latest !== undefined) {
-          const reap = writing.then(() => settle(latest!));
-          // Unhandled until the caller asks (settled), as a started box's own reap is.
-          reap.catch(() => {});
-          failedReaps = Promise.all([failedReaps, reap]).then(() => undefined);
+          failedReaps = Promise.all([failedReaps, writing.then(() => settle(latest!))]).then(() => undefined);
+          // Handled here: a reap that gives its verdict before anyone asks (settled) never rejects unhandled, which would end
+          // the process. settled() still returns the rejecting promise.
+          failedReaps.catch(() => {});
         } else state = "empty";
         throw error;
       }

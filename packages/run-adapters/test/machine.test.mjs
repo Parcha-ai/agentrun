@@ -312,3 +312,30 @@ test("watchClose fails a drive by its machine's failed close, never the next dri
   const third = await watched.acquire();
   await assert.rejects(watched.drive((async () => { await third.close().catch(() => {}); throw new Error('the drive failed'); })()), /the drive failed/);
 });
+
+test("a failed start's reap that gives its verdict before anyone asks never rejects unhandled, and the close still fails by it", async (t) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(String(reason?.message ?? reason));
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    let answered;
+    const verdictGiven = new Promise((resolve) => { answered = resolve; });
+    const box = {
+      isolation: { mode: 'bwrap', cgroup: false },
+      start: (spec, child, recorder) => { recorder.ahead({ id: 'box-failed', writer: { pid: process.pid, startTime: '1' } }); throw new Error('bwrap: the spawn failed'); },
+      reap: async () => { answered(); return { empty: false, left: 1, by: 'pidns' }; },
+    };
+    const machine = await openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(box) });
+    // Closed however the test ends (a second close is a no-op), so a failed assertion never leaves the front open.
+    t.after(() => machine.close().catch(() => {}));
+    assert.throws(() => machine.start({ command: '/bin/true' }), /the spawn failed/);
+    // The reap's own signal, then two turns of the event loop: its verdict has settled the slot's kept promise, and the
+    // runtime has looked for a handler on every rejection by then.
+    await verdictGiven;
+    for (let i = 0; i < 2; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, [], 'no rejection went unhandled');
+    await assert.rejects(machine.close(), /box_not_empty: the box still holds 1 process after its reap/);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
