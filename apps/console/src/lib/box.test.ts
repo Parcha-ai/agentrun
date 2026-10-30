@@ -14,6 +14,10 @@ describe("nativeTools: whether native tools run here", () => {
     expect(nativeTools(on, "pi")).toBe(false);
     expect(nativeTools(undefined)).toBe(false);
   });
+  it("an older server's harness that names no native_tools offers none", () => {
+    expect(nativeTools([{ id: "pi" }, { id: "codex" }])).toBe(false);
+    expect(nativeTools([{ id: "pi" }], "pi")).toBe(false);
+  });
 });
 
 describe("boxNotice: the banner a person sees before they file a bug", () => {
