@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, existsSync, openSync, rmSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,7 @@ import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type Ti
 import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
+import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
@@ -77,7 +77,7 @@ type RunMeta = {
   input?: Json;
   effort?: string;
   max_cost_usd?: number;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: { reason: string } };
   /** A workflow run's output, once it completed. */
   output?: unknown;
   /** Where the run stood when its turn was stopped: the person's last message, by its timeline row's id (its store
@@ -86,14 +86,14 @@ type RunMeta = {
   /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
   stopped_after?: number;
 };
-type RunError = { code: string; message: string; retryable: boolean };
+type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 
 /** An ended run's error from its row and serve.json: an escalated workflow says so (`escalated`, with its summary), a
  *  failed run keeps its own. */
 const errorOfRow = (row: RunRow, meta: Partial<RunMeta> | null): RunError =>
   row.state === "escalated"
     ? { code: "escalated", message: row.summary ?? meta?.error?.message ?? "The workflow escalated.", retryable: false }
-    : { code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false };
+    : { code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false, ...(meta?.error?.details ? { details: meta.error.details } : {}) };
 
 /** One run as this server holds it. */
 export type Run = {
@@ -137,6 +137,8 @@ export type Run = {
   /** The cost the store recorded when it carried the run back. */
   costUsd?: number;
   relaunches: number;
+  /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
+  launching?: boolean;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -372,6 +374,7 @@ export class Runs {
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
+    run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
@@ -506,6 +509,7 @@ export class Runs {
     const pid = holderPid(record);
     if (!pid) return;
     run.orphan = pid;
+    this.reportedBack(run);
     this.connect(run);
     let releasedAt: number | undefined;
     let unreadable = 0;
@@ -563,6 +567,7 @@ export class Runs {
     void (async () => {
       while (!abort.signal.aborted) {
         const door = this.doorOf(await this.record(run));
+        if (door) this.reportedBack(run);
         if (door && run.kind === "workflow") {
           if (!run.working && !run.outcome) {
             run.working = true;
@@ -688,6 +693,7 @@ export class Runs {
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
@@ -699,10 +705,29 @@ export class Runs {
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
+      this.reportedBack(run);
       void this.settle(run, code, true);
     });
-    child.once("error", () => void (run.child === child && (run.child = undefined)));
+    child.once("error", () => {
+      if (run.child === child) run.child = undefined;
+      this.reportedBack(run);
+    });
     this.connect(run);
+  }
+
+  /** Writes the run's launch mark before its process is spawned: a spawn that takes the server down leaves it, and the
+   *  next start fails the run rather than launch it again and go down with it. The file exists once the call returns,
+   *  which a server's death does not undo; no fsync, which would hold the event loop on the disk at every launch. */
+  private markLaunching(run: Run): void {
+    closeSync(openSync(join(run.dir, RUN_LAUNCHING), "w", 0o600));
+    run.launching = true;
+  }
+
+  /** The run's newest launch came through with the server up: its process serves, or exited while it was watched. */
+  private reportedBack(run: Run): void {
+    if (!run.launching) return;
+    rmSync(join(run.dir, RUN_LAUNCHING), { force: true });
+    run.launching = false;
   }
 
   /** Opens the run again on its directory after its process went before the run ended: it resumes from its store. An
@@ -752,7 +777,10 @@ export class Runs {
     // A workflow run carries back how its workflow ended, through workflowCarry; cancelled before that, it stopped.
     if (run.cancel) ended = run.kind === "workflow" ? await this.workflowEnd(run, workflowEnding(record) ?? { status: "stopped" }) : { outcome: "cancelled" };
     else if (run.finishing) ended = { outcome: run.finishing };
-    else if (exited && !released && code !== null && code !== 0) {
+    else if (run.launching && gone) {
+      run.error = { code: "run_failed", message: "The server went down while it started the run's process, which never came up; it is not started again, since starting it may be what took the server down.", retryable: false, details: { reason: LAUNCH_LOST } };
+      ended = { outcome: "failed" };
+    } else if (exited && !released && code !== null && code !== 0) {
       run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     } else if (!gone && this.doorOf(record)) ended = undefined;
@@ -794,7 +822,7 @@ export class Runs {
     const answer = answerOf(run.rows);
     const cost = costOf(run.rows);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
+    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
     const persist = async () => {
       await this.saveMeta(run);
