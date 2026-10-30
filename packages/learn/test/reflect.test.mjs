@@ -13,6 +13,12 @@ test("the reserve for a run's reflection: a tenth of its cap, at most $0.25, and
   assert.equal(learn.reflectBudget(2.5), 0.25);
   assert.equal(learn.reflectBudget(10), 0.25);
   assert.equal(learn.reflectBudget(undefined), 0.05);
+  // Any cap above 0 keeps a reserve above 0, however small, and never above its tenth.
+  for (const cap of [0.000001, 1e-9]) {
+    const reserve = learn.reflectBudget(cap);
+    assert.ok(reserve > 0 && reserve <= cap / 10, `reflectBudget(${cap}) is ${reserve}`);
+  }
+  assert.ok(learn.reflectBudget(0.000001) <= 0.0000001);
   for (const cap of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, "1", null]) assert.throws(() => learn.reflectBudget(cap), /cap/);
 });
 
