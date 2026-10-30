@@ -470,15 +470,81 @@ test("a server that stops while a run's end waits to be written proposes nothing
   assert.equal(git(bareOf(data, "calc"), "log", "--format=%H", `main..runs/${runId}`), state.sha, "one commit on the run's branch");
 });
 
-test("harness and learning sit side by side on a definition: both are kept, and an edit without either keeps both", async (t) => {
-  const { api, data } = await serve(t);
-  const made = await api("POST", "/agents", agent("both", { harness: "claude-agent", learning: "approve" }));
+const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const offThere = (harness) => `learning runs on pi; this agent runs on ${harness}`;
+
+test("learning runs on pi only: a definition that asks for learning on another harness is refused at save by name, on a new agent and an edit; the same on pi saves", async (t) => {
+  const { api } = await serve(t);
+  for (const [harness, learning] of [["claude-agent", "approve"], ["claude-agent", "auto"], ["codex", "auto"]]) {
+    const refused = await api("POST", "/agents", agent(`both-${harness}-${learning}`, { harness, learning }));
+    assert.deepEqual([refused.status, refused.body.error?.fields?.map((f) => [f.field, f.reason, f.message])], [422, [["definition.learning", "not_an_option", `learning runs on pi; ${harness} runs without it. Set definition.learning to null, or use pi.`]]], `${harness} ${learning}`);
+  }
+  assert.equal((await api("POST", "/agents", agent("claude", { harness: "claude-agent" }))).status, 201);
+  const asked = await api("PUT", "/agents/claude/definition", { definition: { instructions: "Answer.", skills: [], tools: [], learning: "approve" } });
+  assert.deepEqual([asked.status, asked.body.error?.fields?.map((f) => f.field)], [422, ["definition.learning"]], "an edit that asks for learning on the agent's harness is refused");
+  const pi = await api("POST", "/agents", agent("both-pi", { learning: "approve" }));
+  assert.deepEqual([pi.status, pi.body.definition.learning, pi.body.learning_effective, pi.body.learning_reason], [201, "approve", "approve", null]);
+});
+
+test("another harness with learning left out saves, keeps the stated value, and reads off with why; it runs, without learning", async (t) => {
+  const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS });
+  const made = await api("POST", "/agents", agent("coder", { harness: "codex" }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  assert.deepEqual([made.body.definition.harness, made.body.definition.learning], ["claude-agent", "approve"]);
-  assert.deepEqual([storeRevision(data, made.body.revision).body.harness, storeRevision(data, made.body.revision).body.learning], ["claude-agent", "approve"]);
-  const edited = await api("PUT", "/agents/both/definition", { definition: { instructions: "Answer briefly.", skills: [], tools: [] } });
-  assert.equal(edited.status, 200, JSON.stringify(edited.body));
-  assert.deepEqual([edited.body.definition.harness, edited.body.definition.learning], ["claude-agent", "approve"]);
+  assert.deepEqual([made.body.definition.learning, made.body.learning_effective, made.body.learning_reason], ["auto", "off", offThere("codex")]);
+  assert.equal(storeRevision(data, made.body.revision).body.learning, "auto", "the stored value is the default, never a written off");
+  assert.equal(existsSync(bareOf(data, "coder")), false, "no learning repository");
+  const edited = await api("PUT", "/agents/coder/definition", { definition: { instructions: "Answer briefly.", skills: [], tools: [] } });
+  assert.deepEqual([edited.status, edited.body.definition.learning, edited.body.learning_effective], [200, "auto", "off"], "an edit that leaves it out is never refused");
+  // A revision stored with learning on another harness runs as it did, without learning.
+  const run = await api("POST", "/agents/coder/runs", { input: { content: "hi" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["completed"]);
+  await sleep(200);
+  assert.equal(await readRunState(data, "coder", run.body.run_id), undefined, "nothing harvested");
+  assert.equal(existsSync(bareOf(data, "coder")), false);
+  const { learningOf } = await learningModule();
+  assert.equal(learningOf(storeRevision(data, edited.body.revision)), "off");
+});
+
+test("an agent made on another harness with learning left out, then edited to pi without restating it, learns: the kept value runs there", async (t) => {
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("mover", { harness: "codex" }))).status, 201);
+  const moved = await api("PUT", "/agents/mover/definition", { definition: { instructions: "Answer.", skills: [], tools: [], harness: "pi" } });
+  assert.deepEqual([moved.status, moved.body.definition.harness, moved.body.definition.learning, moved.body.learning_effective, moved.body.learning_reason], [200, "pi", "auto", "auto", null]);
+  const { body: run } = await api("POST", "/agents/mover/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  assert.equal((await stateOf(data, "mover", run.run_id)).state, "proposed", "a learning run: its note is proposed");
+  assert.match(show(bareOf(data, "mover"), `runs/${run.run_id}`, RATE_NOTE), /rate-limits/);
+});
+
+test("learning_effective and learning_reason are read only: the agent and revision views show them and meet the served document, and a request that carries them is refused by field", async (t) => {
+  const { api, baseUrl } = await serve(t);
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const { schemaProblems } = await import("./schema-support.mjs");
+  const agentSchema = { $ref: "#/components/schemas/Agent" };
+  // The document adds exactly the two, response side only, marked learning/2; the definition takes neither.
+  assert.deepEqual(doc.info["x-agentrun-serve"].fields.filter((field) => field.includes("learning_")).sort(), ["Agent.learning_effective", "Agent.learning_reason"]);
+  for (const field of ["learning_effective", "learning_reason"]) {
+    assert.equal(doc.components.schemas.Agent.properties[field]["x-agentrun-serve"], "learning/2");
+    assert.equal(doc.components.schemas.DefinitionInput.properties[field], undefined);
+  }
+  const revisionsSchema = doc.paths["/agents/{agent_id}/revisions"].get.responses["200"].content["application/json"].schema;
+  for (const [id, extra, view] of [["on-codex", { harness: "codex" }, ["auto", "off", offThere("codex")]], ["on-pi", {}, ["auto", "auto", null]]]) {
+    const made = (await api("POST", "/agents", agent(id, extra))).body;
+    const { warnings: _, ...read } = (await api("GET", `/agents/${id}`)).body;
+    assert.deepEqual([read.definition.learning, read.learning_effective, read.learning_reason], view, id);
+    assert.deepEqual(schemaProblems(doc, agentSchema, read), [], JSON.stringify(read));
+    const revisions = (await api("GET", `/agents/${id}/revisions`)).body;
+    assert.deepEqual([revisions.revisions[0].learning_effective, revisions.revisions[0].learning_reason], view.slice(1), id);
+    assert.deepEqual(schemaProblems(doc, revisionsSchema, revisions), [], JSON.stringify(revisions));
+    assert.equal(made.learning_effective, view[1]);
+  }
+  // The positive control: the same check sees a value the document does not hold.
+  assert.notDeepEqual(schemaProblems(doc, agentSchema, { ...(await api("GET", "/agents/on-pi")).body, learning_effective: "sometimes" }), []);
+  const top = await api("POST", "/agents", { ...agent("given"), learning_effective: "off", learning_reason: "chosen" });
+  assert.deepEqual([top.status, top.body.error.fields.map((f) => [f.field, f.reason])], [422, [["learning_effective", "not_allowed"], ["learning_reason", "not_allowed"]]]);
+  const inside = await api("PUT", "/agents/on-pi/definition", { definition: { instructions: "Answer.", skills: [], tools: [], learning_effective: "off" } });
+  assert.deepEqual([inside.status, inside.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.learning_effective", "not_allowed"]]]);
 });
 
 test("a cancelled run's memo says it stopped", async (t) => {
