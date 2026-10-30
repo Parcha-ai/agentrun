@@ -11,7 +11,8 @@ import { call, scratch, serve } from "./support.mjs";
 
 const json = { "content-type": "application/json" };
 const page = (server) => ({ ...json, origin: `http://127.0.0.1:${server.port}` });
-const PASSWORD = "not-a-secret-owner";
+const pw = (name) => `not-a-secret-${name}`;
+const PASSWORD = pw("owner");
 
 async function machine(t) {
   const root = await scratch(t);
