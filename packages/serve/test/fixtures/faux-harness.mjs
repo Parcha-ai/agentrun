@@ -4,6 +4,9 @@ import { existsSync } from "node:fs";
 
 export function script(spec) {
   const text = spec.system.join("\n");
+  // The replay class each host tool reached the adapter with, said as JSON `[name, replay]` pairs: proof that serve
+  // bound the class onto the HostTool the harness got, not only into its own REPLAY table.
+  if (/Say each tool's replay class\./.test(text)) return [{ say: JSON.stringify((spec.tools ?? []).map((tool) => [tool.name, tool.replay])), usd: 0.001 }];
   // As real harnesses do, a request that goes on calls a tool, and the turn's last request is its answer.
   if (/Make three requests\./.test(text)) return [{ call: "read", args: { path: "a.txt" }, usd: 0.001 }, { call: "read", args: { path: "b.txt" }, usd: 0.002 }, { say: "Read it.", usd: 0.004 }];
   if (/Write then read\./.test(text)) return [{ call: "write", args: { path: "note.txt", content: "hello from the tool" }, usd: 0.001 }, { call: "read", args: { path: "note.txt" }, usd: 0.001 }, { say: "Read back.", usd: 0.001 }];
