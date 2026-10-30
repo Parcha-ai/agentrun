@@ -1,0 +1,23 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-b447-731e-85f0-e0f68eae3fb7/files"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-b447-731e-85f0-e0f68eae3fb7",
+    "files": [
+      {
+        "path": "CHANGELOG.md",
+        "size_bytes": 770,
+        "modified_at": "2026-10-28T19:33:28.590Z",
+        "content_type": "text/markdown; charset=utf-8"
+      }
+    ],
+    "complete": true,
+    "truncated": false
+  }
+}

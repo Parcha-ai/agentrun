@@ -74,7 +74,8 @@ export class DecisionProviderError extends Error {
   readonly attempts: number;
   /** The provider's own reference for the failure, when it gives one. */
   readonly refId?: string;
-  /** What a request that may have been billed is booked at (`outcome_unknown`), with how it was reached; null when unknown. */
+  /** What a request that was or may have been billed is booked at (`outcome_unknown`, `invalid_response`), with how it was
+   *  reached; null when unknown. */
   readonly costUsd?: number | null;
   readonly costBasis?: CostBasis;
   constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis } = {}) {
@@ -95,6 +96,14 @@ export interface DecisionProvider {
   readonly needs: readonly string[];
   readonly capabilities: DecisionCapabilities;
   decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome>;
+}
+
+/** What a provider's error books for its request: one sent whose outcome was lost (`outcome_unknown`), or one answered
+ *  with what the seam or the provider rejects (`invalid_response`), was or may have been paid for, and is booked at the
+ *  cost the error carries, null when that is unknown (never 0). Undefined for an error that books nothing. */
+export function chargedCost(error: unknown): number | null | undefined {
+  if (!(error instanceof DecisionProviderError) || (error.code !== "outcome_unknown" && error.code !== "invalid_response")) return undefined;
+  return typeof error.costUsd === "number" && Number.isFinite(error.costUsd) ? error.costUsd : null;
 }
 
 /** Refuses, as invalid_request, a request beyond what `capabilities` declares: a question type it does not answer, more
@@ -120,7 +129,11 @@ export function judgeFromProvider(provider: DecisionProvider, options: { deadlin
     const outcome = await provider.decide(request, { decisionId: params.decisionId ?? "", signal: params.signal ?? new AbortController().signal, deadlineMs: options.deadlineMs ?? null });
     const { answers, confidence_source } = completeConfidence(params.questions, (outcome.answers ?? {}) as Record<string, unknown>);
     try { validateAnswers(params.questions, answers); }
-    catch (error) { throw new DecisionProviderError("invalid_response", `${provider.id} answered with ${(error as Error).message.replace(/^System One /, "")}`); }
+    catch (error) {
+      // The provider answered, so the request was paid for: the rejection carries its cost, or null when it reported none.
+      const cost = typeof outcome.cost_usd === "number" && Number.isFinite(outcome.cost_usd) ? outcome.cost_usd : null;
+      throw new DecisionProviderError("invalid_response", `${provider.id} answered with ${(error as Error).message.replace(/^System One /, "")}`, { costUsd: cost, costBasis: cost === null ? "unknown" : outcome.cost_basis });
+    }
     const result: JudgeResult = {
       answers, model: outcome.model, usage: outcome.usage, cost_usd: outcome.cost_usd, cost_basis: outcome.cost_basis,
       evidence: outcome.evidence, provider_request_id: outcome.provider_request_id, confidence_source,

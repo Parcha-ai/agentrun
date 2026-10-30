@@ -1,0 +1,163 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/capabilities"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "backend": "local",
+    "contract": "agentrun.v2/0",
+    "server": {
+      "name": "@parcha/agentrun-serve",
+      "version": "0.1.0-beta.28",
+      "platform": "linux"
+    },
+    "runtimes": [
+      "pi-durable-disk"
+    ],
+    "harnesses": [
+      {
+        "id": "pi",
+        "available": true
+      },
+      {
+        "id": "claude-agent",
+        "available": false,
+        "reason": "This server does not run claude-agent yet."
+      },
+      {
+        "id": "codex",
+        "available": false,
+        "reason": "This server does not run codex yet."
+      }
+    ],
+    "models": {
+      "source": "faux",
+      "fast": "faux/faux-1",
+      "default": "faux/faux-1",
+      "strong": "faux/faux-1"
+    },
+    "tools": [
+      "read",
+      "write",
+      "edit",
+      "ask_person"
+    ],
+    "workflows": {
+      "nodes": [
+        "agent",
+        "decide",
+        "extract",
+        "report"
+      ],
+      "node_tools": [
+        "read",
+        "write",
+        "edit"
+      ],
+      "adapters": [
+        "runNode"
+      ]
+    },
+    "features": {
+      "agents": {
+        "create": true,
+        "list": true,
+        "update": true,
+        "revisions": true
+      },
+      "archive": {
+        "agents": true,
+        "runs": true,
+        "list_param": "archived",
+        "routes": [
+          "POST /agents/{id}/archive",
+          "POST /agents/{id}/unarchive",
+          "POST /runs/{id}/archive",
+          "POST /runs/{id}/unarchive"
+        ]
+      },
+      "home": {
+        "export": false,
+        "import": false,
+        "check": false
+      },
+      "runs": {
+        "stop": true,
+        "cancel": true,
+        "kill": false,
+        "list": true,
+        "kinds": [
+          "agentic",
+          "workflow"
+        ]
+      },
+      "messages": {
+        "steer": true,
+        "answer": true,
+        "follow_up": true,
+        "steer_workflow_runs": false
+      },
+      "timeline": {
+        "long_poll": true,
+        "sse": true,
+        "live_rows": true,
+        "live_workflow_rows": false
+      },
+      "files": {
+        "upload": false,
+        "read": true,
+        "range": false,
+        "during_run": true
+      },
+      "quotes": false,
+      "usage": {
+        "basis": "estimate",
+        "meters": [
+          "tokens"
+        ]
+      },
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "thinking": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "browser": "none",
+      "sign_ins": false,
+      "vault": false,
+      "query": false
+    },
+    "regions": [
+      {
+        "id": "local",
+        "jurisdiction": null,
+        "state": "live"
+      }
+    ],
+    "links": {
+      "openapi": "/v2/openapi.json"
+    },
+    "limits": {
+      "max_body_bytes": 1048576,
+      "max_upload_bytes": null,
+      "max_files_per_run": 0,
+      "max_message_chars": 20000,
+      "max_concurrent_runs": 4976,
+      "timeline_max_wait_ms": 25000,
+      "timeline_page_rows": 500,
+      "idempotency_ttl_s": 86400,
+      "input_wait_s": null,
+      "max_cost_usd": null
+    }
+  }
+}

@@ -256,6 +256,13 @@ test('T7c: a call cut by its node\'s own timeoutMs keeps the cost its provider r
   assert.deepEqual(booked.map(({ receipt, exchange }) => [receipt.status, receipt.cost_usd, exchange.result?.cost_usd, exchange.result?.cost_basis]), [['failed', 0.012, 0.012, 'reported']], 'booked at what the provider reported, not an estimate');
 });
 
+test('T8: a dry run passes a node that requires evidence: its synthetic answer carries a placeholder, as a provider that gives evidence would', async () => {
+  for (const evidence of ['required', 'if_supported', 'off']) {
+    const dry = await dsl.dryRunWorkflow(doc([judge({ provider: 'parallel', evidence })]), { input: INPUT });
+    assert.deepEqual([dry.ok, dry.status], [true, 'passed'], `${evidence}: ${JSON.stringify(dry)}`);
+  }
+});
+
 test('T6: the published schema and the author guide carry the four fields', () => {
   const schema = JSON.parse(readFileSync(new URL('../schema/workflow.schema.json', import.meta.url), 'utf8'));
   const nodes = [];
