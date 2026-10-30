@@ -10,7 +10,7 @@
 //   node box-forward.js --listen <port>=<socket> [--listen <port>=<socket> ...] -- <command> [args...]
 import { spawn } from "node:child_process";
 import { connect, createServer, type Server } from "node:net";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 /** A port inside the box, and the socket it serves. */
 export interface ForwardListen {
@@ -100,4 +100,5 @@ export async function main(argv: readonly string[]): Promise<void> {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main(process.argv.slice(2));
+// Run as the command only (node box-forward.js ...), never when imported.
+if ((import.meta as { main?: boolean }).main) void main(process.argv.slice(2));

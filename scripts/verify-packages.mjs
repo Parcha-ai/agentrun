@@ -76,11 +76,6 @@ const allowedEndpoints = {
     ['dist/testing/fake-anthropic.js', 'http://127.0.0.1:${port}'],
     ['dist/testing/fake-anthropic.d.ts', 'http://127.0.0.1:<port>'],
   ],
-  'run-adapters': [
-    // The session's model proxy listens on the loopback interface, on the free port it chose; its type documents that.
-    ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
-    ['dist/host/proxy.d.ts', 'http://127.0.0.1:<port>'],
-  ],
   'pi-browser': [
     // Stagehand's trace export is pointed at a closed loopback port (the discard port): nothing listens, nothing leaves the host.
     // The request observer owns the URL (it exempts that export from its holds) and the driver's types carry it.
@@ -102,10 +97,6 @@ const allowedEndpoints = {
     ['dist/serve/server.d.ts', 'http://127.0.0.1:<port>/'],
     // The README's example of the address the command prints.
     ['README.md', 'http://127.0.0.1:41297/'],
-  ],
-  'run-adapters-codex': [
-    // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
-    ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
   ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
