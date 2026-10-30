@@ -8,7 +8,7 @@ import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
 import { LEARN_NAME, learningBlocker } from "./learning.js";
 import { chooseModel, nodeTiers, workflowNodes } from "./model.js";
-import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
+import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, SPAWNING_TOOLS, TOOLS, workflowTools } from "./tools.js";
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
@@ -39,7 +39,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     (revision.tools ?? []).forEach((tool, index) => {
       // A name a learning revision could give before learning had file tools: it binds nothing there.
       if (tool === LEARN_NAME && learning) return;
-      if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
+      // What a learning run writes is committed to its agent's repository: it gets no tool that can start a process,
+      // and its revision is refused rather than run with fewer tools than it names.
+      if (learning && SPAWNING_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} runs a process, and a learning revision names no tool that does. Remove ${tool}, or set definition.learning to null.`, host: false, tool });
+      else if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
       // Another harness gets the file tools only (host-tools.ts): any other tool this host binds, ask_person among them,
       // is pi's here and refuses the run, never runs without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });

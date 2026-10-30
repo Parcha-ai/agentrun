@@ -36,19 +36,25 @@ const IDENTITY: GitIdentity = { name: "agentrun-serve", email: "serve@agentrun.i
  *  server takes no uploads (capabilities `files.upload: false`), so a run has no input file to read: the change that
  *  turns uploads on must make a run that reads an input file untrusted. */
 const TRUSTED_TOOLS = new Set(["read", "write", "edit", "ask_person"]);
-/** The tools a learning run has for its working copy, whatever its revision names. */
+/** The file tools of a learning run, whatever its revision names: every one works on the run's working copy only. */
 export const LEARNING_TOOLS: readonly string[] = ["read", "write", "edit"];
 /** The run's working copy of its agent's repository, under its work. */
 export const WORKING_COPY = join(".agent", "repo");
-/** Why a tool learning added (one the revision did not name) may not take `path`, or undefined: it works on the run's
- *  working copy only. `path` is read as the tool reads it, against `work`; a link anywhere on the way is refused, never
- *  followed, so a link inside the copy cannot lead out of it. */
+/** The notes the run was seeded with, which its `<learned>` section points at: `read` reaches them too. */
+const SEEDED_NOTES = join(".agent", "learnings");
+/** Why a learning run's file tool `tool` may not take `path`, or undefined: it works on the run's working copy only
+ *  (`read` on the seeded notes too). `path` is read as the tool reads it, against `work`; a link anywhere on the way is
+ *  refused, never followed, so a link inside the copy cannot lead out of it. */
 export async function copyRefusal(work: string, tool: string, path: string): Promise<string | undefined> {
-  const refusal = `${tool} is the learning copy's only here: ${path} is outside ${WORKING_COPY}`;
+  const roots = tool === "read" ? [WORKING_COPY, SEEDED_NOTES] : [WORKING_COPY];
+  const refusal = `${tool} is the learning copy's only here: ${path} is outside ${roots.join(" and ")}`;
   const target = resolve(work, path);
   const rest = relative(work, target).split(sep);
-  const copy = WORKING_COPY.split(sep);
-  if (rest.length <= copy.length || copy.some((part, at) => rest[at] !== part)) return refusal;
+  const inside = roots.some((root) => {
+    const parts = root.split(sep);
+    return rest.length > parts.length && parts.every((part, at) => rest[at] === part);
+  });
+  if (!inside) return refusal;
   for (let at = 1; at <= rest.length; at++) {
     const step = await lstat(join(work, ...rest.slice(0, at))).catch(() => undefined);
     if (!step) break;
@@ -62,8 +68,8 @@ export async function copyRefusal(work: string, tool: string, path: string): Pro
  *  `toolExecution` "parallel" at dist/harness/agent.js:46; startToolRound at dist/harness/generation.js:436-457), and one
  *  sequential tool makes its whole round sequential, so no other call of the round runs between the check and the open.
  *  That window is why the mode is here, not speed: it stays until these tools resolve their path on held directory
- *  handles (pi-durable-disk's confinement). No tool this server binds can make a link today; a background process a
- *  future shell leaves running is for the run box's mount allowlist to stop. */
+ *  handles (pi-durable-disk's confinement). No tool a learning run gets can make a link or start a process: a revision
+ *  naming one is refused at save (runnable.ts). */
 export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T {
   return {
     ...tool,
@@ -75,6 +81,21 @@ export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T
       return tool.execute(args, api, context);
     },
   };
+}
+
+/** What a learning run is told about saving what it learned: where its working copy is, its memo, and the paths a
+ *  harvest takes (agentrun-learn's layout). */
+export function learningInstructions(runId: string): string {
+  return [
+    "<saving-learning>",
+    `Your learning repository is checked out at ${WORKING_COPY}. Save what you learned there with your file tools, which work there only (read reaches ${SEEDED_NOTES} too). Once this run ends, the server commits what you changed there to the branch runs/${runId} for review; nothing else is kept.`,
+    `- Your memo: ${WORKING_COPY}/memos/${runId}.md. Keep its front matter (the server writes it) and add, in this order, ## What happened, ## What I learned, ## What could be better, and ## Proposed changes, which lists every path you changed. A memo you leave as it is proposes nothing.`,
+    `- A note: ${WORKING_COPY}/learnings/L-<12 lowercase hex digits>.md, one general rule. Its front matter holds id, type (lesson, fact or correction), status (active), runs ([${runId}]) and supersedes ([] or the notes it replaces); the rule follows it. Add one line for it to ${WORKING_COPY}/learnings/INDEX.md: - L-<id>: <the rule>.`,
+    `- A skill: ${WORKING_COPY}/.agents/skills/<name>/SKILL.md. A workflow draft: ${WORKING_COPY}/workflows/<name>/workflow.json with its README.md.`,
+    "- AGENTS.md and agent.json are your rules and definition, never changed here; any other path is left out.",
+    "Never put names, ids or data from this case, or any key, token or password, in these files: a change that holds one is refused whole.",
+    "</saving-learning>",
+  ].join("\n");
 }
 
 /** A name a learning revision could give before learning had file tools: accepted there, and binds nothing. */
@@ -223,8 +244,9 @@ export async function readyToRun(data: string, entry: AgentEntry, current: () =>
   if (!main) await hostCommit(data, id, () => ({ ...entry, revision, version }));
 }
 
-/** What the server recorded for a run of a learning agent once it proposed it. D extends it with what review did. */
-export type RunState = { state: "proposed" | "empty" | "refused"; branch?: string; base?: string; sha?: string; reasons?: string[]; reason?: string };
+/** What the server recorded for a run of a learning agent once it proposed it, or `waiting` while its process outlives
+ *  its end and its working copy is not read yet. D extends it with what review did. */
+export type RunState = { state: "proposed" | "empty" | "refused" | "waiting"; branch?: string; base?: string; sha?: string; reasons?: string[]; reason?: string };
 
 const runStateFile = (data: string, agentId: string, runId: string) => join(agentDir(data, agentId), "learning", "runs", `${runId}.json`);
 
@@ -281,7 +303,11 @@ export async function harvestFor(data: string, agents: StoreAccess, runId: strin
   // caller's mistake, said, never a silent no-op.
   if (row.state === "running") throw new Error(`the run ${runId} has not ended in the agent store yet, so it is not harvested`);
   const dir = join(data, "runs", runId);
-  if (processLive(dir)) throw new Error(`the run ${runId}'s process is still live, so its working copy is not harvested`);
+  if (processLive(dir)) {
+    const reason = `the run ${runId}'s process is still live, so its working copy is not harvested yet`;
+    await writeRunState(data, row.agent, runId, { state: "waiting", reason });
+    throw new Error(reason);
+  }
   const storeFile = join(dir, "store", "run.sqlite");
   const copy = join(dir, "work", WORKING_COPY);
   const { SeedDoc } = await import("@parcha/pi-agent-learn");
@@ -314,8 +340,8 @@ export async function harvestFor(data: string, agents: StoreAccess, runId: strin
  *  longer than one does, and past the last step leaves the rest to the next start. */
 export const CATCH_UP_BUSY_MS: readonly number[] = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000];
 
-/** At start: every ended run of a learning revision that has no recorded proposal is proposed, so a server that stopped
- *  between a carry back and its proposal loses nothing. The store is read when it is free (`CATCH_UP_BUSY_MS`); each
+/** At start: every ended run of a learning revision that has no recorded proposal, or is still `waiting`, is proposed,
+ *  so a server that stopped between a carry back and its proposal loses nothing. The store is read when it is free (`CATCH_UP_BUSY_MS`); each
  *  wait, and a store that stays busy, is said in `log`. Returns the runs it proposed. */
 export async function catchUp(data: string, agents: StoreAccess, log: (line: string) => void, delaysMs: readonly number[] = CATCH_UP_BUSY_MS): Promise<string[]> {
   const { store } = agents;
@@ -334,7 +360,7 @@ export async function catchUp(data: string, agents: StoreAccess, log: (line: str
     if (row.state === "running") continue;
     try {
       if (!learns.has(row.revision)) learns.set(row.revision, learningOf(await free(() => store.readRevision(row.revision))) !== "off");
-      if (!learns.get(row.revision) || (await readRunState(data, row.agent, row.id))) continue;
+      if (!learns.get(row.revision) || ((await readRunState(data, row.agent, row.id))?.state ?? "waiting") !== "waiting") continue;
       if (await harvestFor(data, { store, request: free }, row.id)) done.push(row.id);
     } catch (error) {
       log(`run ${row.id}: not proposed: ${(error as Error).message}`);
