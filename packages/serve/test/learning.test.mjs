@@ -88,18 +88,18 @@ test("a new agentic agent learns (auto, stored), an edit without the field keeps
   assert.equal(existsSync(bareOf(data, "f")), false);
 });
 
-test("learn is no tool: naming it is refused at save, learning on or off; a learning run has the file tools and writes its notes with them", async (t) => {
+test("learn is no tool: on a learning revision it is an accepted name that binds nothing, off one it is refused; a learning run has the file tools and writes its notes with them", async (t) => {
   const { api, data } = await serve(t);
-  for (const learning of [null, "auto"]) {
-    const refused = await api("POST", "/agents", agent(`named-${learning ?? "off"}`, { learning, tools: ["read", "learn"] }));
-    assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
-  }
-  // It names no tool: learning gives it read, write and edit, for its working copy of the repository.
-  await api("POST", "/agents", agent("calc"));
+  const refused = await api("POST", "/agents", agent("named-off", { learning: null, tools: ["read", "learn"] }));
+  assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
+  // A learning revision that names learn, as one could before: it saves, runs, and gets read, write and edit.
+  const named = await api("POST", "/agents", agent("calc", { tools: ["read", "learn"] }));
+  assert.equal(named.status, 201, JSON.stringify(named.body));
+  assert.deepEqual(named.body.warnings, []);
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   await follow(api, run.run_id, ["completed"]);
   assert.equal((await stateOf(data, "calc", run.run_id)).state, "proposed");
-  assert.match(show(bareOf(data, "calc"), `runs/${run.run_id}`, RATE_NOTE), /rate-limits/);
+  assert.match(show(bareOf(data, "calc"), `runs/${run.run_id}`, RATE_NOTE), /rate-limits/, "written with the write tool learning gives it");
 });
 
 test("an agent that learns has a repository beside the store whose main holds AGENTS.md and agent.json for its current revision, one host commit per change", async (t) => {
@@ -699,4 +699,51 @@ test("a run that reached its seed and has no working copy is an error, never an 
   t.after(() => store.close());
   await assert.rejects(harvestFor(data, { store, request: async (act) => act() }, run.run_id), /no working copy/);
   assert.equal(await readRunState(data, "calc", run.run_id), undefined);
+});
+
+test("a run that ended before working copies existed is recorded once, as empty with its reason, and the next catch-up skips it", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  await stateOf(data, "calc", run.run_id);
+  // As a run from before this change left it: seeded, with no working copy and no mark that one was laid out.
+  const { rm } = await import("node:fs/promises");
+  await rm(join(data, "runs", run.run_id, "work", ".agent", "repo"), { recursive: true, force: true });
+  await rm(join(data, "runs", run.run_id, "learning.copy"), { force: true });
+  await rm(join(data, "agents", "calc", "learning", "runs", `${run.run_id}.json`));
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  const reader = { store, request: async (act) => act() };
+  const lines = [];
+  assert.deepEqual(await catchUp(data, reader, (line) => lines.push(line)), [run.run_id]);
+  assert.deepEqual(await readRunState(data, "calc", run.run_id), { state: "empty", reason: "the run ended before working copies" });
+  assert.deepEqual(lines, []);
+  assert.deepEqual(await catchUp(data, reader, (line) => lines.push(line)), [], "the next catch-up skips it");
+  assert.deepEqual(lines, []);
+});
+
+test("an ended run with no recorded end time is harvested once, dated its start, never retried for ever", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  await stateOf(data, "calc", run.run_id);
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(data, "store.sqlite"));
+  db.prepare("UPDATE runs SET ended_at = NULL WHERE id = ?").run(run.run_id);
+  const started = db.prepare("SELECT started_at FROM runs WHERE id = ?").get(run.run_id).started_at;
+  db.close();
+  const { rm } = await import("node:fs/promises");
+  await rm(join(data, "agents", "calc", "learning", "runs", `${run.run_id}.json`));
+  const bare = bareOf(data, "calc");
+  git(bare, "update-ref", "-d", `refs/heads/runs/${run.run_id}`);
+  await rm(join(data, "agents", "calc", "host.git"), { recursive: true, force: true });
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  const lines = [];
+  assert.deepEqual(await catchUp(data, { store, request: async (act) => act() }, (line) => lines.push(line)), [run.run_id]);
+  assert.deepEqual(lines, []);
+  assert.equal((await readRunState(data, "calc", run.run_id)).state, "proposed");
+  assert.equal(new Date(git(bare, "log", "-1", "--format=%cI", `runs/${run.run_id}`)).getTime(), Math.floor(Date.parse(started) / 1000) * 1000);
 });
