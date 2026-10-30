@@ -130,3 +130,20 @@ test("at open, the session's last record is reaped first: a box not counted empt
   await fresh.adopt({ id: "box-0", pid: 7 });
   assert.equal(fresh.state, "empty");
 });
+
+test("a reap that could not count (it throws) never frees the slot: the next start is refused, and so after adopt", async () => {
+  const failing = async () => {
+    throw Object.assign(new Error("EPERM: the cgroup could not be read"), { code: "EPERM" });
+  };
+  const box = scripted();
+  const slot = boxSlot({ reap: failing });
+  const { reaped } = slot.start(box.start, box.recorder);
+  box.exited.resolve({ code: 0 });
+  await assert.rejects(reaped, /EPERM/);
+  assert.equal(slot.state, "full");
+  assert.throws(() => slot.start(scripted().start, box.recorder), named("box_busy", (e) => /is full/.test(e.message)));
+  const opened = boxSlot({ reap: failing });
+  await assert.rejects(opened.adopt({ id: "box-0", pid: 7 }), /EPERM/);
+  assert.equal(opened.state, "full");
+  assert.throws(() => opened.start(scripted().start, box.recorder), named("box_busy"));
+});
