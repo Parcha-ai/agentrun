@@ -108,7 +108,8 @@ test("GET /runs lists every agent's runs newest first, filtered by agent, revisi
   await follow(api, c.run_id, ["completed"]);
   const all = (await api("GET", "/runs")).body;
   assert.deepEqual(all.runs.map((r) => r.run_id), [c.run_id, b.run_id, a.run_id]);
-  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "kind", "revision", "run_id", "sha", "state", "status", "title"]);
+  assert.deepEqual(Object.keys(all.runs[0]).sort(), ["agent_id", "agent_version", "archived_at", "cost", "created_at", "ended_at", "error", "kind", "review", "revision", "run_id", "sha", "state", "status", "title"]);
+  assert.deepEqual(all.runs.map((r) => r.review), [null, null, null], "no run here escalated, so none waits for review");
   assert.deepEqual((await api("GET", "/runs?agent=one")).body.runs.map((r) => r.run_id), [c.run_id, a.run_id]);
   assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs.map((r) => [r.run_id, r.agent_id, r.error.code]), [[b.run_id, "two", "run_failed"]], "a failed run keeps its own error");
   assert.equal(all.runs[0].error, null);
