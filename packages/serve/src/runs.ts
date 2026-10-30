@@ -687,8 +687,9 @@ export class Runs {
 
   /** Opens the run again on its directory after its process went before the run ended: it resumes from its store. An
    *  agentic run whose first message never landed gets it again, under the same request id. */
-  /** Why the run may not open again in this server's box, given the box its last open ran in: it never loses its box
-   *  mid-run (boxed, then unsandboxed), and never opens with no box after it had one (fail closed). A run that had no box
+  /** Why the run may not open again in this server's box, given the box its last open ran in. It never loses its box
+   *  mid-run: boxed, then unsandboxed, ends it (box_downgrade). With no box here after it had one (box_unavailable) it is
+   *  held: never opened, its messages and follow-ups refused, until a server with a box opens it. A run that had no box
    *  may open in one, and one boxed kind may follow another. */
   private boxRefusal(run: Run): { code: "box_downgrade" | "box_unavailable"; message: string } | undefined {
     const now = this.options.boxView;
@@ -696,7 +697,7 @@ export class Runs {
     if (!now || !before) return undefined;
     const boxed = (mode: string) => mode === "bwrap" || mode === "seatbelt" || mode === "provider";
     if (boxed(before) && now.mode === "unsandboxed") return { code: "box_downgrade", message: "box_downgrade: this run started in a box; start a new run to run it unsandboxed" };
-    if (before !== "unavailable" && now.mode === "unavailable") return { code: "box_unavailable", message: `box_unavailable: this run ran with ${before === "unsandboxed" ? "no box, by the operator's setting" : `a ${before} box`}, and this server has no box (${now.error}); it opens again once the box is back` };
+    if (before !== "unavailable" && now.mode === "unavailable") return { code: "box_unavailable", message: `box_unavailable: this run ran with ${before === "unsandboxed" ? "no box, by the operator's setting" : `a ${before} box`}, and this server has no box (${now.error}); it is held, and opens again on a server whose box is back` };
     return undefined;
   }
 
@@ -760,6 +761,11 @@ export class Runs {
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
       if (!gone || !stalled || this.closing) return this.refresh(run);
       const refused = this.boxRefusal(run);
+      // No box here for a run that had one: held, unopened, until a server with a box opens it. Nothing runs without one.
+      if (refused?.code === "box_unavailable") {
+        warn(run.id, `held: ${refused.message}`);
+        return this.refresh(run);
+      }
       if (refused) run.error = { code: refused.code, message: refused.message, retryable: false };
       else if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
       else run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };

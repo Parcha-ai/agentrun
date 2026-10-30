@@ -225,17 +225,21 @@ test("a run that started in a box never continues unsandboxed: refused by name, 
   assert.equal((await record()).mode, "bwrap", "nothing opened, so nothing recorded");
 });
 
-test("a run that had a box never opens with none: a server whose box is unavailable refuses it by name", async (t) => {
+test("a run that had a box is held by a server whose box is unavailable: never opened, refused by name; the next server with a box opens it", async (t) => {
   const { data, id, record } = await leftWaiting(t, {}, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
   withEnv(t, {}, BOX_ENV);
-  const second = await serve(t, { data });
-  const answer = await second.api("POST", `/runs/${id}/messages`, { content: "eu" });
-  assert.equal(answer.status, 409);
-  assert.match(answer.body.error.message, /^box_unavailable: /);
-  await follow(second.api, id, ["failed"]);
-  const { error } = (await second.api("GET", `/runs/${id}`)).body;
-  assert.equal(error.code, "box_unavailable");
-  assert.match(error.message, /^box_unavailable: this run ran with a bwrap box, and this server has no box/);
+  const held = await serve(t, { data });
+  const answer = await held.api("POST", `/runs/${id}/messages`, { content: "eu" });
+  assert.equal(answer.status, 409, JSON.stringify(answer.body));
+  assert.match(answer.body.error.message, /^box_unavailable: this run ran with a bwrap box, and this server has no box \(box_probe_failed\); it is held/);
+  const view = (await held.api("GET", `/runs/${id}`)).body;
+  assert.notEqual(view.status, "failed", "held, never failed");
+  assert.equal(view.error ?? null, null);
+  assert.equal((await record()).mode, "bwrap", "never opened here, so nothing recorded");
+  await held.close();
+  const boxed = await serve(t, { data, boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  assert.equal((await boxed.api("POST", `/runs/${id}/messages`, { content: "eu" })).status, 202);
+  await follow(boxed.api, id, ["completed"]);
   assert.equal((await record()).mode, "bwrap");
 });
 
