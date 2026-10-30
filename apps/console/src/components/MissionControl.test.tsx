@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { costLine, missionFrom, type MissionView } from "@/lib/mission";
+import { costLine, missionFrom, type MissionView, type Stats } from "@/lib/mission";
 import { MissionControl } from "./MissionControl";
 import type { Run } from "@/lib/v2";
 
@@ -11,9 +11,9 @@ const run = (id: string, status: Run["status"], state: Run["state"], title: stri
 });
 const view: MissionView = {
   agents: 2,
-  runs: { total: 7, active: 1, needsInput: 2, failed: 1 },
+  runs: { total: 7, active: 1, needsInput: 2, failed: 1, statusUnknown: 0 },
   perAgent: [{ agentId: "calc", name: "Calc", runs: 5 }, { agentId: "notes", name: "Meeting notes", runs: 2 }],
-  cost: { usd: 0.0043, basis: "mixed", unknownRuns: 2 },
+  cost: { usd: 0.0043, basis: "estimate", unknownRuns: 2 },
   recent: [run("run-1", "completed", "idle", "What is six times seven?"), run("run-2", "working", "working", "Summarize the standup")],
 };
 
@@ -30,7 +30,7 @@ describe("MissionControl", () => {
     expect(html).toContain('href="#/runs?agent=calc"');
   });
   it("renders a store with nothing in it, without error", () => {
-    const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [] };
+    const empty: MissionView = { agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [] };
     const html = renderToStaticMarkup(createElement(MissionControl, { view: empty }));
     expect(html).toContain("No agents yet");
     expect(html).toContain("No runs yet");
@@ -42,31 +42,40 @@ describe("costLine: a total said honestly, never $0 for a cost not known", () =>
   it("is Unknown when no run's cost is known", () => {
     expect(costLine({ usd: null, basis: null, unknownRuns: 3 })).toBe("Unknown");
   });
-  it("marks an estimate, and a mix of estimate and reported, as est.", () => {
+  it("marks an estimate as est.", () => {
     expect(costLine({ usd: 1.5, basis: "estimate", unknownRuns: 0 })).toBe("$1.50 est.");
-    expect(costLine({ usd: 0.0043, basis: "mixed", unknownRuns: 0 })).toBe("$0.0043 est.");
+    expect(costLine({ usd: 0.0043, basis: "estimate", unknownRuns: 0 })).toBe("$0.0043 est.");
   });
   it("says a reported total plainly", () => {
     expect(costLine({ usd: 1.5, basis: "reported", unknownRuns: 0 })).toBe("$1.50");
   });
   it("says how many runs aren't in the total", () => {
-    expect(costLine({ usd: 0.0043, basis: "mixed", unknownRuns: 2 })).toBe("$0.0043 est. · 2 runs unknown");
+    expect(costLine({ usd: 0.0043, basis: "estimate", unknownRuns: 2 })).toBe("$0.0043 est. · 2 runs unknown");
     expect(costLine({ usd: 0.0043, basis: "estimate", unknownRuns: 1 })).toBe("$0.0043 est. · 1 run unknown");
   });
 });
 
 describe("missionFrom: GET /v2/stats and the latest runs, as the page shows them", () => {
   const stats = {
-    agents: 2, runs: { total: 7, active: 1, needs_input: 2, failed: 1 },
+    agents: 2, runs: { total: 7, active: 1, needs_input: 2, failed: 1, status_unknown: 0 },
     per_agent: [{ agent_id: "calc", name: "Calc", runs: 5 }],
     cost: { usd: null, basis: null, unknown_runs: 7 }, archived: { agents: 1, runs: 3 },
-  };
+  } satisfies Stats;
   it("maps the server's fields, keeps an all-unknown cost null, and leaves archived out of the counts", () => {
     const v = missionFrom(stats, view.recent);
     expect(v).toEqual({
-      agents: 2, runs: { total: 7, active: 1, needsInput: 2, failed: 1 }, perAgent: [{ agentId: "calc", name: "Calc", runs: 5 }],
+      agents: 2, runs: { total: 7, active: 1, needsInput: 2, failed: 1, statusUnknown: 0 }, perAgent: [{ agentId: "calc", name: "Calc", runs: 5 }],
       cost: { usd: null, basis: null, unknownRuns: 7 }, recent: view.recent,
     });
     expect(costLine(v.cost)).toBe("Unknown");
+  });
+  it("reads the contract's cost basis: an estimate says est., a charge says it plainly", () => {
+    expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "estimate", unknown_runs: 0 } }, []).cost)).toBe("$1.50 est.");
+    expect(costLine(missionFrom({ ...stats, cost: { usd: 1.5, basis: "charge", unknown_runs: 0 } }, []).cost)).toBe("$1.50");
+  });
+  it("keeps the runs whose state the server can't tell, and the page says how many", () => {
+    const v = missionFrom({ ...stats, runs: { ...stats.runs, status_unknown: 3 } }, []);
+    expect(v.runs.statusUnknown).toBe(3);
+    expect(renderToStaticMarkup(createElement(MissionControl, { view: v }))).toContain("3 unknown");
   });
 });

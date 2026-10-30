@@ -6,14 +6,20 @@ import { cn } from "@/lib/utils";
 /** Mission Control, the console's first page: how many agents and runs this server has, how many runs are working,
  *  waiting on a person or failed, what they cost (said with its basis, never $0 for a cost not known), runs per agent,
  *  and the latest runs, each a link to its page. */
-export function MissionControl({ view, error }: { view: MissionView | null; error?: string | null }) {
-  if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">Mission Control could not be read: {error}</p>;
+export function MissionControl({ view, error, onRetry }: { view: MissionView | null; error?: string | null; onRetry?: () => void }) {
+  if (error) return (
+    <div className="m-8 border p-4" role="alert">
+      <p className="font-mono text-[13px] text-destructive-text">Mission Control could not be read: {error}</p>
+      {onRetry && <button type="button" onClick={onRetry} className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent">Try again</button>}
+    </div>
+  );
   if (!view) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
   const spent = costParts(view.cost);
   const tiles: [string, string, string?, string?][] = [
     ["Agents", String(view.agents)],
     ["Runs", String(view.runs.total)],
-    ["Active", String(view.runs.active)],
+    // Running runs the server can't tell the state of are in no other count: said under Active, never dropped.
+    ["Active", String(view.runs.active), undefined, view.runs.statusUnknown ? `${view.runs.statusUnknown} unknown` : undefined],
     ["Needs input", String(view.runs.needsInput), view.runs.needsInput ? "text-warning-text" : undefined],
     ["Failed", String(view.runs.failed), view.runs.failed ? "text-destructive-text" : undefined],
     ["Total cost", spent.total, undefined, spent.note],

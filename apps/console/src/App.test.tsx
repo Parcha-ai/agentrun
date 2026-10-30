@@ -41,3 +41,31 @@ describe("App, Mission Control when the stats can't be read", () => {
     expect(host.textContent).toContain("not_found");
   });
 });
+
+describe("App, Mission Control after a failed read", () => {
+  it("Try again reads the stats and the latest runs again, and shows them", async () => {
+    let statsCalls = 0;
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/stats") return ++statsCalls === 1
+        ? json(503, { error: { code: "store_busy", message: "the store is busy", retryable: true } })
+        : json(200, { agents: 3, runs: { total: 9, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 9 }, archived: { agents: 0, runs: 0 } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const wait = async (ok: () => boolean) => { const end = Date.now() + 4000; while (!ok() && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); }); };
+    await wait(() => !!host.textContent?.includes("could not be read"));
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => /try again/i.test(b.textContent ?? ""))!.click(); });
+    await wait(() => !host.textContent?.includes("could not be read"));
+    expect(statsCalls).toBe(2);
+    expect(host.textContent).toContain("Mission Control");
+    expect(host.textContent).not.toContain("could not be read");
+  });
+});

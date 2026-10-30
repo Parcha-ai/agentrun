@@ -70,6 +70,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
   const [mission, setMission] = useState<MissionView | null>(null);
   const [missionError, setMissionError] = useState<string | null>(null);
+  const [missionTry, setMissionTry] = useState(0);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -132,7 +133,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
       .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
     return () => { live = false; };
-  }, [v2, where.section]);
+  }, [v2, where.section, missionTry]);
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -160,7 +161,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "mission"
-        ? <MissionControl view={mission} error={missionError} />
+        ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
