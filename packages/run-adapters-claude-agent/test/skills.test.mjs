@@ -16,6 +16,7 @@ import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 
 let problem;
 try { verifyClaudeAgent({}); } catch (error) { problem = `${error.name}: ${error.message}`; }
+import { boxedOptions, boxedSession, boxSkip } from './boxed.mjs';
 const skip = problem && process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY !== '1' ? problem : false;
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-skills-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -205,7 +206,7 @@ test('the skills are checked when the adapter is made: a plain name, a SKILL.md 
   assert.throws(() => claudeAgentAdapter({ model: 'm', provider: { origin: 'https://x.invalid', credential: () => 'k' }, skills: [{ name: 'a', files: {} }], sdk: {}, standIn: { command: process.execPath } }), /agentrun-harness-claude: the skill a has no SKILL.md/);
 });
 
-test('a loaded skill survives a crash: the next process, in a NEW session directory, recovers from the store and turn 3 still has the skill in its history, nothing re-sent', { skip, timeout: 240_000 }, async (t) => {
+test('a loaded skill survives a crash: the next process, in a NEW session directory, recovers from the store and turn 3 still has the skill in its history, nothing re-sent', { skip: skip || boxSkip, timeout: 240_000 }, async (t) => {
   let main = 0;
   // Turn 1 loads the skill, turn 2 asks for a never tool (which the kill cuts off), turn 3 answers.
   const provider = await fakeAnthropic({ reply: (r) => {
@@ -224,10 +225,12 @@ test('a loaded skill survives a crash: the next process, in a NEW session direct
   const { memorySessionStore: stores } = await import('@parcha/agentrun-kernel/testing');
   const store = stores();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
-  const adapterIn = (dir) => claudeAgentAdapter({ builtins: false, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir, skills: [SKILL] });
+  const boxed = await boxedOptions(t, ROOT, undefined);
+  const adapterIn = (dir) => claudeAgentAdapter({ builtins: false, model: MODEL, smallModel: SMALL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir, skills: [SKILL], ...(boxed.box ? { box: boxed.box } : {}) });
 
   const died = new AbortController();
-  const a = await adapterIn(mkdtempSync(join(ROOT, 'skill-a-'))).open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {} });
+  const dirA = mkdtempSync(join(ROOT, 'skill-a-'));
+  const a = await adapterIn(dirA).open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {}, ...boxedSession(dirA) });
   await a.send('Charge the card, following the research method.');
   await reached;
   died.abort(new Error('the process died'));
@@ -235,7 +238,8 @@ test('a loaded skill survives a crash: the next process, in a NEW session direct
   await a.close();
   assert.equal(provider.messages().filter((r) => r.model === MODEL).length, 2);
 
-  const b = await adapterIn(mkdtempSync(join(ROOT, 'skill-b-'))).open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  const dirB = mkdtempSync(join(ROOT, 'skill-b-'));
+  const b = await adapterIn(dirB).open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {}, ...boxedSession(dirB) });
   assert.equal(b.state, 'open_turn');
   await b.recover();
   assert.equal((await b.turnEnd()).status, 'completed');

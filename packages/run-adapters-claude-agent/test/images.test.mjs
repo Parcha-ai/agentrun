@@ -14,6 +14,7 @@ import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { CLAUDE_AGENT_MAX_IMAGE_BYTES, claudeAgentAdapter, toolImageProblems, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
 import { fakeAnthropic, fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 
+import { boxedOptions, boxedSession, boxSkip } from './boxed.mjs';
 const required = process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY === '1';
 let problem;
 try { verifyClaudeAgent({}); } catch (error) { problem = `${error.name}: ${error.message}`; }
@@ -51,7 +52,7 @@ test("an image over the adapter's size is the call's error, by the tool's name a
 /** The tool_result blocks of a request, by the call each answers. */
 const results = (body) => (body?.messages ?? []).flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b?.type === 'tool_result');
 
-test("on the pinned CLI, a tool's image reaches the model inline in its result, with no note of a local file, and is still there when the session is resumed in a NEW directory", { skip, timeout: 240_000 }, async (t) => {
+test("on the pinned CLI, a tool's image reaches the model inline in its result, with no note of a local file, and is still there when the session is resumed in a NEW directory", { skip: skip || boxSkip, timeout: 240_000 }, async (t) => {
   let main = 0;
   // Turn 1 takes the screenshot, turn 2 asks for a never tool (which the kill cuts off), turn 3 answers.
   const provider = await fakeAnthropic({ reply: (r) => {
@@ -70,10 +71,12 @@ test("on the pinned CLI, a tool's image reaches the model inline in its result, 
   const spec = { key: 'step:images', label: 'shot', system: ['Look at the page.'], tools: [shot, charge], context: 'fresh' };
   const store = memorySessionStore();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
-  const adapterIn = (dir) => claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir });
+  const boxed = await boxedOptions(t, ROOT, undefined);
+  const adapterIn = (dir) => claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir, ...(boxed.box ? { box: boxed.box } : {}) });
 
   const died = new AbortController();
-  const a = await adapterIn(mkdtempSync(join(ROOT, 'a-'))).open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {} });
+  const dirA = mkdtempSync(join(ROOT, 'a-'));
+  const a = await adapterIn(dirA).open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {}, ...boxedSession(dirA) });
   await a.send('Look at the page, then charge.');
   await reached;
   died.abort(new Error('the process died'));
@@ -87,7 +90,8 @@ test("on the pinned CLI, a tool's image reaches the model inline in its result, 
   assert.ok(!JSON.stringify(first).includes('[Image: source:'), 'no note of a local file');
 
   // The next process, in a NEW directory: the CLI's own file is gone; the history comes from the store.
-  const b = await adapterIn(mkdtempSync(join(ROOT, 'b-'))).open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  const dirB = mkdtempSync(join(ROOT, 'b-'));
+  const b = await adapterIn(dirB).open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {}, ...boxedSession(dirB) });
   await b.recover();
   assert.equal((await b.turnEnd()).status, 'completed');
   await b.close();
