@@ -62,6 +62,9 @@ export type CommitOptions = {
   readonly parent?: string;
   /** Make the commit even when `files` change nothing, for a commit whose message and trailers are the record. */
   readonly allowEmpty?: boolean;
+  /** The commit's author and committer date, to the second, from 1970 on (git takes no earlier one). Given, the same
+   *  files, parent, message and trailers make the same commit on any host at any time; absent, the clock's. */
+  readonly date?: Date;
   /** A second parent: the commit is a merge of it into the branch, and its tree is still the base's with `files` applied,
    *  never the merged commit's tree. The commit must be here. */
   readonly mergeParent?: string;
@@ -111,7 +114,7 @@ export type Repo = {
   commitTo(branch: string, options: CommitOptions): Promise<Committed>;
   /** A commit of `files` applied on `parent`, written here and named by no ref: the second parent of a merge whose own
    *  branch is never merged. Pushing a branch that reaches it carries it. */
-  makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers }): Promise<string>;
+  makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers; readonly date?: Date }): Promise<string>;
   /** Sends a commit to `branch` on the remote: by sha, never forced, never running a hook on either side. A remote that
    *  moved is a `conflict`; a remote that refuses the ref is `refused`. */
   push(sha: string, branch: string): Promise<void>;
@@ -415,8 +418,17 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     }
   }
 
-  async function commitTree(tree: string, parents: readonly string[], message: string): Promise<string> {
-    return text(["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-F", "-"], { input: message });
+  async function commitTree(tree: string, parents: readonly string[], message: string, date?: string): Promise<string> {
+    return text(["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-F", "-"], { input: message, ...(date ? { date } : {}) });
+  }
+
+  /** A commit's date as git reads it, or undefined for the clock's. */
+  function dateOf(date: unknown): string | undefined {
+    if (date === undefined) return undefined;
+    if (!(date instanceof Date) || !Number.isFinite(date.getTime())) throw refused("a commit's date must be a valid Date");
+    // git refuses a negative timestamp.
+    if (date.getTime() < 0) throw refused("a commit's date must not be before 1970");
+    return `@${Math.floor(date.getTime() / 1000)} +0000`;
   }
 
   /** Moves the local branch only if it is still where it was before the write was built. */
@@ -529,6 +541,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     if (!options || typeof options !== "object") throw refused("commitTo needs { files, message }");
     checkCommitFiles(options.files, limits);
     const message = formatMessage(options.message, options.trailers);
+    const date = dateOf(options.date);
     await fetchAll();
     const runId = firstValue(options.trailers?.[RUN_ID_TRAILER]);
     if (runId !== undefined) {
@@ -551,21 +564,22 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     if (base && tree === baseTree && options.allowEmpty !== true) return { sha: base, created: false };
     const merged = options.mergeParent === undefined ? undefined : await commitOf(options.mergeParent);
     if (merged !== undefined && !base) throw refused("a merge needs a base commit on the branch");
-    const sha = await commitTree(tree, base ? [base, ...(merged === undefined ? [] : [merged])] : [], message);
+    const sha = await commitTree(tree, base ? [base, ...(merged === undefined ? [] : [merged])] : [], message, date);
     await moveBranch(branch, sha, localBefore);
     return { sha, created: true };
   }
 
-  async function makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers }): Promise<string> {
+  async function makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers; readonly date?: Date }): Promise<string> {
     if (!options || typeof options !== "object") throw refused("makeCommit needs { parent, files, message }");
     checkCommitFiles(options.files, limits);
     const message = formatMessage(options.message, options.trailers);
+    const date = dateOf(options.date);
     await fetchAll();
     const parent = await commitOf(options.parent);
     const baseTree = await treeOf(parent);
     const tree = await buildTree(baseTree, options.files);
     await checkIntroduced(baseTree, tree);
-    return commitTree(tree, [parent], message);
+    return commitTree(tree, [parent], message, date);
   }
 
   async function push(sha: string, branchName: string): Promise<void> {

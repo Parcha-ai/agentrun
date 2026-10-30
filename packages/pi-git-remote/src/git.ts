@@ -57,6 +57,8 @@ export type GitCall = {
   readonly credential?: GitCredential;
   /** Resolve with a non-zero exit instead of rejecting. */
   readonly allowFail?: boolean;
+  /** The author and committer date of a commit this call writes, as git reads it (`@<seconds> +0000`). */
+  readonly date?: string;
 };
 
 export type GitResult = { readonly code: number; readonly stdout: Buffer; readonly stderr: string };
@@ -114,7 +116,7 @@ export function createGitRunner(options: GitRunnerOptions): GitRunner {
     const credential = call.credential;
     const fd = credential ? credentialDescriptor(options.tmp, credential) : null;
     const helper = credential ? ["-c", `credential.helper=${FD_CREDENTIAL_HELPER}`] : [];
-    const env = call.indexFile ? { ...baseEnv, GIT_INDEX_FILE: call.indexFile } : baseEnv;
+    const env = { ...baseEnv, ...(call.indexFile ? { GIT_INDEX_FILE: call.indexFile } : {}), ...(call.date ? { GIT_AUTHOR_DATE: call.date, GIT_COMMITTER_DATE: call.date } : {}) };
     return new Promise<GitResult>((resolve, reject) => {
       let settled = false;
       let timedOut = false;
