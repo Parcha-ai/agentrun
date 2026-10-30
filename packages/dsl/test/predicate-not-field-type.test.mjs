@@ -92,3 +92,28 @@ test('the guard inside not must read a produced value', () => {
   const errors = errorsOf({ predicate: 'not', of: { predicate: 'field_type', path: 'nowhere', type: 'number' } });
   assert.match(errors.join('\n'), /reads "nowhere" but no input key or earlier node produces "nowhere"/);
 });
+
+// A path into a code node's probed shape, or a call's declared result, is checked through `not` as it is bare.
+const refusals = (flow) => { const checked = validateWorkflow(flow, { input: {} }); return checked.ok ? [] : checked.errors; };
+
+test('a when under not on a path the code node does not produce is refused as the bare predicate is', () => {
+  const at = (when) => ({ ...guarded(when), root: { node: 'chain', steps: [{ node: 'code', label: 'read', code: '(s) => ({ answer: { score: 3 } })' }, ...guarded(when).root.steps] } });
+  const bare = { predicate: 'field_type', path: 'answer.nope', type: 'number' };
+  const errors = refusals(at({ predicate: 'not', of: bare }));
+  assert.match(errors.join('\n'), /predicate path "answer\.nope" is not produced by the code node that writes "answer" \(its shape has: score\); the guard can never fire/);
+  assert.deepEqual(errors, refusals(at(bare)));
+});
+
+test('a poll under not on a path outside the declared result is refused as the bare predicate is', () => {
+  const at = (until) => {
+    const flow = guarded(notNumber);
+    flow.schemas.Job = { type: 'object', properties: { state: { type: 'string' } } };
+    flow.root.steps = [{ node: 'call', label: 'job', via: 'tool', tool: 'jobs.get', out: 'Job', as: 'job', deadline_s: 5, poll: { until, interval_s: 1, deadline_s: 5 } }];
+    flow.output.path = 'job';
+    return flow;
+  };
+  const bare = { predicate: 'field_type', path: 'nope', type: 'string' };
+  const errors = refusals(at({ predicate: 'not', of: bare }));
+  assert.match(errors.join('\n'), /poll\.until path "nope" is not in the declared result shape \(state\); the poll could never settle/);
+  assert.deepEqual(errors, refusals(at(bare)));
+});
