@@ -1,6 +1,7 @@
 // The small JSON files the server reads and writes beside the agent store.
+import { randomBytes } from "node:crypto";
 import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { open, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Json } from "./validate.js";
 
@@ -16,11 +17,21 @@ export const readJson = (path: string): Promise<Json | null> =>
     .then((text) => JSON.parse(text) as Json)
     .catch(() => null);
 
-/** Writes `text` to `path` whole: through a temporary file and a rename, so a reader never sees half of it. */
+/** A temporary file beside `path`, this write's own: two writes of one file at once never share one, so neither renames
+ *  the other's away nor writes into the file the other renamed. */
+export const tempOf = (path: string): string => `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+
+/** Writes `text` to `path` whole: through a temporary file of its own and a rename, so a reader never sees half of it.
+ *  A failed write removes its temporary file. */
 export async function writeWhole(path: string, text: string, mode = 0o600): Promise<void> {
-  const temp = `${path}.tmp`;
-  await writeFile(temp, text, { mode });
-  await rename(temp, path);
+  const temp = tempOf(path);
+  try {
+    await writeFile(temp, text, { mode });
+    await rename(temp, path);
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
 }
 
 /** Writes `text` to `path` whole and durably: the temporary file is synced before the rename, and the directory after it,

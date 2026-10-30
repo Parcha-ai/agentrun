@@ -15,7 +15,7 @@ import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type Run
 import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
+import { readJson, RUN_CANCELLED, RUN_META, tempOf, writeWhole } from "./files.js";
 import { type BoxView, UNSANDBOXED_RUN_LINE } from "./box/config.js";
 import { RUN_BOX_ENV, type RunBoxSettings } from "./box/run-box.js";
 import type { Isolation } from "@parcha/agentrun-kernel/host";
@@ -718,9 +718,13 @@ export class Runs {
     // changed AGENTRUN_BOX records the new mode), so the record always tells the truth about the latest open.
     if (this.options.boxView) {
       run.meta.box = this.options.boxView;
+      // Written here, before the spawn, through a temporary file of its own (a save in flight has its own). Then a save
+      // is queued behind any in flight, so the last write of the record is always the run's latest, box and all.
       const meta = join(run.dir, RUN_META);
-      writeFileSync(`${meta}.tmp`, `${JSON.stringify(run.meta)}\n`, { mode: 0o600 });
-      renameSync(`${meta}.tmp`, meta);
+      const temp = tempOf(meta);
+      writeFileSync(temp, `${JSON.stringify(run.meta)}\n`, { mode: 0o600 });
+      renameSync(temp, meta);
+      void this.saveMeta(run).catch((error: Error) => warn(run.id, `its record is not saved again: ${error.message}`));
     }
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // Loud, in the run's own log too: its harness's tools run with no box.
@@ -830,14 +834,16 @@ export class Runs {
     if (!ended) {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
-      if (!gone || !stalled || this.closing) return this.refresh(run);
+      if (!gone || this.closing) return this.refresh(run);
       const refused = this.boxRefusal(run);
       // No box here for a run that had one: held, unopened, until a server with a box opens it. Nothing runs without one.
       if (refused?.code === "box_unavailable") {
         warn(run.id, `held: ${refused.message}`);
         return this.refresh(run);
       }
+      // A run that started in a box ends here, waiting for the person or not: no message could ever open it again.
       if (refused) run.error = { code: refused.code, message: refused.message, retryable: false };
+      else if (!stalled) return this.refresh(run);
       else if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
       else run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };

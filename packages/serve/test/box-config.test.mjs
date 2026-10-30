@@ -103,6 +103,18 @@ test("no box at all (no factory), a factory that throws, or a box claiming unsan
   }
 });
 
+test("an unavailable box's cause goes to the operator's log, whole, while capabilities keep their fixed words", async (t) => {
+  withEnv(t, {}, BOX_ENV);
+  const thrown = await stderrOf(t, () => served(t, { boxFactory: async () => { throw new Error("bwrap exploded at /opt/odd/bwrap"); } }));
+  assert.match(thrown.text, /agentrun-serve: the box is unavailable \(box_probe_failed\), so runs get no tools of their harness's own: making it failed: bwrap exploded at \/opt\/odd\/bwrap/);
+  assert.doesNotMatch(thrown.result.caps.box.detail, /exploded|\/opt/);
+  const probe = await stderrOf(t, () => served(t, { boxFactory: factory({ mode: "unavailable", error: "bwrap_userns_denied", detail: "bwrap: setting up uid map: Permission denied" }) }));
+  assert.match(probe.text, /the box is unavailable \(bwrap_userns_denied\), so runs get no tools of their harness's own: its probe failed \(bwrap_userns_denied\): bwrap: setting up uid map: Permission denied/);
+  assert.doesNotMatch(probe.result.caps.box.detail, /uid map/);
+  const none = await stderrOf(t, () => served(t, {}));
+  assert.match(none.text, /the box is unavailable \(box_probe_failed\), so runs get no tools of their harness's own: this server was given no box to make/);
+});
+
 test("error and detail appear only when the box is unavailable: the served document refuses either on a working box", async (t) => {
   withEnv(t, {}, BOX_ENV);
   const { caps, doc } = await served(t, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
@@ -225,6 +237,16 @@ test("a run that started in a box never continues unsandboxed: refused by name, 
   // The message would open it again: it is refused there, the run ends, and both say why, by name.
   const answer = await second.api("POST", `/runs/${id}/messages`, { content: "eu" });
   assert.deepEqual([answer.status, answer.body.error.message], [409, "box_downgrade: this run started in a box; start a new run to run it unsandboxed"], JSON.stringify(answer.body));
+  await follow(second.api, id, ["failed"]);
+  const { error } = (await second.api("GET", `/runs/${id}`)).body;
+  assert.deepEqual([error.code, error.message], ["box_downgrade", "box_downgrade: this run started in a box; start a new run to run it unsandboxed"]);
+  assert.equal((await record()).mode, "bwrap", "nothing opened, so nothing recorded");
+});
+
+test("a boxed run waiting for the person ends box_downgrade when a server restarts unsandboxed, with no message sent: it never waits on a box it lost", async (t) => {
+  const { data, id, record } = await leftWaiting(t, {}, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  withEnv(t, { AGENTRUN_BOX: "unsandboxed" }, BOX_ENV);
+  const second = await serve(t, { data });
   await follow(second.api, id, ["failed"]);
   const { error } = (await second.api("GET", `/runs/${id}`)).body;
   assert.deepEqual([error.code, error.message], ["box_downgrade", "box_downgrade: this run started in a box; start a new run to run it unsandboxed"]);
