@@ -35,6 +35,9 @@ export interface BoxSlot<P extends SlotChild> {
   /** At open: the record the session's last box left, reaped before anything starts. The slot is empty only if that
    *  reap counts it empty. */
   adopt(previous: BoxRecord): Promise<void>;
+  /** The reap of a start that threw after its box was recorded, once it gave its verdict (rejects with box_not_empty
+   *  when it found a process left); resolved when there was none. A machine's close waits for it with its boxes' own. */
+  settled(): Promise<void>;
 }
 
 const busy = (state: BoxSlotState) => new BoxError("box_busy", `box_busy: the session's box is ${state}; a new one starts only once a reap has counted the last one empty`);
@@ -46,6 +49,8 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
   let latest: BoxRecord | undefined;
   // Each box's start counts one up: a record of an earlier box never lands as this one's.
   let generation = 0;
+  // The reap of a start that threw after it was recorded: kept for `settled`, never left to run unseen.
+  let failedReaps: Promise<void> = Promise.resolve();
 
   const settle = async (record: BoxRecord): Promise<void> => {
     state = "reaping";
@@ -67,6 +72,9 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
   return {
     get state() {
       return state;
+    },
+    settled() {
+      return failedReaps;
     },
 
     start(start, recorder) {
@@ -105,8 +113,12 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
       } catch (error) {
         // Recorded, so something may run in it: reaped, and the slot says how that went. Unrecorded: nothing spawned.
         ended = true;
-        if (latest !== undefined) writing.then(() => settle(latest!)).catch(() => {});
-        else state = "empty";
+        if (latest !== undefined) {
+          failedReaps = Promise.all([failedReaps, writing.then(() => settle(latest!))]).then(() => undefined);
+          // Handled here: a reap that gives its verdict before anyone asks (settled) never rejects unhandled, which would end
+          // the process. settled() still returns the rejecting promise.
+          failedReaps.catch(() => {});
+        } else state = "empty";
         throw error;
       }
       if (latest === undefined) {

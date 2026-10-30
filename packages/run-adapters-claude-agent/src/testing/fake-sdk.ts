@@ -343,7 +343,9 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
               await mirror([a], lag);
               let started!: () => void;
               const begun = new Promise<void>((resolve) => { started = resolve; });
-              running.push(builtinCall(out.id, name, input, { started }).then((result) => { if (result) out.result = result; started(); }));
+              // A call that fails (a Write under a directory that is not there) is the model's error result, as the CLI's is, and
+              // ends the wait for its start too.
+              running.push(builtinCall(out.id, name, input, { started }).then((result) => { if (result) out.result = result; }, (error) => { out.result = { text: String((error as Error)?.message ?? error), isError: true }; }).finally(started));
               await begun;
             }
             await Promise.all(running);
