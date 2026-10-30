@@ -16,13 +16,17 @@ export interface Seen {
 
 /**
  * The processes of `table` in process group `group`, zombies left out (a zombie waits for a parent that does not reap, a
- * container's pid 1): those that started no later than `before`, the instant taken just before the next open, are the
- * command's own, so each is a survivor, a child it forked late included. Those that started after it are other processes
- * that took the group's number once the command's had ended: reported, never counted as the command's.
+ * container's pid 1). A group's number stays its own while any process of the group lives (the kernel hands it out again
+ * only once the group has ended), so two groups never hold it at once:
+ *  - while any of them started no later than `before`, the instant taken just before the next open, the command's group
+ *    never ended, and every one is the command's: a survivor, a child it forked after that instant included;
+ *  - when every one started after it, the command's group had ended and its number was handed out again: they are another
+ *    group's, reported and never counted as the command's.
  */
 export function judge(table: readonly Seen[], group: number, before: number): { survivors: Seen[]; reused: Seen[] } {
   const live = table.filter((p) => p.group === group && !p.state.startsWith("Z"));
-  return { survivors: live.filter((p) => p.start <= before), reused: live.filter((p) => p.start > before) };
+  const lived = live.some((p) => p.start <= before);
+  return lived ? { survivors: live, reused: [] } : { survivors: [], reused: live };
 }
 
 /** One line for a process, for the example's failure message. */

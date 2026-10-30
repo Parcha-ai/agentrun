@@ -145,14 +145,16 @@ const endAll = (): void => {
   for (const child of started) {
     child.kill("SIGKILL");
   }
-  try {
-    // Once the next open's instant is taken, only the command's own processes (by start) are ended, never another process
-    // that took a number of the group; before it, the group is ended by its leader's pid, which nothing else holds while
-    // the command runs.
-    if (before !== undefined) for (const p of judged().survivors) process.kill(p.pid, "SIGKILL");
-    else process.kill(-Number(readFileSync(join(work, "job.pid"), "utf8")), "SIGKILL");
-  } catch {
-    // no command started, or it is already gone
+  // Once the next open's instant is taken, only the command's own processes (see survivors.ts) are ended, each on its own
+  // (one that ends meanwhile stops none of the others), never another group that took the number; before it, the group is
+  // ended by its leader's pid, which nothing else holds while the command runs.
+  const targets = before !== undefined ? judged().survivors.map((p) => p.pid) : existsSync(join(work, "job.pid")) ? [-Number(readFileSync(join(work, "job.pid"), "utf8"))] : [];
+  for (const target of targets) {
+    try {
+      process.kill(target, "SIGKILL");
+    } catch {
+      // already gone
+    }
   }
 };
 process.on("exit", endAll);

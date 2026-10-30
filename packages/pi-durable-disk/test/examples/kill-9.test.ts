@@ -28,11 +28,17 @@ it("the example's check: a process holding the command's group number that start
   assert.ok([stranger].some((p) => p.group === 4300 && !p.state.startsWith("Z")), "the old check's reading of this table");
 });
 
-it("the example's check: a process of the command's group that started before the next open is a survivor, a child forked late included, and an equal start counts", () => {
+it("the example's check: a process of the command's group that started before the next open is a survivor, and an equal start counts", () => {
   const leader = seen(4300, 4300, 500, "S", "bash -c ...");
-  const late = seen(4310, 4300, 999);
   const atTheInstant = seen(4320, 4300, before);
-  assert.deepEqual(judge([leader, late, atTheInstant], 4300, before).survivors, [leader, late, atTheInstant]);
+  assert.deepEqual(judge([leader, atTheInstant], 4300, before), { survivors: [leader, atTheInstant], reused: [] });
+});
+
+it("the example's check: while a process of the command's group from before the next open lives, the group never ended, so a child it forked after that instant is the command's too, a survivor", () => {
+  // The command pauses between `echo started` and starting `sleep` while the instant is taken: its sleep starts after it.
+  const leader = seen(4300, 4300, 500, "S", "bash -c ...");
+  const late = seen(4310, 4300, 1500, "S", "sleep 120");
+  assert.deepEqual(judge([leader, late], 4300, before), { survivors: [leader, late], reused: [] });
 });
 
 it("the example's check: a zombie of the group, and a live process of another group, are neither survivors nor reused numbers", () => {
