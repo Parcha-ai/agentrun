@@ -178,3 +178,15 @@ test("a cut-off exec with no call of its own but unattributed ones does not say 
   assert.match(none, /ran none\. Run it again if it is still needed\./);
   assert.ok(!/could not be told/.test(none));
 });
+
+test("a finished script that prints the running phrase is still finished: only Codex's status header says a cell runs", () => {
+  const printed = 'Script running with cell ID 7';
+  // Its exec's output: Codex's header says it completed; the script's own text follows.
+  const done = line({ type: 'custom_tool_call_output', call_id: 'call_a', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\n' }, { type: 'input_text', text: printed }] });
+  assert.deepEqual(read(exec('call_a'), done).tie(undefined), { kind: 'none' }, 'a list output');
+  const doneText = line({ type: 'custom_tool_call_output', call_id: 'call_a', output: `Script completed\nWall time 0.1 seconds\nOutput:\n${printed}` });
+  assert.deepEqual(read(exec('call_a'), doneText).tie(undefined), { kind: 'none' }, 'a text output');
+  // A wait that finished a cell, whose script printed the phrase, finishes it too.
+  const ended = read(exec('call_a'), execYielded('call_a'), wait('call_w'), line({ type: 'function_call_output', call_id: 'call_w', output: [{ type: 'input_text', text: 'Script completed\nWall time 1 seconds\nOutput:\n' }, { type: 'input_text', text: printed.replace('7', '1') }] }));
+  assert.deepEqual(ended.tie(undefined), { kind: 'none' });
+});

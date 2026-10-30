@@ -179,9 +179,11 @@ export function usageOf(text: string): ProxyUsage | undefined {
 }
 
 /** The text of a tool output item: a string, or the text of each of its parts. */
-function outputText(item: Record<string, unknown>): string {
+/** Codex's status header of a tool output: the text it starts with (its first part), never what the script printed after it. */
+function statusText(item: Record<string, unknown>): string {
   if (typeof item.output === "string") return item.output;
-  return Array.isArray(item.output) ? item.output.map((part) => (isPlain(part) && typeof part.text === "string" ? part.text : "")).join("\n") : "";
+  const first = Array.isArray(item.output) ? item.output[0] : undefined;
+  return isPlain(first) && typeof first.text === "string" ? first.text : "";
 }
 
 /** Whether a script of code mode is still running, from the request's input alone: an `exec` whose output said "Script running
@@ -192,7 +194,7 @@ function cellRunning(input: readonly unknown[]): boolean {
   const cells = new Set<string>();
   for (const item of input) {
     if (!isPlain(item) || typeof item.call_id !== "string") continue;
-    const running = /Script running with cell ID (\S+)/.exec(outputText(item));
+    const running = /^Script running with cell ID (\S+)/.exec(statusText(item));
     if (item.type === "custom_tool_call" && item.name === "exec") execs.add(item.call_id);
     else if (item.type === "custom_tool_call_output" && execs.has(item.call_id) && running) cells.add(running[1]!);
     else if (item.type === "function_call" && item.name === "wait" && typeof item.arguments === "string") {

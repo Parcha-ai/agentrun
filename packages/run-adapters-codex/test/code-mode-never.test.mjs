@@ -165,7 +165,7 @@ test("code mode: a model that writes a new exec while a cell still runs: a never
 });
 
 /** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
-async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found' } = {}) {
+async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found', yielded = false } = {}) {
   let charged = 0;
   let looked = 0;
   let holding;
@@ -173,7 +173,8 @@ async function crashed(after, { pad = false, script, then, again = false, lookup
   const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
   const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: lookupText }; } };
   const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
-  const spec = { key: 'step:code-adversary', label: 'pay', system: [], tools: [charge, hold, lookup], context: 'fresh' };
+  const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((r) => setTimeout(r, 800)); return { text: 'slept' }; } };
+  const spec = { key: 'step:code-adversary', label: 'pay', system: [], tools: yielded ? [charge, hold, lookup, slow] : [charge, hold, lookup], context: 'fresh' };
   const store = memorySessionStore();
   const seen = [];
   let resumed = false;
@@ -186,7 +187,10 @@ async function crashed(after, { pad = false, script, then, again = false, lookup
       return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
     }
     const first = [...(pad ? [{ type: 'message', role: 'assistant', id: 'msg_pad', content: [{ type: 'output_text', text: 'x'.repeat(4 * 1024 * 1024 + 100) }] }] : []), exec('call_js', script ?? `text('lookup: ' + JSON.stringify(await tools.lookup({ q: 'x' })));\ntext('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});\ntext('held');`)];
-    const items = n === 1 ? first : resumed ? after(seen, n) : [say(n)];
+    // A script that yields after 100 ms (its pragma) and goes on: the charge runs while the model waits on its cell.
+    const yielding = [exec('call_js', `// @exec: {"yield_time_ms": 100}\nawait tools.slow({});\ntext('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});`)];
+    const wait = { type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: '1', yield_time_ms: 20000 }), call_id: 'call_wait' };
+    const items = resumed ? after(seen, n) : n === 1 ? (yielded ? yielding : first) : yielded && n === 2 ? [wait] : [say(n)];
     return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const died = new AbortController();
@@ -383,4 +387,62 @@ test("recovery note: a tool's recorded output is data, not the harness's words: 
   assert.match(note, /completed/, 'and its status');
   const output = resumed[0].input.find((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
   assert.match(JSON.stringify(output), /CANARY-7f3a91/, 'the exec\'s tool output carries the outcome, in a tool slot');
+});
+
+/** A model that, after the resume, writes a new exec that charges again with the same arguments, once. */
+const recharge = (seen, n) => (!seen.some((b) => JSON.stringify(b.input ?? []).includes('call_again')) ? [exec('call_again', `text(JSON.stringify(await tools.charge({ amount: 5 })));`)] : [say(n)]);
+
+test("code mode: a second crash in the same interrupted turn, after the first recovery answered the cut-off exec: a never call re-issued then is still answered from the log", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed(recharge, { again: true });
+  assert.equal(r.charged(), 1, 'the never tool ran once across both recoveries');
+  assert.match(toldAbout(r.seen, 'call_again').join('\n'), /Recorded earlier in this turn, not run again: charged/);
+});
+
+test("code mode: a crash while a yielded script ran, after its never call completed: a never call re-issued after the resume is answered from the log", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed(recharge, { yielded: true });
+  assert.ok(toldAbout(r.seen, 'call_js').join('\n').includes('Script running with cell ID 1'), 'the script yielded: its exec had an output before the crash');
+  assert.equal(r.charged(), 1, 'the never tool ran once');
+  assert.match(toldAbout(r.seen, 'call_again').join('\n'), /Recorded earlier in this turn, not run again: charged/);
+});
+
+test("code mode: a never call completed in an EARLIER turn is not answered from the log after a later turn's crash: the same call there runs", { skip, timeout: 300_000 }, async () => {
+  let charged = 0;
+  let held;
+  const holding = new Promise((resolve) => { held = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { held(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:code-two-turns-charge', label: 'two turns', system: [], tools: [charge, hold], context: 'fresh' };
+  const store = memorySessionStore();
+  const seen = [];
+  let resumed = false;
+  let again = false;
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const n = seen.length;
+    // Turn 1 charges and ends; turn 2 is cut off in a script that holds; after the resume the model charges again, once.
+    const items = resumed ? (!again ? ((again = true), [exec('call_again', `text(JSON.stringify(await tools.charge({ amount: 5 })));`)]) : [say(n)])
+      : n === 1 ? [exec('call_t1', `text(JSON.stringify(await tools.charge({ amount: 5 })));`)]
+      : n === 3 ? [exec('call_t2', `await tools.hold({});`)]
+      : [say(n)];
+    return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('first');
+  assert.equal((await a.turnEnd()).status, 'completed');
+  assert.equal(charged, 1);
+  await a.send('second');
+  await holding;
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  resumed = true;
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  const told = toldAbout(seen, 'call_again').join('\n');
+  assert.ok(told.length > 0, 'the model charged again after the resume');
+  assert.ok(!/Recorded earlier/.test(told), 'not answered from the log: the earlier turn\'s charge is not this turn\'s');
+  assert.equal(charged, 2, 'it ran');
 });
