@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { localRun } from "../src/local-run.ts";
+import { readLocalRunStatus } from "../src/index.ts";
 import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON, type BoxMode } from "../src/status.ts";
 import { reapOrRefuse } from "../src/commands.ts";
@@ -88,6 +89,7 @@ describe("localRun", () => {
         assert.deepEqual(box(), { mode }, `while ${mode} runs`);
         await run.release();
         assert.deepEqual(box(), { mode }, `kept through the release (${mode})`);
+        assert.deepEqual((await readLocalRunStatus(root))?.box, { mode }, `read back as the record says (${mode})`);
       }
       await (await open()).release();
       assert.equal(box(), undefined, "an open given no box records none");
