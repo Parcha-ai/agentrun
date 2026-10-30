@@ -1,7 +1,7 @@
 // The Codex adapter behind createHarnessRunner, as a DSL host runs it, on the stand-in app-server (fake-app-server.mjs)
 // with its model requests going through the session's real proxy to a scripted provider. No network, no Codex binary.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -285,4 +285,30 @@ test("a model Codex runs in code mode is checked like any other: the check refus
   for (const model of ['gpt-5.4-mini', 'gpt-6-sol', 'gpt-5.6-luna']) assert.deepEqual(make(model).check(spec), [], model);
   const tiered = codexAdapter({ model: { default: 'gpt-5.4-mini', strong: 'gpt-6-sol' }, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
   assert.deepEqual(tiered.check({ ...spec, tier: 'strong' }), []);
+});
+
+test("a Codex turn the session itself stops, by its interrupt or its close, ends interrupted", async () => {
+  for (const stop of ['interrupt', 'close']) {
+    let inside;
+    const reached = new Promise((resolve) => { inside = resolve; });
+    const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+    const { adapter: codex } = adapter(['call wait {}']);
+    const spec = { key: `step:${stop}`, label: 'w', system: [], tools: [wait], context: 'fresh' };
+    const store = memorySessionStore();
+    const session = await codex.open(spec, { store, writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} });
+    await session.send('go');
+    await reached;
+    const ending = session.turnEnd();
+    if (stop === 'interrupt') await session.interrupt(); else await session.close();
+    assert.equal((await ending).status, 'interrupted', stop);
+    if (stop === 'interrupt') await session.close();
+  }
+});
+
+
+test("the adapter ends an aborted turn only through the kernel's abortedOutcome, and keeps no interrupted end of its own", () => {
+  // Structural: a halt with a reason the fakes cannot raise mid-turn still ends this adapter's turn as every other's.
+  const source = readFileSync(new URL('../src/adapter.ts', import.meta.url), 'utf8');
+  assert.match(source, /abortedOutcome\(current\.signal, io\.signal\)/);
+  assert.doesNotMatch(source, /status:\s*"interrupted"/);
 });
