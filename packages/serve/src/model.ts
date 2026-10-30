@@ -8,6 +8,11 @@ import type { ModelCost, ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
+/** Every test hook's name starts so (AGENTRUN_SERVE_FAUX, AGENTRUN_SERVE_FAUX_HARNESS, AGENTRUN_SERVE_FAUX_WEB, ...). */
+export const FAUX_PREFIX = "AGENTRUN_SERVE_FAUX";
+/** `env` without a test hook's name: serve sets those from startServe's options alone, so a name the server's own
+ *  environment holds (an operator's export, a leftover) never gives its runs fake answers or loads a module. */
+export const withoutFaux = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith(FAUX_PREFIX)));
 /** A run's `effort`, passed to its child. */
 export const EFFORT_ENV = "AGENTRUN_SERVE_EFFORT";
 export const MODEL_PROVIDER = "agent-model";

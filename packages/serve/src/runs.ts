@@ -21,7 +21,7 @@ import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, withoutFaux } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
@@ -247,10 +247,11 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
- *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
+ *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. A test hook's name passes
+ *  never (withoutFaux): the run gets one only from startServe's options. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
+  Object.fromEntries(Object.entries(withoutFaux(env)).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
 
 /** One line of the run process's log in words: pi-durable-disk writes JSON lines (`{at, event, message, ...}`). */
 function inWords(line: string): string {
