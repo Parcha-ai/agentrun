@@ -10,7 +10,6 @@ import { test } from "node:test";
 import { startServe } from "../dist/index.js";
 import { agent, client, FAUX, follow, scratch, serve } from "./support.mjs";
 
-const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const usageOf = (rows) => rows.findLast((r) => r.kind === "usage")?.usage;
@@ -65,7 +64,11 @@ test("a run whose process dies mid-turn after a paid request resumes on the next
 test("a chat sent while a turn works, then the server and the run's process die: the next server's run finishes the turn and answers the chat before it completes, never dropping it", { timeout: 120_000 }, async (t) => {
   const data = join(await scratch(t), "agents");
   // The first server in a process of its own, so it dies as a crash kills it, and the next one knows nothing it knew.
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_SERVE_FAUX_HARNESS: FAUX_HARNESS } });
+  // Started through startServe's options: the faux harness is a test hook, which no environment name enables.
+  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: ${JSON.stringify(FAUX)}, fauxHarness: ${JSON.stringify(FAUX_HARNESS)}, drainTimeout: "5s" });
+process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\nAGENTRUN_API_KEY=" + server.token + "\\n");`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
