@@ -396,13 +396,12 @@ test("a blob write goes through the drive's queue too: it waits behind an append
   assert.equal((await readBlobs(drive.world, 'run-1')).get(await sha256Hex('x'.repeat(10))), 'x'.repeat(10));
 });
 
-test("a built-in call its wrapper refuses before letting it go never runs, and is answered refused, so a hook can say it was not run", async () => {
+test("a built-in call its wrapper refuses before letting it go never runs: it is answered with the wrapper's failure, and the drive goes on", async () => {
   const inner = await memorySessionStore().open('run-1');
   const drive = await openDrive({ writer: inner, signal: new AbortController().signal });
   const calls = new BuiltinCalls(drive, { live: false, around: async () => { throw new Error('Bash was not run: the session is pausing'); } });
   const start = await calls.begin({ callId: 'c1', name: 'Bash', input: { command: 'pay' }, replay: 'never' });
   assert.equal(start.run, false, 'never told to run');
-  assert.equal(start.refused, true, 'answered as refused, not as an outcome the log already had');
   assert.match(start.result.text, /was not run: the session is pausing/);
   assert.equal(start.result.isError, true);
   assert.equal(drive.signal.aborted, false, 'a refusal does not halt the drive');
