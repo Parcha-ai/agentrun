@@ -12,6 +12,8 @@ import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, readRunState, withAgentRepo } from "../dist/learning.js";
+// Imported per call, so a module without them fails each test that uses them by name.
+const learningModule = () => import("../dist/learning.js");
 import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 /** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
@@ -746,4 +748,51 @@ test("an ended run with no recorded end time is harvested once, dated its start,
   assert.deepEqual(lines, []);
   assert.equal((await readRunState(data, "calc", run.run_id)).state, "proposed");
   assert.equal(new Date(git(bare, "log", "-1", "--format=%cI", `runs/${run.run_id}`)).getTime(), Math.floor(Date.parse(started) / 1000) * 1000);
+});
+
+/** The faux model's answer to "Make these calls: ...": what each call returned. */
+async function calls(api, agentId, list) {
+  const { body: run } = await api("POST", `/agents/${agentId}/runs`, { input: { content: `Make these calls: ${JSON.stringify(list)}` } });
+  await follow(api, run.run_id, ["completed"]);
+  return { runId: run.run_id, outcomes: JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer) };
+}
+
+test("learning never widens a revision's tools: a tool learning adds works on the working copy only, and is refused by name anywhere else", async (t) => {
+  const { api, data } = await serve(t);
+  const skill = { "cite/SKILL.md": "Cite the source." };
+  assert.equal((await api("POST", "/agents", { ...agent("reader", { tools: ["read"], skills: ["cite"] }), skills: skill })).status, 201);
+  const note = ".agent/repo/learnings/L-5ca1ab1e0002.md";
+  const { runId, outcomes } = await calls(api, "reader", [
+    ["write", { path: note, content: "---\nid: L-5ca1ab1e0002\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nCite twice.\n" }],
+    ["write", { path: "input.txt", content: "changed" }],
+    ["read", { path: ".agents/skills/cite/SKILL.md" }],
+  ]);
+  assert.equal(outcomes[0].isError, false, JSON.stringify(outcomes[0]));
+  assert.deepEqual([outcomes[1].isError, outcomes[1].text], [true, "write is the learning copy's only here: input.txt is outside .agent/repo"]);
+  assert.equal(existsSync(join(data, "runs", runId, "work", "input.txt")), false, "nothing was written");
+  assert.deepEqual([outcomes[2].isError, outcomes[2].text.includes("Cite the source.")], [false, true], "read was named: it keeps its scope");
+  await stateOf(data, "reader", runId);
+  assert.match(show(bareOf(data, "reader"), `runs/${runId}`, "learnings/L-5ca1ab1e0002.md"), /Cite twice/);
+  // A revision that names no tool: even read is the learning copy's only.
+  assert.equal((await api("POST", "/agents", { ...agent("plain", { skills: ["cite"] }), skills: skill })).status, 201);
+  const plain = await calls(api, "plain", [["read", { path: ".agents/skills/cite/SKILL.md" }], ["read", { path: ".agent/repo/AGENTS.md" }]]);
+  assert.deepEqual([plain.outcomes[0].isError, plain.outcomes[0].text], [true, "read is the learning copy's only here: .agents/skills/cite/SKILL.md is outside .agent/repo"]);
+  assert.deepEqual([plain.outcomes[1].isError, plain.outcomes[1].text.includes("Answer.")], [false, true]);
+});
+
+test("a tool learning adds never follows a link out of the working copy", async (t) => {
+  const { copyRefusal } = await learningModule();
+  const { symlink } = await import("node:fs/promises");
+  const work = await scratch(t);
+  await mkdir(join(work, ".agent", "repo", "learnings"), { recursive: true });
+  await symlink(work, join(work, ".agent", "repo", "out"));
+  assert.equal(await copyRefusal(work, "write", ".agent/repo/learnings/L-x.md"), undefined);
+  assert.equal(await copyRefusal(work, "write", join(work, ".agent/repo/learnings/new/L-x.md")), undefined, "a path not made yet, inside the copy");
+  assert.equal(await copyRefusal(work, "write", ".agent/repo/out/input.txt"), "write is the learning copy's only here: .agent/repo/out/input.txt is outside .agent/repo");
+  assert.equal(await copyRefusal(work, "edit", ".agent/repo/../input.txt"), "edit is the learning copy's only here: .agent/repo/../input.txt is outside .agent/repo");
+});
+
+test("a case value too short or too plain to be the case's own is not a refused value; a longer one, a number included, is", async () => {
+  const { caseValuesOf } = await learningModule();
+  assert.deepEqual(caseValuesOf({ a: "yes", b: "12", c: "123456789012", d: "True", e: "NO", f: "abcd", g: "false", h: "1234" }), ["123456789012", "abcd", "1234"]);
 });

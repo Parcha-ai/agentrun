@@ -34,6 +34,14 @@ export default function reply(context, faux) {
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
     return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
   }
+  // Makes the tool calls its first message lists as JSON, one per turn, then answers with what each returned.
+  const calls = /^Make these calls: (.*)$/s.exec(first);
+  if (calls) {
+    const list = JSON.parse(calls[1]);
+    if (results < list.length) return faux.message(faux.toolCall(list[results][0], list[results][1]), { stopReason: "toolUse" });
+    const outcomes = context.messages.filter((m) => m.role === "toolResult").map((m) => ({ isError: m.isError === true, text: textOf(m) }));
+    return faux.message(JSON.stringify(outcomes));
+  }
   // Asks the person through ask_person; for an agent without it the call fails, and the reply goes on without asking.
   if (first.includes("Pick a region")) {
     if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
