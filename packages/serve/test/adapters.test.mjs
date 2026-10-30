@@ -2,7 +2,7 @@
 // other provider, a missing key, or a gateway under a path the proxy cannot reach is a reason capabilities shows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeModelId, claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
+import { claudeModel, claudeModelId, claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -54,17 +54,19 @@ test("the model id codex is given is the one model.ts chose: OpenAI's own id dir
   assert.equal((await chooseModel({ ...gateway, AGENT_MODEL_GATEWAY_IDS: "bare" }, "openai/gpt-4o")).model.modelId, "gpt-4o", "unless the gateway takes bare ids");
 });
 
-test("the model id claude-agent sends: Anthropic's own id, unless ANTHROPIC_BASE_URL is the same gateway as AGENT_MODEL_BASE_URL, whose own name for it is sent whole, as OpenRouter names its models", () => {
-  const sonnet = { provider: "anthropic", modelId: "claude-sonnet-5.5" };
-  const openrouter = { ANTHROPIC_BASE_URL: "https://openrouter.ai/api", AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1" };
-  assert.equal(claudeModelId({}, sonnet), "claude-sonnet-5.5", "to Anthropic: its own id");
-  assert.equal(claudeModelId({ ANTHROPIC_BASE_URL: "http://127.0.0.1:5000" }, sonnet), "claude-sonnet-5.5", "to an Anthropic-compatible endpoint of its own: Anthropic's id");
-  assert.equal(claudeModelId({ AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1" }, sonnet), "claude-sonnet-5.5", "the other harnesses' gateway alone does not reach claude-agent");
-  assert.equal(claudeModelId(openrouter, sonnet), "anthropic/claude-sonnet-5.5", "one gateway for every harness: its name, whole");
-  assert.equal(claudeModelId({ ...openrouter, ANTHROPIC_BASE_URL: "https://openrouter.ai/api/v1/" }, sonnet), "anthropic/claude-sonnet-5.5", "the same base, given with /v1");
-  assert.equal(claudeModelId({ ...openrouter, AGENT_MODEL_GATEWAY_IDS: "bare" }, sonnet), "claude-sonnet-5.5", "unless that gateway takes bare ids");
-  assert.equal(claudeModelId({ ...openrouter, AGENT_MODEL_BASE_URL: "https://gw.example/v1" }, sonnet), "claude-sonnet-5.5", "another gateway than Claude's: Anthropic's id");
-  assert.equal(claudeModelId({ ...openrouter, AGENT_MODEL_BASE_URL: "https://user@openrouter.ai/api/v1" }, sonnet), "claude-sonnet-5.5", "a gateway setting refused elsewhere is not Claude's to refuse here");
+test("the model id claude-agent sends and prices is Anthropic's own: dots as dashes, as a gateway such as OpenRouter names its models with dots", () => {
+  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-sonnet-5.5" }), "claude-sonnet-5-5", "OpenRouter's name, as Anthropic's id");
+  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-sonnet-5-5" }), "claude-sonnet-5-5", "Anthropic's own id, unchanged");
+  assert.equal(claudeModelId({ provider: "anthropic", modelId: "claude-haiku-4.5" }), "claude-haiku-4-5");
+  assert.equal(claudeModelId({ provider: "other", modelId: "a.b" }), "a.b", "another provider's id is never rewritten");
+});
+
+test("claude-agent's model is one provider and the model's own id: the doubled anthropic/anthropic/<model> is refused, naming the form to use", () => {
+  assert.deepEqual(claudeModel({}, "anthropic/claude-sonnet-5.5"), { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } });
+  const doubled = claudeModel({}, "anthropic/anthropic/claude-sonnet-5.5");
+  assert.equal(doubled.host, false, "the revision's own model: a refusal at save, which no host setting fixes");
+  assert.match(doubled.why, /name it anthropic\/claude-sonnet-5\.5\./);
+  assert.equal(claudeModel({ AGENT_MODEL: "anthropic/anthropic/claude-haiku-4.5" }, undefined).host, true, "the host's default: a setting of the host");
 });
 
 test("a gateway base with a path: codex sends to <base>/v1/responses and claude-agent to <base>/v1/messages, a trailing /v1 taken once, so one OpenRouter-style base serves both", () => {
