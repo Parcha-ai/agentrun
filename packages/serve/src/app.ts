@@ -16,11 +16,12 @@ import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/p
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
 import { readJson, RUN_META } from "./files.js";
+import type { AgentAdapter } from "@parcha/agentrun-kernel";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { nativeTools } from "./native-tools.js";
 import { isWorkspace } from "./run-workspace.js";
-import { runBox, runBoxOf } from "./box/run-box.js";
+import { claimBoxedClaude, runBox, runBoxOf } from "./box/run-box.js";
 import { adapterRun } from "./harness-app.js";
 import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
@@ -87,7 +88,10 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     const settings = runBoxOf(process.env);
     const box = settings && nativeTools(harness, settings.isolation.mode, isWorkspace(workspace) ? workspace : "work") ? await runBox(settings, { id: run.id, dir: where.root }, process.env) : undefined;
     // Built at the open: the harness's own process runs under the run's confinement, the prefix pi's commands get there.
-    const make = (confine?: ConfineChild) => adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(box ? { box } : {}) });
+    const make = async (confine?: ConfineChild) => {
+      const adapter = await adapterFor(harness, process.env, { model: model!, models: chosen.models as never, ...(confine ? { confine } : {}), ...(box ? { box } : {}) });
+      return box && harness === "claude-agent" ? oneBoxedClaude(adapter) : adapter;
+    };
     // The run's cap, checked before each of the harness's requests: the same ceiling rule as pi's (cap.ts).
     const guard = await capBefore(cap, chosen.models.getModel(model!.provider, model!.modelId) as never);
     const { door, onOpen } = adapterRun(make, harness, spec, BACKGROUND, cap, named, dir, guard);
@@ -165,4 +169,38 @@ export default async function app(where: AppContext): Promise<AppOptions> {
     await durable.release();
   };
   return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), onOpen } as unknown as AppOptions;
+}
+
+/** A boxed Claude adapter whose sessions claim this process's one boxed Claude session (box/run-box.ts): each open
+ *  claims it and its close lets it go, so a second open at once, from this adapter or another, is refused by name. */
+export function oneBoxedClaude(adapter: AgentAdapter): AgentAdapter {
+  return {
+    ...adapter,
+    check: (spec) => adapter.check(spec),
+    async open(spec, io) {
+      const release = claimBoxedClaude(spec.key);
+      let session: Awaited<ReturnType<AgentAdapter["open"]>>;
+      try {
+        session = await adapter.open(spec, io);
+      } catch (error) {
+        release();
+        throw error;
+      }
+      // The session as it is (its state read live), but its close lets the claim go.
+      const close = async () => {
+        try {
+          await session.close();
+        } finally {
+          release();
+        }
+      };
+      return new Proxy(session, {
+        get(target, property) {
+          if (property === "close") return close;
+          const value = Reflect.get(target, property, target) as unknown;
+          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+    },
+  };
 }

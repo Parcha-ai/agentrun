@@ -186,7 +186,7 @@ test("in the run's real box: its own workspace reads and writes; the server's to
 
 test("serve hands a harness run's process its box settings in one non-secret variable: its data root and what its probe proved; none when its box is unavailable", { timeout: 90_000 }, async (t) => {
   const boxed = { isolation: { mode: "bwrap", cgroup: false }, start() { throw new Error("not in this test"); }, reap: async () => ({ empty: true, left: 0, by: "none" }) };
-  for (const [factory, expected] of [[async () => boxed, (data) => ({ data, isolation: { mode: "bwrap", cgroup: false } })], [undefined, () => undefined]]) {
+  for (const [factory, expected] of [[async () => boxed, (data) => ({ data, isolation: { mode: "bwrap", cgroup: false }, runtimeDir: tmpdir() })], [undefined, () => undefined]]) {
     const { api, data } = await serve(t, { fauxHarness: FAUX_HARNESS, ...(factory ? { boxFactory: factory } : {}) });
     assert.equal((await api("POST", "/agents", agent("boxed", { harness: "claude-agent", instructions: `Wait for ${join(data, "never")} before the answer.`, tools: [] }))).status, 201);
     const run = await api("POST", "/agents/boxed/runs", { input: { content: "hi" } });
@@ -198,6 +198,9 @@ test("serve hands a harness run's process its box settings in one non-secret var
     }
     const environ = Object.fromEntries((await readFile(`/proc/${holder.pid}/environ`, "utf8")).split("\0").filter(Boolean).map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]));
     assert.deepEqual(environ[RUN_BOX_ENV] === undefined ? undefined : JSON.parse(environ[RUN_BOX_ENV]), expected(data));
+    // A boxed harness run's process takes its launch's own temporary directory, in its harness directory; none, its own.
+    if (factory) assert.match(environ.TMPDIR ?? "", new RegExp(`^${dir.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}/harness/proc-tmp/[0-9a-f]{6}$`), `the run process's TMPDIR is its launch's directory: ${environ.TMPDIR}`);
+    else assert.doesNotMatch(environ.TMPDIR ?? "", /proc-tmp/, "a run with no box keeps the server's");
     const caps = (await api("GET", "/capabilities")).body;
     assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", false], ["codex", false]], "capabilities say it from the same function: off, in a box too");
     assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status, 202);

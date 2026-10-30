@@ -7,6 +7,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, openSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -18,6 +19,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { readJson, RUN_CANCELLED, RUN_META, tempOf, writeWhole } from "./files.js";
 import { type BoxView, UNSANDBOXED_RUN_LINE } from "./box/config.js";
 import { RUN_BOX_ENV, type RunBoxSettings } from "./box/run-box.js";
+import { newLaunchDir, ownLaunchDir } from "./box/launch-tmp.js";
 import type { Isolation } from "@parcha/agentrun-kernel/host";
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
@@ -714,6 +716,10 @@ export class Runs {
     delete env[RUN_BOX_ENV];
     const settings = this.runBoxSettings();
     if (settings) env[RUN_BOX_ENV] = JSON.stringify(settings);
+    // A boxed harness run's process gets a temporary directory of this launch's own (box/launch-tmp.ts), in the run's
+    // harness directory: what its harness's own tools need of it is lent to their box one directory at a time.
+    const launchTmp = settings && run.meta.workspace === "harness/work" ? newLaunchDir(run.dir) : undefined;
+    if (launchTmp) env.TMPDIR = launchTmp;
     // The box this open runs in, recorded before its process starts: every launch's own (a relaunch after the operator
     // changed AGENTRUN_BOX records the new mode), so the record always tells the truth about the latest open.
     if (this.options.boxView) {
@@ -736,6 +742,7 @@ export class Runs {
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
     ], { stdio: ["ignore", "ignore", log], env });
     closeSync(log);
+    if (launchTmp) ownLaunchDir(launchTmp, child.pid);
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
@@ -767,7 +774,7 @@ export class Runs {
     const view = this.options.boxView;
     if (!view || view.mode === "unavailable") return undefined;
     const isolation: Isolation = view.mode === "unsandboxed" ? { mode: "unsandboxed" } : { mode: view.mode, cgroup: view.cgroup };
-    return { data: this.options.agents.dir, isolation, ...(view.cgroup && this.options.boxCgroupRoot !== undefined ? { cgroupRoot: this.options.boxCgroupRoot } : {}) };
+    return { data: this.options.agents.dir, isolation, runtimeDir: tmpdir(), ...(view.cgroup && this.options.boxCgroupRoot !== undefined ? { cgroupRoot: this.options.boxCgroupRoot } : {}) };
   }
 
   private relaunch(run: Run): void {
