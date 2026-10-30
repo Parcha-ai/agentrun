@@ -11,6 +11,12 @@
       },
       "packages/harness-process/src/types.ts": {
         "harness-process": "src/types.ts"
+      },
+      "packages/harness-codex/src/scripts.ts": {
+        "harness-codex": "src/scripts.ts"
+      },
+      "packages/harness-codex/src/code-mode.ts": {
+        "harness-codex": "src/code-mode.ts"
       }
     }
   },
@@ -192,7 +198,8 @@
           "harness-claude-code": "journalLedger"
         },
         "openTurn": {
-          "harness-claude-code": "openTurn"
+          "harness-claude-code": "openTurn",
+          "harness-codex": "openTurn"
         },
         "replayBy": {
           "harness-claude-code": "replayBy"
@@ -202,6 +209,12 @@
         },
         "zodShapeFromJsonSchema": {
           "harness-claude-code": "zodShapeFromJsonSchema"
+        },
+        "recoverySystemNote": {
+          "harness-codex": "recoverySystemNote"
+        },
+        "recoveryUserTurn": {
+          "harness-codex": "recoveryUserTurn"
         }
       }
     },

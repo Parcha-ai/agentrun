@@ -57,7 +57,7 @@ export {
 export type { AuthorHostAddendum, CandidatePolicyOptions, AuthorWorkflowOptions, AuthoredWorkflow, HostOutputTypeOptions } from "./author.js";
 export {
   WORKFLOW_NODE_KINDS, GENERATIVE_NODE_KINDS, JUDGMENT_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS,
-  MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS,
+  MECHANICAL_PREDICATES, WORKFLOW_PREDICATES, PREDICATE_FIELDS, FIELD_TYPES,
   EFFORT_LEVELS, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES,
 } from "./vocabulary.js";
-export type { WorkflowNodeKind, WorkflowPredicateName } from "./vocabulary.js";
+export type { WorkflowNodeKind, WorkflowPredicateName, FieldType } from "./vocabulary.js";

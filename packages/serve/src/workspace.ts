@@ -27,11 +27,12 @@ const reasonOf = (error: unknown): RefusedReason => {
 };
 
 /** Test seams, tests only: before the walk enters a directory it listed (after its lstat, before its pin); after a
- *  directory is pinned and before it is read; after a file is opened and checked, before the caller reads it; after a
- *  capped read's size check, before the bytes are read. */
+ *  directory is pinned and before it is read; after a directory is listed and before its entries are looked at; after a
+ *  file is opened and checked, before the caller reads it; after a capped read's size check, before the bytes are read. */
 export const workspaceTestHooks: {
   beforeEnter?: (path: string) => Promise<void> | void;
   afterPin?: (path: string) => Promise<void> | void;
+  afterList?: (path: string) => Promise<void> | void;
   afterOpen?: (path: string) => Promise<void> | void;
   afterSizeCheck?: (path: string) => Promise<void> | void;
 } = {};
@@ -130,12 +131,19 @@ export async function walkWork(work: string, visit: (path: string, stats: Stats,
         refused(rel, failed ?? "unreadable");
         return true;
       }
+      await workspaceTestHooks.afterList?.(rel || ".");
       for (const name of names) {
         if (skip(name)) continue;
         // By the held directory: a name swapped for a link reads as the link, which is skipped.
-        const stats = await lstat(`${pin.dir}/${name}`).catch(() => null);
+        let gone = false;
+        const stats = await lstat(`${pin.dir}/${name}`).catch((error) => void (gone = (error as NodeJS.ErrnoException)?.code === "ENOENT"));
         const path = rel ? `${rel}/${name}` : name;
-        if (!stats) continue;
+        if (!stats) {
+          // Gone since the listing: nothing to say. Any other failure (a directory that lists but cannot be searched)
+          // is an entry never read, so it is reported, never left out as if it were not there.
+          if (!gone) refused(path, "unreadable");
+          continue;
+        }
         if (stats.isSymbolicLink()) {
           refused(path, "link");
           continue;

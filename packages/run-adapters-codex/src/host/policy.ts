@@ -12,8 +12,10 @@
 // format (plain text, or the JSON schema a node's output schema becomes) and a verbosity, and the model is the session's.
 // `max_output_tokens` is clamped. No tool the provider runs on its own passes: web search, which the CLI
 // adds whatever its config says, is dropped, and any other provider-hosted tool is refused. A function or custom tool
-// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. This adapter
-// runs classic function tools only: a code-mode request (its `additional_tools` carriers, exec and wait) is refused.
+// that is not one of the session's names is dropped, so the model is offered exactly the host's tools. A code-mode
+// model's request carries Codex's own `exec` and `wait` in an `additional_tools` item; those pass, and nothing else in
+// the item does (the sub-agent and user-input tools it also lists are dropped), so the model is offered exactly the
+// host's tools, called from `exec` as nested ones.
 //
 // Usage is read from the stream's `response.completed` (or `response.incomplete`, a paid response cut at its output
 // limit), each `data:` line parsed as JSON on its own, never matched as text. OpenAI counts cached and cache-write tokens
@@ -46,6 +48,10 @@ export interface CodexPolicyOptions {
   tools: readonly string[];
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
+  /** Told, before Codex has the piece of an answer, what the answer carries: `response()` when an answer starts, and
+   *  `exec(callId)` for each code-mode `exec` call it holds. The session ties a script's nested calls to the `exec` of the
+   *  latest answer, which is known here before Codex can run anything of it. */
+  announce?: { response(): void; exec(callId: string): void; failed(): void; end(): void };
 }
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -172,6 +178,120 @@ export function usageOf(text: string): ProxyUsage | undefined {
   }
 }
 
+/** The text of a tool output item: a string, or the text of each of its parts. */
+/** Codex's status header of a tool output: the text it starts with (its first part), never what the script printed after it. */
+function statusText(item: Record<string, unknown>): string {
+  if (typeof item.output === "string") return item.output;
+  const first = Array.isArray(item.output) ? item.output[0] : undefined;
+  return isPlain(first) && typeof first.text === "string" ? first.text : "";
+}
+
+/** Whether a script of code mode is still running, from the request's input alone: an `exec` whose output said "Script running
+ *  with cell ID N" (it yielded and went on), and no later `wait` on N whose output says the script ended. */
+function cellRunning(input: readonly unknown[]): boolean {
+  const execs = new Set<string>();
+  const waits = new Map<string, string>();
+  const cells = new Set<string>();
+  for (const item of input) {
+    if (!isPlain(item) || typeof item.call_id !== "string") continue;
+    const running = /^Script running with cell ID (\S+)/.exec(statusText(item));
+    if (item.type === "custom_tool_call" && item.name === "exec") execs.add(item.call_id);
+    else if (item.type === "custom_tool_call_output" && execs.has(item.call_id) && running) cells.add(running[1]!);
+    else if (item.type === "function_call" && item.name === "wait" && typeof item.arguments === "string") {
+      try {
+        const cell = (JSON.parse(item.arguments) as { cell_id?: unknown }).cell_id;
+        if (cell !== undefined) waits.set(item.call_id, String(cell));
+      } catch {}
+    } else if (item.type === "function_call_output" && waits.has(item.call_id) && !running) cells.delete(waits.get(item.call_id)!);
+  }
+  return cells.size > 0;
+}
+
+/** The code-mode runtime a request may carry: Codex's `exec` (a custom tool) and `wait` (a function), in the `functions`
+ *  namespace of an `additional_tools` item. Every other tool the item lists is dropped, and an item of any other shape is
+ *  refused. Other input items pass as they are. */
+const CODE_MODE_TOOLS = new Map([["exec", "custom"], ["wait", "function"]]);
+function codeModeCarrier(item: unknown, offerExec: boolean): unknown {
+  if (!isPlain(item) || item.type !== "additional_tools") return item;
+  if (!Array.isArray(item.tools)) throw new ProxyRefusal(400, "an additional_tools item has no tools list");
+  const kept: unknown[] = [];
+  for (const namespace of item.tools) {
+    if (!isPlain(namespace) || namespace.type !== "namespace" || !Array.isArray(namespace.tools)) throw new ProxyRefusal(400, "an additional_tools item holds something other than a namespace");
+    if (namespace.name !== "functions") continue;
+    const own = namespace.tools.filter((tool) => isPlain(tool) && typeof tool.name === "string" && CODE_MODE_TOOLS.get(tool.name) === tool.type && (offerExec || tool.name !== "exec"));
+    kept.push({ ...namespace, tools: own });
+  }
+  return { ...item, tools: kept };
+}
+
+/** An event that is not whole by this many characters is not read: the answer is then reported as not watched. */
+const EVENT_CAP = 4 * 1024 * 1024;
+
+/** Reads an answer's server-sent events as they pass (lines end in LF, CRLF or a bare CR; an event is its `data:` lines joined
+ *  with LF, ended by a blank line), and tells `announce` of each code-mode `exec` call it holds. One that cannot be read to its
+ *  end (an event over the cap) is reported as failed. `end` closes the answer. */
+function watchResponse(announce: NonNullable<CodexPolicyOptions["announce"]>): { chunk(text: string): void; failed(): void; end(): void } {
+  announce.response();
+  let line = "";
+  let held = false; // a CR ended the last piece: an LF that starts the next belongs to it
+  let data: string[] = [];
+  let size = 0;
+  let broken = false;
+  const fail = () => {
+    if (broken) return;
+    broken = true;
+    announce.failed();
+  };
+  const dispatch = () => {
+    const text = data.join("\n");
+    data = [];
+    size = 0;
+    if (!text.includes("custom_tool_call")) return;
+    let event: unknown;
+    try {
+      event = JSON.parse(text);
+    } catch {
+      return;
+    }
+    const item = isPlain(event) && event.type === "response.output_item.done" && isPlain(event.item) ? event.item : undefined;
+    if (item?.type === "custom_tool_call" && item.name === "exec" && typeof item.call_id === "string") announce.exec(item.call_id);
+  };
+  const endLine = () => {
+    const done = line;
+    line = "";
+    if (done === "") return dispatch();
+    if (done.startsWith("data:")) {
+      const value = done.slice(done.startsWith("data: ") ? 6 : 5);
+      size += value.length + 1;
+      if (size > EVENT_CAP) return fail();
+      data.push(value);
+    }
+  };
+  return {
+    failed: () => fail(),
+    end: () => announce.end(),
+    chunk(text) {
+      if (broken) return;
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i]!;
+        if (held) {
+          held = false;
+          if (ch === "\n") continue;
+        }
+        if (ch === "\n") endLine();
+        else if (ch === "\r") {
+          endLine();
+          held = true;
+        } else {
+          line += ch;
+          if (line.length > EVENT_CAP) return fail();
+        }
+        if (broken) return;
+      }
+    },
+  };
+}
+
 export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
   const allowed = new Set(options.tools);
   const maxOutputTokens = options.maxOutputTokens ?? 32_000;
@@ -199,13 +319,22 @@ export function codexPolicy(options: CodexPolicyOptions): ProviderPolicy {
       if (out.text !== undefined) out.text = textOptions(out.text);
       if (out.tools !== undefined) out.tools = ownTools(out.tools, allowed);
       if (out.tool_choice !== undefined) out.tool_choice = toolChoice(out.tool_choice, allowed);
-      if (Array.isArray(out.input)) {
-        if (out.input.some((item) => isPlain(item) && item.type === "additional_tools")) throw new ProxyRefusal(400, "code mode is not supported by this adapter yet: its tools run as classic function calls only");
+      if (Array.isArray(out.input) && out.input.some((item) => isPlain(item) && item.type === "additional_tools")) {
+        // While a script that yielded still runs, the model is offered `wait` and not `exec`: one script is live at a time.
+        const offerExec = !cellRunning(out.input);
+        out.input = out.input.map((item) => codeModeCarrier(item, offerExec));
+        // One `exec` is open at a time (the session's barrier for a code-mode call rests on it): a code-mode request that allows
+        // parallel calls is refused, and one that says nothing is sent with them off. A classic request is as the CLI sent it.
+        if (out.parallel_tool_calls !== undefined && typeof out.parallel_tool_calls !== "boolean") throw new ProxyRefusal(400, "parallel_tool_calls is not a boolean");
+        if (out.parallel_tool_calls === true) throw new ProxyRefusal(400, "parallel tool calls are not allowed in code mode: the model writes one exec at a time");
+        out.parallel_tool_calls = false;
       }
       const asked = typeof out.max_output_tokens === "number" && out.max_output_tokens > 0 ? out.max_output_tokens : maxOutputTokens;
       return { ...out, model: options.model, store: false, max_output_tokens: Math.min(asked, maxOutputTokens) };
     },
     usageOf,
+    watch: options.announce ? () => watchResponse(options.announce!) : undefined,
+    unwatched: options.announce ? () => options.announce!.failed() : undefined,
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
   };
 }
