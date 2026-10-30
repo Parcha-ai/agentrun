@@ -34,7 +34,7 @@ USER node
 ENV NODE_ENV=production
 EXPOSE 7340
 VOLUME ["/data"]
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentrun/packages/serve/dist/cli.js"]
+ENTRYPOINT ["/opt/agentrun/packages/serve/launcher/agentrun-serve", "--", "/usr/bin/tini", "--", "node", "/opt/agentrun/packages/serve/dist/cli.js"]
 # A busy run gets 6 s to finish its turn on SIGTERM, so a stop (about 1.5 s more) ends inside Docker's default 10 s
 # grace; a turn cut off resumes at the next start.
 CMD ["--data", "/data", "--listen", "0.0.0.0", "--port", "7340", "--drain-timeout", "6s"]
