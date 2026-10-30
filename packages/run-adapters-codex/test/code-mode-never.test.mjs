@@ -4,7 +4,7 @@
 //
 // Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing or different binary fails.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { env } from 'node:process';
@@ -226,4 +226,37 @@ test("code mode: after a recovery, a safe tool called again is run again: only a
   const r = await crashed((seen, n) => (!seen.some((b, i) => i > 0 && JSON.stringify(b.input).includes('call_look')) ? [exec('call_look', `text(JSON.stringify(await tools.lookup({ q: 'x' })));`)] : [say(n)]));
   assert.equal(r.looked(), 2, 'the safe tool ran again');
   assert.equal(r.charged(), 1);
+});
+
+test("a cut-off code-mode exec is answered with a custom tool output holding the nested outcomes, and never with a generic one", { skip, timeout: 180_000 }, async () => {
+  let charged = 0;
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged 5' }; } };
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const spec = { key: 'step:code-repair', label: 'pay', system: [], tools: [charge, hold], context: 'fresh' };
+  const store = memorySessionStore();
+  const { seen, fetch } = provider([[exec('call_js', `text('charge: ' + JSON.stringify(await tools.charge({ amount: 5 })));\nawait tools.hold({});`)]]);
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('pay');
+  await held;
+  died.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+  const before = seen.length;
+
+  const b = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await b.recover();
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 1, 'the never tool did not run again');
+  const answers = seen.slice(before).flatMap((body) => body.input ?? []).filter((item) => item.call_id === 'call_js' && /_output$/.test(item.type ?? ''));
+  assert.deepEqual([...new Set(answers.map((item) => item.type))], ['custom_tool_call_output'], 'the exec is answered as a custom tool call, and never with a generic output');
+  assert.ok(answers.map((item) => JSON.stringify(item.output)).join('\n').includes('charged 5'), 'the answer carries the nested outcome');
+  // Codex drops an output that does not match its call's kind from what it sends, so the rollout itself is what shows a generic output.
+  const lines = readdirSync(ROOT, { recursive: true }).filter((f) => /rollout-.*\.jsonl$/.test(String(f))).flatMap((f) => readFileSync(join(ROOT, String(f)), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)));
+  const outputs = lines.filter((l) => l.type === 'response_item' && l.payload?.call_id === 'call_js' && /_output$/.test(l.payload.type ?? '')).map((l) => l.payload.type);
+  assert.ok(outputs.includes('custom_tool_call_output'), 'the rollout holds the exec\'s custom output');
+  assert.ok(!outputs.includes('function_call_output'), 'and no generic output for it');
 });

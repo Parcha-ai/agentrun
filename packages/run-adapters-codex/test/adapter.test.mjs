@@ -1,14 +1,15 @@
 // The Codex adapter behind createHarnessRunner, as a DSL host runs it, on the stand-in app-server (fake-app-server.mjs)
 // with its model requests going through the session's real proxy to a scripted provider. No network, no Codex binary.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
-import { foldSession } from '@parcha/agentrun-adapters/kernel';
+import { foldSession, openDrive } from '@parcha/agentrun-adapters/kernel';
+import { NativeJournal } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
@@ -143,6 +144,57 @@ const until = async (done, what, ms = 15_000) => {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 };
+
+/** The calls in the session's Codex rollout that have no output line: what the next turn's history would hold unanswered. */
+function unansweredCalls(sessionsDir) {
+  const files = readdirSync(sessionsDir, { recursive: true }).filter((f) => /rollout-.*\.jsonl$/.test(String(f)));
+  assert.equal(files.length, 1, 'one rollout');
+  const items = readFileSync(join(sessionsDir, String(files[0])), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((l) => l.type === 'response_item').map((l) => l.payload);
+  const answered = new Set(items.filter((i) => i.type === 'function_call_output').map((i) => i.call_id));
+  return items.filter((i) => i.type === 'function_call' && !answered.has(i.call_id)).map((i) => i.call_id);
+}
+
+test("a crash inside a never tool's call, then the turn closed in the log: the next send answers the dangling call from the log before the new turn, and the call is never run again", async () => {
+  const dir = scratch();
+  const file = join(dir, 'script.json');
+  writeFileSync(file, JSON.stringify(['call charge {"amount":5}', 'next']));
+  const codex = codexAdapter({
+    model: 'luna-test',
+    provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' },
+    sessionsDir: join(dir, 'sessions'),
+    standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_SCRIPT: file } },
+  });
+  let charged = 0;
+  let inside;
+  const reached = new Promise((resolve) => { inside = resolve; });
+  const charge = { name: 'charge', description: 'Charge the card.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { charged += 1; inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut off')), { once: true })); } };
+  const spec = { key: 'step:repair', label: 'pay', system: [], tools: [charge], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+
+  const first = new AbortController();
+  const a = await codex.open(spec, { writer: await store.open(spec.key), models, signal: first.signal, onEvent: () => {} });
+  await a.send('pay');
+  await reached;
+  first.abort(new Error('the process died'));
+  assert.equal((await a.turnEnd()).status, 'interrupted');
+  await a.close();
+  assert.equal(unansweredCalls(join(dir, 'sessions')).length, 1, 'the crash left the call without an output in the rollout');
+
+  // The turn is closed in the log without resuming it, as a settle does: the next open has no open turn, so no recovery note.
+  const closing = await openDrive({ writer: await store.open(spec.key), signal: new AbortController().signal });
+  const journal = new NativeJournal(closing);
+  journal.message({ type: 'turn', status: 'interrupted' });
+  await journal.flush();
+
+  const b = await codex.open(spec, { writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(b.state, 'idle', 'no open turn, so no recovery note');
+  await b.send('next');
+  assert.equal((await b.turnEnd()).status, 'completed');
+  await b.close();
+  assert.equal(charged, 1, 'the cut call is never run again');
+  assert.deepEqual(unansweredCalls(join(dir, 'sessions')), [], 'every call in the history the new turn sends has its output');
+});
 
 test("an interrupt while a never tool's outcome is still being written: the next turn's drive folds the outcome, never takes it for abandoned", async () => {
   let charged = 0;

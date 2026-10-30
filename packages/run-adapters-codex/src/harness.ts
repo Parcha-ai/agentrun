@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-repair-before-any-turn
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -1102,36 +1102,39 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
 
       // An earlier invocation that ended before its snapshot: the manifest catches up first.
       await driveFiles.catchUp();
+      // Calls the rollout has no output for get theirs from the log, before any turn is sent: a recovery's, or a new turn's
+      // after a turn that ended without them (one settled, not resumed, or interrupted mid-call), whose history the
+      // provider would refuse with a call left unanswered. A cut-off `exec` is answered first, from its nested calls; the
+      // generic output is for every other call.
+      const summary = summarizeRollout(lines);
+      if (resume && summary.dangling.length > 0) {
+        const ties = (await journal.read<{ callId: string; exec: string }>(NESTED_STREAM)).map((r) => r.data);
+        const rolled = completedNested(lines);
+        const items = summary.dangling.map((c) => {
+          // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
+          if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
+          const facts: NestedFact[] = [];
+          for (const tie of ties.filter((t) => t.exec === c.callId)) {
+            const e = ctx.state().effects.get(toolKey(tie.callId));
+            const fact: NestedFact = {
+              callId: tie.callId,
+              tool: e ? e.name.replace(/^tool\./, '') : (rolled.get(tie.callId)?.tool ?? 'a tool'),
+              ...(e ? { store: { status: e.status === 'completed' ? 'completed' : e.status === 'failed' ? 'failed' : 'started', text: e.status === 'failed' ? (e.error?.message ?? '') : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact['store']> } : {}),
+              ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
+            };
+            facts.push(fact);
+            const settled = settle(fact);
+            if (settled.kind === 'completed' && e?.replay === 'never') recovered.set(callKey(fact.tool, e.input), { tool: fact.tool, text: settled.text });
+          }
+          return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(facts) };
+        });
+        await guard(rpc.request('thread/inject_items', { threadId, items }));
+        await guard(synced());
+      }
       // A turn a crash cut off.
       const note = recoveryNote(ctx.state());
       if (note) {
-        const summary = summarizeRollout(lines);
         const owed = owedSubmissions(ctx.state(), note.turn.placed, summary.clientIds);
-        if (resume && summary.dangling.length > 0) {
-          // Calls the rollout has no output for get theirs from the log.
-          const ties = (await journal.read<{ callId: string; exec: string }>(NESTED_STREAM)).map((r) => r.data);
-          const rolled = completedNested(lines);
-          const items = summary.dangling.map((c) => {
-            // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
-            if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
-            const facts: NestedFact[] = [];
-            for (const tie of ties.filter((t) => t.exec === c.callId)) {
-              const e = ctx.state().effects.get(toolKey(tie.callId));
-              const fact: NestedFact = {
-                callId: tie.callId,
-                tool: e ? e.name.replace(/^tool\./, '') : (rolled.get(tie.callId)?.tool ?? 'a tool'),
-                ...(e ? { store: { status: e.status === 'completed' ? 'completed' : e.status === 'failed' ? 'failed' : 'started', text: e.status === 'failed' ? (e.error?.message ?? '') : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact['store']> } : {}),
-                ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
-              };
-              facts.push(fact);
-              const settled = settle(fact);
-              if (settled.kind === 'completed' && e?.replay === 'never') recovered.set(callKey(fact.tool, e.input), { tool: fact.tool, text: settled.text });
-            }
-            return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(facts) };
-          });
-          await guard(rpc.request('thread/inject_items', { threadId, items }));
-          await guard(synced());
-        }
         // Codex finished the turn (its last turn was this one's, and completed): only the end was not in the log yet.
         const finished =
           resume &&
