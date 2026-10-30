@@ -65,10 +65,13 @@ test("a pi run's tool call is journaled in its OWN records under the wire name, 
   const calls = callsIn(messages);
   const results = resultsIn(messages);
 
-  // (1) The call is journaled in the run's own records: a toolCall and its toolResult are both there.
+  // (1) The call is journaled in the run's own records: exactly one toolCall and its one toolResult, and the result
+  // answers that call (its toolCallId is the call's id), so a duplicate or a result linked to another call fails here.
   assert.equal(calls.length, 1, "one tool call in the run's own records");
-  const result = results.find((r) => r.toolName === calls[0].name);
-  assert.ok(result, "the call's result is journaled too");
+  assert.equal(results.length, 1, "one tool result in the run's own records");
+  const result = results[0];
+  assert.equal(result.toolName, calls[0].name, "the result answers the journaled call by name");
+  assert.equal(result.toolCallId, calls[0].id, "the result answers the journaled call by id");
 
   // (4) The journaled name is the wire name the catalog gives, computed, never a literal; the callId is the call's id.
   const wire = wireName("fetch_page");
@@ -111,9 +114,11 @@ function env(t, vars) {
   Object.assign(process.env, vars);
 }
 
-/** A server in a process of its own, so the test can kill it the way a crash does; it inherits this process's env. */
-async function serverProcess(data) {
+/** A server in a process of its own, so the test can kill it the way a crash does; it inherits this process's env. Its
+ *  child is killed on test teardown from the moment it spawns, so a startup timeout leaves nothing alive. */
+async function serverProcess(t, data) {
   const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
+  t.after(() => child.kill("SIGKILL"));
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
   for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
@@ -142,13 +147,14 @@ async function callInFlight(api, runId, toolName) {
  *  kill the server and the run's own process the way a crash does, and return the data root and run id. */
 async function crashInToolCall(t, { tools, content }) {
   const data = join(await scratch(t), "agents");
-  const first = await serverProcess(data);
-  t.after(() => first.child.kill("SIGKILL"));
+  const first = await serverProcess(t, data);
   assert.equal((await first.api("POST", "/agents", { definition: { id: "a", name: "a", instructions: "Do.", tools } })).status, 201);
   const { body: run } = await first.api("POST", "/agents/a/runs", { input: { content } });
   const runId = run.run_id;
   await callInFlight(first.api, runId, tools[0]);
   const record = JSON.parse(await readFile(join(data, "runs", runId, "run.json"), "utf8"));
+  // The run's process outlives its server; register its teardown now, so a failure after this never leaves it alive.
+  t.after(() => alive(record.holder.pid) && process.kill(record.holder.pid, "SIGKILL"));
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
   assert.ok(alive(record.holder.pid), "the run's process outlived its server");
@@ -157,7 +163,6 @@ async function crashInToolCall(t, { tools, content }) {
     assert.ok(i < 200, "the run's process dies on SIGKILL");
     await sleep(50);
   }
-  t.after(() => alive(record.holder.pid) && process.kill(record.holder.pid, "SIGKILL"));
   return { data, runId };
 }
 
