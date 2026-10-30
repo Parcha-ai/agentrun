@@ -165,12 +165,12 @@ test("code mode: a model that writes a new exec while a cell still runs: a never
 });
 
 /** The crash of the second test above, with a model that answers after the resume as `after(seen)` says. */
-async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found', yielded = false } = {}) {
+async function crashed(after, { pad = false, script, then, again = false, lookupText = 'found', yielded = false, failFirst = false } = {}) {
   let charged = 0;
   let looked = 0;
   let holding;
   const held = new Promise((resolve) => { holding = resolve; });
-  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return { text: 'charged' }; } };
+  const charge = { name: 'charge', description: 'Charge the card once.', inputSchema: { type: 'object', properties: { amount: { type: 'number' } } }, replay: 'never', call: async () => { charged += 1; return failFirst && charged === 1 ? { text: 'declined by the bank', isError: true } : { text: 'charged' }; } };
   const lookup = { name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => { looked += 1; return { text: lookupText }; } };
   const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
   const slow = { name: 'slow', description: 'Take a while.', inputSchema: { type: 'object', properties: {} }, replay: 'safe', call: async () => { await new Promise((r) => setTimeout(r, 800)); return { text: 'slept' }; } };
@@ -445,4 +445,12 @@ test("code mode: a never call completed in an EARLIER turn is not answered from 
   assert.ok(told.length > 0, 'the model charged again after the resume');
   assert.ok(!/Recorded earlier/.test(told), 'not answered from the log: the earlier turn\'s charge is not this turn\'s');
   assert.equal(charged, 2, 'it ran');
+});
+
+test("code mode: a never call that FAILED in the interrupted turn is not answered from the log: re-issued after the recovery, it runs", { skip, timeout: 300_000 }, async () => {
+  const r = await crashed(recharge, { failFirst: true });
+  assert.equal(r.charged(), 2, 'the failed call had no effect, so its retry ran');
+  const told = toldAbout(r.seen, 'call_again').join('\n');
+  assert.ok(!/Recorded earlier/.test(told), 'not answered from the log');
+  assert.match(told, /charged/, 'the retry\'s own result');
 });
