@@ -360,27 +360,43 @@ test('a dangling custom tool call that is not exec, such as apply_patch, is answ
   assert.equal(withOutputKind({ call_id: 'c-shell', output: 'x' }, call('function_call', 'shell')).type, 'function_call_output');
 });
 
-/** The no-note repair of a rollout holding `calls`, unanswered, with `hostTools` bridged: the items it injects. */
-async function repairedItems(calls, hostTools = []) {
+/** The no-note repair of a rollout holding `calls`, unanswered, with `hostTools` bridged: the items it injects. `order`, when given, records
+ *  the inject, the end of the sync after it (which takes a tick, as draining the rollout's tail does), and the repair's return. */
+async function repairedItems(calls, hostTools = [], order) {
   const injected = [];
   const code = codeMode({
     ctx: { state: () => ({ effects: new Map(), submissions: [], effectOrder: [] }), isMemoized: () => false },
     machine: {},
     journal: { append() {}, flush: async () => {}, read: async () => [] },
     logged: new Set(),
-    synced: async () => {},
+    synced: async () => { await new Promise((resolve) => setTimeout(resolve, 20)); order?.push('synced'); },
     bridge: { get: (name) => hostTools.find((t) => t === name) && { name, replay: 'safe' } },
     log() {},
     lines: [],
-    rpc: () => ({ request: async (_method, params) => { injected.push(...params.items); } }),
+    rpc: () => ({ request: async (method, params) => { order?.push(method); injected.push(...params.items); } }),
     guard: (promise) => promise,
     threadId: () => 'thread-1',
     tries: 1,
     declined: 'declined',
   });
   await code.repairUnnoted(calls.map((payload) => JSON.stringify({ timestamp: '2026-10-30T00:00:00.000Z', type: 'response_item', payload })));
+  order?.push('returned');
   return injected;
 }
+
+test('the no-note repair answers each dangling call with an output of its own kind: a custom tool call output for apply_patch, a function call output for a function call', async () => {
+  const applyPatch = { type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch\n*** End Patch', call_id: 'call_patch' };
+  const shell = { type: 'function_call', name: 'shell', arguments: '{}', call_id: 'call_shell' };
+  const items = await repairedItems([applyPatch, shell]);
+  assert.deepEqual(items.map((item) => [item.call_id, item.type]), [['call_patch', 'custom_tool_call_output'], ['call_shell', 'function_call_output']]);
+  for (const item of items) assert.match(item.output, /^Not executed: the session stopped before this call started/, 'the same text for either kind');
+});
+
+test("the no-note repair returns only once the rollout's tail is synced after the inject, so the next turn starts on a log that holds the outputs", async () => {
+  const order = [];
+  await repairedItems([{ type: 'function_call', name: 'shell', arguments: '{}', call_id: 'call_shell' }], [], order);
+  assert.deepEqual(order, ['thread/inject_items', 'synced', 'returned']);
+});
 
 test("a dangling wait of code mode is told the session stopped while it waited on its cell, never that it did not start", async () => {
   const wait = { type: 'function_call', name: 'wait', arguments: JSON.stringify({ cell_id: '3', yield_time_ms: 5000 }), call_id: 'call_wait' };
