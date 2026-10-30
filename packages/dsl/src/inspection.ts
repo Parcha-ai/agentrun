@@ -13,6 +13,11 @@ export type WorkflowInspectionNode = {
   /** Effective selection from completed map-item state; absent means whole item state. */
   resultPath?: string;
   childWorkflow?: string;
+  /** A decision node's (or an `ask` predicate's) provider and pinned model, when it names them, and the tokens of the
+   *  images it sends. */
+  provider?: string;
+  model?: string;
+  images?: string[];
 };
 
 export type WorkflowInspection = {
@@ -31,6 +36,18 @@ export type WorkflowInspection = {
     executableCode: boolean;
   };
 };
+
+/** What a decision node, or a loop's or escalate's `ask` predicate, names of its provider, model and images. */
+function decisionFields(node: WorkflowNode): { provider?: string; model?: string; images?: string[] } {
+  const source = node.node === "loop" ? node.until : node.node === "escalate" ? node.when
+    : ["judge", "pick", "sift"].includes(node.node) || node.node === "route" && !routesByValue(node) ? node : undefined;
+  if (!source || ((node.node === "loop" || node.node === "escalate") && (source as { predicate?: unknown }).predicate !== "ask")) return {};
+  const { provider, model, images } = source as { provider?: unknown; model?: unknown; images?: unknown };
+  return {
+    ...(typeof provider === "string" ? { provider } : {}), ...(typeof model === "string" ? { model } : {}),
+    ...(images && typeof images === "object" && Object.keys(images).length ? { images: Object.keys(images) } : {}),
+  };
+}
 
 const pointer = (part: string): string => part.replace(/~/g, "~0").replace(/\//g, "~1");
 
@@ -59,6 +76,7 @@ export function inspectWorkflow(value: unknown): WorkflowInspection {
       ...(node.node === "map" && (node.resultPath || "as" in node.body && node.body.as)
         ? { resultPath: node.resultPath || (node.body as { as: string }).as } : {}),
       ...(node.node === "workflow" ? { childWorkflow: node.workflow.name } : {}),
+      ...decisionFields(node),
     });
     if (["agent", "decide", "extract", "report"].includes(node.node) ||
       node.node === "artifact" && ["markdown", "report"].includes(node.type)) adapters.add("runNode");

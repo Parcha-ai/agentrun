@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { APIConnectionError, APIError, APITimeoutError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
-import { validateAnswers, SystemOneError, isSystemOneResponseReason, checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
+import { validateAnswers, SystemOneError, isSystemOneResponseReason, checkCapabilities, DecisionProviderError, imageDimensions } from "@parcha/agentrun-dsl";
 import type { WorkflowDeps, SystemOneResponseReason, DecisionProvider, DecisionProviderErrorCode } from "@parcha/agentrun-dsl";
 
 /** Injectable client boundary. Custom clients must honor signal and disable their own retries. */
@@ -45,6 +45,9 @@ export type JevJudge = (params: JevJudgeParams) => Promise<JevJudgeResult>;
 
 const IMAGE_HEADER = "TypeSafe-Danger-Zone-Images";
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
+/** The longest side, in pixels, Jev takes an image at: TypeSafe answers HTTP 400 "Invalid image dimensions." past it, on its
+ *  own API and through OpenRouter alike (live, 2026-10-30: 1568x400 answered, 1569x400 refused, area no factor). */
+export const JEV_MAX_IMAGE_SIDE_PX = 1568;
 const MAX_REFERENCE_BYTES = 1024;
 /** The longest delay a Node timer accepts. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -219,6 +222,10 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
         && image.bytes.byteLength > 0 && image.bytes.byteLength <= MAX_IMAGE_BYTES && startsWith(image.bytes, imageMagic[image.mime]);
       if (!sound) throw invalid("invalid_assets", `Each image is a PNG or JPEG file of at most ${MAX_IMAGE_BYTES / 1024 / 1024} MiB, with bytes that are that type and a plain reference. No request was sent.`);
       if (!texts.some(text => text.includes(reference))) throw invalid("invalid_assets", "Every image reference must appear in the state or a question. No request was sent.");
+      const size = imageDimensions(image.bytes);
+      if (size === null) throw invalid("invalid_assets", `The image ${reference} has no width and height its header can be read from. No request was sent.`);
+      if (size.width > JEV_MAX_IMAGE_SIDE_PX || size.height > JEV_MAX_IMAGE_SIDE_PX) throw invalid("invalid_assets",
+        `The image ${reference} is ${size.width}x${size.height} px; Jev takes at most ${JEV_MAX_IMAGE_SIDE_PX} px on each side. Render it smaller (a letter page at 140 dpi is 1190x1540). No request was sent.`);
       assets[reference] = new Image(image.bytes);
       assetDigests[reference] = { sha256: createHash("sha256").update(image.bytes).digest("hex"), mime: image.mime, bytes: image.bytes.byteLength };
     }
@@ -384,17 +391,19 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
 }
 
 /** Jev as a DecisionProvider: `createJevRunner(options)` behind the DSL's provider seam, for a host that runs every
- *  decision model through `judgeFromProvider`. A paid request is never sent twice: it runs with `maxAttempts: 1`, and a
- *  408, a 5xx or a connection error (the SDK cannot tell one before sending from one after) is `outcome_unknown`, at an
- *  unknown cost, and so is the cost of an `invalid_response` (a 200 that breaks the response rules was still answered); so is a deadline that ends the request in flight (the host's, or the runner's own `timeoutMs`). Only the
- *  host's own cancel is `aborted`. Its other errors become DecisionProviderErrors with the same message. The cost basis is "reported" for a cost with no configured price, and "estimate" when
+ *  decision model through `judgeFromProvider`. A paid request is never sent twice: only a 429 with Retry-After or a
+ *  connect error before sending is sent again (up to `maxAttempts`, default 3), and a 408, a 5xx or a connection lost
+ *  after sending is `outcome_unknown`, at an unknown cost, and so is the cost of an `invalid_response` (a 200 that breaks
+ *  the response rules was still answered); so is a deadline that ends the request in flight (the host's, or the runner's
+ *  own `timeoutMs`). Only the host's own cancel is `aborted`. On TypeSafe's route it takes image input: a request's images go as Jev assets under their
+ *  tokens, with the `TypeSafe-Danger-Zone-Images` header. Its other errors become DecisionProviderErrors with the same message. The cost basis is "reported" for a cost with no configured price, and "estimate" when
  *  `pricing` is set, since the runner then reports either one as the cost. */
 export function jevProvider(options: JevOptions = {}): DecisionProvider {
-  const judge = createJevRunner({ ...options, maxAttempts: 1 });
+  const judge = createJevRunner({ ...options, retryAfterSend: false });
   const provider = options.provider ?? "typesafe";
   const capabilities: DecisionProvider["capabilities"] = {
-    // No box question and no image input: a DecisionRequest carries no image, so the seam cannot send one.
-    types: ["noul", "choice", "score"], inputs: ["text", "json"], evidence: "none", probability: "model", grounding: false,
+    // No box question: no workflow node asks one. Images only on TypeSafe's own API, the one route verified for them.
+    types: ["noul", "choice", "score"], inputs: provider === "typesafe" ? ["text", "json", "image"] : ["text", "json"], evidence: "none", probability: "model", grounding: false,
     replay: "never", maxQuestions: null, maxStateBytes: options.maxStateBytes ?? null,
   };
   return {
@@ -404,7 +413,10 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
       const deadline = ctx.deadlineMs === null ? undefined : AbortSignal.timeout(ctx.deadlineMs);
       const signal = deadline ? AbortSignal.any([ctx.signal, deadline]) : ctx.signal;
       try {
-        const result = await judge({ ...request, signal, decisionId: ctx.decisionId });
+        const { images, ...asked } = request;
+        const assets = images && Object.keys(images).length
+          ? Object.fromEntries(Object.entries(images).map(([token, image]) => [token, { bytes: image.bytes, mime: image.mime as JevImage["mime"] }])) : undefined;
+        const result = await judge({ ...asked, signal, decisionId: ctx.decisionId, ...(assets ? { assets } : {}) });
         return {
           answers: result.answers, evidence: [], model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null,
           cost_basis: typeof result.cost_usd !== "number" ? "unknown" : options.pricing ? "estimate" : "reported", provider_request_id: null,
@@ -423,7 +435,8 @@ function jevErrorCode(error: JevError, timedOut: boolean, cancelled: boolean): D
   // The one request is in flight when a deadline ends it (the host's, or the runner's own timeout): it may have been answered.
   if (error.code === "aborted") return timedOut ? "outcome_unknown" : "aborted";
   if (error.code === "timeout") return cancelled ? "aborted" : "outcome_unknown";
-  if (error.code === "connection") return "outcome_unknown";
+  // The runner gives up as `connection` only on a request that never reached Jev; one lost after sending is outcome_unknown.
+  if (error.code === "connection") return "connection";
   if (error.code !== "http") return error.code;
   if (error.status === 408 || (error.status !== undefined && error.status >= 500)) return "outcome_unknown";
   if (error.status === 401 || error.status === 403) return "auth";
