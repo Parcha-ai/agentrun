@@ -311,3 +311,25 @@ test('a follow-up cancelled through its signal interrupts its turn, admits no re
   assert.equal(interrupted, 1);
   assert.equal(followUpState(await store.read(followUp.key)), 'running', 'no outcome: the next process reads it interrupted');
 });
+
+test('a run waiting behind another of its key stops waiting when its own signal aborts, and leaves the earlier run alone', async () => {
+  const { followUpOnce } = await kernel();
+  const store = memorySessionStore();
+  const sent = { n: 0 };
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let interrupted = 0;
+  const target = (f) => ({ ...scripted(async () => { await held; return { status: 'completed' }; }, sent)(f), async interrupt() { interrupted += 1; } });
+  const one = followUpOnce(options(store));
+  const first = one.run(target(one), new AbortController().signal);
+  await settle();
+  const two = followUpOnce(options(store));
+  const abort = new AbortController();
+  const second = two.run(target(two), abort.signal);
+  abort.abort(new Error('the second caller gave up'));
+  await assert.rejects(second, /the second caller gave up/);
+  assert.equal(interrupted, 0, 'the earlier run is not interrupted');
+  release();
+  assert.deepEqual(await first, { status: 'done' });
+  assert.equal(sent.n, 1);
+});
