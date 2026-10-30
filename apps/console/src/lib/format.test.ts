@@ -69,3 +69,20 @@ describe("cost in the runs list", () => {
     expect(html).not.toMatch(/\$0(\.0+)?(?!\.\d*[1-9])/);
   });
 });
+
+describe("cost, by whose number it is (cost.source)", () => {
+  it("a cost every part of which a provider reported reads plainly, though its basis is estimate", () => {
+    expect(cost({ usd: 0.00003, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("<$0.0001");
+    expect(cost({ usd: 1.5, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("$1.50");
+  });
+  it("an estimated cost reads est.", () => {
+    expect(cost({ usd: 1.5, basis: "estimate", source: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
+  });
+  it("an older server that says no source: the basis decides, as before", () => {
+    expect(cost({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null })).toBe("$1.50 est.");
+    expect(cost({ usd: 1.5, basis: "charge", charge_state: null, cap_usd: null })).toBe("$1.50");
+  });
+  it("an unknown cost is Unknown whatever its source says", () => {
+    expect(cost({ usd: null, basis: "estimate", source: "reported", charge_state: null, cap_usd: null })).toBe("Unknown");
+  });
+});

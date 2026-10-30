@@ -19,7 +19,9 @@ export function cost(c: Cost | null | undefined): string {
   if (!c || c.usd === null) return "Unknown";
   // A cost the server priced above zero never reads as $0: under a hundredth of a cent it reads "<$0.0001".
   const usd = c.usd > 0 && c.usd < 0.0001 ? "<$0.0001" : c.usd < 0.01 ? `$${c.usd.toFixed(4)}` : `$${c.usd.toFixed(2)}`;
-  return c.basis === "estimate" ? `${usd} est.` : usd;
+  // Whose number it is says whether it is an estimate: the server's source when it gives one, else its basis.
+  const estimate = c.source ? c.source === "estimate" : c.basis === "estimate";
+  return estimate ? `${usd} est.` : usd;
 }
 
 /** Markdown from a run, as safe HTML: parsed by marked, then sanitized (no scripts, no handlers, no foreign frames). */
