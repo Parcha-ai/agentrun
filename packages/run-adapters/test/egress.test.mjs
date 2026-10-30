@@ -446,7 +446,7 @@ test("a live proxy's socket is never taken: a second start at its path is refuse
 async function deadSocket() {
   const path = socketPath();
   mkdirSync(join(path, '..'), { recursive: true });
-  const child = spawn(process.execPath, ['-e', 'require("node:net").createServer().listen(process.argv[1], () => console.log("up"))', path], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const child = spawn(process.execPath, ['-e', 'require("node:net").createServer().listen(process.env.EGRESS_TEST_SOCKET, () => console.log("up"))'], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, EGRESS_TEST_SOCKET: path } });
   try {
     await new Promise((ok, fail) => {
       const timer = setTimeout(() => fail(new Error('the listener did not start')), 10_000);
