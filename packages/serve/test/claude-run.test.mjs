@@ -49,7 +49,7 @@ const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(statu
 const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
-async function claudeServe(t, fake) {
+async function claudeServe(t, fake, options = {}) {
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
@@ -57,7 +57,7 @@ async function claudeServe(t, fake) {
   });
   delete process.env.AGENT_MODEL_BASE_URL;
   Object.assign(process.env, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` });
-  const served = await serve(t, { faux: undefined });
+  const served = await serve(t, { faux: undefined, ...options });
   assert.equal((await served.api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
   return served;
 }
@@ -162,4 +162,20 @@ test("a claude-agent run whose process dies while a request is in flight resumes
     assert.ok(i < 20, `the dead process's CLI (pid ${cli}) is gone within 2 s`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+});
+
+test("on a server whose box passed its probe, a claude-agent run's own process starts the CLI with none of its own tools and no box: the switch that turns them on (native-tools.ts) is obeyed by the run, not only by capabilities", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
+  t.after(() => fake.close());
+  // serve's box says bwrap: the run's process gets its box settings, and decides for itself whether its harness's own
+  // tools are on. They are not, so the run builds no box and the CLI is offered none of its own tools.
+  const boxed = { isolation: { mode: "bwrap", cgroup: false }, start() { throw new Error("serve's own box starts nothing here"); }, reap: async () => ({ empty: true, left: 0, by: "none" }) };
+  const { api, data } = await claudeServe(t, fake, { boxFactory: async () => boxed });
+  assert.equal((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent").native_tools, false);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  const offered = [...new Set(fake.messages().flatMap((m) => (m.body?.tools ?? []).map((tool) => tool.name)))];
+  assert.deepEqual(offered.filter((name) => !name.startsWith("mcp__")), [], `the run's CLI is offered none of its own tools: ${offered.join(", ")}`);
+  assert.equal(existsSync(join(data, "runs", run.body.run_id, "box.json")), false, "the run built no box for its CLI");
 });
