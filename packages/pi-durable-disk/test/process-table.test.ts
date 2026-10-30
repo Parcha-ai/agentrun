@@ -132,8 +132,9 @@ describe("a mark through /proc, when an environment reads empty or unreadable", 
   }
 
   it("(1) an environment that reads empty for 30 ms (an exec) and then fills in is read again in the window, and marked", () => {
-    const start = Date.now();
-    const { table, reads } = oneProcess(4800, "S", uid, () => (Date.now() - start < 30 ? "" : `PATH=/usr/bin\0${MARK}=tok\0`));
+    // The 30 ms run from the first read, so a slow setup (a loaded machine) cannot use them up before the exec is seen.
+    let start = 0;
+    const { table, reads } = oneProcess(4800, "S", uid, () => ((start ||= Date.now()), Date.now() - start < 30 ? "" : `PATH=/usr/bin\0${MARK}=tok\0`));
     assert.deepEqual(table.snapshot().withMark(MARK, "tok"), [4800]);
     assert.ok(reads.environ > 1, "read again");
   });
