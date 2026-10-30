@@ -30,7 +30,7 @@ function scripted({ verdicts = [], throwAfterAhead, skipAhead } = {}) {
     if (!skipAhead) rec.ahead({ id: "box-1" });
     log.push("spawned");
     if (throwAfterAhead) throw new Error(throwAfterAhead);
-    void rec.started({ id: "box-1", pid: 4242 }).then(() => log.push("released"));
+    void rec.started({ id: "box-1", pid: 4242 }).then(() => log.push("released"), (error) => log.push(`refused ${error.code}`));
     return { ready: ready.promise, exited: exited.promise };
   };
   const reap = async (r) => {
@@ -192,4 +192,19 @@ test("a box that exits while its started record is still being written is reaped
   await new Promise((resolve) => setImmediate(resolve));
   for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(reaps.map((r) => [r.id, r.pid]).at(-1), ["box-2", 5151], "the next box is reaped by its own record");
+});
+
+test("a started record before the box's ahead record is refused, named, and never reaches the recorder; a start that then throws leaves the slot empty", async () => {
+  const log = [];
+  const recorder = { ahead: (r) => log.push(`ahead ${r.id}`), started: async (r) => log.push(`started ${r.id}`) };
+  const slot = boxSlot({ reap: async () => (log.push("reap"), { empty: true, left: 0, by: "pidns" }) });
+  let refusal;
+  assert.throws(() => slot.start((rec) => {
+    refusal = rec.started({ id: "box-1", pid: 4242 });
+    throw new Error("the box did not come up");
+  }, recorder), /did not come up/);
+  await assert.rejects(refusal, named("box_record_failed"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(log, [], "nothing reached the recorder, and nothing was reaped: nothing was spawned");
+  assert.equal(slot.state, "empty");
 });
