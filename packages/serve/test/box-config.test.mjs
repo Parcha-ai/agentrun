@@ -194,3 +194,66 @@ test("shared mode: AGENTRUN_BOX_CGROUP naming a subtree not delegated stops the 
   const single = await served(t, { boxFactory: factory({ mode: "bwrap", cgroup: true }) });
   assert.equal(single.caps.box.cgroup, false, "no subtree named: single-user, and it starts");
 });
+
+// ---- a run opened again after the operator changed AGENTRUN_BOX ------------------------------------------------------
+
+/** A run waiting for the person, left with its process killed by a server started under `env` (and `options`). */
+async function leftWaiting(t, env, options = {}) {
+  withEnv(t, env, BOX_ENV);
+  const first = await serve(t, options);
+  assert.equal((await first.api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
+  const id = (await first.api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
+  await follow(first.api, id, ["input_required"]);
+  const pid = JSON.parse(await readFile(join(first.data, "runs", id, "run.json"), "utf8")).holder.pid;
+  process.kill(pid, "SIGKILL");
+  await first.close();
+  const record = async () => JSON.parse(await readFile(join(first.data, "runs", id, "serve.json"), "utf8")).box;
+  return { data: first.data, id, record };
+}
+
+test("a run that started in a box never continues unsandboxed: refused by name, its record untouched", async (t) => {
+  const { data, id, record } = await leftWaiting(t, {}, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  assert.equal((await record()).mode, "bwrap");
+  withEnv(t, { AGENTRUN_BOX: "unsandboxed" }, BOX_ENV);
+  const second = await serve(t, { data });
+  // The message would open it again: it is refused there, the run ends, and both say why, by name.
+  const answer = await second.api("POST", `/runs/${id}/messages`, { content: "eu" });
+  assert.deepEqual([answer.status, answer.body.error.message], [409, "box_downgrade: this run started in a box; start a new run to run it unsandboxed"], JSON.stringify(answer.body));
+  await follow(second.api, id, ["failed"]);
+  const { error } = (await second.api("GET", `/runs/${id}`)).body;
+  assert.deepEqual([error.code, error.message], ["box_downgrade", "box_downgrade: this run started in a box; start a new run to run it unsandboxed"]);
+  assert.equal((await record()).mode, "bwrap", "nothing opened, so nothing recorded");
+});
+
+test("a run that had a box never opens with none: a server whose box is unavailable refuses it by name", async (t) => {
+  const { data, id, record } = await leftWaiting(t, {}, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  withEnv(t, {}, BOX_ENV);
+  const second = await serve(t, { data });
+  const answer = await second.api("POST", `/runs/${id}/messages`, { content: "eu" });
+  assert.equal(answer.status, 409);
+  assert.match(answer.body.error.message, /^box_unavailable: /);
+  await follow(second.api, id, ["failed"]);
+  const { error } = (await second.api("GET", `/runs/${id}`)).body;
+  assert.equal(error.code, "box_unavailable");
+  assert.match(error.message, /^box_unavailable: this run ran with a bwrap box, and this server has no box/);
+  assert.equal((await record()).mode, "bwrap");
+});
+
+test("a run that ran unsandboxed opens again in a box, and records the box it now runs in", async (t) => {
+  const { data, id, record } = await leftWaiting(t, { AGENTRUN_BOX: "unsandboxed" });
+  assert.equal((await record()).mode, "unsandboxed");
+  withEnv(t, {}, BOX_ENV);
+  const second = await serve(t, { data, boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  assert.equal((await second.api("POST", `/runs/${id}/messages`, { content: "eu" })).status, 202);
+  await follow(second.api, id, ["completed"]);
+  assert.deepEqual(await record(), { mode: "bwrap", cgroup: false, egress: "open" }, "the open it describes, not the first");
+});
+
+test("one kind of box may follow another: a run opened again in a provider's box proceeds, and records it", async (t) => {
+  const { data, id, record } = await leftWaiting(t, {}, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  withEnv(t, {}, BOX_ENV);
+  const second = await serve(t, { data, boxFactory: factory({ mode: "provider", cgroup: false }) });
+  assert.equal((await second.api("POST", `/runs/${id}/messages`, { content: "eu" })).status, 202);
+  await follow(second.api, id, ["completed"]);
+  assert.equal((await record()).mode, "provider");
+});

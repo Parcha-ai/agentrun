@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync, writeSync } from "node:fs";
+import { closeSync, openSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -602,7 +602,12 @@ export class Runs {
         if (launched) throw new ApiError("internal", `the run's process exited before it served: ${await lastLogLine(run)}`);
         const pid = holderPid(record);
         const fresh = record?.status === "running" && typeof record.heartbeatAt === "string" && Date.now() - Date.parse(record.heartbeatAt) < LEASE_MS && (pid === undefined || alive(pid));
-        if (!fresh) this.launch(run), (launched = true);
+        if (!fresh) {
+          const refused = this.boxRefusal(run);
+          if (refused) throw new ApiError("not_continuable", refused.message);
+          this.launch(run);
+          launched = true;
+        }
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
@@ -611,7 +616,9 @@ export class Runs {
   private finished(run: Run): ApiError {
     const status = run.cancel ? "cancelled" : statusOf(run).status;
     const why = status === "completed" ? "This run is finished." : `This run ${status === "failed" ? "failed" : "was cancelled"}.`;
-    return new ApiError("not_continuable", `${why} Start a new run of the agent.`, {
+    // A run its box ended says so in its own words (box_downgrade, box_unavailable): they name what to do.
+    const boxed = status === "failed" && run.error?.code.startsWith("box_") ? run.error.message : undefined;
+    return new ApiError("not_continuable", boxed ?? `${why} Start a new run of the agent.`, {
       next_action: { type: "request", method: "POST", path: `/agents/${run.agentId}/runs`, caller_supplies: ["input", "Idempotency-Key"] },
     });
   }
@@ -651,6 +658,14 @@ export class Runs {
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // The box this open runs in, recorded before its process starts: every launch's own (a relaunch after the operator
+    // changed AGENTRUN_BOX records the new mode), so the record always tells the truth about the latest open.
+    if (this.options.boxView) {
+      run.meta.box = this.options.boxView;
+      const meta = join(run.dir, RUN_META);
+      writeFileSync(`${meta}.tmp`, `${JSON.stringify(run.meta)}\n`, { mode: 0o600 });
+      renameSync(`${meta}.tmp`, meta);
+    }
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // Loud, in the run's own log too: its harness's tools run with no box.
     if (this.options.boxView?.mode === "unsandboxed") writeSync(log, `${UNSANDBOXED_RUN_LINE}\n`);
@@ -672,6 +687,19 @@ export class Runs {
 
   /** Opens the run again on its directory after its process went before the run ended: it resumes from its store. An
    *  agentic run whose first message never landed gets it again, under the same request id. */
+  /** Why the run may not open again in this server's box, given the box its last open ran in: it never loses its box
+   *  mid-run (boxed, then unsandboxed), and never opens with no box after it had one (fail closed). A run that had no box
+   *  may open in one, and one boxed kind may follow another. */
+  private boxRefusal(run: Run): { code: "box_downgrade" | "box_unavailable"; message: string } | undefined {
+    const now = this.options.boxView;
+    const before = run.meta.box?.mode;
+    if (!now || !before) return undefined;
+    const boxed = (mode: string) => mode === "bwrap" || mode === "seatbelt" || mode === "provider";
+    if (boxed(before) && now.mode === "unsandboxed") return { code: "box_downgrade", message: "box_downgrade: this run started in a box; start a new run to run it unsandboxed" };
+    if (before !== "unavailable" && now.mode === "unavailable") return { code: "box_unavailable", message: `box_unavailable: this run ran with ${before === "unsandboxed" ? "no box, by the operator's setting" : `a ${before} box`}, and this server has no box (${now.error}); it opens again once the box is back` };
+    return undefined;
+  }
+
   private relaunch(run: Run): void {
     run.relaunches++;
     warn(run.id, `its process went before the run ended; opening it again (${run.relaunches} of ${MAX_RELAUNCHES})`);
@@ -731,8 +759,10 @@ export class Runs {
       // Work left and no process: opened again. A run that waits for the person waits without one, until a message.
       const stalled = run.kind === "workflow" || statusOf(run).status !== "input_required";
       if (!gone || !stalled || this.closing) return this.refresh(run);
-      if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
-      run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
+      const refused = this.boxRefusal(run);
+      if (refused) run.error = { code: refused.code, message: refused.message, retryable: false };
+      else if (run.relaunches < MAX_RELAUNCHES) return this.relaunch(run);
+      else run.error = { code: "run_failed", message: `The run's process went ${MAX_RELAUNCHES + 1} times before the run ended: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
@@ -945,6 +975,9 @@ export class Runs {
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
     if (row?.state === "running") throw new ApiError("unavailable", "The run's end is still being written to the agent store; try again.", { retry_after_ms: 1000 }, { "retry-after": "1" });
+    // Before it opens again: a run that started in a box never continues without one.
+    const refused = this.boxRefusal(run);
+    if (refused) throw new ApiError("not_continuable", refused.message);
     await this.takePlace();
     try {
       // Read again: the place may have been waited for, and the run (or its agent) archived meanwhile.
