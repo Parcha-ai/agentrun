@@ -67,17 +67,17 @@ test("a chat sent while a turn works, then the server and the run's process die:
   // Started through startServe's options: the faux harness is a test hook, which no environment name enables.
   const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
 const server = await startServe({ data: ${JSON.stringify(data)}, port: 0, faux: ${JSON.stringify(FAUX)}, fauxHarness: ${JSON.stringify(FAUX_HARNESS)}, drainTimeout: "5s" });
-process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\nAGENTRUN_API_KEY=" + server.token + "\\n");`;
+process.stdout.write(JSON.stringify({ base: server.baseUrl, token: server.token }) + "\\n");`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
   t.after(() => child.kill("SIGKILL"));
   let out = "";
   child.stdout.on("data", (chunk) => (out += chunk));
-  for (let i = 0; !/AGENTRUN_API_KEY=/.test(out); i++) {
+  for (let i = 0; !out.includes("\n"); i++) {
     assert.ok(i < 200, `the server did not start: ${out}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
-  const first = client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY"));
+  const { base, token } = JSON.parse(out.slice(0, out.indexOf("\n")));
+  const first = client(base, token);
   const go = join(await scratch(t), "go");
   const runId = await started(first, "chat-resume", `Wait for ${go}, then answer the chat.`);
   for (let i = 0; !(await first("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"); i++) {
