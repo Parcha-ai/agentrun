@@ -787,7 +787,9 @@ export class Runs {
     if (released || gone) await this.storeWhenFree(run);
     // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
     // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
-    // go: a settle with the process not gone means another live holder of the run, whose box is its own.
+    // go: a settle with the process not gone means another live holder of the run, whose box is its own. That holder is
+    // one this server neither started nor adopted (adoptProcess watches only the holder it adopts), so its later exit
+    // settles nothing here: its box stays held, fail-closed, until the next start's sweep or another archive lets it go.
     if (gone && (await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined))?.archivedAt) await this.teardown(run);
     let ended: { outcome: Status; state?: Ended; summary?: string } | undefined;
     // A workflow run carries back how its workflow ended, through workflowCarry; cancelled before that, it stopped.
