@@ -195,7 +195,8 @@
           "harness-claude-code": "journalLedger"
         },
         "openTurn": {
-          "harness-claude-code": "openTurn"
+          "harness-claude-code": "openTurn",
+          "harness-codex": "openTurn"
         },
         "replayBy": {
           "harness-claude-code": "replayBy"

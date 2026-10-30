@@ -4,26 +4,29 @@ Upstream: ours
 Pins: a host tool named exec is a function call: the repair answers it with the generic output, never as code mode's exec
 ---
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index 0c0983f..c00ee85 100644
+index 5608923..8af5953 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
-@@ -1112,12 +1112,14 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -1113,7 +1113,9 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
        const note = recoveryNote(ctx.state());
        if (resume && summary.dangling.length > 0) {
          const ties = (await journal.read<{ callId: string; exec: string | null; since?: number }>(NESTED_STREAM)).map((r) => r.data);
--        const dangling = summary.dangling.filter((d) => d.name === 'exec');
+-        const execs = summary.dangling.filter((d) => d.name === 'exec').map((d) => d.callId);
 +        // An `exec` is a custom tool call: a host tool that is named "exec" is a function call and gets the generic output.
 +        const isExec = (d: { name: string; type: string }) => d.type === 'custom_tool_call' && d.name === 'exec';
-+        const dangling = summary.dangling.filter(isExec);
-         const lastExec = dangling.at(-1)?.callId;
++        const execs = summary.dangling.filter(isExec).map((d) => d.callId);
          const rolled = completedNested(lines);
+         const factOf = (tie: { callId: string }): NestedFact => {
+           const e = ctx.state().effects.get(toolKey(tie.callId));
+@@ -1130,7 +1132,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+         const listed = recoveryFacts(execs, ties, note ? note.turn.since : Number.NaN, factOf);
          const items = summary.dangling.map((c) => {
            // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
 -          if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
 +          if (!isExec(c)) return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
-           const facts: NestedFact[] = [];
-           // A call whose script could not be told when it ran (an answer the proxy did not see to its end) belongs to this interrupted turn
-           // only if it ran in it; with a single cut-off exec it is that exec's, with more it is listed apart.
+           const { own, loose } = listed.get(c.callId)!;
+           // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
+           // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
 diff --git a/packages/harness-codex/src/rollout.ts b/packages/harness-codex/src/rollout.ts
 index 6958a36..48d9767 100644
 --- a/packages/harness-codex/src/rollout.ts
