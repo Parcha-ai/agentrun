@@ -85,8 +85,9 @@ export function withDecisions(rows: readonly TimelineEvent[], receipts: readonly
   const costs = decisions.map((row) => row.usage?.usd ?? null);
   const spent = costs.every((usd) => usd !== null) ? (costs as number[]).reduce((a, b) => a + b, 0) : null;
   const models = at < 0 ? { usd: 0, requests: 0 } : (rows[at]?.usage ?? { usd: null, requests: 0 });
-  const usd = models.usd === null || spent === null ? null : Math.round((models.usd + spent) * 1e6) / 1e6;
+  // Rounded off float noise only: a decision costs millionths of a dollar, and the row agrees with the run's cost.
+  const usd = models.usd === null || spent === null ? null : Math.round((models.usd + spent) * 1e12) / 1e12;
   const base = at < 0 ? { ...decisions.at(-1)!, id: "decisions:usage", agent_label: null, text: null } : rows[at]!;
-  const summary = `Cost so far: ${usd === null ? "unknown" : usd === 0 ? "$0" : `$${usd.toFixed(4)}`} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
+  const summary = `Cost so far: ${usd === null ? "unknown" : usd === 0 ? "$0" : usd < 0.0001 ? "<$0.0001" : `$${usd.toFixed(4)}`} over ${plural(models.requests, "model request")} and ${plural(decisions.length, "decision")}`;
   return [...rest, { ...base, kind: "usage", summary, usage: { usd, requests: models.requests + decisions.length } }];
 }
