@@ -515,7 +515,13 @@ export class Runs {
   private async teardown(run: Run): Promise<void> {
     const box = this.options.box;
     if (!box || this.live(run)) return;
-    if ((await settleBox(box.host, box.quarantine, run.id, run.dir)) === "quarantined") warn(run.id, "its box could not be emptied; it is quarantined, and tried again at each start");
+    // Never in the way of the run's own end or an archive already saved: a box that could not be let go (its cgroup not
+    // removed, its record not marked) is said, and its unmarked record is tried again by the next start's sweep.
+    try {
+      if ((await settleBox(box.host, box.quarantine, run.id, run.dir)) === "quarantined") warn(run.id, "its box could not be emptied; it is quarantined, and tried again at each start");
+    } catch (error) {
+      warn(run.id, `its box was not let go (${(error as Error).message}); the next start tries again`);
+    }
   }
 
   /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
