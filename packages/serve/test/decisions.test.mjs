@@ -391,15 +391,24 @@ test("with no decision key, Jev is unavailable and the reason names each way to 
   assert.match(offer.reason, /openrouter\.ai/, offer.reason);
 });
 
-test("a node naming a decision provider this server does not run is refused before the run, by name, and never sent to Jev", async (t) => {
+test("a node naming a decision provider this server does not run is refused at save, by name", async (t) => {
+  const seen = await withCanary(t);
+  const { api } = await serve(t, { fauxJev: FAUX_JEV });
+  const made = await api("POST", "/agents", flowAgent("coi", flow([{ ...judge, provider: "parallel" }, probe()])));
+  assert.equal(made.status, 422, JSON.stringify(made.body));
+  assert.ok(made.body.error.fields?.some((issue) => issue.field === "definition.workflow" && issue.reason === "not_an_option" && /names the provider parallel/.test(issue.message)), JSON.stringify(made.body.error));
+  assert.deepEqual(await seen(), [], "Jev was never asked in its place");
+});
+
+test("a node asking what its provider cannot give is refused before the run, by name, and never sent: evidence required of Jev", async (t) => {
   const seen = await withCanary(t);
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
-  const runId = await startFlow(api, [{ ...judge, provider: "parallel" }, probe()]);
+  const runId = await startFlow(api, [{ ...judge, provider: "jev", evidence: "required" }, probe()]);
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "failed", JSON.stringify(run));
-  assert.match(failures(join(data, "runs", runId, "store", "run.sqlite")).join("\n"), /judge node "coi" names the decision provider parallel, which this host does not have/);
-  assert.deepEqual(await seen(), [], "Jev was never asked in its place");
+  assert.match(failures(join(data, "runs", runId, "store", "run.sqlite")).join("\n"), /judge node "coi" requires evidence, and the decision provider jev gives none/);
+  assert.deepEqual(await seen(), [], "the request was never sent");
 });
 
 test("a node's timeoutMs bounds its decision: with Jev never answering, the request is cut at the node's bound and the run escalates it as interrupted", async (t) => {
