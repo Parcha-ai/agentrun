@@ -794,22 +794,23 @@ export async function probeBox(options: { scratch: string; bwrap?: string; reapM
   await new Promise<void>((resolveListen) => listener.listen(0, PROBE_HOST, resolveListen));
   const port = (listener.address() as { port: number }).port;
   const dir = mkdtempSync(join(options.scratch, "box-probe-"));
-  // The scratch is the probe's own data root: its session lies under it, so a scratch under the server's home (a TMPDIR
-  // there) is lent like a run's, and the probe binds nothing else of it.
-  const box = bwrapBox({ bwrap, reapMs: options.reapMs ?? 5000, hidden: [options.scratch] });
+  // The probe's own temporary directory is its data root, and its session lies under it: so a scratch under the server's
+  // home (a TMPDIR there) is lent like a run's, and only that directory is hidden, never the rest of the scratch (which
+  // may hold node or the kernel's own checkout, both bound read-only).
+  const box = bwrapBox({ bwrap, reapMs: options.reapMs ?? 5000, hidden: [dir] });
   try {
     const socket = join(dir, "model.sock");
     write(socket, "");
     const spec: BoxSpec = {
-      session: dir,
-      workspace: join(dir, "work"),
+      session: join(dir, "session"),
+      workspace: join(dir, "session", "work"),
       homes: {},
       readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD],
       modelSocket: socket,
       modelPort: 8123,
       env: { PATH: "/usr/bin:/bin" },
     };
-    mkdirSync(spec.workspace);
+    mkdirSync(spec.workspace, { recursive: true });
     const script = `const fs = require("node:fs"); const net = require("node:net");
 const out = { pid1: fs.readFileSync("/proc/1/comm", "utf8").trim(), data: fs.existsSync("/data") };
 const s = net.connect(${port}, ${JSON.stringify(BOX_LOOPBACK)});
