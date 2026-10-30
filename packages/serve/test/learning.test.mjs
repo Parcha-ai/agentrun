@@ -788,9 +788,30 @@ test("a tool learning adds never follows a link out of the working copy", async 
   assert.equal(await copyRefusal(work, "edit", ".agent/repo/../input.txt"), "edit is the learning copy's only here: .agent/repo/../input.txt is outside .agent/repo");
 });
 
-test("a case value too short or too plain to be the case's own is not a refused value; a longer one, a number included, is", async () => {
+test("a case value too short or too plain to be the case's own is not a refused value; a longer one, a JSON number or a nested value included, is", async () => {
   const { caseValuesOf } = await learningModule();
   assert.deepEqual(caseValuesOf({ a: "yes", b: "12", c: "123456789012", d: "True", e: "NO", f: "abcd", g: "false", h: "1234" }), ["123456789012", "abcd", "1234"]);
+  // Measured once trimmed, and a finite number as its decimal text.
+  assert.deepEqual(caseValuesOf({ a: 123456789012, b: 12, c: "  1 ", d: " yes ", e: true, f: null, g: 1234, h: Number.NaN, i: " abcd " }), ["123456789012", "1234", "abcd"]);
+  // An agentic run's input keeps any field beside content, of any shape.
+  assert.deepEqual(caseValuesOf({ client: { accounts: ["123456789012", 9876543210], tier: "gold", flags: [true, "no"] } }), ["123456789012", "9876543210", "gold"]);
+});
+
+test("a run's input that is a JSON number of 4 or more digits refuses its harvest; a number under 4 digits, or a value under 4 characters once trimmed, does not", async (t) => {
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("ledger"))).status, 201);
+  const writes = (id, text) => `Make these calls: ${JSON.stringify([["write", { path: `.agent/repo/learnings/${id}.md`, content: `---\nid: ${id}\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\n${text}\n` }]])}`;
+  const runWith = async (input) => {
+    const { body: run } = await api("POST", "/agents/ledger/runs", { input });
+    await follow(api, run.run_id, ["completed"]);
+    return { runId: run.run_id, state: await stateOf(data, "ledger", run.run_id) };
+  };
+  const numeric = await runWith({ content: writes("L-5ca1ab1e0003", "Account 123456789012 is checked twice."), account: 123456789012 });
+  assert.deepEqual([numeric.state.state, numeric.state.reasons], ["refused", ["learnings/L-5ca1ab1e0003.md holds a value no learning may keep"]], JSON.stringify(numeric.state));
+  assert.equal(branches(bareOf(data, "ledger")).includes(`runs/${numeric.runId}`), false, "nothing is committed");
+  const short = await runWith({ content: writes("L-5ca1ab1e0004", "Step  1 takes 12 seconds."), seconds: 12, step: "  1 " });
+  assert.equal(short.state.state, "proposed", JSON.stringify(short.state));
+  assert.match(show(bareOf(data, "ledger"), `runs/${short.runId}`, "learnings/L-5ca1ab1e0004.md"), /Step {2}1 takes 12 seconds\./);
 });
 
 test("a holder that exited and was never reaped is not live: a zombie never keeps a run from its harvest", async (t) => {
