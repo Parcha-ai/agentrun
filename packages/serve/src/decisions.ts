@@ -83,6 +83,28 @@ export function handedKey(env: NodeJS.ProcessEnv): string | undefined {
   }
 }
 
+/** Why provider `id` does not run here and the variables that would make it run; undefined when it runs, and no `needs`
+ *  for a provider this server does not have at all. */
+export function providerMissing(env: NodeJS.ProcessEnv, id: string): { message: string; needs?: string[] } | undefined {
+  if (id === DEFAULT_DECISION_PROVIDER) return jevRoute(env) ? undefined : { message: jevMissing, needs: [JEV_KEY_ENV] };
+  return { message: `This server's decision provider is jev; this workflow also names the provider ${id}.` };
+}
+
+/** The providers a workflow's typed questions are answered by (`nodes` from workflowNodes): each decision node's and
+ *  `ask` predicate's own, else the default, as is a generative node's `verify`. */
+export function providersNamed(nodes: readonly Record<string, unknown>[]): string[] {
+  const ids = new Set<string>();
+  const add = (at: unknown) => ids.add(typeof (at as { provider?: unknown }).provider === "string" ? ((at as { provider: string }).provider) : DEFAULT_DECISION_PROVIDER);
+  for (const node of nodes) {
+    if (["judge", "pick", "sift"].includes(node.node as string) || (node.node === "route" && node.valuePath === undefined)) add(node);
+    for (const predicate of [node.node === "loop" ? node.until : undefined, node.node === "escalate" ? node.when : undefined]) {
+      if ((predicate as { predicate?: unknown } | undefined)?.predicate === "ask") add(predicate);
+    }
+    if (node.verify) ids.add(DEFAULT_DECISION_PROVIDER);
+  }
+  return [...ids];
+}
+
 /** The route and key handedJev wrote, from what handedKey read; undefined when it holds no route. */
 function handedRoute(handed: string | undefined): { route: string; key: string } | undefined {
   const at = handed?.indexOf("\n") ?? -1;

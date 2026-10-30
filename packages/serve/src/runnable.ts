@@ -3,7 +3,7 @@
 // no instructions, a workflow needing what it does not give) refuses the save, 422 by field; one a setting fixes (a
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { WORKFLOW_ADAPTERS } from "./app.js";
-import { DECISION_ADAPTER, JEV_KEY_ENV, jevMissing, jevRoute } from "./decisions.js";
+import { DECISION_ADAPTER, providerMissing, providersNamed } from "./decisions.js";
 import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
@@ -64,9 +64,16 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const nodes = workflowNodes(revision.workflow, inspection);
   const runs = "agentrun-serve runs a workflow's model nodes (agent, decide, extract, report)";
   for (const adapter of requires.adapters.filter((name) => !(WORKFLOW_ADAPTERS as readonly string[]).includes(name))) {
-    // Typed questions run on Jev once this host sets its key: until then a warning at save, a 409 at a run.
+    // Typed questions run on the provider each node names (Jev for one that names none) once this host sets its key:
+    // until then a warning at save, a 409 at a run. A provider this server does not have refuses the save.
     if (adapter === DECISION_ADAPTER) {
-      if (!jevRoute(env)) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: jevMissing, host: true, adapter, decision: { provider: "jev", needs: [JEV_KEY_ENV] } });
+      for (const provider of providersNamed(nodes)) {
+        const missing = providerMissing(env, provider);
+        if (!missing) continue;
+        out.push(missing.needs
+          ? { field: "definition.workflow", reason: NOT_SET_UP, message: missing.message, host: true, adapter, decision: { provider, needs: missing.needs } }
+          : { field: "definition.workflow", reason: "not_an_option", message: missing.message, host: false, adapter });
+      }
       continue;
     }
     out.push({ field: "definition.workflow", reason: "not_an_option", message: `${runs}; this workflow also needs ${adapter}.`, host: false, adapter });
