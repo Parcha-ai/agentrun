@@ -6,16 +6,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runWorkflow, validateWorkflow, predicateMatches } from '../dist/index.js';
 
-const notNumber = { predicate: 'not', of: { predicate: 'field_type', path: 'score', type: 'number' } };
+// The guard reads the score of an answer; an answer without one leaves the path absent.
+const notNumber = { predicate: 'not', of: { predicate: 'field_type', path: 'answer.score', type: 'number' } };
 const guarded = (when) => ({
   v: 2, name: 'guard', schemas: { Out: { type: 'object' } }, output: { schemaId: 'Out', path: 'accepted' },
   root: { node: 'chain', steps: [
-    { node: 'escalate', label: 'gate', when, kind: 'review', stage: 'gate', summary: 'score is {score}' },
-    { node: 'code', label: 'accept', code: '(s) => ({ accepted: { score: s.score } })' },
+    { node: 'escalate', label: 'gate', when, kind: 'review', stage: 'gate', summary: 'score is {answer.score}' },
+    { node: 'code', label: 'accept', code: '(s) => ({ accepted: { score: s.answer.score } })' },
   ] },
 });
-const run = (when, score) => runWorkflow(guarded(when), { score }, { runCode: async (node, state) => ({ accepted: { score: state.score } }) });
-const errorsOf = (when) => { const checked = validateWorkflow(guarded(when), { executeCode: false, input: { score: 3 } }); return checked.ok ? [] : checked.errors; };
+const run = (when, score) => runWorkflow(guarded(when), { answer: score === undefined ? {} : { score } }, { runCode: async (node, state) => ({ accepted: { score: state.answer.score } }) });
+const errorsOf = (when) => { const checked = validateWorkflow(guarded(when), { executeCode: false, input: { answer: { score: 3 } } }); return checked.ok ? [] : checked.errors; };
 
 test('an escalate on not field_type number fires on a present value that is not a number', async () => {
   const result = await run(notNumber, 'abc');
@@ -23,15 +24,16 @@ test('an escalate on not field_type number fires on a present value that is not 
   assert.equal(result.escalation.label, 'gate');
 });
 
-test('not field_type number fires for "abc", null, NaN, Infinity and an object, and not for 3', async () => {
-  for (const score of ['abc', null, NaN, Infinity, -Infinity, { value: 3 }, [3], true]) {
+test('not field_type number fires for "abc", null, NaN, Infinity, an object and an absent score, and not for 3', async () => {
+  // undefined: the answer has no score at all, so a missing answer fails closed.
+  for (const score of ['abc', null, NaN, Infinity, -Infinity, { value: 3 }, [3], true, undefined]) {
     assert.equal((await run(notNumber, score)).status, 'escalated', String(score));
   }
   for (const score of [3, 0, -0.5]) assert.equal((await run(notNumber, score)).status, 'complete', String(score));
 });
 
 test('gte and lt alone do not fire on "abc": the gap the negation closes', async () => {
-  for (const when of [{ predicate: 'lt', path: 'score', n: 0 }, { predicate: 'gte', path: 'score', n: 100 }]) {
+  for (const when of [{ predicate: 'lt', path: 'answer.score', n: 0 }, { predicate: 'gte', path: 'answer.score', n: 100 }]) {
     assert.equal((await run(when, 'abc')).status, 'complete', when.predicate);
   }
 });
@@ -73,7 +75,7 @@ test('validation accepts not field_type in escalate.when, loop.until and poll.un
 });
 
 test('validation names a bad field_type type by its path', () => {
-  const errors = errorsOf({ predicate: 'not', of: { predicate: 'field_type', path: 'score', type: 'integer' } });
+  const errors = errorsOf({ predicate: 'not', of: { predicate: 'field_type', path: 'answer.score', type: 'integer' } });
   assert.equal(errors.length, 1, errors.join('\n'));
   assert.match(errors[0], /when\.of: field_type needs a type of number\|string\|boolean\|array\|object\|null, not "integer"/);
   assert.match(errorsOf({ predicate: 'field_type', type: 'number' }).join('\n'), /when: field_type needs a path/);
