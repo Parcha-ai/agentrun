@@ -159,3 +159,33 @@ test("a claude-agent run whose process dies while a request is in flight resumes
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 });
+
+/** This test's own caller, by its user-agent. */
+const PROBE_AGENT = "serve-log-test";
+/** A value no log may carry, sent as a bearer and in a query string. */
+const CANARY = `not-a-secret-${"canary"}-7b21e4`;
+
+test("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const { fake, release } = await heldFake(t);
+  const { api, data } = await claudeServe(t, fake);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await untilRequest(fake);
+  // The session's proxy, as the CLI was told it.
+  const cli = await claudeProcess();
+  assert.ok(cli, "the Claude CLI runs, under this test");
+  const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0");
+  const base = environ.find((line) => line.startsWith("ANTHROPIC_BASE_URL="))?.slice("ANTHROPIC_BASE_URL=".length);
+  assert.ok(base, "the CLI is told the session's proxy");
+  const refused = await fetch(`${new URL(base).origin}/?key=${CANARY}`, { headers: { "user-agent": PROBE_AGENT, authorization: `Bearer ${CANARY}`, "x-api-key": CANARY } });
+  assert.equal(refused.status, 401, "a caller without the session's key is refused");
+  release();
+  await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
+  const log = await readFile(join(data, "runs", runId, "process.log"), "utf8");
+  const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
+  // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
+  const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
+  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
+});

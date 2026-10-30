@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/records.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only; the fence comment names the session writer.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 003-comments-name-this-host, 004-comments-name-the-session-writer
 import type { EffectRecord, SessionState } from '../kernel/index.js';
 
 /**

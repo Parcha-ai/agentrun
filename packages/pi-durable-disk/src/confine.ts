@@ -272,7 +272,7 @@ const changed = (path: string) =>
   new PathOutsideWorkError(path, "changed", `${path}: a component of the path changed while it was being resolved, so the operation was refused`);
 
 /** A root's canonical path, as a pattern that matches it whole in a path or a message, and the name the caller gave it. */
-interface RootName {
+export interface RootName {
   readonly canonical: RegExp;
   readonly named: string;
 }

@@ -16,5 +16,5 @@ export {
 } from "./vault.js";
 export {
   type Agent, type AgenticBody, type AgentRow, type ArchiveKind, type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, type RevisionKind, type RevisionRow, type RunRow,
-  type RunState, type StartedRun, STORE_FILE, type WorkflowBody,
+  type ImportedFrom, type ImportedRun, type ImportSource, type RunState, type StartedRun, STORE_FILE, type WorkflowBody,
 } from "./agent-store.js";
