@@ -273,6 +273,11 @@ const BLOCKED_DETAILS = {
     adapters: { type: "array", items: { type: "string" }, description: "A workflow revision: the adapters it needs that this server does not bind." },
     code: { type: "boolean", description: "A workflow revision: whether it needs code this server does not run." },
     tier: { type: "string", description: "A workflow revision: the model tier this host has no model for." },
+    decisions: {
+      type: "object",
+      additionalProperties: { type: "object", additionalProperties: false, required: ["reason", "needs"], properties: { reason: { type: "string" }, needs: { type: "array", items: { type: "string" } } } },
+      description: "A workflow revision: each decision provider its typed questions need that this server does not run, by id, with why (`not_set_up_here`) and the variables it needs.",
+    },
   },
 };
 const ARCHIVED_DETAILS = {
