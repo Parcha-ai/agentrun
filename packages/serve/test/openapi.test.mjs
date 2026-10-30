@@ -90,6 +90,14 @@ test("the contract's operations are as vendored; this server's own are added and
         continue;
       }
       assert.match(property["x-agentrun-serve"], /^[a-z]+\/\d+$/, `${at}.${field} names its addition`);
+      // An addition inside one (a later mark on a property of this server's own) is listed too.
+      const inner = (object, where) => {
+        for (const [name, nested] of Object.entries(object.properties ?? {})) {
+          if (nested["x-agentrun-serve"] !== undefined) marked.push(`${where}.${name}`);
+          inner(nested, `${where}.${name}`);
+        }
+      };
+      inner(property, `${at}.${field}`);
       delete schema.properties[field];
       marked.push(`${at}.${field}`);
     }
@@ -184,4 +192,12 @@ test("live answers meet the served document: capabilities, and an agent made, re
   }
   // The same check sees a field the document does not hold: the positive control.
   assert.notDeepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, { ...(await api("GET", "/capabilities")).body, unheard_of: 1 }), []);
+});
+
+test("the decision providers' widening to parallel is its own addition, decisions/2, and info lists it", async (t) => {
+  const { doc } = await served(t);
+  const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
+  assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
+  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel"]);
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });
