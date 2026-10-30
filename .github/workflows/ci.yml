@@ -187,7 +187,7 @@ jobs:
     # clean consumer, `rest` every other suite, so each suite runs once and a new pi workspace runs in `rest`.
     name: pi-1-2 (${{ matrix.pi }}, ${{ matrix.suites }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.suites == 'rest' && 1 || 30 }}
     env:
       FIRST: '@parcha/pi-transport,@parcha/agentrun-serve,@parcha/pi-git-remote'
     strategy:
