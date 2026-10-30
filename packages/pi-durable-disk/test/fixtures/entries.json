@@ -26,6 +26,7 @@
       "ServeError",
       "StoreBehindSealError",
       "SuperviseError",
+      "WORKSPACES",
       "acquire",
       "archilControl",
       "archilEnv",
@@ -181,7 +182,8 @@
       "UnheldRun",
       "UnheldStart",
       "Unmounted",
-      "WithClaimOptions"
+      "WithClaimOptions",
+      "Workspace"
     ]
   },
   "./lease": {
@@ -250,7 +252,8 @@
       "RunSeedDir",
       "RunStatus",
       "StoreHeadSource",
-      "Unmounted"
+      "Unmounted",
+      "Workspace"
     ]
   },
   "./internals": {
