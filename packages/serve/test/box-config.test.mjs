@@ -213,6 +213,33 @@ test("shared mode: AGENTRUN_BOX_CGROUP naming a subtree not delegated stops the 
   assert.equal(single.caps.box.cgroup, false, "no subtree named: single-user, and it starts");
 });
 
+test("shared mode: a delegated AGENTRUN_BOX_CGROUP with a box that gives runs no cgroup of their own (the local box) stops the start, by name; never every run uncapped", { skip: process.getuid?.() === 0 && "root writes a file of mode 444" }, async (t) => {
+  withEnv(t, { AGENTRUN_BOX_CGROUP: await fakeCgroup(t) }, BOX_ENV);
+  // The local box's isolation as its probe proves it: bwrap, no cgroup.
+  await assert.rejects(serve(t, { boxFactory: factory({ mode: "bwrap", cgroup: false }) }), /^Error: AGENTRUN_BOX_CGROUP names a cgroup subtree, but this server's box \(bwrap\) gives runs no cgroup of their own: per-run cgroups for the local box are not in this release/);
+  withEnv(t, {}, BOX_ENV);
+  const single = await served(t, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  assert.equal(single.caps.box.mode, "bwrap", "unset, the same box runs single-user");
+  await single.close();
+});
+
+test("shared mode: a delegated AGENTRUN_BOX_CGROUP with no box (unavailable: its probe failed, or making it threw) stops the start, by name; never every run unboxed and uncapped", { skip: process.getuid?.() === 0 && "root writes a file of mode 444" }, async (t) => {
+  withEnv(t, { AGENTRUN_BOX_CGROUP: await fakeCgroup(t) }, BOX_ENV);
+  await assert.rejects(serve(t, { boxFactory: factory({ mode: "unavailable", error: "bwrap_userns_denied", detail: "user namespaces are denied here" }) }), /^Error: AGENTRUN_BOX_CGROUP names a cgroup subtree, but this server has no box \(bwrap_userns_denied\), so it gives runs no cgroup of their own/);
+  await assert.rejects(serve(t, { boxFactory: async () => { throw new Error("no bwrap here"); } }), /^Error: AGENTRUN_BOX_CGROUP names a cgroup subtree, but this server has no box \(box_probe_failed\), so it gives runs no cgroup of their own/);
+  withEnv(t, {}, BOX_ENV);
+  const single = await served(t, { boxFactory: factory({ mode: "unavailable", error: "bwrap_userns_denied", detail: "user namespaces are denied here" }) });
+  assert.equal(single.caps.box.mode, "unavailable", "unset, a single-user server starts with no box, as before");
+  await single.close();
+});
+
+test("shared mode: AGENTRUN_BOX=unsandboxed with a delegated AGENTRUN_BOX_CGROUP starts: the operator's own word, runs uncapped by that choice", { skip: process.getuid?.() === 0 && "root writes a file of mode 444" }, async (t) => {
+  withEnv(t, { AGENTRUN_BOX: "unsandboxed", AGENTRUN_BOX_CGROUP: await fakeCgroup(t) }, BOX_ENV);
+  const shared = await served(t, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  assert.deepEqual([shared.caps.box.mode, shared.caps.box.cgroup], ["unsandboxed", false]);
+  await shared.close();
+});
+
 // ---- a run opened again after the operator changed AGENTRUN_BOX ------------------------------------------------------
 
 /** A run waiting for the person, left with its process killed by a server started under `env` (and `options`). */

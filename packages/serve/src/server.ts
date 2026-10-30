@@ -270,11 +270,19 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // The box, before anything listens: a setting this server does not know, or a shared server's cgroup subtree not
-  // delegated to it, stops the start; a box that is missing or fails its probe does not, and reads as unavailable.
+  // delegated to it, stops the start; on a single-user server, a box that is missing or fails its probe does not, and
+  // reads as unavailable.
   const boxSettings = boxConfig(process.env);
   const undelegated = boxSettings.cgroup === undefined ? undefined : await cgroupDelegation(boxSettings.cgroup);
   if (undelegated) throw new Error(`AGENTRUN_BOX_CGROUP names a cgroup subtree this server cannot use (${undelegated}): a shared server never runs runs uncapped. Delegate the subtree to this server's user, or unset it to run single-user.`);
   const { box: madeBox, view: boxView } = await resolveBox(boxSettings, options.boxFactory, boxSettings.cgroup !== undefined);
+  // A shared server's runs each get a cgroup of their own, or the start stops. A box that makes none (the local box's
+  // probe proves no cgroup), or no box at all (unavailable), would run every run uncapped under the subtree the operator
+  // named to cap them. Only the operator's own word, AGENTRUN_BOX=unsandboxed, runs a shared server's runs uncapped.
+  if (boxSettings.cgroup !== undefined && boxView.mode !== "unsandboxed" && !boxView.cgroup) {
+    const which = boxView.mode === "unavailable" ? `this server has no box (${boxView.error ?? "unavailable"}), so it` : `this server's box (${boxView.mode})`;
+    throw new Error(`AGENTRUN_BOX_CGROUP names a cgroup subtree, but ${which} gives runs no cgroup of their own: per-run cgroups for the local box are not in this release, and a shared server never runs runs uncapped. Unset it to run single-user.`);
+  }
   // The boxes runs leave are swept by the reap of the box this server made, unless one was given.
   const boxHost: BoxHost | undefined = options.box ?? (madeBox && boxView.mode !== "unavailable" && boxView.mode !== "unsandboxed" ? { reap: (record) => madeBox.reap(record) } : undefined);
   if (boxView.mode === "unsandboxed") process.stderr.write(`${UNSANDBOXED_BANNER}\n`);
