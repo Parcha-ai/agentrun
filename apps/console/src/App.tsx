@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { LiveRun } from "@/components/LiveRun";
-import { Operator } from "@/components/Operator";
+import { MissionControl } from "@/components/MissionControl";
+import { missionFrom, type MissionView } from "@/lib/mission";
 import { Playground, type StartResult } from "@/components/Playground";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
@@ -23,7 +24,8 @@ function route(): Where {
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
-  if (h.startsWith("#/start")) return { section: "operator" };
+  // Mission Control is the first page: the bare address, and the old start page's, land there.
+  if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
   m = h.match(/^#\/runs\?agent=([^&]+)$/);
   return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
 }
@@ -65,6 +67,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(route);
   const [caps, setCaps] = useState<Capabilities | null>(null);
+  // Mission Control: the store's counts (GET /v2/stats) and the latest runs, read each time the page opens.
+  const [mission, setMission] = useState<MissionView | null>(null);
+  const [missionError, setMissionError] = useState<string | null>(null);
   const [runs, setRuns] = useState<Run[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [more, setMore] = useState(false);
@@ -100,7 +105,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", operator: "#/start" }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
@@ -108,7 +113,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const [startError, setStartError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
-    if (where.section !== "playground" && where.section !== "operator") return;
+    if (where.section !== "playground") return;
     setStartError(null);
     allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents)
       .then((a) => {
@@ -119,6 +124,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       })
       .catch((e) => setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)));
   }, [v2, where.section, retry]);
+  useEffect(() => {
+    if (where.section !== "mission") return;
+    let live = true;
+    setMissionError(null);
+    Promise.all([v2.stats(), v2.listRuns(10)])
+      .then(([s, r]) => { if (live) setMission(missionFrom(s, r.runs)); })
+      .catch((e) => { if (live) setMissionError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
+    return () => { live = false; };
+  }, [v2, where.section]);
   const revsAsked = useRef(0);
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
@@ -143,10 +157,10 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }}>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
-      {(where.section === "operator" || where.section === "playground") && startError
+      {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
-        : where.section === "operator"
-        ? agents && <Operator agents={agents} error={error} onSend={send} onStarted={(id) => go(`#/runs/${encodeURIComponent(id)}`)} />
+        : where.section === "mission"
+        ? <MissionControl view={mission} error={missionError} />
         : where.section === "playground"
         ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
             live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />
