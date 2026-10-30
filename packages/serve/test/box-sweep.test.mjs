@@ -420,3 +420,28 @@ test("an archived run whose process dies while it waits for the person has its b
   for (const deadline = Date.now() + 15_000; !(await mark()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `let go once its process died: ${reaped}`);
   assert.deepEqual(reaped, ["box-waiting"]);
 });
+
+
+test("a box that cannot be let go never holds up its run's end: an archived run that completes is carried back, its box tried again later", linux, async (t) => {
+  const reaped = [];
+  const box = {
+    reap: async (r) => (reaped.push(r.id), { empty: true, left: 0, by: "cgroup" }),
+    cgroups: { list: async () => [], remove: async () => { throw new Error("EBUSY: cgroup removal refused"); } },
+  };
+  const { api, data } = await serve(t, { box });
+  assert.equal((await api("POST", "/agents", agent("busy"))).status, 201);
+  const go = join(data, "go-stuck");
+  const id = (await api("POST", "/agents/busy/runs", { input: { content: `Answer once ${go} exists.` } })).body.run_id;
+  for (const deadline = Date.now() + 10_000; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+    const record = JSON.parse(await readFile(join(data, "runs", id, "run.json"), "utf8").catch(() => "null"));
+    if (record?.holder?.pid) break;
+    assert.ok(Date.now() < deadline, "the run's process came up");
+  }
+  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-stuck", cgroup: "/cg/stuck", writer: await goneWriter() }));
+  assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
+  await writeFile(go, "");
+  const { last } = await follow(api, id, ["completed"], { deadlineMs: 20_000 });
+  assert.equal(last.status, "completed", "carried back, whatever its box's cleanup did");
+  assert.ok(reaped.includes("box-stuck"), "its box was reaped");
+  assert.equal(JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped, undefined, "its record left unmarked, for the next start to try again");
+});
