@@ -2,7 +2,8 @@
 // state, answered with probabilities and grounded in live web evidence. The response carries no cost and the API takes no
 // idempotency key, so the answered request is booked at list price as an estimate, and a paid request is never re-sent
 // unasked: only one that provably never reached Parallel (a connect error before sending) or a 429 that says when to
-// retry is sent again. A 408, a 5xx or a connection lost after sending is outcome_unknown, booked at list price.
+// retry is sent again. A 408, a 5xx or a connection lost after sending is outcome_unknown, booked at list price, and a 200
+// whose body does not parse or match the questions is invalid_response, booked at list price too.
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
 import type { DecisionCapabilities, DecisionContext, DecisionEvidence, DecisionOutcome, DecisionProvider, DecisionRequest, ProviderAnswer, SystemOneQuestion } from "@parcha/agentrun-dsl";
@@ -65,7 +66,8 @@ function checkLimits(questions: Record<string, SystemOneQuestion>): void {
 
 /** The answers, sources and metering of a 200 response, checked against the questions asked. */
 function readResponse(body: unknown, questions: Record<string, SystemOneQuestion>, attempts: number): DecisionOutcome {
-  const invalid = (why: string) => new DecisionProviderError("invalid_response", `Parallel returned ${why}.`, { attempts });
+  // Parallel answered, so the request was billed: a response it rejects is booked at list price too.
+  const invalid = (why: string) => new DecisionProviderError("invalid_response", `Parallel returned ${why}.`, { attempts, costUsd: PARALLEL_LIST_PRICE_USD, costBasis: "estimate" });
   if (!isRecord(body) || !isRecord(body.answers)) throw invalid("no answers");
   const asked = Object.keys(questions);
   const given = Object.keys(body.answers);
@@ -150,7 +152,7 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
           catch { throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, signal.aborted ? "passed its deadline" : "lost the connection while the answer was read"); }
           let parsed: unknown;
           try { parsed = JSON.parse(text); }
-          catch { throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt }); }
+          catch { throw new DecisionProviderError("invalid_response", "Parallel returned a body that is not JSON.", { attempts: attempt, costUsd: PARALLEL_LIST_PRICE_USD, costBasis: "estimate" }); }
           return readResponse(parsed, request.questions, attempt);
         }
         const status = response.status;

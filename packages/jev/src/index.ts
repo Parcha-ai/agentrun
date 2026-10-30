@@ -389,7 +389,8 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
 /** Jev as a DecisionProvider: `createJevRunner(options)` behind the DSL's provider seam, for a host that runs every
  *  decision model through `judgeFromProvider`. A paid request is never sent twice: it runs with `maxAttempts: 1`, and a
  *  408, a 5xx or a connection error (the SDK cannot tell one before sending from one after) is `outcome_unknown`, at an
- *  unknown cost; so is a deadline that ends the request in flight (the host's, or the runner's own `timeoutMs`). Only the
+ *  unknown cost, and so is the cost of an `invalid_response` (a 200 that breaks the response rules was still answered); so
+ *  is a deadline that ends the request in flight (the host's, or the runner's own `timeoutMs`). Only the
  *  host's own cancel is `aborted`. Its other errors become DecisionProviderErrors with the same message. A cost the
  *  response reports is booked "reported"; else the counted tokens are priced at `pricing`, by default TypeSafe's published
  *  price on the TypeSafe route (none on OpenRouter's), and booked "estimate"; else the cost is unknown (null, never 0). */
@@ -423,7 +424,7 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
         if (!(error instanceof JevError)) throw new DecisionProviderError("http", "Jev request failed.");
         const timedOut = Boolean(deadline?.aborted) && !ctx.signal.aborted;
         const code = jevErrorCode(error, timedOut, ctx.signal.aborted);
-        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" ? { costUsd: null, costBasis: "unknown" as const } : {}) });
+        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" || code === "invalid_response" ? { costUsd: null, costBasis: "unknown" as const } : {}) });
       }
     },
   };

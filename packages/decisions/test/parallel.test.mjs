@@ -87,6 +87,16 @@ test('a connection that drops after the 200 headers, before the body ends, is ou
   await assert.rejects(parallelProvider({ ...settings, fetch: malformed.fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx()), code('invalid_response'));
 });
 
+test('a 200 Parallel answered that does not parse, or does not match the questions, was billed: invalid_response at list price', async () => {
+  const questions = { holds: { type: 'noul', instructions: 'Q?' } };
+  const atListPrice = (error) => { code('invalid_response')(error); assert.deepEqual([error.costUsd, error.costBasis], [PARALLEL_LIST_PRICE_USD, 'estimate']); return true; };
+  for (const body of ['{"mode": "fast", "answers": [not json', { mode: 'fast', answers: { other: { type: 'noul', noul: 0.5 } } }]) {
+    const malformed = fakeFetch([json(body)]);
+    await assert.rejects(parallelProvider({ ...settings, fetch: malformed.fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx()), atListPrice);
+    assert.equal(malformed.seen.length, 1, 'and it is not sent again');
+  }
+});
+
 test('a choice with no confidence gets one derived, and its source says so', async () => {
   const { questions, response } = responses.find((r) => Object.values(r.response.answers).some((a) => a.type === 'choice'));
   const stripped = structuredClone(response);

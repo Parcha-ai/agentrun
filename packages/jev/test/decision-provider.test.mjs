@@ -107,3 +107,12 @@ test('with no token counts, a failed call, or the OpenRouter route, the cost is 
   const routed = await askOnce(jevProvider({ provider: 'openrouter', apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: answered({ input_tokens: 1000, output_tokens: 0 }) }));
   assert.deepEqual([routed.cost_usd, routed.cost_basis], [null, 'unknown'], "TypeSafe's price is not OpenRouter's");
 });
+
+test('a Jev 200 that breaks the response rules was paid for: invalid_response at an unknown cost, never $0', async () => {
+  const provider = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: async () => json({ model: 'jev-test', answers: { holds: { type: 'noul', noul: 1.7 } }, usage: { input_tokens: 1, output_tokens: 1 } }) });
+  await assert.rejects(provider.decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, { decisionId: 'd', signal: new AbortController().signal, deadlineMs: null }), (error) => {
+    assert.equal(error.code, 'invalid_response');
+    assert.deepEqual([error.costUsd, error.costBasis], [null, 'unknown']);
+    return true;
+  });
+});
