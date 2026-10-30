@@ -229,6 +229,12 @@ function argumentsListing(run: CommandRunner): Map<number, string> {
 const MARK_READS = 3;
 
 /** The table on macOS: `ps` and `sysctl`, through `run` (for tests). */
+/** Whether a `ps -E` line shows an environment after one of the given readings of its process's arguments: false when
+ *  it shows none after them, or starts with neither (it cannot be told, and is read again). */
+function showsEnvironment(text: string, readings: readonly (string | undefined)[]): boolean {
+  return readings.some((args) => args !== undefined && text.startsWith(`${args} `) && text.slice(args.length + 1).trim() !== "");
+}
+
 export function psTable(run: CommandRunner = runCommand): ProcessTable {
   let boot: string | undefined;
   return {
@@ -264,9 +270,9 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         // arguments changed between the reads (it exec'd) cannot be told marked or not: the three reads are taken again,
         // MARK_READS times in all, and if one still cannot be told this throws, as a failed listing does, so the reap
         // stops and keeps the mark. Unread is never unmarked: the mark would be dropped beside a live command. A process
-        // whose arguments changed and whose `-E` line does not hold the word is, if it is another user's, unmarked; if it
-        // is this uid's, read again in the window (inside an exec its line can show the new arguments with no environment
-        // yet), so a program that keeps rewriting its title holds a reap up for the window, never longer.
+        // whose arguments changed and whose `-E` line does not hold the word is unmarked when its line shows an
+        // environment, so another program that keeps rewriting its title holds nothing up; one of this uid whose line shows
+        // no environment yet (inside an exec) is read again in the window, never longer.
         withMark(name, value) {
           const word = `${name}=${value}`;
           const uid = process.getuid?.();
@@ -290,7 +296,10 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
               const own = before.get(pid);
               if (own === undefined || after.get(pid) !== own || !text.startsWith(own)) {
                 if (text.includes(word)) unread.push(pid);
-                else if (Number(m[2]) === uid) empty.push(pid);
+                // Without the word: one of this uid whose line shows no environment after either reading of its arguments
+                // (inside an exec: the new arguments, no environment yet) is read again in the window; one that shows an
+                // environment without the word, or another user's, is unmarked.
+                else if (Number(m[2]) === uid && !showsEnvironment(text, [own, after.get(pid)])) empty.push(pid);
                 continue;
               }
               const env = environmentOf(own, text, own);
