@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { CODEX_ROUTES, gatewayHandler, isBrandedMachine } from '../dist/host/process.js';
 import { childEnv, confined, localMachine } from '../dist/host/machine.js';
+import { UNWATCHED } from '../dist/scripts.js';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-codex-machine-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -176,5 +177,76 @@ test("the machine knows the exec the model proxy's latest answer carried: set as
     assert.equal(machine.announcedExec(), undefined, 'an answer with no exec clears it');
   } finally {
     await machine.close();
+  }
+});
+
+test("two answers open at once on a session (a background call beside the turn) make the announced exec unknown until both have ended, and a clean answer after them announces again", async () => {
+  const encoder = new TextEncoder();
+  const exec = (id) => `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: id, input: 'x' } })}\n\n`;
+  const done = `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'r', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } })}\n\n`;
+  const gates = [];
+  const open = [];
+  const answer = (id) => new Promise((resolve) => {
+    let finish;
+    const gate = new Promise((r) => { finish = r; });
+    gates.push(finish);
+    resolve(new Response(new ReadableStream({ async start(c) { c.enqueue(encoder.encode(exec(id))); open.push(id); await gate; c.enqueue(encoder.encode(done)); c.close(); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  });
+  const ids = ['call_a', 'call_b', 'call_c'];
+  const acquire = localMachine({ dir: scratch(), proxy: { hooks, tools: [], fetch: async () => answer(ids.shift()) } });
+  const machine = await acquire({ ctx: { runId: 'overlap' }, model: gatewayHandler(route) });
+  const until = async (test) => { for (let i = 0; i < 200 && !test(); i++) await new Promise((r) => setTimeout(r, 10)); assert.ok(test()); };
+  const ask = () => new Promise((resolve, reject) => {
+    const { hostname, port } = new URL(machine.modelUrl);
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${machine.modelKey}` } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject);
+    req.end(JSON.stringify({ model: 'm', stream: true, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] }] }));
+  });
+  try {
+    const first = ask();
+    await until(() => open.includes('call_a'));
+    assert.equal(machine.announcedExec(), 'call_a', 'one answer open: its exec');
+    const second = ask();
+    await until(() => open.includes('call_b'));
+    assert.equal(machine.announcedExec(), UNWATCHED, 'two open: which carried which cannot be told');
+    gates[0]();
+    await first;
+    assert.equal(machine.announcedExec(), UNWATCHED, 'one ended, one open: still unknown');
+    gates[1]();
+    await second;
+    assert.equal(machine.announcedExec(), UNWATCHED, 'both ended: neither exec stands for the other');
+    const third = ask();
+    await until(() => open.includes('call_c'));
+    assert.equal(machine.announcedExec(), 'call_c', 'a clean answer after them announces again');
+    gates[2]();
+    await third;
+  } finally {
+    for (const g of gates) g();
+    await machine.close();
+  }
+});
+
+test("a machine acquired again announces nothing until its own proxy has seen an answer", async () => {
+  const exec = { type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: 'call_a', input: 'x' } };
+  const body = [exec, { type: 'response.completed', response: { id: 'r', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
+  const dir = scratch();
+  const make = () => localMachine({ dir, proxy: { hooks, tools: [], fetch: async () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }) } });
+  const first = await make()({ ctx: { runId: 'again' }, model: gatewayHandler(route) });
+  try {
+    const { hostname, port } = new URL(first.modelUrl);
+    await new Promise((resolve, reject) => {
+      const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${first.modelKey}` } }, (res) => { res.resume(); res.on('end', resolve); });
+      req.on('error', reject);
+      req.end(JSON.stringify({ model: 'm', stream: true, input: [] }));
+    });
+    assert.equal(first.announcedExec(), 'call_a');
+  } finally {
+    await first.close();
+  }
+  const second = await make()({ ctx: { runId: 'again' }, model: gatewayHandler(route) });
+  try {
+    assert.equal(second.announcedExec(), undefined, 'a re-attached machine announces nothing');
+  } finally {
+    await second.close();
   }
 });

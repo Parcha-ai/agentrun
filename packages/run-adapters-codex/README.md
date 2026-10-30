@@ -29,7 +29,9 @@ const runNode = createHarnessRunner(
   the log, and is declined, never run, while two scripts are live. `test/tool-off.test.mjs` runs the pinned binary
   against a scripted model that calls every built-in, and checks that nothing runs, writes or spawns;
   `test/code-mode-never.test.mjs` runs a `never` tool from code mode, from a script that yielded, and from a second
-  script a model wrote while the first ran.
+  script a model wrote while the first ran. After a crash the harness's note about the interrupted turn reaches the model
+  once, as a developer message injected on the recovery resume (Codex ignores new developer instructions on resume, and every
+  turn opens with `thread/resume`), and the resumed turn's user input is the user's own words or `Continue.`.
 - **The model behind a proxy.** Codex talks to a model proxy on the loopback interface with a key of its session's own;
   it never holds the provider key. The proxy forwards `POST /v1/responses` only, fixes the model, stores nothing at the
   provider, drops any tool that is not the session's, and asks the runner before every paid request, so the turn cap and

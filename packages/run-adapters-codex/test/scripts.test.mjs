@@ -2,7 +2,7 @@
 // latest answer carried. Pure: no binary, no network.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, Scripts, settle, UNWATCHED } from '../dist/scripts.js';
+import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, recoveryFacts, Scripts, settle, UNWATCHED } from '../dist/scripts.js';
 
 const line = (payload) => JSON.stringify({ timestamp: '2026-10-29T23:00:00Z', type: 'response_item', payload });
 const exec = (callId) => line({ type: 'custom_tool_call', name: 'exec', call_id: callId, input: 'await tools.slow({})' });
@@ -99,6 +99,7 @@ const rolled = (text, ok = true) => ({ tool: 'x', ok, text });
 test("a nested call comes to what the store says, then what the rollout says; they must agree, or it is interrupted", () => {
   assert.deepEqual(settle(nested('e1', 'record', done('recorded'))), { kind: 'completed', text: 'recorded' }, 'store only');
   assert.deepEqual(settle(nested('e1', 'record', undefined, rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'rollout only (the store lost the end)');
+  assert.deepEqual(settle(nested('e1', 'record', { status: 'started' }, rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'store started, rollout completed: Codex writes that line only after our tool answered, so the effect happened');
   assert.deepEqual(settle(nested('e1', 'record', done('recorded'), rolled('recorded'))), { kind: 'completed', text: 'recorded' }, 'both, agreeing');
   assert.deepEqual(settle(nested('e1', 'record', done('recorded'), rolled('something else'))), { kind: 'interrupted' }, 'both, disagreeing');
   assert.deepEqual(settle(nested('e1', 'record', { status: 'started' })), { kind: 'interrupted' }, 'started, no end');
@@ -129,4 +130,46 @@ test("the rollout's completion of a nested call is read from its item_completed 
   assert.deepEqual([...completedNested([item('completed')])], [['exec-0e41febd-a273-40e5-8b2a-44fb79a552ae', { tool: 'record', ok: true, text: 'recorded' }]]);
   assert.equal(completedNested([item('inProgress')]).size, 0);
   assert.equal(completedNested(['not json', JSON.stringify({ type: 'response_item', payload: { type: 'message' } })]).size, 0);
+});
+
+test("two cut-off execs and an unwatched safe call of the turn: the call is listed once, apart, in the last exec's output, under neither exec's own list, and a call of another turn is not", () => {
+  const ties = [
+    { callId: 'exec-a1', exec: 'call_a', since: 3 },
+    { callId: 'exec-b1', exec: 'call_b', since: 3 },
+    { callId: 'exec-u1', exec: null, since: 3 },
+    { callId: 'exec-old', exec: null, since: 1 },
+  ];
+  const fact = (tie) => ({ callId: tie.callId, tool: tie.callId.replace('exec-', 'tool-'), store: { status: 'completed', text: `out ${tie.callId}` } });
+  const listed = recoveryFacts(['call_a', 'call_b'], ties, 3, fact);
+  assert.deepEqual(listed.get('call_a').own.map((f) => f.callId), ['exec-a1']);
+  assert.deepEqual(listed.get('call_a').loose, [], 'not the first exec\'s');
+  assert.deepEqual(listed.get('call_b').loose.map((f) => f.callId), ['exec-u1'], 'the last exec\'s, and only this turn\'s');
+  const outputs = ['call_a', 'call_b'].map((id) => execRecoveryOutput(listed.get(id).own, listed.get(id).loose));
+  assert.ok(!/could not be told/.test(outputs[0]));
+  assert.match(outputs[1], /1 call ran whose script could not be told/);
+  assert.equal(outputs.join('\n').split('tool-u1 completed').length - 1, 1, 'listed exactly once');
+  assert.ok(!outputs.join('\n').includes('tool-old'), 'a call of another turn is not listed');
+  const own = outputs[1].split('1 call ran whose script')[0];
+  assert.ok(!own.includes('tool-u1'), 'under neither exec\'s own list');
+});
+
+test("no slot of the model's takes the full recovery note: the harness never falls back to the note's text, which holds tool outputs", async () => {
+  // recoverySystemNote cannot be stubbed in an ES module, so this reads what the built harness does with it: it injects only what
+  // recoverySystemNote returned, and nothing when that is undefined.
+  const { readFileSync } = await import('node:fs');
+  const built = readFileSync(new URL('../dist/harness.js', import.meta.url), 'utf8');
+  assert.ok(!/\bnote\.text\b/.test(built), 'note.text (the full note) is not used by the harness');
+  assert.match(built, /system !== undefined && !noted/, 'no developer item is injected without a system note');
+  assert.ok(!/recoverySystemNote\(ctx\.state\(\)\)\s*\?\?/.test(built), 'no fallback after recoverySystemNote');
+});
+
+test("a cut-off exec with no call of its own but unattributed ones does not say it ran none; with no calls at all it does", () => {
+  const call = { callId: 'exec-u1', tool: 'lookup', store: { status: 'completed', text: 'found' } };
+  const withLoose = execRecoveryOutput([], [call]);
+  assert.match(withLoose, /no call of its own was recorded/);
+  assert.match(withLoose, /1 call ran whose script could not be told/);
+  assert.ok(!/ran none/.test(withLoose) && !/Run it again/.test(withLoose), 'it does not tell the model to run the script again');
+  const none = execRecoveryOutput([], []);
+  assert.match(none, /ran none\. Run it again if it is still needed\./);
+  assert.ok(!/could not be told/.test(none));
 });

@@ -154,12 +154,25 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     const route = model.options;
     // The code-mode `exec` the model proxy's latest answer carried: set while the answer passes, before Codex has it.
     let announced: string | undefined;
+    let open = 0;
     const proxy = await startModelProxy({
       policy: codexPolicy({
         model: route.models.model,
         tools: options.proxy.tools,
         ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
-        announce: { response: () => void (announced = undefined), exec: (callId) => void (announced = callId), failed: () => void (announced = UNWATCHED) },
+        announce: {
+          // The cost is liveness, not safety: after an overlap a never call is declined until the next single answer, which the model's
+          // next wait or exec gives.
+          // A second answer that starts while one is open (a background call beside the turn) makes every tie ambiguous until both have
+          // ended: which of them carried which exec cannot be told. A failed watch, likewise, stands for an exec not seen.
+          response: () => {
+            open += 1;
+            announced = open > 1 ? UNWATCHED : undefined;
+          },
+          exec: (callId) => void (announced = open > 1 || announced === UNWATCHED ? UNWATCHED : callId),
+          failed: () => void (announced = UNWATCHED),
+          end: () => void (open = Math.max(0, open - 1)),
+        },
       }),
       hooks: options.proxy.hooks,
       model: route.models.model,
