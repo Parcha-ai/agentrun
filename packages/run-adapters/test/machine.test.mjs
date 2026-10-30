@@ -198,14 +198,21 @@ test("a box whose reap finds a process left stops the session: no box starts aft
   await assert.rejects(machine.close(), (error) => error.code === 'box_not_empty' && error.left === 2);
 });
 
-test("the session's last box is reaped before anything starts, and one not counted empty fails the open", async (t) => {
-  const box = fakeBox();
+test("the session's last box is reaped before anything starts, in every mode, and one not counted empty fails the open", async (t) => {
   const previous = { id: 'old', pid: 4242, startTime: '9', pidns: 'pid:[9]', writer: { pid: 1, startTime: '1' } };
-  const machine = await machineAt(t, scratch(), { box: boxOf(box, { previous }) });
-  assert.deepEqual(box.reaped, ['old'], 'the old box is reaped at open');
-  await machine.start({ command: '/bin/true' }).exited;
-  const stuck = fakeBox({ reap: async () => ({ empty: false, left: 1, by: 'pidns' }) });
-  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: {}, box: boxOf(stuck, { previous }) }), (error) => error.code === 'box_not_empty');
+  const reaper = (verdict) => { const r = { reaped: [] }; r.reap = async (record) => { r.reaped.push(record.id); return verdict; }; return r; };
+  const empty = { empty: true, left: 0, by: 'pidns' };
+  const held = { empty: false, left: 1, by: 'cgroup' };
+  const down = fakeBox({ isolation: { mode: 'unavailable', error: 'bwrap_userns_denied', detail: 'x' } });
+  // Each mode this open may be in, after a boxed one: boxed again, unsandboxed, an unavailable box, no box at all.
+  for (const [mode, extra] of [['boxed', { box: boxOf(fakeBox()) }], ['unsandboxed', { box: 'unsandboxed' }], ['unavailable', { box: boxOf(down) }], ['no box', {}]]) {
+    const ok = reaper(empty);
+    const machine = await machineAt(t, scratch(), { ...extra, previousBox: { record: previous, reap: ok.reap } });
+    assert.deepEqual(ok.reaped, ['old'], `${mode}: the old box is reaped at open`);
+    await machine.start({ command: '/bin/true' }).exited;
+    const stuck = reaper(held);
+    await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, ...extra, previousBox: { record: previous, reap: stuck.reap } }), (error) => error.code === 'box_not_empty' && error.left === 1, `${mode}: a last box not counted empty fails the open`);
+  }
 });
 
 test("isolation says what the host gave: a box's own, unsandboxed only by the operator's word, and nothing for no box; an unavailable box boxes nothing", async (t) => {

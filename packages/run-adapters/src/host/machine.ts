@@ -16,7 +16,7 @@ import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, writeFileSync } fr
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
-import type { Box, BoxedChild, BoxRecord, BoxRecorder, BoxSpec, Isolation } from "./box.js";
+import { BoxError, type Box, type BoxedChild, type BoxRecord, type BoxRecorder, type BoxSpec, type Isolation, type Reaped } from "./box.js";
 import { BOX_FORWARD, forwardChild } from "./box-forward.js";
 import { boxSlot } from "./box-slot.js";
 import { startModelProxy, type ModelProxyOptions } from "./proxy.js";
@@ -204,9 +204,6 @@ export interface MachineBox {
    *  either cannot be made or reads as dead while another host's is live. Default: one per session under the OS's temp
    *  directory, named by the session's directory. A short path also keeps a socket's within the 108 bytes one allows. */
   runtimeDir?: string;
-  /** The record the session's last box left (a relaunch, a woken run): reaped, and counted empty, before anything
-   *  starts. */
-  previous?: BoxRecord;
 }
 
 export interface LocalMachineSpec<D extends string> {
@@ -227,6 +224,10 @@ export interface LocalMachineSpec<D extends string> {
   /** The host's box for every child of the session, or `unsandboxed` where the operator said there is none. Absent:
    *  the host gave none, and the machine's `isolation` says so. */
   box?: MachineBox | "unsandboxed";
+  /** The record the session's last box left (a relaunch, a woken run), and the reap of the box that wrote it: reaped,
+   *  and counted empty, before anything of this session starts, whatever this open's mode. A session boxed before and
+   *  unsandboxed now (or whose box is unavailable now) must not start beside a box of its own that still runs. */
+  previousBox?: { record: BoxRecord; reap(record: BoxRecord): Promise<Reaped> };
 }
 
 /** A local session machine: private directories, a loopback model proxy, and children ended with it. Unbranded: each
@@ -273,8 +274,14 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   const isolation: Isolation | undefined = boxed ? boxed.box.isolation : spec.box === "unsandboxed" ? { mode: "unsandboxed" } : undefined;
   const boxing = boxed && isolation?.mode !== "unavailable" ? boxed : undefined;
   const slot = boxing ? boxSlot<BoxedChild>({ reap: (record) => boxing.box.reap(record) }) : undefined;
-  // The last box first: nothing of this session starts while one of its old boxes may still hold a process.
-  if (slot && boxing?.previous) await slot.adopt(boxing.previous);
+  // The last box first, in every mode (boxed, unsandboxed, unavailable or none): nothing of this session starts while
+  // one of its old boxes may still hold a process. Only the reap's own count says it is empty; anything else fails the
+  // open, by name, and the next open reaps it again.
+  const previous = spec.previousBox;
+  if (previous) {
+    const verdict = await previous.reap(previous.record);
+    if (!verdict.empty) throw new BoxError("box_not_empty", `box_not_empty: the session's last box still holds ${verdict.left} process${verdict.left === 1 ? "" : "es"} (counted by ${verdict.by}); nothing of the session starts`, { record: previous.record, left: verdict.left });
+  }
 
   const key = randomBytes(32).toString("base64url");
   // In a box, the front's only door is a socket of the session's own, which the box is given; outside one, loopback.
