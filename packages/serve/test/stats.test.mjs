@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
 import { schemaProblems } from "./schema-support.mjs";
 import { follow, scratch, serve, startRun } from "./support.mjs";
+import { statsView } from "../dist/stats.js";
 
 const at = (i) => new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
 
@@ -142,4 +143,19 @@ test("GET /v2/stats over 1,000 runs across several agents answers within 500 ms,
   } finally {
     await chmod(join(data, "runs"), 0o700);
   }
+});
+
+test("a held run still queued (launched, its work not started) counts as active; one working too; one not held is unknown", () => {
+  // The held runs are as the server holds them, read by the real statusOf: a workflow run whose work has not started
+  // is queued, one whose work has is working.
+  const held = new Map([["q", { kind: "workflow", working: false }], ["w", { kind: "workflow", working: true }]]);
+  const runs = { held: (id) => held.get(id) };
+  const store = {
+    agents: 1, archivedAgents: 0, archivedRuns: 0,
+    runs: { total: 3, running: 3, completed: 0, failed: 0, stopped: 0, escalated: 0 },
+    cost: { usd: null, known: 0, unknown: 3 },
+    byAgent: [{ id: "a", name: "A", runs: 3 }],
+    running: ["q", "w", "elsewhere"],
+  };
+  assert.deepEqual(statsView(store, runs).runs, { total: 3, active: 2, needs_input: 0, failed: 0, status_unknown: 1 });
 });
