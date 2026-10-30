@@ -30,14 +30,26 @@ test("the reverse of the forward mapping is the identity for every catalog name"
   for (const name of SYNTHETIC) assert.equal(reverse.get(wireName(name)), name, name);
 });
 
-test("a dotted and an over-64 name do map away from the identity, so the mapping is doing something", () => {
+test("a dotted name maps away from the identity, so the mapping is doing something", () => {
   assert.equal(wireName("monid.discover"), "monid_discover");
   assert.equal(wireName("mcp:github/create_issue"), "mcp__github__create_issue");
-  const long = "mcp:a-very-long-server-name-that-keeps-going/an-equally-long-tool-name-past-the-limit";
-  const wire = wireName(long);
-  assert.notEqual(wire, long);
-  assert.ok(wire.length <= 64, `the wire name is ${wire.length} characters`);
-  assert.match(wire, /-[0-9a-f]{8}$/, "an over-64 name takes the hash suffix");
+});
+
+test("a name over 52 characters takes the hash suffix and fits, whatever characters it is made of", () => {
+  // A plain name of valid characters that is 53-64 long must NOT skip the mapping and come out over 52.
+  const plain = "a".repeat(60);
+  const wirePlain = wireName(plain);
+  assert.notEqual(wirePlain, plain, "a 60-character valid name is not kept as itself");
+  assert.ok(wirePlain.length <= 52, `the wire name is ${wirePlain.length} characters`);
+  assert.match(wirePlain, /-[0-9a-f]{8}$/, "it takes the hash suffix");
+  const dotted = "mcp:a-very-long-server-name-that-keeps-going/an-equally-long-tool-name";
+  const wireDotted = wireName(dotted);
+  assert.ok(wireDotted.length <= 52, `the wire name is ${wireDotted.length} characters`);
+  assert.match(wireDotted, /-[0-9a-f]{8}$/);
+  // Either one round-trips through the catalog's reverse.
+  const reverse = reverseOf([plain, dotted]);
+  assert.equal(reverse.get(wirePlain), plain);
+  assert.equal(reverse.get(wireDotted), dotted);
 });
 
 test("two names with one wire name are a collision, reported against the second", () => {

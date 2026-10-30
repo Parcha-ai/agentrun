@@ -5,19 +5,22 @@
 // records the wire name (recovery matches a call by it), and a reader maps it back to the catalog name on the way out.
 import { createHash } from "node:crypto";
 
-/** A wire name a CLI adapter and the model APIs accept. */
-export const WIRE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+/** A wire name: at most 52 characters, not the adapter's 64. One CLI gives the model the name with a 12-character
+ *  `mcp__hands__` prefix, and the model API's 64-character limit is on the name the model sees, so 52 is the budget that
+ *  holds on every harness. The one constant the identity branch and the length check both read: a plain 53-64 character
+ *  name of valid characters must not skip the mapping and come out over budget. */
+export const WIRE_NAME = /^[A-Za-z0-9_-]{1,52}$/;
 
-/** A catalog name's wire name: itself when it already is one, else `:` and `/` to `__`, `.` to `_`, any other character
- *  to `_`, and a `-<8 hex of the catalog name>` suffix (prefix trimmed to keep 64) when the result is too long. The
- *  suffix makes a long name unique; a collision between two names is refused at the save (collisions, reverseOf), never
- *  suffixed away. The reverse is a lookup, never a parse. */
+/** A catalog name's wire name: itself when it already is one within the budget, else `:` and `/` to `__`, `.` to `_`,
+ *  any other character to `_`, and a `-<8 hex of the catalog name>` suffix (prefix trimmed to fit) when the result is
+ *  too long. The suffix makes a long name unique; a collision between two names is refused at the save (collisions,
+ *  reverseOf), never suffixed away. The reverse is a lookup, never a parse. */
 export function wireName(catalog: string): string {
   if (WIRE_NAME.test(catalog)) return catalog;
   const base = catalog.replace(/[:/]+/g, "__").replace(/[^A-Za-z0-9_-]/g, "_");
-  if (base.length <= 64) return base;
+  if (base.length <= 52) return base;
   const tag = `-${createHash("sha256").update(catalog).digest("hex").slice(0, 8)}`;
-  return base.slice(0, 64 - tag.length) + tag;
+  return base.slice(0, 52 - tag.length) + tag;
 }
 
 /** The reverse of {@link wireName} over `names`: a map from each name's wire name back to the catalog name. A collision
