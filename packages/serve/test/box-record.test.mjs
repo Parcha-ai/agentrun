@@ -112,3 +112,61 @@ test("a box record is the server's alone: 0600, written by either form", async (
   await writeDurable(join(dir, "plain-async"), "x");
   assert.deepEqual([(await stat(join(dir, "plain"))).mode & 0o777, (await stat(join(dir, "plain-async"))).mode & 0o777], [0o600, 0o600], "the default mode of both");
 });
+
+/** writeSync and FileHandle.write replaced while `fn` runs: each call writes what `plan(call, length)` returns of what
+ *  it was asked (0 is a write that makes no progress, as on a full disk). */
+async function shortWrites(t, plan, fn) {
+  const fs = createRequire(import.meta.url)("node:fs");
+  const probe = await open(join(await scratch(t), ".probe"), "w");
+  const FileHandle = Object.getPrototypeOf(probe);
+  await probe.close();
+  const realSync = fs.writeSync;
+  const realWrite = FileHandle.write;
+  let syncCalls = 0;
+  let asyncCalls = 0;
+  fs.writeSync = (fd, buffer, offset, length, ...rest) => {
+    const n = plan(syncCalls++, length);
+    return n === 0 ? 0 : realSync(fd, buffer, offset, n, ...rest);
+  };
+  FileHandle.write = async function (buffer, offset, length, ...rest) {
+    const n = plan(asyncCalls++, length);
+    return n === 0 ? { bytesWritten: 0, buffer } : realWrite.call(this, buffer, offset, n, ...rest);
+  };
+  syncBuiltinESMExports();
+  const restore = () => {
+    fs.writeSync = realSync;
+    FileHandle.write = realWrite;
+    syncBuiltinESMExports();
+  };
+  t.after(restore);
+  try {
+    return await fn();
+  } finally {
+    restore();
+  }
+}
+
+test("a record that cannot be written whole (a short write, then none) is refused, named, with nothing renamed into place", async (t) => {
+  const dir = await scratch(t);
+  const recorder = boxRecorder(dir);
+  const path = join(dir, BOX_RECORD);
+  const halfThenNothing = (call, length) => (call === 0 ? Math.ceil(length / 2) : 0);
+  await shortWrites(t, halfThenNothing, () => assert.throws(() => recorder.ahead({ id: "box-1", writer: WRITER }), (error) => error.code === "box_record_failed" && /^box_record_failed: /.test(error.message)));
+  await assert.rejects(readFile(path), { code: "ENOENT" }, "ahead renamed nothing");
+  await assert.rejects(readFile(`${path}.tmp`), { code: "ENOENT" }, "and left no part behind");
+  await shortWrites(t, halfThenNothing, () => assert.rejects(recorder.started({ id: "box-1", pid: 4242, writer: WRITER }), (error) => error.code === "box_record_failed"));
+  await assert.rejects(readFile(path), { code: "ENOENT" }, "started renamed nothing");
+});
+
+test("a record written in pieces (short writes that keep going) is written whole", async (t) => {
+  const dir = await scratch(t);
+  const recorder = boxRecorder(dir);
+  const path = join(dir, BOX_RECORD);
+  const halves = (call, length) => Math.max(1, Math.ceil(length / 2));
+  const record = { id: "box-1", cgroup: "/sys/fs/cgroup/agentrun/run-1", writer: WRITER };
+  await shortWrites(t, halves, () => recorder.ahead(record));
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), record);
+  const done = { ...record, pid: 4242, startTime: "9", pidns: "pid:[4026532000]" };
+  await shortWrites(t, halves, () => recorder.started(done));
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), done);
+});
