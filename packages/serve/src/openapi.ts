@@ -133,7 +133,7 @@ const REVIEW: Json = {
     },
     { type: "null" },
   ],
-  description: "Set when a workflow run escalated: it completed, and waits for a person to review it. A message to it is still 409 not_continuable.",
+  description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
