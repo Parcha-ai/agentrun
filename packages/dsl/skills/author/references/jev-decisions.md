@@ -123,7 +123,9 @@ predicate) may say four things about the provider that answers it. Each is optio
 
 The host checks each decision node against its providers before any node runs: a
 provider it lacks, evidence it cannot give, a model it does not serve, or a
-question type it does not answer stops the run with the node named. The evidence a provider gives travels with the
+question type it does not answer stops the run with the node named. A host that
+names no decision providers cannot honour `provider` or `timeoutMs`, so it
+refuses a node that sets either. The evidence a provider gives travels with the
 answer, in `<as>$answers.evidence`, the decision receipt and the node's event.
 
 ## Consume uncertainty honestly

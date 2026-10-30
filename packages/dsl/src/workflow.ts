@@ -328,8 +328,8 @@ export type WorkflowDeps = {
    *  which is not a sandbox: a host that runs code from an untrusted author supplies this. */
   runCode?: (node: CodeNode, state: Record<string, unknown>, ctx: { sop: string; label: string; executionPath: string; item?: MapItem; signal?: AbortSignal }) => Promise<unknown>;
   /** The host's decision providers by id, and the one a node that names none gets. A run checks every decision node
-   *  against them before any node runs: a provider the host lacks, evidence it cannot give, a question type it does not
-   *  answer. */
+   *  against them before any node runs: a provider the host lacks, evidence it cannot give, a model it does not serve, a
+   *  question type it does not answer. Without them, a node that names a provider or sets timeoutMs is refused. */
   decisionProviders?: { providers: Readonly<Record<string, DecisionProvider>>; default: string };
   runJudge?: (params: {
     label: string;
@@ -2909,10 +2909,10 @@ function resolveSopSections(node: { node: string; label?: string; sopSection?: s
 
 /** Refuses, before any node runs, a decision node (or an `ask` predicate) the host's providers cannot answer as asked:
  *  a provider it lacks, `evidence: "required"` on a provider that gives none, a model it does not serve, a question type
- *  it does not answer, or more questions than one of its requests may hold. A host that names no providers is not checked here. */
+ *  it does not answer, or more questions than one of its requests may hold. A host that names no providers has a judge
+ *  that may honour neither a node's provider nor its timeoutMs, so a node that sets either is refused. */
 function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow?: Workflow): void {
   const registry = deps.decisionProviders;
-  if (!registry) return;
   const label = "label" in node ? node.label : node.node;
   const asked: Array<{ choice: DecisionChoice; types: string[]; count: number | null; what: string }> = [];
   const questionsOf = (out: string): string[] => {
@@ -2927,6 +2927,11 @@ function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow
     if ((pred as AskPredicate | undefined)?.predicate === "ask") asked.push({ choice: pred as AskPredicate, types: ["noul"], count: 1, what: `${node.node} node "${label}" (ask predicate)` });
   }
   for (const { choice, types, count, what } of asked) {
+    if (!registry) {
+      if (choice.provider !== undefined) throw new Error(`${what} names the decision provider ${choice.provider}, and this host names no decision providers`);
+      if (choice.timeoutMs !== undefined) throw new Error(`${what} sets timeoutMs, and this host names no decision providers to bound it with`);
+      continue;
+    }
     const id = choice.provider ?? registry.default;
     const provider = Object.hasOwn(registry.providers, id) ? registry.providers[id] : undefined;
     if (!provider) throw new Error(`${what} names the decision provider ${id}, which this host does not have`);

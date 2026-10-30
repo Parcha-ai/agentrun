@@ -429,6 +429,7 @@ export class WorkflowExtensionService {
       ...(options.deps.recovery ? { recovery: options.deps.recovery } : {}),
       ...(options.deps.maxQuestionsPerRequest !== undefined ? { maxQuestionsPerRequest: options.deps.maxQuestionsPerRequest } : {}),
       ...(options.deps.maxStateBytesPerRequest !== undefined ? { maxStateBytesPerRequest: options.deps.maxStateBytesPerRequest } : {}),
+      ...(options.deps.decisionProviders ? { decisionProviders: options.deps.decisionProviders } : {}),
       ...(options.deps.runNode ? { runNode: params => dispatch('agent', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runNode!({ ...params, tools: params.tools ?? [...this.allowedTools] }), new Set([...(params.tools ?? this.allowedTools), 'submit'])), true) } : {}),
       ...(options.deps.runJudge ? { runJudge: params => dispatch('judge', params.signal, () => withAdapterDiagnostic(params.label, () => options.deps.runJudge!(params)), true) } : {}),
       ...(options.deps.runEffect ? { runEffect: params => dispatch('tool', params.signal, () => {
