@@ -4,8 +4,8 @@
 //
 // The TypeSafe key never enters a run's environment, which the run's tools and its model's provider read
 // (`ToolHost.env`, a call node's effect). The server drops the variable from the run's process and hands the value over
-// once, on an inherited pipe (`DECISION_KEY_FD`), at each launch of a workflow run. The run's process reads it into the
-// judge's runner and nowhere else. On the OpenRouter route the key is also the model gateway's key, which the run's
+// once, on an inherited pipe (`DECISION_KEY_FD_ENV` names it), at each launch of a workflow run. The run's process reads
+// it into the judge's runner and nowhere else. On the OpenRouter route the key is also the model gateway's key, which the run's
 // process already holds in its environment for its model nodes. That route keeps it there.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -15,11 +15,8 @@ export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
 /** The adapter a workflow's typed questions run through. */
 export const DECISION_ADAPTER = "runJudge";
-/** The descriptor a run's process reads the TypeSafe key from. Node takes 3 to about 20 for itself at start, and a
- *  low number is handed out again as soon as it is closed. A high one stays free, so "closed once read" holds and
- *  can be checked. */
-export const DECISION_KEY_FD = 63;
-/** Set on a run's process the server hands the TypeSafe key: the descriptor's number, never the key. */
+/** Set on a run's process the server hands the TypeSafe key: the descriptor's number, never the key. The server puts
+ *  it on the first descriptor after the process's stdio: macOS aborts the parent of a spawn with a pipe at 16 or above. */
 export const DECISION_KEY_FD_ENV = "AGENTRUN_SERVE_DECISION_KEY_FD";
 /** Under --faux only: a module whose default export is the fetch Jev's runner sends through, in place of TypeSafe's
  *  API (the tests' fake). */
@@ -51,9 +48,9 @@ export function decisionsOf(env: NodeJS.ProcessEnv): DecisionOffer[] {
 }
 
 /** The TypeSafe key the server handed the run's process, read once and the descriptor closed; undefined when none was. */
-function handedKey(env: NodeJS.ProcessEnv): string | undefined {
+export function handedKey(env: NodeJS.ProcessEnv): string | undefined {
   const fd = Number(env[DECISION_KEY_FD_ENV]);
-  if (!Number.isSafeInteger(fd) || fd < DECISION_KEY_FD) return undefined;
+  if (!Number.isSafeInteger(fd) || fd < 3) return undefined;
   try {
     return readFileSync(fd, "utf8");
   } finally {
