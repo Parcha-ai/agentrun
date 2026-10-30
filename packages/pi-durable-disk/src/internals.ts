@@ -4,3 +4,6 @@
 export { createRunDir, findDelegations, mintMountToken, pathlessResolver, removeMountToken, runPath, unmountClaim } from "./claim.ts";
 export { LABEL_FLEET, LABEL_RUN, sandboxName, sandboxStatus, sweepSandboxes } from "./hosts/daytona.ts";
 export { isLeaseFresh, parseRunRecord, RUN_JSON } from "./status.ts";
+// The workspace confinement, for a host that reads a run's files itself (agentrun-serve): its handle-held walk, and its
+// test seam.
+export { Confinement, confineHooks } from "./confine.ts";
