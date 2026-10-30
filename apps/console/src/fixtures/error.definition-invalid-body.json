@@ -1,0 +1,34 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v2/agents/lead-scorer/definition",
+    "body": {
+      "instructions": "x"
+    }
+  },
+  "status": 422,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "input_invalid",
+      "message": "The body keeps no field instructions.",
+      "retryable": false,
+      "request_id": "req_e8ecb0e104eb5ee6",
+      "fields": [
+        {
+          "field": "instructions",
+          "reason": "not_allowed",
+          "message": "The body keeps no field instructions.",
+          "fix": "Remove instructions."
+        },
+        {
+          "field": "definition",
+          "reason": "missing",
+          "message": "definition is not an object"
+        }
+      ]
+    }
+  }
+}

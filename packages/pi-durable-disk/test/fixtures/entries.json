@@ -255,9 +255,11 @@
   },
   "./internals": {
     "values": [
+      "Confinement",
       "LABEL_FLEET",
       "LABEL_RUN",
       "RUN_JSON",
+      "confineTestHooks",
       "createRunDir",
       "findDelegations",
       "isLeaseFresh",
@@ -271,6 +273,10 @@
       "sweepSandboxes",
       "unmountClaim"
     ],
-    "types": []
+    "types": [
+      "Pin",
+      "PinSpec",
+      "RootName"
+    ]
   }
 }

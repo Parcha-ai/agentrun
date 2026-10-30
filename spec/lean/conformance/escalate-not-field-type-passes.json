@@ -1,0 +1,89 @@
+{
+  "description": "The same guard lets a finite number through: the run continues past it.",
+  "workflow": {
+    "v": 2,
+    "name": "not-number-passes",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "read",
+          "code": "s => ({ score: s.raw })"
+        },
+        {
+          "node": "escalate",
+          "label": "gate",
+          "when": {
+            "predicate": "not",
+            "of": {
+              "predicate": "field_type",
+              "path": "score",
+              "type": "number"
+            }
+          },
+          "kind": "review",
+          "stage": "gate",
+          "summary": "Score: {score}"
+        },
+        {
+          "node": "code",
+          "label": "accept",
+          "code": "s => ({ accepted: s.score })"
+        }
+      ]
+    }
+  },
+  "input": {
+    "raw": 3
+  },
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {
+          "score": 3
+        }
+      },
+      "/root/steps/2": {
+        "return": {
+          "accepted": 3
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "complete",
+    "state": {
+      "raw": 3,
+      "score": 3,
+      "accepted": 3
+    },
+    "output": {
+      "raw": 3,
+      "score": 3,
+      "accepted": 3
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:read",
+        "node.end:read:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:gate:false"
+      ],
+      "/root/steps/2": [
+        "node.start:accept",
+        "node.end:accept:ok"
+      ]
+    }
+  }
+}

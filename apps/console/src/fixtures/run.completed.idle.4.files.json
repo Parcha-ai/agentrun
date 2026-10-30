@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-ef11-7671-95eb-f8c9245976cd/files"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-ef11-7671-95eb-f8c9245976cd",
+    "files": [],
+    "complete": true,
+    "truncated": false
+  }
+}

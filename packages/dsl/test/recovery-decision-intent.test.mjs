@@ -78,6 +78,31 @@ for (const layout of LAYOUTS) {
     assert.deepEqual(kept.receipts.slice(before).map((receipt) => [receipt.id, receipt.status, receipt.cost_usd]), [[request?.decision_id, 'failed', null]], 'the next process books it once, at an unknown cost');
   });
 
+  test(`an interrupted decision is counted in the run's spend: the next process books it once at an unknown cost, the spend reads incomplete, and a further reopen does not count it again (${layout})`, async () => {
+    const inner = memoryStore(); let dead = false; let asked = 0;
+    const store = dying(inner, () => dead);
+    const kept = receiptStore();
+    // The provider answers and the process dies before anything after the answer commits, so the request is left
+    // asked and unanswered.
+    const first = { runJudge: async () => { asked += 1; dead = true; return structuredClone(answer); } };
+    await assert.rejects(run(store, first, kept, layout), /the process died/);
+    dead = false;
+    // A checkpoint written before the interrupted decision carries no count: the mark is the interrupted booking's.
+    const unread = await inner.open(recoveryBound(workflow));
+    try { assert.equal(unread.state.unpricedQuestionCount, undefined, 'no count before the decision is booked interrupted'); } finally { await unread.close(); }
+    // The next process books it interrupted and routes to review; the unknown cost is counted, so the run's spend reads incomplete.
+    const result = await run(store, { runJudge: async () => { asked += 1; return structuredClone(answer); } }, kept, layout);
+    assert.equal(asked, 1, 'runJudge is called once across the two processes');
+    assert.equal(result.escalation.kind, 'decision_interrupted');
+    const journal = await inner.open(recoveryBound(workflow));
+    try { assert.deepEqual([journal.state.questionSpendUsd, journal.state.unpricedQuestionCount], [undefined, 1], 'the interrupted decision is counted, never folded into a bare total'); } finally { await journal.close(); }
+    // A further reopen escalates again but does not count the decision a second time: the booking happens once.
+    const again = await run(store, { runJudge: async () => { asked += 1; return structuredClone(answer); } }, kept, layout);
+    assert.equal(again.escalation.kind, 'decision_interrupted');
+    const reread = await inner.open(recoveryBound(workflow));
+    try { assert.equal(reread.state.unpricedQuestionCount, 1, 'a reopen does not count the interrupted decision again'); } finally { await reread.close(); }
+  });
+
   test(`a decision answered before a crash replays from its receipt at no cost and is not asked again (${layout})`, async () => {
     const inner = memoryStore(); let dead = false; let asked = 0;
     const store = dying(inner, () => dead);

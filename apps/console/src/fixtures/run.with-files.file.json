@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-b447-731e-85f0-e0f68eae3fb7/files/CHANGELOG.md"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "text/markdown; charset=utf-8"
+  },
+  "body": "# Release 2.4.0\n\n## Highlights\n- **Faster search.** Results show while you type, and a query with a typo still finds what you meant.\n- **Dark mode** follows the system setting, with a switch in Settings.\n\n## Changes by area\n\n| Area | Change | Pull request |\n| --- | --- | --- |\n| Search | Incremental results | #412 |\n| Search | Typo tolerance (one edit) | #418 |\n| Settings | Theme switch | #420 |\n| Export | CSV keeps leading zeros | #423 |\n\n## Fixes\n1. Exported CSV files keep leading zeros in postal codes.\n2. The sign-in page no longer jumps when the keyboard opens on a phone.\n3. A very long project name wraps instead of hiding the menu button.\n\n## Upgrade notes\nNo migration is needed. The `search.legacy` setting is ignored from this release and can be removed."
+}

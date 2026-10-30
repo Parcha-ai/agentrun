@@ -5,6 +5,7 @@
 // gateway; otherwise pi-ai's providers serve it, with their keys from the environment.
 import { pathToFileURL } from "node:url";
 import type { ModelCost, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { authContextOf } from "./secrets.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
@@ -78,7 +79,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | undefine
   if (slash < 1) return { why: `The host's default model ${named} is not a provider/model-id.`, host: true };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-  const models = builtinModels();
+  const models = builtinModels({ authContext: authContextOf(env) });
   const model = models.getModel(provider, modelId);
   if (!model) return { why: `pi-ai knows no model ${modelId} of ${provider}. Name one of its models, or route every model through a gateway with AGENT_MODEL_BASE_URL.`, host: ref === undefined };
   if (!(await models.getAuth(model))) return { why: `pi-ai finds no key for ${provider} in this environment (${models.getProvider(provider)?.auth.apiKey?.name ?? "its API key"}): set it where agentrun-serve starts.`, host: true };
@@ -121,7 +122,8 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const model = byTier.get("default");
   if (!faux && !env.AGENT_MODEL_BASE_URL) {
     const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
-    return { models: builtinModels(), model, byTier, unpriced: new Set<string>() };
+    // Each provider's key from `env`, which holds this process's secrets, never from process.env (secrets.ts).
+    return { models: builtinModels({ authContext: authContextOf(env) }), model, byTier, unpriced: new Set<string>() };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
   const models = createModels();
