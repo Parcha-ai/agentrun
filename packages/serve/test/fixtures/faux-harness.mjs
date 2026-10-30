@@ -10,6 +10,9 @@ export function script(spec) {
   // A read of a link out of the workspace, which the test plants while the turn holds; a crash then resumes the turn.
   const link = /Read the link after (\S+)\./.exec(text)?.[1];
   if (link) return [{ call: "write", args: { path: "first.txt", content: "x" }, usd: 0.001 }, ...(existsSync(link) ? [] : [{ hang: true }]), { call: "read", args: { path: "out.txt" }, usd: 0.001 }, { say: "Tried.", usd: 0.001 }];
+  // A write of the door's own, then (once the file exists) a read of what the harness's own tool left in the same tree.
+  const native = /Write, then read native\.txt after (\S+)\./.exec(text)?.[1];
+  if (native) return [{ call: "write", args: { path: "note.txt", content: "from the door" }, usd: 0.001 }, ...(existsSync(native) ? [] : [{ hang: true }]), { call: "read", args: { path: "native.txt" }, usd: 0.001 }, { say: "Read both.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // A chat whose second turn has a request of unknown price.

@@ -269,4 +269,18 @@ describe("the CLI on a local directory", () => {
     assert.match(written.join(""), /--dir is a run on a local directory: it takes no --disk\n/);
     assert.match(written.join(""), /it takes no --region, --mount-root\n/);
   });
+
+  it("takes --workspace work or harness/work only, and only with --dir, with a usage error (exit 2) naming why", async () => {
+    const written: string[] = [];
+    const write = process.stderr.write;
+    process.stderr.write = ((chunk: string) => (written.push(String(chunk)), true)) as typeof process.stderr.write;
+    try {
+      for (const bad of ["elsewhere", "../x", "/tmp/x", "harness"]) assert.equal(await main(["run", "--dir", "/tmp/x", "--app", "a.ts", "--workspace", bad]), 2, bad);
+      assert.equal(await main(["run", "--disk", "dsk-1", "--region", "r", "--id", "i", "--app", "a.ts", "--workspace", "harness/work"]), 2, "a disk's run");
+    } finally {
+      process.stderr.write = write;
+    }
+    assert.equal(written.join("").match(/--workspace is work or harness\/work\n/g)?.length, 4);
+    assert.match(written.join(""), /--workspace is for a run on a local directory \(--dir\); a disk's run keeps its workspace at work\/\n/);
+  });
 });

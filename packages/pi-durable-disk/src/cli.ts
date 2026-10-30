@@ -21,7 +21,7 @@ import { isLoopback, readServeToken, serveRun, type RunServer } from "./serve.ts
 import { dockerHost } from "./hosts/docker.ts";
 import { localHost, procStartTicks } from "./hosts/local-host.ts";
 import { processTable, thisBoot } from "./process-table.ts";
-import { localRun } from "./local-run.ts";
+import { localRun, WORKSPACES } from "./local-run.ts";
 import { parseRunRecord, RUN_JSON } from "./status.ts";
 import {
   archilControl,
@@ -46,7 +46,7 @@ class UsageError extends PdaError {
 }
 
 const USAGE = `usage:
-  pi-durable-disk run --dir PATH --app MODULE [--id ID] [any run flag below but the Archil ones]
+  pi-durable-disk run --dir PATH --app MODULE [--id ID] [--workspace work|harness/work] [any run flag below but the Archil ones]
   pi-durable-disk run --disk D --region R --id ID --app MODULE [--mount-root DIR] [--archil BIN]
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
                         [--token-stdin] [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
@@ -249,6 +249,9 @@ async function readToken(values: Record<string, unknown>): Promise<string> {
 async function runInstance(values: Record<string, unknown>): Promise<number> {
   const dir = localDir(values, ["disk", "region", "mount-root", "archil", "token-stdin"]);
   if (dir === undefined) need(values, "disk", "region", "id", "app");
+  const workspace = str(values.workspace, "work")!;
+  if (values.workspace !== undefined && dir === undefined) throw new UsageError("--workspace is for a run on a local directory (--dir); a disk's run keeps its workspace at work/");
+  if (!(WORKSPACES as readonly string[]).includes(workspace)) throw new UsageError(`--workspace is ${WORKSPACES.join(" or ")}`);
   else need(values, "app");
   const ref: RunRef =
     dir === undefined ? { disk: str(values.disk)!, region: str(values.region)!, id: str(values.id)! } : { disk: "local", region: "local", id: str(values.id) ?? basename(dir) };
@@ -294,7 +297,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   try {
     run = await openDurableRun(ref, {
       // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
-      ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
+      ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir, { workspace })),
       afterClaim: async (claim) => {
         app = await loadApp(str(values.app)!, { ref, root: claim.root, work: claim.work, store: claim.store });
         const { onOpen: _onOpen, beforeResume, root: appRoot, wake: _wake, door: _door, ...harness } = app;
@@ -751,6 +754,7 @@ export async function main(argv: string[]): Promise<number> {
             "park-idle": { type: "string" },
             "drain-timeout": { type: "string" },
             "run-as": { type: "string" },
+            workspace: { type: "string" },
           }),
         );
       case "supervise":

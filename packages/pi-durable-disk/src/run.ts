@@ -4,8 +4,9 @@
 // builds the whole run on it: the store, the seal check, pi's Harness, resume. A fence reported by the store, the claim,
 // a write of the run's own files or the lapsed lease kills the run's commands and ends the instance (exit 75). Nothing
 // is retried. The lease writes its own files through the claim directory (`ClaimDir`), never by path.
-import { mkdir } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { lstat, mkdir } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -30,6 +31,8 @@ import {
   RUN_JSON,
   RunRecordError,
   writeRunRecord,
+  WORKSPACES,
+  type Workspace,
   type ClaimDir,
   type PersistRecord,
   type RunHolder,
@@ -694,6 +697,7 @@ class Lease implements RunLease {
         heartbeatAt: now,
         updatedAt: now,
         detail: null,
+        workspace: this.#workspace,
       })));
     });
     // Two self-fences: a timer on this thread, and a watchdog thread for when this thread is stuck in a FUSE request.
@@ -715,6 +719,13 @@ class Lease implements RunLease {
     for (const dir of [claim.store, claim.work, join(claim.root, "tmp")]) {
       const under = relative(claim.root, dir);
       if (under === "" || under.startsWith("..") || isAbsolute(under)) throw new RunError("INVALID_ARGUMENT", `${dir} is not under the claim root ${claim.root}`);
+      // A workspace below a directory of its own (harness/work) is made one step at a time, private (that directory
+      // holds the harness's homes too), and through no link: a step that is a link, or not a directory, is refused by
+      // name (a usage error, not a fence), so the workspace never lands outside the root.
+      if (dir === claim.work && dirname(under) !== ".") {
+        await privateSteps(this.#dir!.at, under, (error) => ownWriteFenced(dir, error));
+        continue;
+      }
       try {
         await mkdir(join(this.#dir!.at, under), { recursive: true });
       } catch (error) {
@@ -853,7 +864,19 @@ class Lease implements RunLease {
     if (previous !== undefined && previous.run !== this.ref.id) {
       throw new RunRecordError(`${join(this.rawClaim.root, RUN_JSON)} names run ${JSON.stringify(previous.run)}, not ${JSON.stringify(this.ref.id)}`);
     }
+    // A run keeps its workspace where its first open put it: an open that names another would find none of its files.
+    const kept = previous?.workspace ?? "work";
+    if (previous !== undefined && kept !== this.#workspace) {
+      throw new RunError("INVALID_ARGUMENT", `${this.rawClaim.root} keeps its workspace at ${kept}, and this open names ${this.#workspace}: a run is never moved (open it with --workspace ${kept})`);
+    }
     return previous;
+  }
+
+  /** Where the claim puts the workspace under its root: one of WORKSPACES, or the open is refused by name. */
+  get #workspace(): Workspace {
+    const under = relative(this.rawClaim.root, this.rawClaim.work);
+    if (!(WORKSPACES as readonly string[]).includes(under)) throw new RunError("INVALID_ARGUMENT", `the workspace ${this.rawClaim.work} is not ${WORKSPACES.map((w) => join(this.rawClaim.root, w)).join(" or ")}`);
+    return under as Workspace;
   }
 
   /** `run.json` becomes `failed` with `detail`; the seal the record carries is kept as evidence. */
@@ -1144,4 +1167,28 @@ export async function openDurableRun<Tool extends ToolRegistration = ToolRegistr
     throw error;
   }
   return run;
+}
+
+/** `under` (relative) made below `at` one segment at a time, mode 0700, each segment a real directory, never a link. A
+ *  link or a file is refused by name; a failed read or write is `fenced`'s. */
+async function privateSteps(at: string, under: string, fenced: (error: unknown) => unknown): Promise<void> {
+  let path = at;
+  for (const segment of under.split("/")) {
+    path = join(path, segment);
+    let found: Stats | undefined;
+    try {
+      found = await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw fenced(error);
+    }
+    if (found === undefined) {
+      try {
+        await mkdir(path, { mode: 0o700 });
+      } catch (error) {
+        throw fenced(error);
+      }
+    } else if (found.isSymbolicLink() || !found.isDirectory()) {
+      throw new RunError("INVALID_ARGUMENT", `${under}: ${relative(at, path)} is ${found.isSymbolicLink() ? "a link" : "not a directory"}, and a run's workspace is never reached through one`);
+    }
+  }
 }

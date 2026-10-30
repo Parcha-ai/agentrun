@@ -1,7 +1,7 @@
 import type { JsonObject } from "@earendil-works/pi-durable";
 import type { Workflow } from "@parcha/agentrun-dsl"; // a type only: a store that never holds a workflow loads nothing of the DSL
 import { existsSync, mkdirSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { ID_PATTERN, isSkillPath, openAgentHome, readAgentHome, runStoreIn, sha256, uuidv7 } from "./home.js";
@@ -9,6 +9,7 @@ import type { PromptVariant } from "./kinds.js";
 import { canonical } from "./kinds.js";
 import { seedRun } from "./runs.js";
 import { AgentHomeError } from "./store.js";
+import { isWorkspace, type Workspace, WORKSPACES } from "./workspace.js";
 
 // An agent store is one folder: `store.sqlite` (plain tables, and the truth) and `runs/<run id>/`, each run's own pi-durable store and
 // work directory. Copy the folder and every agent, revision and run comes with it.
@@ -279,9 +280,11 @@ export class AgentStore extends AgentStoreReader {
   }
 
   /** Start a run pinned to `revision` (default: the agent's current one): the run's directory is seeded in pi-durable-disk's layout, then its row goes in as `running`. */
-  async startRun(input: { agent: string; revision?: string }): Promise<StartedRun> {
+  async startRun(input: { agent: string; revision?: string; workspace?: Workspace }): Promise<StartedRun> {
     const agent = checkId(input?.agent, "agent");
     if ("runId" in input) throw invalid("startRun takes no run id: the store mints it");
+    const workspace = input.workspace ?? "work";
+    if (!isWorkspace(workspace)) throw invalid(`the workspace ${JSON.stringify(workspace)} is not one of ${WORKSPACES.join(", ")}`);
     const runId = uuidv7();
     const revisionId = input.revision ?? (this.db.prepare("SELECT current_revision FROM agents WHERE id = ?").get(agent) as { current_revision: string | null } | undefined)?.current_revision;
     if (!revisionId) throw invalid("the agent has no current revision: name one");
@@ -293,9 +296,15 @@ export class AgentStore extends AgentStoreReader {
       return [file, text];
     }));
     const dir = path.join(this.dir, "runs", runId);
-    const run: StartedRun = { runId, dir, storePath: runStoreIn(dir), workspace: path.join(dir, "work"), agentId: agent, revision };
+    const run: StartedRun = { runId, dir, storePath: runStoreIn(dir), workspace: path.join(dir, workspace), agentId: agent, revision };
     // The directory first, then the row: a seed that fails throws and nothing is written; a hard kill between the two leaves a directory no query shows.
     try {
+      // A workspace below a directory of its own (harness/work): that directory is private, since the harness's homes go
+      // there too. The seed then makes the workspace inside it.
+      if (workspace !== "work") {
+        await mkdir(dir, { recursive: true });
+        await mkdir(path.join(dir, path.dirname(workspace)), { mode: 0o700 });
+      }
       await seedRun({ storePath: run.storePath, workDir: run.workspace }, { runId, leases: [], profiles: {}, skills });
       this.db.prepare("INSERT INTO runs (id, agent_id, revision_id, started_at, state) VALUES (?, ?, ?, ?, 'running')").run(runId, agent, revisionId, new Date().toISOString());
     } catch (error) {

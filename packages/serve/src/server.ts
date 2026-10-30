@@ -20,7 +20,11 @@ import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
+import { type BoxFactory, type BoxView, boxConfig, cgroupDelegation, NO_BOX, resolveBox, UNSANDBOXED_BANNER } from "./box/config.js";
+import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { workspaceOf } from "./run-workspace.js";
+import { nativeTools } from "./native-tools.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
 export const CONTRACT = "agentrun.v2/0";
@@ -88,6 +92,12 @@ export type ServeOptions = {
   carryBackRetry?: CarryBackRetry;
   /** How long a request waits for a run's door, its process coming up or a settle in progress (default 45 s). */
   readyTimeoutMs?: number;
+  /** How the host's box is made (4a's bwrapBox, or a provider's), for AGENTRUN_BOX's setting. None: no box, so the box
+   *  reads as unavailable and runs get no tools of their harness's own. */
+  boxFactory?: BoxFactory;
+  /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
+   *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
+  box?: BoxHost;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
@@ -148,15 +158,19 @@ export const ROUTES: readonly Route[] = [
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
-export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
+export function capabilities(env: NodeJS.ProcessEnv = process.env, maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env), box: BoxView = NO_BOX) {
   const models = modelSource(env);
   return {
     backend: "local",
     contract: CONTRACT,
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     runtimes: ["pi-durable-disk"],
-    /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
-    harnesses,
+    /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and whether a new run of
+     *  it gets the harness's own tools here (native-tools.ts, from the box below). */
+    harnesses: harnesses.map((offer) => ({ ...offer, native_tools: nativeTools(offer.id, box.mode) })),
+    /** Where runs' harness tools would run: the box's mode as its probe proved it (unavailable with a named error when
+     *  it failed), whether each run gets its own cgroup, and where the box may reach. */
+    box,
     models,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
     tools: toolsView(env),
@@ -255,10 +269,27 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
-  const caps = capabilities(env, maxRuns, await harnessOffers(env));
+  // The box, before anything listens: a setting this server does not know, or a shared server's cgroup subtree not
+  // delegated to it, stops the start; on a single-user server, a box that is missing or fails its probe does not, and
+  // reads as unavailable.
+  const boxSettings = boxConfig(process.env);
+  const undelegated = boxSettings.cgroup === undefined ? undefined : await cgroupDelegation(boxSettings.cgroup);
+  if (undelegated) throw new Error(`AGENTRUN_BOX_CGROUP names a cgroup subtree this server cannot use (${undelegated}): a shared server never runs runs uncapped. Delegate the subtree to this server's user, or unset it to run single-user.`);
+  const { box: madeBox, view: boxView } = await resolveBox(boxSettings, options.boxFactory, boxSettings.cgroup !== undefined);
+  // A shared server's runs each get a cgroup of their own, or the start stops. A box that makes none (the local box's
+  // probe proves no cgroup), or no box at all (unavailable), would run every run uncapped under the subtree the operator
+  // named to cap them. Only the operator's own word, AGENTRUN_BOX=unsandboxed, runs a shared server's runs uncapped.
+  if (boxSettings.cgroup !== undefined && boxView.mode !== "unsandboxed" && !boxView.cgroup) {
+    const which = boxView.mode === "unavailable" ? `this server has no box (${boxView.error ?? "unavailable"}), so it` : `this server's box (${boxView.mode})`;
+    throw new Error(`AGENTRUN_BOX_CGROUP names a cgroup subtree, but ${which} gives runs no cgroup of their own: per-run cgroups for the local box are not in this release, and a shared server never runs runs uncapped. Unset it to run single-user.`);
+  }
+  // The boxes runs leave are swept by the reap of the box this server made, unless one was given.
+  const boxHost: BoxHost | undefined = options.box ?? (madeBox && boxView.mode !== "unavailable" && boxView.mode !== "unsandboxed" ? { reap: (record) => madeBox.reap(record) } : undefined);
+  if (boxView.mode === "unsandboxed") process.stderr.write(`${UNSANDBOXED_BANNER}\n`);
+  const caps = capabilities(env, maxRuns, await harnessOffers(env), boxView);
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, boxView, ...(boxSettings.cgroup !== undefined ? { boxCgroupRoot: boxSettings.cgroup } : {}), ...(boxHost ? { box: { host: boxHost, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -494,7 +525,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     const parts = rel.split("/");
     if (!rel || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0") || parts.some((p) => p === "" || p === "." || p === "..")) throw new ApiError("invalid_file_path", "the path has an empty, . or .. segment, a backslash, a NUL or a leading /");
     if (parts.some((p) => p.startsWith("."))) throw new ApiError("system_file_forbidden", "a path segment that starts with . is the run's own, not a file it wrote");
-    let path = join(run.dir, "work");
+    let path = workspaceOf(run);
     if (!(await lstat(path).catch(() => null))?.isDirectory()) throw new ApiError("not_found", "no such file");
     for (const part of parts) {
       path = join(path, part);
@@ -688,6 +719,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "unarchiveAgent": {
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
+        if (found.name === "archiveAgent") await runs.archived();
         const entry = await needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
@@ -739,11 +771,12 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "unarchiveRun": {
         const run = await needRun(id);
         await agents.setArchived("run", run.id, found.name === "archiveRun");
+        if (found.name === "archiveRun") await runs.archived();
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {
         const run = await needRun(id);
-        const files = (await walk(join(run.dir, "work"))).sort((a, b) => a.path.localeCompare(b.path));
+        const files = (await walk(workspaceOf(run))).sort((a, b) => a.path.localeCompare(b.path));
         return send(res, 200, { run_id: run.id, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: files.length > FILE_LIST_CAP });
       }
       case "readRunFile":

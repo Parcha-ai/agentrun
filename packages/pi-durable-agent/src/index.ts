@@ -6,6 +6,7 @@ export type { AgentAlias, AgentDefinition, AgentIdentity, AgentSource, BrowserPr
 export { EXPORTABLE_KINDS, projectForExport, SECRET_KINDS } from "./export.js";
 export { durableProfileStore, type ProfileStore, type ProfileTarget } from "./profiles.js";
 export { type CarryBack, carryBack, prepareRun, RUN_STORE_FILE, type RunPaths, runPaths, type RunPrompt, type RunSeed, type RunStart, seedRun, startRun, undoPrepare } from "./runs.js";
+export { isWorkspace, type Workspace, WORKSPACES } from "./workspace.js";
 export { type PackOptions, packHome, type Skipped } from "./pack.js";
 export { type HomeManifest, PACK_FORMAT } from "./pack-shared.js";
 export { type ImportOptions, type ImportReport, type ImportStep, importPack, readPack } from "./unpack.js";

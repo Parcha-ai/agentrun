@@ -315,7 +315,7 @@ reference. [Library](docs/reference.md#library) describes each in full.
 | Name | What it is | Example |
 |---|---|---|
 | `openDurableRun(ref, options)` | Open a run: take the claim and the owner lock, open the store and the Harness, resume, keep the lease. `run.release()` seals it | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
-| `localRun(root)` | The `acquire` and `claimDir` that put a run on a plain directory of this machine, with no disk and no key | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
+| `localRun(root, { workspace? })` | The `acquire` and `claimDir` that put a run on a plain directory of this machine, with no disk and no key; its workspace at `work/` or `harness/work` (`WORKSPACES`) | [pick-up-a-run](examples/pick-up-a-run/main.ts) |
 | `seed` (an option of `openDurableRun`) | Write what a new run starts with, its store file and workspace files, once, before anything sees the run ([Seeding a new run](docs/reference.md#seeding-a-new-run)) | [seed-a-run](examples/seed-a-run/) |
 | `localPlace({ app })` and `archilPlace({ disk, region, control, host })` | Where one run lives and how its instance starts and ends, for a supervisor of your own ([Places](docs/reference.md#places-where-a-runs-instance-starts-and-ends)) | [place-outcome](examples/place-outcome/) (`localPlace`, no key); `archilPlace` needs Archil: [`test/place.test.ts`](test/place.test.ts) |
 | `PlaceOutcome` | How a runner ended: the run's `status` (`complete` or `failed`), its `generation`, and the app's `record` or `code` and `message`, and the `models` it used | [place-outcome](examples/place-outcome/) |

@@ -15,7 +15,8 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AcquireOptions, Claim, RunRef } from "./claim.ts";
 import { FencedError } from "./errors.ts";
-import { openClaimDir, type ClaimDir } from "./status.ts";
+import { openClaimDir, type ClaimDir, WORKSPACES, type Workspace } from "./status.ts";
+export { WORKSPACES, type Workspace };
 
 export interface LocalRun {
   /** Takes the claim: the directory, made when it is missing. */
@@ -24,13 +25,16 @@ export interface LocalRun {
   readonly claimDir: (root: string) => Promise<ClaimDir>;
 }
 
-/** `openDurableRun`'s `acquire` and `claimDir` for a run in `root`, a directory on this machine. */
-export function localRun(root: string): LocalRun {
+/** `openDurableRun`'s `acquire` and `claimDir` for a run in `root`, a directory on this machine, its workspace at
+ *  `<root>/<workspace>` (default `work`). Anything but one of WORKSPACES is refused by name. */
+export function localRun(root: string, options: { workspace?: string } = {}): LocalRun {
   const dir = resolve(root);
+  const workspace = options.workspace ?? "work";
+  if (!(WORKSPACES as readonly string[]).includes(workspace)) throw new RangeError(`the workspace ${JSON.stringify(workspace)} is not one of ${WORKSPACES.join(", ")}`);
   return {
     acquire: async ({ ref }) => {
       await mkdir(dir, { recursive: true });
-      return new LocalClaim(ref, dir);
+      return new LocalClaim(ref, dir, workspace as Workspace);
     },
     claimDir: (at) => openClaimDir(at, { fstype: null }),
   };
@@ -50,11 +54,11 @@ class LocalClaim implements Claim {
   readonly timings = { mountMs: 0, verifyMs: 0 };
   #fence: { cause: unknown } | undefined;
 
-  constructor(ref: RunRef, root: string) {
+  constructor(ref: RunRef, root: string, workspace: Workspace = "work") {
     this.ref = ref;
     this.disk = ref.disk;
     this.root = root;
-    this.work = join(root, "work");
+    this.work = join(root, workspace);
     this.store = join(root, "store");
     this.commands = join(root, "commands");
   }

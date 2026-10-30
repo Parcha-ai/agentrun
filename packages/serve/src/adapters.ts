@@ -5,6 +5,7 @@
 // says so with the one line that installs it.
 import { pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
+import type { MachineBox } from "@parcha/agentrun-kernel/host";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import type { ModelRef } from "./model.js";
 
@@ -26,7 +27,13 @@ type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite:
 export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>) => { command: string; args: string[] };
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, and the run's
  *  confinement for the harness's own process. */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild };
+export type AdapterNeeds = {
+  model: ModelRef;
+  models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined };
+  confine?: ConfineChild;
+  /** The run's box, when its harness's own tools are on (native-tools.ts decides): the harness runs its tools in it. */
+  box?: MachineBox | "unsandboxed";
+};
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
  *  the run confines nothing, since an adapter refuses a confinement that adds nothing. */
@@ -98,15 +105,24 @@ const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
 async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const claude = (await import(CLAUDE_PACKAGE).catch(() => {
     throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`);
-  })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
+  })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; claudeAgentExecutable(): string | undefined };
   const provider = claudeProvider(env, needs.model);
   try {
-    // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once).
-    return claude.claudeAgentAdapter({ ...SERVE_SESSION_OPTIONS, model: { default: needs.model.modelId }, provider, price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}) });
+    // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once). With a box the CLI's
+    // own tools are on and run in it, the pinned CLI bound read-only beside node (the machine adds node and the
+    // forwarder); with none they stay off.
+    const own = needs.box === undefined ? SERVE_SESSION_OPTIONS : { builtins: true, box: needs.box === "unsandboxed" ? "unsandboxed" : { ...needs.box, readOnly: [...needs.box.readOnly, ...pinned(claude.claudeAgentExecutable())] } };
+    return claude.claudeAgentAdapter({ ...own, model: { default: needs.model.modelId }, provider, price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
   }
+}
+
+/** The pinned CLI's path, which a box binds read-only; none found is refused by name rather than boxed without it. */
+function pinned(path: string | undefined): string[] {
+  if (path === undefined) throw new HarnessUnavailable(`claude-agent's pinned CLI is not installed beside it, so its box would have nothing to run (${INSTALL["claude-agent"]})`);
+  return [path];
 }
 
 /** The run's thinking level as the harness takes it: serve's levels run to max; Codex's reasoning efforts stop at xhigh. */

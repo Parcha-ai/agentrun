@@ -24,6 +24,11 @@ export const DEFAULT_LEASE_EXPIRY_MS = 90_000;
 export const DEFAULT_LEASE_MARGIN_MS = 15_000;
 
 export const RUN_STATUSES = ["running", "sleeping", "paused", "done", "failed"] as const;
+
+/** Where a run's workspace may sit under its root: `work`, or `harness/work` for a run whose harness's own tools run in a
+ *  box lent `<root>/harness` (the box binds nothing of the root outside it, so its workspace is there). */
+export const WORKSPACES = ["work", "harness/work"] as const;
+export type Workspace = (typeof WORKSPACES)[number];
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /**
@@ -57,6 +62,9 @@ export interface RunRecord {
   /** Wall-clock time of the last status transition (ISO 8601). */
   readonly updatedAt: string;
   readonly detail: JsonValue | null;
+  /** Where the run's workspace sits under its root, as its first open gave it; a record without it is `work`. A later
+   *  open that names another is refused: a run is never moved. */
+  readonly workspace?: Workspace;
 }
 
 /** `run.json` is missing a field, has one of the wrong type, or is not JSON. Exit 65 (EX_DATAERR): a restart cannot fix it. */
@@ -100,6 +108,7 @@ export function parseRunRecord(text: string): RunRecord {
   if (r.wakeAt !== null && !isInstant(r.wakeAt)) throw new RunRecordError("wakeAt must be an ISO 8601 instant or null");
   if (r.heartbeatAt !== null && !isInstant(r.heartbeatAt)) throw new RunRecordError("heartbeatAt must be an ISO 8601 instant or null");
   if (!isInstant(r.updatedAt)) throw new RunRecordError("updatedAt must be an ISO 8601 instant");
+  if (r.workspace !== undefined && !(WORKSPACES as readonly unknown[]).includes(r.workspace)) throw new RunRecordError(`workspace ${JSON.stringify(r.workspace)} is not one of ${WORKSPACES.join(", ")}`);
   return {
     run: r.run,
     status: r.status as RunStatus,
@@ -110,6 +119,7 @@ export function parseRunRecord(text: string): RunRecord {
     heartbeatAt: r.heartbeatAt as string | null,
     updatedAt: r.updatedAt,
     detail: r.detail === undefined ? null : (r.detail as JsonValue),
+    ...(r.workspace === undefined ? {} : { workspace: r.workspace as Workspace }),
   };
 }
 

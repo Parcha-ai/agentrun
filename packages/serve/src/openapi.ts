@@ -3,6 +3,7 @@
 // not changed: an operation answered 501 here carries `x-agentrun-serve-unsupported` with the reason, and this server's
 // own routes are added as operations marked `x-agentrun-serve: true`, listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
+import { BOX_EGRESS, BOX_UNAVAILABLE } from "./box/config.js";
 import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
@@ -135,10 +136,24 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
   },
   Capabilities: {
+    box: {
+      description: "Where runs' harness tools would run: the box's mode as its probe proved it, whether each run gets its own cgroup v2 (a shared server), and where the box may reach. `unavailable` (no box, or its probe failed, so native tools are off) carries a stable `error` code and a `detail` a person can act on, and only it does; `unsandboxed` is only the operator's AGENTRUN_BOX=unsandboxed.",
+      oneOf: [
+        {
+          type: "object", additionalProperties: false, required: ["mode", "cgroup", "egress"],
+          properties: { mode: { enum: ["bwrap", "seatbelt", "provider", "unsandboxed"] }, cgroup: { type: "boolean" }, egress: { enum: [...BOX_EGRESS] } },
+        },
+        {
+          type: "object", additionalProperties: false, required: ["mode", "cgroup", "egress", "error", "detail"],
+          properties: { mode: { const: "unavailable" }, cgroup: { const: false }, egress: { enum: [...BOX_EGRESS] }, error: { enum: [...BOX_UNAVAILABLE] }, detail: { type: "string" } },
+        },
+      ],
+      "x-agentrun-serve": "box/1",
+    },
     harnesses: {
       type: "array",
       description: "Each harness a revision may name, and whether this server runs it; when not, why.",
-      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer", "native_tools"], properties: { native_tools: { type: "boolean", description: "Whether runs on this harness get the harness's own tools, its shell among them. False on every harness here until runs get a confined box, since on this server they would run as the server's own user. pi's runs have its file tools, never its shell." }, id: { enum: [...HARNESSES] }, available: { type: "boolean" }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" } } },
+      items: { type: "object", additionalProperties: false, required: ["id", "available", "steer", "native_tools"], properties: { native_tools: { type: "boolean", description: "Whether a new run on this harness gets the harness's own tools, its shell among them: false on every harness for now (claude-agent's wait until a boxed run can resume a restored session); once on, true only where this server's box passed its probe (`box.mode` bwrap, seatbelt or provider), so the tools run in the run's box, never as the server's own user, and only on a harness whose own tools serve turns on (claude-agent). False with no box, an unavailable one, or `unsandboxed`. A run started before its workspace moved to its harness's directory keeps them off. pi's runs have its file tools, never its shell." }, id: { enum: [...HARNESSES] }, available: { type: "boolean" }, steer: { type: "boolean", description: "Whether a message sent while the run works lands mid-turn (`steer`); when false, it waits for the turn's end and the answer's mode is `follow_up`." }, reason: { type: "string" } } },
       "x-agentrun-serve": "harness/1",
     },
     tools: {

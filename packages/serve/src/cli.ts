@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
+import { localBoxFactory } from "./box/local.js";
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D]
        agentrun-serve reset-password [--data DIR]
@@ -99,6 +100,7 @@ try {
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     ...(accounts ? { accounts, openSetup: !publicUrl, ...(publicUrl ? { publicUrl } : {}) } : {}),
+    boxFactory: localBoxFactory,
   });
 } catch (error) {
   console.error(`agentrun-serve: ${(error as Error).message}`);

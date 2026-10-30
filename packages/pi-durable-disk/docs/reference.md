@@ -217,7 +217,7 @@ Until the hook commits, the current state is the state at `head`, which is how a
 
 | Command | What it does |
 |---|---|
-| `run --dir PATH --app MODULE [--id ID]` | The instance on a local directory (`localRun`): no disk, no mount token, no key. The same app contract and exit codes as on a disk (76 when another process holds the run, or when a process its last incarnation left will not die; 75 when fenced), and the same run flags but the Archil ones (`--disk`, `--region`, `--mount-root`, `--archil`, `--token-stdin` are refused beside it, exit 2). `--id` defaults to the directory's name |
+| `run --dir PATH --app MODULE [--id ID] [--workspace work\|harness/work]` | The instance on a local directory (`localRun`): no disk, no mount token, no key. The same app contract and exit codes as on a disk (76 when another process holds the run, or when a process its last incarnation left will not die; 75 when fenced), and the same run flags but the Archil ones (`--disk`, `--region`, `--mount-root`, `--archil`, `--token-stdin` are refused beside it, exit 2). `--id` defaults to the directory's name. `--workspace` puts the workspace at `PATH/work` (the default) or `PATH/harness/work` ([localRun](#a-run-on-a-local-directory)) |
 | `run --disk D --region R --id ID --app MODULE` | The instance a host driver starts: claim the run, open it, resume it. `--token-stdin` reads the mount token from stdin. Lease flags: `--heartbeat-ms`, `--lease-expiry-ms`, `--lease-margin-ms`. `--on-sigterm resume` (default) or `pause`. `--serve PORT`, `--park-threshold`, `--park-idle`, `--drain-timeout` (below). `--run-as USER` runs the agent's commands as USER when the instance runs as root (in a container) |
 | `supervise --disk D --region R (--id ID ... \| --all) [--every 30s] --app MODULE` | One decision per run, once or in a loop: nothing to do, start, or revoke and start; `--app` is the module each started instance runs. `--create` makes the run directory. `--check` proves this host's fence first. `--sweep-tokens` removes expired token users. `--host docker --image IMAGE` starts each instance in a container (`--app-root`, `--fleet`, `--name-prefix`, `--run-as`, `--docker-arg`, `--apparmor`). Prints one JSON line per decision |
 | `status --dir PATH` | `run.json` read from the directory, and whether its holder is still the process that claimed it: `running` (this boot, its pid alive with the start ticks `run --dir` recorded), `stopped`, `gone` (another boot), or `unknown` when this machine's boot or processes cannot be read |
@@ -691,8 +691,12 @@ await openDurableRun(ref, {
 
 ### A run on a local directory
 
-`localRun(root)` returns the `acquire` and `claimDir` that put a run on a plain directory of this machine, with no mount
-and no mount token:
+`localRun(root, { workspace? })` returns the `acquire` and `claimDir` that put a run on a plain directory of this machine,
+with no mount and no mount token. Its workspace is `<root>/work`, or with `workspace: "harness/work"` `<root>/harness/work`,
+for a run whose harness's own tools run in a box lent `<root>/harness` (`WORKSPACES` names both; anything else is a
+`RangeError`). `harness/` and `harness/work` are made 0700, a step at a time, and a step that is a link or a file is
+refused (`RunError`, `INVALID_ARGUMENT`). `run.json` records the workspace, and a later open naming another is refused
+the same way, so a run is never moved:
 
 ```ts
 import { localRun, openDurableRun } from "@parcha/pi-durable-disk";
@@ -704,7 +708,8 @@ const run = await openDurableRun({ disk: "local", region: "local", id: "run-1" }
 ```
 
 The run's status is its `run.json`, and `readLocalRunStatus(root)` (the directory `localRun` takes) reads it, read-only and safe beside a live instance, the way `readRunStatus` reads a disk's: the
-same `RunRecord` (`status`, `generation`, `wakeAt`, `holder`, `sealedSeq`, `detail`), `null` when the run has no `run.json`
+same `RunRecord` (`status`, `generation`, `wakeAt`, `holder`, `sealedSeq`, `detail`, and `workspace`, absent from a record
+older than it, which then reads as `work`), `null` when the run has no `run.json`
 yet, and `RunRecordError` (`RUN_JSON_INVALID`) when it is malformed.
 
 ```ts

@@ -2,7 +2,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,8 @@ import { openDurableRun, RunError } from "../src/run.ts";
 import { parseRunRecord, RUN_JSON } from "../src/status.ts";
 import { FencedError, HeldError } from "../src/errors.ts";
 import { processTable } from "../src/process-table.ts";
+import { archilEnv } from "../src/env.ts";
+import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { alive, ctx, killQuietly, scratchRoot, scriptedHarness, startCommand } from "./_run-support.ts";
 
 const ref = { disk: "dsk-local", region: "local", id: "run-1" };
@@ -186,6 +188,91 @@ describe("localRun", () => {
     }
   });
 });
+
+describe("a local run's workspace", () => {
+  const open = (root: string, workspace?: string) => {
+    const scripted = scriptedHarness();
+    return openDurableRun(ref, { ...localRun(root, workspace === undefined ? {} : { workspace }), harness: { models: scripted.models, registry: scripted.registry } });
+  };
+
+  it("at harness/work: the claim's work is there, made private through no link, recorded in run.json, and the run's own tools write there", async () => {
+    const dir = scratchRoot("local-ws");
+    const root = join(dir.root, "run");
+    try {
+      const run = await open(root, "harness/work");
+      try {
+        assert.equal(run.claim.work, join(root, "harness", "work"));
+        for (const made of [join(root, "harness"), join(root, "harness", "work")]) {
+          assert.ok(lstatSync(made).isDirectory() && !lstatSync(made).isSymbolicLink(), `${made} is a directory`);
+          assert.equal(statSync(made).mode & 0o777, 0o700, `${made} is private`);
+        }
+        assert.equal(existsSync(join(root, "work")), false, "no work/ at the root");
+        assert.equal(parseRunRecord(readFileSync(join(root, RUN_JSON), "utf8")).workspace, "harness/work");
+        getOrThrow(await archilEnv({ root: run.claim.root, work: run.claim.work })({}).writeFile("note.txt", "written by the run's tool", ctx));
+        assert.equal(readFileSync(join(root, "harness", "work", "note.txt"), "utf8"), "written by the run's tool");
+        assert.equal(getOrThrow(await archilEnv({ root: run.claim.root, work: run.claim.work })({}).readTextFile("note.txt", ctx)), "written by the run's tool");
+      } finally {
+        await run.release();
+      }
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("is kept: an open that names another workspace is refused by name and moves nothing; a record older than the field is work", async () => {
+    const dir = scratchRoot("local-ws-kept");
+    const root = join(dir.root, "run");
+    try {
+      await (await open(root, "harness/work")).release();
+      await assert.rejects(open(root, "work"), (error: unknown) => error instanceof RunError && /keeps its workspace at harness\/work, and this open names work: a run is never moved \(open it with --workspace harness\/work\)/.test((error as Error).message));
+      await assert.rejects(open(root), /keeps its workspace at harness\/work/, "the default is work, and refused the same");
+      assert.equal(existsSync(join(root, "work")), false, "the refused open made no work/");
+      await (await open(root, "harness/work")).release();
+
+      const old = join(dir.root, "old");
+      await (await open(old)).release();
+      const record = JSON.parse(readFileSync(join(old, RUN_JSON), "utf8")) as Record<string, unknown>;
+      assert.equal(record.workspace, "work", "a new record names work");
+      delete record.workspace;
+      writeFileSync(join(old, RUN_JSON), JSON.stringify(record));
+      await assert.rejects(open(old, "harness/work"), /keeps its workspace at work, and this open names harness\/work/);
+      await (await open(old)).release();
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("refuses any other workspace by name, and a harness/ or harness/work that is a link", async () => {
+    const dir = scratchRoot("local-ws-refused");
+    try {
+      for (const bad of ["../x", "/tmp/x", "harness", "harness/work/../../store", "elsewhere"]) {
+        assert.throws(() => localRun(join(dir.root, "r"), { workspace: bad }), new RegExp(`the workspace ${JSON.stringify(bad).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} is not one of work, harness/work`));
+      }
+      const outside = join(dir.root, "outside");
+      mkdirSync(outside);
+      for (const [name, link] of [["linked-parent", "harness"], ["linked-work", "harness/work"]] as const) {
+        const root = join(dir.root, name);
+        mkdirSync(join(root, "harness"), { recursive: true });
+        if (link === "harness") {
+          rmSyncQuiet(join(root, "harness"));
+          symlinkSync(outside, join(root, "harness"));
+        } else symlinkSync(outside, join(root, "harness", "work"));
+        await assert.rejects(open(root, "harness/work"), new RegExp(`harness/work: ${link} is a link, and a run's workspace is never reached through one`));
+        assert.deepEqual(readdirSync(outside), [], "nothing was made through the link");
+      }
+    } finally {
+      dir.remove();
+    }
+  });
+});
+
+function rmSyncQuiet(path: string): void {
+  try {
+    rmdirSync(path);
+  } catch {
+    // not there
+  }
+}
 
 describe("the mount token", () => {
   it("is required only to mount an Archil disk: with the default acquire and none, the open is refused before anything mounts", async () => {

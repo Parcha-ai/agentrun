@@ -9,10 +9,10 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 
 /** One harness as capabilities lists it: whether this server runs it, and when not, why; whether it takes a message
  *  mid-turn (`steer`), or queues it for the turn's end; and whether its runs get the harness's own tools (`native_tools`:
- *  never here until runs get a confined box, adapters.ts's SERVE_SESSION_OPTIONS). */
-export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; native_tools: false; reason?: string };
+ *  off here, and set by capabilities from the server's box, native-tools.ts). */
+export type HarnessOffer = { id: HarnessId; available: boolean; steer: boolean; native_tools: boolean; reason?: string };
 
-/** Off on every harness: see HarnessOffer. */
+/** Off until capabilities say otherwise from the box: see HarnessOffer. */
 const NATIVE_TOOLS = false;
 
 /** Whether a harness takes a message mid-turn: pi does; another harness's run queues it for the turn's end. */

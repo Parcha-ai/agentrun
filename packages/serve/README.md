@@ -287,6 +287,20 @@ back.
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
 
+A run can get its harness's own tools (the CLI's shell and file tools) only in a box. The box is bubblewrap here:
+`AGENTRUN_BOX=local`, the default, probed once at start. `capabilities.harnesses[].native_tools` says whether a new run
+gets them. Today it is false for every harness, in a box too: a boxed claude-agent run can't resume a restored session
+yet, so its tools stay off until it can. They are off with no box, an unavailable one (macOS has none: there is no
+Seatbelt box yet) or `AGENTRUN_BOX=unsandboxed`. It is false for Codex,
+whose adapter takes no such option yet, and for pi, whose tools are its own.
+The run's own process builds its box once, from what serve hands it at launch. The box binds only the run's harness
+directory (`<run>/harness`): its homes, and the run's one workspace, `<run>/harness/work`. It never binds the rest of
+the data root (the server's tokens and store, other runs, and its own run's `store/`, `process.log`, `box.json` and
+`serve.json`).
+A harness run's workspace is `<run>/harness/work`, for pi's door tools, the files route and the file list alike; a pi
+run's is `<run>/work`. It is recorded in the run's `serve.json` at its start and never moves. A harness run started
+before that keeps `work/`, and its harness's own tools stay off.
+
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
 `serve/1`), and lists them in `info.x-agentrun-serve.fields`.
@@ -475,8 +489,10 @@ carries no cost at all, as from a provider that does not price the model. The te
 - No path offers a shell. `bash` is not bound: a definition that names it is not saved here (`422`), one saved before
   that check is not runnable (`409`), and a model that
   calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
-  nothing. There is no sandbox box in this phase, so shell stays off.
-- Files are served from `work/` only. A path with an empty, `.` or `..` segment, a backslash or a NUL is
+  nothing. pi's shell stays off, and so does every harness's own shell for now. When claude-agent's is turned on, it
+  runs only in the run's box ([harnesses](#harnesses)), as the server's uid inside its own user, pid, mount and network
+  namespaces, seeing only what the box binds.
+- Files are served from the run's workspace only (`work/`, or a harness run's `harness/work/`). A path with an empty, `.` or `..` segment, a backslash or a NUL is
   `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404`. Every answer is `nosniff`, and HTML carries a CSP with
   `sandbox` and `default-src 'none'`.
