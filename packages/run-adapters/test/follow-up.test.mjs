@@ -198,3 +198,48 @@ test('the kernel knows no learning: its exports and the follow-up\'s source name
   const source = await readFile(new URL('../src/kernel/follow-up.ts', import.meta.url), 'utf8');
   assert.deepEqual(source.split('\n').filter((line) => words.test(line)), []);
 });
+
+/** A target whose turn is `turn(followUp)`: what it does while the follow-up's turn runs, and how the turn ends. */
+const scripted = (turn, sent = { n: 0 }) => (followUp) => ({
+  state: 'idle',
+  async send() { sent.n += 1; this.ended = await turn(followUp); },
+  async turnEnd() { return this.ended ?? { status: 'completed' }; },
+  async settleOpenTurn() {},
+});
+const request = (spentUsd, inFlight) => ({ key: SESSION, label: 'r1', model: 'faux', turn: 1, maxTurns: null, spentUsd, inFlight });
+
+test('each request in flight holds its worst case: with two in flight, a third that alone would fit is refused', async () => {
+  const { followUpOnce } = await kernel();
+  const verdicts = [];
+  const followUp = followUpOnce(options(memorySessionStore(), { reserveUsd: 0.1, worstUsd: 0.04 }));
+  await followUp.run(scripted(async (f) => {
+    verdicts.push(f.beforeRequest(request(1, [])));
+    // $0 spent since the start, two requests in flight: 0 + 3 x 0.04 is over 0.10, though 0 + 0.04 is not.
+    verdicts.push(f.beforeRequest(request(1, [{}, {}])));
+    return { status: 'completed' };
+  })(followUp), new AbortController().signal);
+  assert.equal(verdicts[0], undefined);
+  assert.match(verdicts[1]?.refuse ?? '', /^follow_up_budget_reached/);
+});
+
+test('the guard stands down once the follow-up\'s turn is over, whether it was done or failed', async () => {
+  const { followUpOnce } = await kernel();
+  const store = memorySessionStore();
+  const done = followUpOnce(options(store));
+  assert.deepEqual(await done.run(scripted(async () => ({ status: 'completed' }))(done), new AbortController().signal), { status: 'done' });
+  assert.equal(done.beforeRequest(request(null, [])), undefined);
+  const failed = followUpOnce(options(store, { name: 'other' }));
+  assert.equal((await failed.run(scripted(async () => ({ status: 'failed', error: 'boom' }))(failed), new AbortController().signal)).status, 'failed');
+  assert.equal(failed.beforeRequest(request(null, [])), undefined);
+});
+
+test('a follow-up recorded failed is answered failed, with its error, and a later process sends nothing', async () => {
+  const { followUpOnce } = await kernel();
+  const store = memorySessionStore();
+  const sent = { n: 0 };
+  const first = followUpOnce(options(store));
+  assert.deepEqual(await first.run(scripted(async () => ({ status: 'failed', error: 'the provider refused it' }), sent)(first), new AbortController().signal), { status: 'failed', error: 'the provider refused it' });
+  const later = followUpOnce(options(store));
+  assert.deepEqual(await later.run(scripted(async () => ({ status: 'completed' }), sent)(later), new AbortController().signal), { status: 'failed', error: 'the provider refused it' });
+  assert.equal(sent.n, 1);
+});
