@@ -373,6 +373,19 @@ jobs:
           HOME: /tmp/box-home
           AGENTRUN_BOX_REAL: '1'
         run: node --test --test-timeout=120000 packages/serve/test/box-run.test.mjs
+      - name: A boxed Claude run on a real bwrap, through serve
+        env:
+          HOME: /tmp/box-home
+          AGENTRUN_BOX_REAL: '1'
+        run: node --test --test-timeout=300000 packages/serve/test/claude-box-real.test.mjs
+      - name: The Claude adapter's real-CLI cases, boxed
+        env:
+          HOME: /tmp/box-home
+          AGENTRUN_BOX_REAL: '1'
+          AGENTRUN_CLAUDE_BOXED: '1'
+          AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY: '1'
+        working-directory: packages/run-adapters-claude-agent
+        run: node --test --test-timeout=300000 test/native-on.test.mjs test/refused-tools.test.mjs test/skills.test.mjs test/images.test.mjs
   stranger:
     # A package installed from its packed tarball into an empty directory, with an empty environment and home, runs the one command
     # its README gives with no key (scripts/stranger/<name>.json). Each spec runs on its own runner. A spec that says the package has

@@ -13,6 +13,7 @@ import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { claudeAgentAdapter, verifyClaudeAgent } from '@parcha/agentrun-harness-claude';
 import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 
+import { boxedOptions, boxedSession, boxSkip } from './boxed.mjs';
 const required = process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY === '1';
 let problem;
 try { verifyClaudeAgent({}); } catch (error) { problem = `${error.name}: ${error.message}`; }
@@ -21,7 +22,7 @@ const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-refused-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 const MODEL = 'claude-sonnet-5-5';
 
-test("a tool the session doesn't have is refused by the CLI, kept in the store, and shown to the host as a failed call by its name; the node still delivers", { skip, timeout: 120_000 }, async (t) => {
+test("a tool the session doesn't have is refused by the CLI, kept in the store, and shown to the host as a failed call by its name; the node still delivers", { skip: skip || boxSkip, timeout: 120_000 }, async (t) => {
   // A prompt that names a browser tool the session lacks, another server's tool, and a built-in that is off.
   const plan = [
     { tool: { name: 'browser_navigate', input: { url: 'https://example.com' } } },
@@ -39,10 +40,12 @@ test("a tool the session doesn't have is refused by the CLI, kept in the store, 
   const events = [];
   const logged = [];
   // The CLI's own tools off (they are on by default), so WebFetch is a built-in the session lacks.
-  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions'), log: (message, detail) => logged.push({ message, ...detail }), builtins: false });
+  const sessionsDir = join(mkdtempSync(join(ROOT, 'run-')), 'sessions');
+  const boxed = await boxedOptions(t, sessionsDir, undefined);
+  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir, ...(boxed.box ? { box: boxed.box } : {}), log: (message, detail) => logged.push({ message, ...detail }), builtins: false });
   const lookup = { name: 'lookup', description: 'Look.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => ({ text: 'found' }) };
   const broken = { name: 'broken', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'the backend is down', isError: true }) };
-  const runNode = createHarnessRunner(adapter, { store, tools: [lookup, broken], maxTurns: 20, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
+  const runNode = createHarnessRunner(adapter, { ...boxed.runner, store, tools: [lookup, broken], maxTurns: 20, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'refused', system: ['Answer.'], user: 'Go.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: ['lookup', 'broken'] }), { answer: 'ok' });
 
   // Shown: each refused call is a tool call that failed, by its name, with the call id the model used.
@@ -93,7 +96,7 @@ test("a session tool's own error is heard once, whatever its text: a call the se
   assert.deepEqual(logged.filter((l) => /turned down a call/.test(l.message)), [], 'no call that ran is logged as turned down');
 });
 
-test("a refusal the CLI made reaches the host only once the session's store holds it", { skip, timeout: 120_000 }, async (t) => {
+test("a refusal the CLI made reaches the host only once the session's store holds it", { skip: skip || boxSkip, timeout: 120_000 }, async (t) => {
   const plan = [
     { tool: { name: 'browser_navigate', input: { url: 'https://example.com' } } },
     { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } },
@@ -124,8 +127,11 @@ test("a refusal the CLI made reaches the host only once the session's store hold
     },
   };
   let atEnd;
-  const adapter = claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions') });
+  const sessionsDir = join(mkdtempSync(join(ROOT, 'run-')), 'sessions');
+  const boxed = await boxedOptions(t, sessionsDir, undefined);
+  const adapter = claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir, ...(boxed.box ? { box: boxed.box } : {}) });
   const runNode = createHarnessRunner(adapter, {
+    ...boxed.runner,
     store,
     tools: [],
     maxTurns: 20,

@@ -15,6 +15,7 @@ import { CLAUDE_AGENT_SDK_VERSION, claudeAgentAdapter, verifyClaudeAgent } from 
 import { CLAUDE_BUILTINS, CLAUDE_BUILTINS_OFF } from '../dist/harness.js';
 import { fakeAnthropic } from '@parcha/agentrun-harness-claude/testing';
 
+import { boxedOptions, boxedSession, boxSkip } from './boxed.mjs';
 const required = process.env.AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY === '1';
 let problem;
 try { verifyClaudeAgent({}); } catch (error) { problem = `${error.name}: ${error.message}`; }
@@ -24,7 +25,7 @@ after(() => rmSync(ROOT, { recursive: true, force: true }));
 const MODEL = 'claude-sonnet-5-5';
 const SMALL = 'claude-haiku-4-5';
 
-test("with the CLI's own tools on, the model sees the allowlist and nothing that is off; a Bash call runs once, its intent logged before its outcome", { skip, timeout: 240_000 }, async (t) => {
+test("with the CLI's own tools on, the model sees the allowlist and nothing that is off; a Bash call runs once, its intent logged before its outcome", { skip: skip || boxSkip, timeout: 240_000 }, async (t) => {
   const dir = mkdtempSync(join(ROOT, 'run-'));
   // What the model asks for, one call per main-model request: a command of the CLI's own, then the host's submit.
   const plan = [
@@ -35,6 +36,7 @@ test("with the CLI's own tools on, the model sees the allowlist and nothing that
   const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL ? plan[main++] ?? { text: 'done' } : { text: 'ok' }) });
   t.after(() => provider.close());
 
+  const boxed = await boxedOptions(t, join(dir, 'sessions'));
   const adapter = claudeAgentAdapter({
     sdk: await import('@anthropic-ai/claude-agent-sdk'),
     sdkVersion: CLAUDE_AGENT_SDK_VERSION,
@@ -43,11 +45,11 @@ test("with the CLI's own tools on, the model sees the allowlist and nothing that
     provider: { origin: provider.url, credential: () => 'provider-secret' },
     sessionsDir: join(dir, 'sessions'),
     // Stated, never a default: the test runs with no box, the operator's word for a machine whose boundary is elsewhere.
-    box: 'unsandboxed',
+    box: boxed.box,
   });
   const store = memorySessionStore();
   const events = [];
-  const runNode = createHarnessRunner(adapter, { store, tools: [], maxTurns: 20, timeoutMs: 200_000, onEvent: (e) => { if (e.type === 'tool_start' || e.type === 'tool_end') events.push(e); } });
+  const runNode = createHarnessRunner(adapter, { ...boxed.runner, store, tools: [], maxTurns: 20, timeoutMs: 200_000, onEvent: (e) => { if (e.type === 'tool_start' || e.type === 'tool_end') events.push(e); } });
   const output = await runNode({ kind: 'agent', label: 'native', system: ['Answer.'], user: 'Write the file, then say ok.', schema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } }, tools: [] });
   assert.deepEqual(output, { answer: 'ok' });
 

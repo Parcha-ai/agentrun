@@ -132,6 +132,12 @@ function failed(error: Error): SdkSpawnedProcess {
   };
 }
 
+/** Whether the session's machine starts its children in a box: its own, a provider's, or Seatbelt. */
+const boxedMachine = (machine: unknown): boolean => {
+  const mode = (machine as { isolation?: { mode?: string } }).isolation?.mode;
+  return mode === "bwrap" || mode === "seatbelt" || mode === "provider";
+};
+
 /** The spawn hook for the session's machine. */
 export function sandboxSpawn(options: SandboxSpawnOptions): (request: SdkSpawnOptions) => SdkSpawnedProcess {
   return (request) => {
@@ -152,8 +158,11 @@ export function sandboxSpawn(options: SandboxSpawnOptions): (request: SdkSpawnOp
     const problem = spawnProblem(request, options);
     if (problem) return refuse(problem);
     const env = Object.fromEntries(Object.entries(request.env).filter((e): e is [string, string] => typeof e[1] === "string"));
+    // In a box, the CLI's config directory is lent to this spawn's box alone: the harness's own (this drive's) and, on a
+    // resume, the SDK's resume dir, which the CLI reads its transcript from. Unboxed there is nothing to lend.
+    const binds = boxedMachine(options.machine) ? [...new Set([options.env.CLAUDE_CONFIG_DIR, env.CLAUDE_CONFIG_DIR].filter((dir): dir is string => typeof dir === "string"))] : [];
     try {
-      const proc = machine.start({ command: options.executable, args: request.args ?? [], env, cwd: options.machine.root, signal: AbortSignal.any([options.signal, request.signal]) });
+      const proc = machine.start({ command: options.executable, args: request.args ?? [], env, cwd: options.machine.root, ...(binds.length ? { binds } : {}), signal: AbortSignal.any([options.signal, request.signal]) });
       options.onSpawn?.(proc);
       return proc.child as unknown as SdkSpawnedProcess;
     } catch (error) {
