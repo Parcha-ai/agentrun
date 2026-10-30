@@ -34,6 +34,12 @@ it("the example's check: a process of the command's group that started before th
   assert.deepEqual(judge([leader, atTheInstant], 4300, before), { survivors: [leader, atTheInstant], reused: [] });
 });
 
+it("the example's check: a group whose only live process started at exactly the instant the next open took is the command's: that process is a survivor, never a reused number", () => {
+  // No earlier process of the group decides it: the one start at the instant alone must count as before it.
+  const atTheInstant = seen(4300, 4300, before, "S", "sleep 120");
+  assert.deepEqual(judge([atTheInstant], 4300, before), { survivors: [atTheInstant], reused: [] });
+});
+
 it("the example's check: while a process of the command's group from before the next open lives, the group never ended, so a child it forked after that instant is the command's too, a survivor", () => {
   // A process of the group from before the instant lives, so the group never ended and its number was never free.
   const leader = seen(4300, 4300, 500, "S", "bash -c ...");
