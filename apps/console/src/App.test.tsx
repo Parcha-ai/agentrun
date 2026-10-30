@@ -69,3 +69,24 @@ describe("App, Mission Control after a failed read", () => {
     expect(host.textContent).not.toContain("could not be read");
   });
 });
+
+describe("App, a server whose box is unavailable", () => {
+  it("says native tools are off, in the server's words, above every page", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } }, box: { mode: "unavailable", cgroup: false, egress: "open", error: "bwrap_missing", detail: "bubblewrap (bwrap) is not installed on this host; install it, then restart the server." } });
+      if (path === "/v2/stats") return json(200, { agents: 0, runs: { total: 0, active: 0, needs_input: 0, failed: 0, status_unknown: 0 }, per_agent: [], cost: { usd: null, basis: null, unknown_runs: 0 }, archived: { agents: 0, runs: 0 } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.textContent?.includes("Native tools are off") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(host.textContent).toContain("Native tools are off on this server: bubblewrap (bwrap) is not installed on this host; install it, then restart the server.");
+  });
+});

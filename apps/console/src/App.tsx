@@ -4,6 +4,8 @@ import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView } from "@/lib/mission";
+import { type Box, boxNotice, nativeTools } from "@/lib/box";
+import { cn } from "@/lib/utils";
 import { Playground, type StartResult } from "@/components/Playground";
 import { type Agent, toolOffers } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
@@ -105,7 +107,9 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const agentName = (id: string) => names[id] ?? id;
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
+  const box = (caps as unknown as { box?: Box } | null)?.box;
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default, box };
+  const boxSays = boxNotice(box, nativeTools(c?.harnesses));
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
@@ -158,6 +162,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }}>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
+      {boxSays && <p className={cn("border-b bg-card px-5 py-3 font-mono text-[13px] md:px-8", boxSays.tone === "error" ? "text-destructive-text" : "text-warning-text")} role="status">{boxSays.text}</p>}
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "mission"

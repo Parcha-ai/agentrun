@@ -4,10 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Agent, type AgentFields, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor } from "@/lib/agentForm";
 import { markdown, when } from "@/lib/format";
+import { type Box, boxLine, nativeTools } from "@/lib/box";
 import { cn } from "@/lib/utils";
 
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string };
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string; native_tools?: boolean }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; box?: Box };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -57,6 +58,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const fieldError = (field: string) => (problem?.kind === "invalid" ? problem.fields[`definition.${field}`] : undefined);
   const set = (patch: AgentFields) => { setF((x) => ({ ...x, ...patch })); setSaved(false); };
   const workflow = agent?.kind === "workflow";
+  // Where the agent's tools run, said only where its harness runs native tools (capabilities.box and native_tools).
+  const toolsWhere = boxLine(caps.box, nativeTools(caps.harnesses, f.harness ?? "pi"));
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
   const steps = STEPS.filter((s) => !(creating && s.id === "history"));
@@ -137,7 +140,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
           {step === "tools" && (
             <div className="max-w-3xl space-y-6">
-              <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")}>
+              <Field label="Tools" note={`On by default: the tools this agent's harness runs on this server. Untick one to take it away.${toolsWhere ? ` ${toolsWhere}.` : ""}`} error={fieldError("tools")}>
                 <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {caps.tools.map((t) => {
                     const runs = toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);

@@ -76,3 +76,15 @@ describe("AgentEditor, tools a person chose by hand", () => {
     done();
   });
 });
+
+describe("AgentEditor's Tools step says where tools run", () => {
+  const bwrap = { mode: "bwrap" as const, cgroup: true, egress: "open" as const };
+  it("names the server's box when the agent's harness runs native tools", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...caps, harnesses: [{ id: "pi", available: true, native_tools: true }], box: bwrap }, step: "tools" }));
+    expect(html).toContain("Tools run in a bwrap sandbox · network open");
+  });
+  it("claims nothing when the agent's harness runs no native tools", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...caps, harnesses: [{ id: "pi", available: true, native_tools: false }], box: bwrap }, step: "tools" }));
+    expect(html).not.toContain("Tools run in");
+  });
+});
