@@ -3,7 +3,8 @@
 // one process too.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ServerLockHeldError, startServe } from "../dist/index.js";
@@ -14,8 +15,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const refusal = (data) => `agentrun-serve: another server holds this data root (${join(data, "server.lock")}): stop it, or start this one with another --data\n`;
 
 /** The bin on `data`, its output kept; with `started`, resolves once it printed its address, else once it exited. */
-async function bin(t, data, { started = true } = {}) {
-  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"] });
+async function bin(t, data, { started = true, env = {} } = {}) {
+  const child = spawn(process.execPath, [CLI, "--data", data, "--port", "0", "--faux", FAUX], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
   t.after(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"));
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));
@@ -81,4 +82,35 @@ test("two servers in one process on one root: the second start is refused (SQLit
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
   assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200);
+});
+
+test("a start that fails after taking the lock releases it: the next start on the same root, in the same process, serves", { timeout: 60_000 }, async (t) => {
+  const data = join(await scratch(t), "agents");
+  const taken = createServer();
+  await new Promise((resolve) => taken.listen(0, "127.0.0.1", resolve));
+  t.after(() => taken.close());
+  await assert.rejects(startServe({ data, port: taken.address().port, faux: FAUX }), (error) => !(error instanceof ServerLockHeldError));
+  const next = await startServe({ data, port: 0, faux: FAUX });
+  t.after(() => next.close());
+  assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200);
+});
+
+test("the CLI drops node:sqlite's ExperimentalWarning only: another warning still prints, and the library entry filters nothing", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const data = join(dir, "agents");
+  // A warning raised once the CLI has loaded (its filter is its first import).
+  const late = join(dir, "late-warning.mjs");
+  await writeFile(late, 'setTimeout(() => process.emitWarning("a warning of the test", "TestWarning"), 300);\n');
+  const server = await bin(t, data, { env: { NODE_OPTIONS: `--import=${late}` } });
+  for (let i = 0; !/TestWarning: a warning of the test/.test(server.seen.err); i++) {
+    assert.ok(i < 100, `the other warning was not printed: ${server.seen.err}`);
+    await sleep(50);
+  }
+  assert.doesNotMatch(server.seen.err, /ExperimentalWarning/);
+  // The library an embedder imports installs no filter: its process prints node:sqlite's warning as node does.
+  const library = spawn(process.execPath, ["--input-type=module", "-e", `await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});`], { stdio: ["ignore", "ignore", "pipe"] });
+  let err = "";
+  library.stderr.on("data", (chunk) => (err += chunk));
+  await new Promise((resolve) => library.once("exit", resolve));
+  assert.match(err, /ExperimentalWarning: SQLite/);
 });
