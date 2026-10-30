@@ -145,8 +145,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "array",
       description: "Every tool a revision may name (this server's closed table): whether a workflow's model nodes may use it (`nodes`), whether its code may call it (`calls`), and whether it runs here, else the variables it is missing.",
       items: {
-        type: "object", additionalProperties: false, required: ["name", "summary", "nodes", "calls", "available"],
-        properties: { name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, available: { type: "boolean" }, missing: { type: "array", items: { type: "string" } } },
+        type: "object", additionalProperties: false, required: ["name", "summary", "nodes", "calls", "available", "harnesses"],
+        properties: {
+          name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, available: { type: "boolean" }, missing: { type: "array", items: { type: "string" } },
+          harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tool here; a revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable.", "x-agentrun-serve": "tool-harness/1" },
+        },
       },
       "x-agentrun-serve": "serve/1",
     },
