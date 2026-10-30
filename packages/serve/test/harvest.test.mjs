@@ -388,12 +388,23 @@ test("a value in a path the run deleted refuses the harvest too", async (t) => {
   noBranch(s);
 });
 
-test("a value no URI encoder takes (a lone surrogate) never stops the harvest, and a value percent-encoded as a URI component is still found", async (t) => {
+test("a value no URI encoder takes (a lone surrogate) never stops the harvest, and its percent form, as its UTF-8 bytes read, is refused by name", async (t) => {
+  const { privateFormsOf } = await import("../dist/harvest.js");
+  const lone = "abcdefghijkl\ud800";
+  const forms = privateFormsOf(lone);
+  assert.ok(forms.folded.length > 0 && forms.base64.length > 0, "hex, percent and base64 forms, none throwing");
   const s = await seeded(t);
   await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", "Policies live under /policies/."));
-  assert.equal((await harvest(s, "host", { refuse: ["abcdefghijkl\ud800"] })).status, "proposed");
-  const value = "canary 5ca1ab1e/0123+x";
-  const component = await seeded(t);
-  await writeFile(join(component.work, NOTE), note("L-0a93ff12c4e7", `Send ${encodeURIComponent(value)} first.`));
-  assert.deepEqual((await harvest(component, "host", { refuse: [value] })).refused, [`${NOTE} holds a value no learning may keep`]);
+  assert.equal((await harvest(s, "host", { refuse: [lone] })).status, "proposed");
+  const planted = await seeded(t);
+  await writeFile(join(planted.work, NOTE), note("L-0a93ff12c4e7", "Send abcdefghijkl%EF%BF%BD first."));
+  assert.deepEqual((await harvest(planted, "host", { refuse: [lone] })).refused, [`${NOTE} holds a value no learning may keep`]);
+});
+
+test("a value with one reserved character, percent-encoded as a URI component, is refused: the unreserved characters stay as they are", async (t) => {
+  const value = "canary-5ca1ab1e/0123456";
+  const s = await seeded(t);
+  await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", `Send ${encodeURIComponent(value)} first.`));
+  assert.equal(encodeURIComponent(value), "canary-5ca1ab1e%2F0123456");
+  assert.deepEqual((await harvest(s, "host", { refuse: [value] })).refused, [`${NOTE} holds a value no learning may keep`]);
 });

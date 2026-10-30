@@ -1049,26 +1049,38 @@ test("a canary a named write plants in the learning copy is refused at harvest, 
   assert.equal(branches(bareOf(data, "ledger")).includes(`runs/${runId}`), false, "nothing is committed");
 });
 
-test("a learning run is told where and how to save what it learned: its working copy, its memo, and the paths a harvest takes", async (t) => {
+test("a learning run is told where and how to save what it learned: its working copy, its memo, a whole note as the learning loop writes one, and the paths a harvest takes", async (t) => {
   const { learningInstructions } = await learningModule();
-  const base = "0123456789abcdef0123456789abcdef01234567";
-  const text = learningInstructions("run-1", base);
-  // The note it shows is one the learning loop reads back: written as shown, it parses.
-  const { parseLearning } = await import("@parcha/pi-agent-learn");
-  const example = /<note>\n([\s\S]*?)<\/note>/.exec(text)?.[1];
-  assert.ok(example, "the instructions show a whole note");
-  const written = example.replace("L-<id>", "L-5ca1ab1e0009").replace("<the rule, in one or two sentences>", "Search both forms of the legal name.");
-  const parsed = parseLearning(written);
-  assert.deepEqual([parsed.id, parsed.type, parsed.status, parsed.provenance.runs, parsed.provenance.sha, parsed.uses, parsed.supersedes], ["L-5ca1ab1e0009", "lesson", "active", ["run-1"], base, 0, []]);
+  const text = learningInstructions("run-1", "---\nthe note\n---\nits rule\n");
+  assert.ok(text.includes("<note>\n---\nthe note\n---\nits rule\n</note>"), "the note it is given, whole");
   for (const said of [".agent/repo", ".agent/repo/memos/run-1.md", ".agent/repo/learnings/L-<id>.md", ".agent/repo/learnings/INDEX.md", ".agent/repo/.agents/skills/<name>/SKILL.md", ".agent/repo/workflows/<name>/workflow.json", "runs/run-1", "## Proposed changes"]) {
     assert.ok(text.includes(said), `the instructions name ${said}`);
   }
   const { api, data } = await serve(t);
   await api("POST", "/agents", agent("calc"));
+  const seed = tip(bareOf(data, "calc"), "main");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "How do you save what you learn?" } });
   await follow(api, run.run_id, ["completed"]);
-  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer, learningInstructions(run.run_id, tip(bareOf(data, "calc"), "main")), "the run's model sees them, with its seed");
+  const seen = (await api("GET", `/runs/${run.run_id}`)).body.result.final_answer;
+  assert.match(seen, /^<saving-learning>\n[\s\S]*<\/saving-learning>$/, "the run's model sees them");
+  // The note it shows is one the learning loop reads back: written as shown, it parses, with this run and its seed.
+  const { parseLearning } = await import("@parcha/pi-agent-learn");
+  const example = /<note>\n([\s\S]*?)<\/note>/.exec(seen)?.[1];
+  assert.ok(example, "the instructions show a whole note");
+  const rule = "Search both forms of the legal name.";
+  const written = example.replace("L-<id>", "L-5ca1ab1e0009").replace("<the rule, in one or two sentences>", rule);
+  const parsed = parseLearning(written);
+  assert.deepEqual([parsed.id, parsed.type, parsed.scope, parsed.status, parsed.provenance.runs, parsed.provenance.sha, parsed.provenance.untrusted, parsed.uses, parsed.supersedes, parsed.text], ["L-5ca1ab1e0009", "lesson", "all", "active", [run.run_id], seed, false, 0, [], rule]);
   await stateOf(data, "calc", run.run_id);
+  // Written that way by a run, proposed, and on main (as a merge would put it), a later run loads it.
+  const { body: writer } = await api("POST", "/agents/calc/runs", { input: { content: `Make these calls: ${JSON.stringify([["write", { path: ".agent/repo/learnings/L-5ca1ab1e0009.md", content: written }], ["write", { path: ".agent/repo/learnings/INDEX.md", content: `- L-5ca1ab1e0009: ${rule}\n` }]])}` } });
+  await follow(api, writer.run_id, ["completed"]);
+  assert.equal((await stateOf(data, "calc", writer.run_id)).state, "proposed");
+  const proposed = show(bareOf(data, "calc"), `runs/${writer.run_id}`, "learnings/L-5ca1ab1e0009.md");
+  await onMain(t, data, "calc", { "learnings/L-5ca1ab1e0009.md": `${proposed}\n` });
+  const { body: reader } = await api("POST", "/agents/calc/runs", { input: { content: "What have you learned?" } });
+  await follow(api, reader.run_id, ["completed"]);
+  assert.match((await api("GET", `/runs/${reader.run_id}`)).body.result.final_answer, /- L-5ca1ab1e0009 lesson: Search both forms of the legal name\./, "a later run loads it");
   // A run that does not learn is not told.
   await api("POST", "/agents", agent("quiet", { learning: null }));
   const { body: quiet } = await api("POST", "/agents/quiet/runs", { input: { content: "How do you save what you learn?" } });
