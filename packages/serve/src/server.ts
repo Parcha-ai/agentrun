@@ -587,6 +587,13 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // ---- the owner ------------------------------------------------------------------------------------------------------
 
   /** A write from the page: this server's own origin and a JSON body. A cookie never makes one from anywhere else. */
+  /** A read only this server's page makes: the browser says so (Sec-Fetch-Site), or its Origin is this server's. A
+   *  same-origin GET carries no Origin and no body, so fromPage's checks would refuse the page itself. */
+  function pageRead(req: IncomingMessage): void {
+    if (req.headers["sec-fetch-site"] === "same-origin" || req.headers.origin?.toLowerCase() === ownOrigin(req)) return;
+    throw new ApiError("forbidden", "this read must come from this server's page");
+  }
+
   function fromPage(req: IncomingMessage): void {
     if (req.headers.origin?.toLowerCase() !== ownOrigin(req)) throw new ApiError("forbidden", "this write must come from this server's page");
     if (!isJson(req)) throw new ApiError("unsupported_media_type", "the body must be application/json");
@@ -625,7 +632,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "/setup/import": {
         // Before the owner is set, on a server on this machine only: how many projects and sessions the box would import.
         if (!offersImport || me.hasPassword()) throw new ApiError("not_found", "no route /v2/setup/import");
-        fromPage(req);
+        pageRead(req);
         const plan = await sessionsPlan();
         return send(res, 200, { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + p.sessions.length, 0) });
       }
