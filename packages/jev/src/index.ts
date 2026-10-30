@@ -206,7 +206,7 @@ function prepareRequest(params: JevJudgeParams, model: string, maxStateBytes: nu
   if (!isRecord(given)) throw invalid("invalid_assets", "assets must map each reference to an image; no request was sent.");
   const references = Object.keys(given);
   const carriesImage = references.length > 0;
-  if ((carriesImage || hasBox) && provider !== "typesafe") throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only; the OpenRouter path is not verified for them. No request was sent.");
+  if ((carriesImage || hasBox) && provider !== "typesafe") throw invalid("unsupported_provider", "Images and Box questions are sent to TypeSafe's own API only: OpenRouter refuses the multipart body the TypeSafe SDK sends them in. For Jev with images through OpenRouter, use the openrouter decision provider with model typesafe/jev-1.14. No request was sent.");
   if (hasBox && !answersBox(callModel)) throw invalid("unsupported_model", `A Box question needs a model that answers it, by name: ${BOX_MODEL} or later, or jev-preview; jev-latest is refused whatever version it points at. No request was sent.`);
   if (hasBox && !carriesImage) throw invalid("invalid_assets", "A Box question locates something in an image, and the request carries none. No request was sent.");
   let assets: Record<string, Image> | undefined;

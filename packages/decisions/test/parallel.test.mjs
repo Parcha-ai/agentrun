@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { DecisionProviderError, judgeFromProvider, runWorkflow, validateAnswers } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
-import { parallelProvider, PARALLEL_LIST_PRICE_USD } from '../dist/index.js';
+import { parallelProvider, PARALLEL_LIST_PRICE_USD, PARALLEL_MODES } from '../dist/index.js';
 
 const KEY = 'parallel-canary-key-0123456789';
 const { responses } = JSON.parse(readFileSync(new URL('./fixtures/parallel-responses.json', import.meta.url), 'utf8'));
@@ -148,6 +148,20 @@ test('a model pin Parallel does not serve is refused by name before anything is 
   const outcome = await provider.decide({ label: 'x', kind: 'judge', state: {}, questions, model: 'parallel-fast' }, ctx());
   assert.equal(JSON.parse(seen[0].init.body).mode, 'fast');
   assert.equal(outcome.model, 'parallel-fast');
+});
+
+test('a mode Parallel adds is pinned as parallel-<mode> once modes lists it, and a node that pins none asks the first', async () => {
+  const questions = { holds: { type: 'noul', instructions: 'Does it hold?' } };
+  const { fetch, seen } = fakeFetch([(init) => json({ ...wire({ holds: { type: 'noul', noul: 0.7 } }), mode: JSON.parse(init.body).mode })]);
+  assert.deepEqual([PARALLEL_MODES, parallelProvider(settings).capabilities.models], [['fast'], ['parallel-fast']]);
+  const provider = parallelProvider({ ...settings, fetch, modes: ['fast', 'pro'] });
+  assert.deepEqual(provider.capabilities.models, ['parallel-fast', 'parallel-pro']);
+  const pinned = await provider.decide({ label: 'x', kind: 'judge', state: {}, questions, model: 'parallel-pro' }, ctx());
+  const unpinned = await provider.decide({ label: 'x', kind: 'judge', state: {}, questions }, ctx());
+  assert.deepEqual(seen.map(({ init }) => JSON.parse(init.body).mode), ['pro', 'fast']);
+  assert.deepEqual([pinned.model, unpinned.model], ['parallel-pro', 'parallel-fast']);
+  await assert.rejects(provider.decide({ label: 'x', kind: 'judge', state: {}, questions, model: 'pro' }, ctx()), code('invalid_request'));
+  assert.equal(seen.length, 2, 'a bare mode name is refused before sending');
 });
 
 test('a 422 keeps the reference Parallel gives it and drops the body', async () => {
@@ -305,4 +319,16 @@ test('parallelProvider declares what Parallel answers, and the key it reads by n
   assert.equal(id, 'parallel');
   assert.deepEqual(needs, ['PARALLEL_API_KEY']);
   assert.deepEqual(capabilities, { types: ['noul', 'choice', 'score'], inputs: ['text', 'json', 'url'], evidence: 'citations', probability: 'model', grounding: true, replay: 'never', maxQuestions: 100, maxStateBytes: 96_000, models: ['parallel-fast'] });
+});
+
+test('the live response (2026-10-30) reads as answered: parallel-fast, its citations as evidence with their excerpts, the decision id, list price', async () => {
+  const { question, response } = JSON.parse(readFileSync(new URL('./fixtures/parallel-live-20261030.json', import.meta.url), 'utf8'));
+  const { fetch } = fakeFetch([json(response)]);
+  const outcome = await parallelProvider({ ...settings, fetch }).decide({ label: 'registry', kind: 'judge', state: { company: 'Stripe, Inc.', jurisdiction: 'Delaware' }, questions: question }, ctx());
+  validateAnswers(question, outcome.answers);
+  assert.equal(outcome.answers.active_delaware.noul, response.answers.active_delaware.noul);
+  assert.deepEqual([outcome.model, outcome.provider_request_id, outcome.cost_usd, outcome.cost_basis], ['parallel-fast', response.decision_id, PARALLEL_LIST_PRICE_USD, 'estimate']);
+  assert.equal(outcome.evidence.length, response.citations.length);
+  assert.deepEqual(outcome.evidence[0], { url: response.citations[0].url, title: response.citations[0].title, excerpts: response.citations[0].excerpts, scope: 'call' });
+  assert.deepEqual(outcome.usage, { input_tokens: response.usage.input_tokens, output_tokens: 0 });
 });

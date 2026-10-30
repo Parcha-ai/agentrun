@@ -12,13 +12,17 @@ import type { DecisionCapabilities, DecisionContext, DecisionEvidence, DecisionO
 export const PARALLEL_LIST_PRICE_USD = 0.001;
 
 const KEY_VARIABLE = "PARALLEL_API_KEY";
-/** The one model this provider asks for, as Parallel names it in an answer: a node may pin it and no other. */
-const MODEL = "parallel-fast";
 const BASE_URL = "https://api.parallel.ai";
 /** Parallel's documented limits: options per choice, levels per score, and characters per rendered question. */
 const LIMITS = { minOptions: 2, maxOptions: 255, minLevels: 2, maxLevels: 10, renderedChars: 5_000 } as const;
 
+/** The modes Parallel Decisions takes, as its API reference lists them (2026-10-30: `fast` only, a const). A node pins
+ *  one as `parallel-<mode>`, the name an answer's model reads; a node that pins none asks the first. */
+export const PARALLEL_MODES: readonly string[] = ["fast"];
+
 export interface ParallelOptions {
+  /** The modes a node may pin (default PARALLEL_MODES), for when Parallel adds one before this package does. */
+  modes?: readonly string[];
   /** The key; otherwise PARALLEL_API_KEY, read when a request is made. */
   apiKey?: string;
   /** API root, without /v1/decisions. */
@@ -107,9 +111,10 @@ function retryAfterMs(response: Response): number | undefined {
 }
 
 export function parallelProvider(options: ParallelOptions = {}): DecisionProvider {
+  const modes = options.modes ?? PARALLEL_MODES;
   const capabilities: DecisionCapabilities = {
     types: ["noul", "choice", "score"], inputs: ["text", "json", "url"], evidence: "citations", probability: "model", grounding: true,
-    replay: "never", maxQuestions: 100, maxStateBytes: 96_000, models: [MODEL],
+    replay: "never", maxQuestions: 100, maxStateBytes: 96_000, models: modes.map((mode) => `parallel-${mode}`),
   };
   const timeoutMs = options.timeoutMs ?? 30_000;
   const maxAttempts = options.maxAttempts ?? 3;
@@ -121,9 +126,11 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
     async decide(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionOutcome> {
       checkCapabilities(capabilities, request);
       checkLimits(request.questions);
+      // checkCapabilities refused any pin outside the declared modes.
+      const mode = request.model ? request.model.slice("parallel-".length) : modes[0];
       const key = options.apiKey ?? process.env[KEY_VARIABLE];
       if (typeof key !== "string" || !key.trim()) throw new DecisionProviderError("configuration", `${KEY_VARIABLE} is not set.`);
-      const body = JSON.stringify({ mode: "fast", state: request.state ?? null, questions: Object.fromEntries(Object.entries(request.questions).map(([id, q]) => [id, wireQuestion(q)])), include_excerpts: options.includeExcerpts ?? true });
+      const body = JSON.stringify({ mode, state: request.state ?? null, questions: Object.fromEntries(Object.entries(request.questions).map(([id, q]) => [id, wireQuestion(q)])), include_excerpts: options.includeExcerpts ?? true });
       const budgetMs = Math.min(timeoutMs, ctx.deadlineMs ?? Infinity);
       const deadlineAt = Date.now() + budgetMs;
       const deadline = AbortSignal.timeout(budgetMs);
