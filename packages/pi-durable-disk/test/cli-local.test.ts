@@ -263,10 +263,12 @@ describe("the CLI on a local directory", () => {
       assert.equal(await main(["run", "--dir", "/tmp/x", "--region", "r", "--mount-root", "/mnt", "--app", "a.ts"]), 2);
       assert.equal(await main(["run", "--dir", "/tmp/x"]), 2, "run --dir needs --app");
       assert.equal(await main(["status", "--dir", "/tmp/x", "--disk", "dsk-1"]), 2);
+      assert.equal(await main(["run", "--dir", "/tmp/x", "--app", "a.ts", "--box-mode", "docker"]), 2, "an unknown box mode");
     } finally {
       process.stderr.write = write;
     }
     assert.match(written.join(""), /--dir is a run on a local directory: it takes no --disk\n/);
     assert.match(written.join(""), /it takes no --region, --mount-root\n/);
+    assert.match(written.join(""), /--box-mode is one of bwrap, seatbelt, provider, unsandboxed, unavailable\n/);
   });
 });

@@ -22,7 +22,7 @@ import { dockerHost } from "./hosts/docker.ts";
 import { localHost, procStartTicks } from "./hosts/local-host.ts";
 import { processTable, thisBoot } from "./process-table.ts";
 import { localRun } from "./local-run.ts";
-import { parseRunRecord, RUN_JSON } from "./status.ts";
+import { BOX_MODES, type BoxMode, parseRunRecord, RUN_JSON } from "./status.ts";
 import {
   archilControl,
   checkHost,
@@ -51,6 +51,7 @@ const USAGE = `usage:
                         [--heartbeat-ms N] [--lease-expiry-ms N] [--lease-margin-ms N] [--on-sigterm resume|pause]
                         [--token-stdin] [--run-as USER] [--serve PORT] [--serve-host H] [--serve-url URL]
                         [--serve-token-file F] [--park-threshold 60s] [--park-idle 60s] [--drain-timeout 25s]
+                        [--box-mode bwrap|seatbelt|provider|unsandboxed|unavailable]
   pi-durable-disk supervise --disk D --region R (--id ID ... | --all) [--every 30s] [--check]
                         [--host local|docker] [--driver systemd|child] [--mount-root DIR] [--host-name NAME] [--unit-prefix P]
                         [--user U] [--group G] [--app MODULE] [--run-arg ARG ...] [--lease-expiry 90s] [--stonith-timeout 30s]
@@ -256,6 +257,9 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   if (runAs && process.getuid?.() !== 0) throw new UsageError("--run-as needs an instance that runs as root (inside a container); elsewhere run the instance as the run user");
   const onSigterm = str(values["on-sigterm"], "resume");
   if (onSigterm !== "resume" && onSigterm !== "pause") throw new UsageError("--on-sigterm is resume or pause");
+  // The box this launch runs in, as the host resolved it: recorded in run.json as given (`boxMode`), never probed here.
+  const boxMode = str(values["box-mode"]);
+  if (boxMode !== undefined && !(BOX_MODES as readonly string[]).includes(boxMode)) throw new UsageError(`--box-mode is one of ${BOX_MODES.join(", ")}`);
   const ms = (name: string) => durationFlag(values, name);
   const lease = { heartbeatMs: ms("heartbeat-ms"), expiryMs: ms("lease-expiry-ms"), marginMs: ms("lease-margin-ms") };
   const parkMs = ms("park-threshold") || undefined;
@@ -293,6 +297,7 @@ async function runInstance(values: Record<string, unknown>): Promise<number> {
   let run: DurableRun;
   try {
     run = await openDurableRun(ref, {
+      ...(boxMode === undefined ? {} : { boxMode: boxMode as BoxMode }),
       // A local directory is its own claim (no mount, no token); a disk's run is mounted with a token.
       ...(dir === undefined ? { mountToken: await readToken(values), mountRoot, host: { archil: str(values.archil) } } : localRun(dir)),
       afterClaim: async (claim) => {
@@ -751,6 +756,7 @@ export async function main(argv: string[]): Promise<number> {
             "park-idle": { type: "string" },
             "drain-timeout": { type: "string" },
             "run-as": { type: "string" },
+            "box-mode": { type: "string" },
           }),
         );
       case "supervise":
