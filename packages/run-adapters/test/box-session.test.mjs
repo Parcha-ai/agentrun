@@ -175,3 +175,13 @@ test("a socket of the spec's own is still never bound from a CLI's config: one u
   const socket = file(join(s.home, '.claude', 'agentrun.sock'));
   refusedBy(s, specOf(s, { modelSocket: socket }), new RegExp(`--bind /run/agentrun/model.sock \\(${escape(socket)}\\) is under ${escape(join(s.home, '.claude'))}, a CLI's config`));
 });
+
+test("the session is judged as what it resolves to: a link to the run directory is refused by name as the run directory holding its store, and a link to a proper session binds as its target", () => {
+  const s = server();
+  const toRun = join(s.top, 'session-link-run');
+  symlinkSync(s.a.dir, toRun);
+  refusedBy(s, specOf(s, { session: toRun }), new RegExp(`the session ${escape(s.a.dir)} is or holds ${escape(join(s.a.dir, 'store'))}, which a box never sees`));
+  const toSession = join(s.top, 'session-link');
+  symlinkSync(s.a.session, toSession);
+  check(s, specOf(s, { session: toSession }));
+});
