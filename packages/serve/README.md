@@ -289,9 +289,11 @@ harness this server does not run yet saves with a warning on `definition.harness
 
 A run can get its harness's own tools (the CLI's shell and file tools) only in a box. The box is bubblewrap here:
 `AGENTRUN_BOX=local`, the default, probed once at start. `capabilities.harnesses[].native_tools` says whether a new run
-gets them. Today it is false for every harness, in a box too: a boxed claude-agent run can't resume a restored session
-yet, so its tools stay off until it can. They are off with no box, an unavailable one (macOS has none: there is no
-Seatbelt box yet) or `AGENTRUN_BOX=unsandboxed`. It is false for Codex,
+gets them. It is true for claude-agent when the box's probe passed (`box.mode` `bwrap`), and false with no box, an
+unavailable one (macOS has none: there is no Seatbelt box yet) or `AGENTRUN_BOX=unsandboxed`. A boxed claude-agent run
+resumes like any other: each launch of its process gets a temporary directory of its own in the run's harness directory,
+where the Agent SDK makes its config and resume directories, and each start of the CLI is lent only its own.
+A host that runs several Claude sessions in one process does not get them boxed. It is false for Codex,
 whose adapter takes no such option yet, and for pi, whose tools are its own.
 The run's own process builds its box once, from what serve hands it at launch. The box binds only the run's harness
 directory (`<run>/harness`): its homes, and the run's one workspace, `<run>/harness/work`. It never binds the rest of
@@ -489,9 +491,8 @@ carries no cost at all, as from a provider that does not price the model. The te
 - No path offers a shell. `bash` is not bound: a definition that names it is not saved here (`422`), one saved before
   that check is not runnable (`409`), and a model that
   calls it anyway, as an agent or as a workflow's model node, is answered that the tool is not available and runs
-  nothing. pi's shell stays off, and so does every harness's own shell for now. When claude-agent's is turned on, it
-  runs only in the run's box ([harnesses](#harnesses)), as the server's uid inside its own user, pid, mount and network
-  namespaces, seeing only what the box binds.
+  nothing. pi's shell stays off. A claude-agent run's own shell runs only in the run's box ([harnesses](#harnesses)),
+  as the server's uid inside its own user, pid, mount and network namespaces, seeing only what the box binds.
 - Files are served from the run's workspace only (`work/`, or a harness run's `harness/work/`). A path with an empty, `.` or `..` segment, a backslash or a NUL is
   `400 invalid_file_path`; a segment that starts with `.` (the run's skills under `.agents/`) is
   `403 system_file_forbidden`; a symlink on the way is `404`. Every answer is `nosniff`, and HTML carries a CSP with

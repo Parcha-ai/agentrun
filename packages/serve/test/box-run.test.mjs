@@ -71,9 +71,10 @@ test("eligible for native tools: only claude-agent, only in a box whose probe pa
   assert.equal(nativeToolsEligible("claude-agent", "bwrap", "work"), false, "a run on work/ keeps them off: its harness's tools would write a second tree");
 });
 
-test("no harness's own tools are on today, a boxed run's included: claude-agent waits for a boxed resume (BOXED_CLAUDE_RESUME)", () => {
-  assert.equal(BOXED_CLAUDE_RESUME, false);
-  for (const harness of HARNESS_IDS) for (const mode of MODES) for (const workspace of ["harness/work", "work"]) assert.equal(nativeTools(harness, mode, workspace), false, `${harness} in ${mode} on ${workspace}`);
+test("native tools are the eligible ones exactly: claude-agent in a box whose probe passed, now that a boxed Claude can resume (BOXED_CLAUDE_RESUME)", () => {
+  assert.equal(BOXED_CLAUDE_RESUME, true);
+  for (const harness of HARNESS_IDS) for (const mode of MODES) for (const workspace of ["harness/work", "work"]) assert.equal(nativeTools(harness, mode, workspace), nativeToolsEligible(harness, mode, workspace), `${harness} in ${mode} on ${workspace}`);
+  assert.equal(nativeTools("claude-agent", "bwrap"), true);
 });
 
 test("the launch settings are read strictly: none is no box; no data root, a relative one, or a malformed value is refused by name", () => {
@@ -202,7 +203,7 @@ test("serve hands a harness run's process its box settings in one non-secret var
     if (factory) assert.match(environ.TMPDIR ?? "", new RegExp(`^${dir.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}/harness/proc-tmp/[0-9a-f]{6}$`), `the run process's TMPDIR is its launch's directory: ${environ.TMPDIR}`);
     else assert.doesNotMatch(environ.TMPDIR ?? "", /proc-tmp/, "a run with no box keeps the server's");
     const caps = (await api("GET", "/capabilities")).body;
-    assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", false], ["codex", false]], "capabilities say it from the same function: off, in a box too");
+    assert.deepEqual(caps.harnesses.map((h) => [h.id, h.native_tools]), [["pi", false], ["claude-agent", factory !== undefined], ["codex", false]], "capabilities say it from the same function: claude-agent's on in a box");
     assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status, 202);
     await follow(api, run.body.run_id, ["cancelled"], { deadlineMs: 30_000 });
   }
