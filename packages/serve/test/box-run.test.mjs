@@ -150,8 +150,9 @@ test("in the run's real box: its own workspace reads and writes; the server's to
       `echo written > '${join(spec.workspace, "new.txt")}' && cat '${join(spec.workspace, "new.txt")}'`,
       `cat '${join(spec.workspace, "mine.txt")}'; echo`,
       ...absent.map((path) => `cat '${path}' 2>&1; echo`),
-      `echo forged > '${join(a.dir, "box.json")}' 2>&1 || echo no-write-box`,
-      `echo forged > '${join(a.dir, "process.log")}' 2>&1 || echo no-write-log`,
+      // A write to either lands, if at all, in the box's own scratch for the path to its session: never on the host.
+      `echo forged > '${join(a.dir, "box.json")}' 2>/dev/null; true`,
+      `echo forged > '${join(a.dir, "process.log")}' 2>/dev/null; true`,
     ].join("; ");
     const recorded = [];
     const boxed = made.box.start(spec, forwardChild({ command: "/bin/sh", args: ["-c", script] }, boxListens(spec)), { ahead: (r) => recorded.push(r), started: async () => {} });
@@ -163,8 +164,6 @@ test("in the run's real box: its own workspace reads and writes; the server's to
     assert.match(out, /^run-a's file$/m, out);
     for (const path of absent) assert.match(out, new RegExp(`${path.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}: No such file or directory`), `${path} is not in the box: ${out}`);
     assert.doesNotMatch(out, /the server's token|the door's token|the agent store|run-b's file|run-a's journal|run-a's process\.log|run-a's box\.json|run-a's serve\.json/, out);
-    assert.match(out, /no-write-box/);
-    assert.match(out, /no-write-log/);
     assert.equal(await readFile(join(a.dir, "box.json"), "utf8"), "run-a's box.json", "box.json is never written from the box: a forged one would aim the sweep's reap");
     assert.equal(await readFile(join(a.dir, "process.log"), "utf8"), "run-a's process.log");
     await made.box.reap(boxed.record);
