@@ -154,13 +154,18 @@ test("two cut-off execs and an unwatched safe call of the turn: the call is list
 });
 
 test("no slot of the model's takes the full recovery note: the harness never falls back to the note's text, which holds tool outputs", async () => {
-  // recoverySystemNote cannot be stubbed in an ES module, so this reads what the built harness does with it: it injects only what
-  // recoverySystemNote returned, and nothing when that is undefined.
+  // recoverySystemNote cannot be stubbed in an ES module, so this reads what the built modules do with it: code-mode.js injects only what
+  // recoverySystemNote returned, and nothing when that is undefined; and the harness replaces the old user text (which began as the full
+  // note) with the user's own words before anything is sent.
   const { readFileSync } = await import('node:fs');
-  const built = readFileSync(new URL('../dist/harness.js', import.meta.url), 'utf8');
-  assert.ok(!/\bnote\.text\b/.test(built), 'note.text (the full note) is not used by the harness');
+  const built = readFileSync(new URL('../dist/code-mode.js', import.meta.url), 'utf8');
+  assert.ok(!/\bnote\.text\b/.test(built), 'note.text (the full note) is not used by the module');
   assert.match(built, /system !== undefined && !noted/, 'no developer item is injected without a system note');
   assert.ok(!/recoverySystemNote\(ctx\.state\(\)\)\s*\?\?/.test(built), 'no fallback after recoverySystemNote');
+  const harness = readFileSync(new URL('../dist/harness.js', import.meta.url), 'utf8');
+  const replaced = harness.indexOf('text = await code.resumeTurn(note, owed);');
+  assert.ok(replaced > 0, 'the user text is replaced by the user\'s own words');
+  assert.ok(replaced < harness.indexOf("synthetic: 'recovery'"), 'before it is journaled or sent');
 });
 
 test("a cut-off exec with no call of its own but unattributed ones does not say it ran none; with no calls at all it does", () => {

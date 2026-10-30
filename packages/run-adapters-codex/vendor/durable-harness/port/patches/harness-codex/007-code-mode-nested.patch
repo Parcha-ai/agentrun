@@ -1,152 +1,54 @@
 Patch: 007-code-mode-nested
-Reason: a host tool a code-mode model's script calls arrives as a nested call under an id of Codex's own (exec-<uuid>) that no rollout line carries, and nothing on the app-server's stream names the exec it belongs to, so a never tool's barrier waited for a line that never comes and the call was declined for good; it is tied to the one live script (the exec's line in the log, kept until an output says it finished, a yielded script's cell until the wait that finishes it, and the exec the proxy's latest answer carried) and is held until that exec's line is in the log, and declined while two scripts are live
+Reason: a code-mode model's script calls host tools as nested calls under ids of Codex's own that no rollout line carries and that name no exec, so a never tool's call was declined for good and a recovery answered a cut-off exec as if it had not run; the harness takes only the hooks (the module is code-mode.ts, written for AgentRun): it hands the module the harness's own log, journal and tail, wraps the app-server's request handler so a nested call is tied to its script and held for that script's line before the harness's own handler runs, overrides the dangling exec's output with the log's, and tells the module when a turn ends
 Upstream: ours
 Pins: code mode: an exec that calls a never host tool runs it exactly once
 Pins: code mode: two nested calls of one exec (a Promise.all) each pass the barrier once, under the one exec, and run once
 Pins: code mode: a never tool called after its exec yielded runs once, under the cell that is still running
 Pins: code mode: a model that writes a new exec while a cell still runs: a never tool its new script calls is declined, not run
+Pins: code mode: an unwatched answer's call in an earlier turn is not listed by a later turn's recovery
 ---
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index 068cb7a..34e30a1 100644
+index b389e23..ba08512 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
-@@ -44,6 +44,7 @@ import {
-   THREAD_STREAM,
-   type ThreadRecord,
- } from './rollout.ts';
-+import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, Scripts, settle, UNWATCHED } from './scripts.ts';
- 
- /**
-  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
-@@ -225,6 +226,8 @@ export function codexItemReplay(item: { type?: string; commandActions?: { type?:
-  */
- export const KEY_ENV = 'HARNESS_CODEX_GATEWAY_KEY';
- 
-+/** The stream that ties each nested call to the `exec` it ran under: `{ callId, exec }`, written before the call runs. */
-+export const NESTED_STREAM = 'codex.nested';
- /** How long the drive waits for a call's `function_call` line before it declines the call: `SYNC` and look again, this many times, with a growing pause. */
- const BARRIER_TRIES = 5;
- /** What the model is told when a call was declined because its line wasn't in the log yet. */
-@@ -570,9 +573,16 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-       let threadId = '';
-       /** The calls whose `function_call` (or `custom_tool_call`) line is in the log: what the barrier looks for. */
-       const logged = new Set<string>();
-+      /** Code mode: which script a nested call of the model's belongs to (see scripts.ts). */
-+      const code = new Scripts();
-+      /** The exec each nested call was admitted under. */
-+      const execOf = new Map<string, string>();
-+      /** After a recovery: the `never` calls the log holds a completed outcome for, by tool and arguments, until the turn ends. */
-+      const recovered = new Map<string, { tool: string; text: string }[]>();
-       for (const line of lines) {
-         const id = callIdOf(line);
-         if (id) logged.add(id);
-+        code.note(line);
-       }
- 
-       /**
-@@ -608,6 +618,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-           journal.append(stream, line);
-           const id = callIdOf(line);
-           if (id) logged.add(id);
-+          code.note(line);
-           if (endsTurn(line)) turnEnds++;
+@@ -30,6 +30,7 @@ import {
+ } from 'harness-world-process';
+ import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from 'harness-world-sandbox/cli';
+ import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.ts';
++import { codeMode } from './code-mode.ts';
+ import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.ts';
+ import {
+   callIdOf,
+@@ -613,6 +614,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
          }
+         mirror();
        };
-@@ -628,10 +639,27 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-        * asynchronous, so the line is looked for again after each drain, a
-        * bounded number of times. False: it never came, and the call must be
-        * declined (it never ran; the model is told to make it again).
-+       *
-+       * A nested call of code mode has no line of its own: it is durable once
-+       * the `exec` it runs under is, so it is tied to the one live script and
-+       * waits for that `exec`'s line; with two scripts live it is declined.
-        */
-       const barrier = async (callId: string): Promise<boolean> => {
-+        const nested = NESTED_CALL.test(callId);
-         for (let i = 0; ; i++) {
-           await synced();
-+          if (nested) {
-+            const tie = code.tie(machine.announcedExec?.(), (id) => logged.has(id));
-+            if (tie.kind === 'ambiguous') {
-+              log('codex: declined a nested call while two scripts are live', { callId, live: tie.live });
-+              return false;
-+            }
-+            if (tie.kind === 'tied') {
-+              execOf.set(callId, tie.exec);
-+              await journal.flush();
-+              return true;
-+            }
-+          }
-           if (logged.has(callId)) {
-             await journal.flush();
-             return true;
-@@ -807,11 +835,26 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-           case 'item/tool/call': {
-             const callId = String(p.callId ?? '');
-             const tool = bridge.get(String(p.tool));
-+            // After a recovery, a `never` call the log already holds a completed outcome for, called again (a script that was cut
-+            // short and written again re-issues every call it made): answered from the log, run no more.
-+            const owed = tool?.replay === 'never' ? recovered.get(callKey(tool.name, p.arguments)) : undefined;
-+            const again = owed?.shift();
-+            if (again) {
-+              log('codex: answered a never call from the log: it completed before the interruption', { callId, tool: again.tool });
-+              return { contentItems: [{ type: 'inputText', text: `Recorded earlier in this turn, not run again: ${again.text}` }], success: true };
-+            }
-             // A `never` tool's call: its own line in the log first (the barrier), else it is declined, never run.
-             if (tool?.replay === 'never' && callId && !ctx.isMemoized(toolKey(callId)) && !(await barrier(callId))) {
-               return { contentItems: [{ type: 'inputText', text: LAGGING_RESULT }], success: false };
-             }
-             mirror();
-+            if (NESTED_CALL.test(callId)) {
-+              const tie = code.tie(machine.announcedExec?.(), (id) => logged.has(id));
-+              const exec = execOf.get(callId) ?? (tie.kind === 'tied' || tie.kind === 'held' ? tie.exec : undefined);
-+              if (exec) execOf.set(callId, exec);
-+              // Never the unwatched-answer sentinel: a call tied to no known exec is journaled with none.
-+              journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec });
-+            }
-             const text = takeSaid(active);
-             journal.message({ type: 'message', role: 'assistant', text, toolCalls: [{ id: callId, name: String(p.tool) }] });
-             // Tracked for the invocation: a re-attach waits for it, so the next drive reads its real outcome.
-@@ -989,6 +1032,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
++      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT });
+       /**
+        * The hard barrier before a `never` call (§5.6): its `function_call`
+        * line in the log, flushed, before its intent. Codex's rollout writer is
+@@ -879,7 +881,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+ 
+       rpc = new AppServer(child, {
+         onNotification,
+-        onRequest,
++        onRequest: code.request(onRequest),
+         onNoise: (line) => log('codex: stdout noise', { line: line.slice(0, 200) }),
+       });
+       const died = rpc.closed.then((err) => {
+@@ -980,6 +982,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
          return { status, ...(error ? { error } : {}) };
        };
        const endTurn = async (outcome: TurnOutcome) => {
-+        recovered.clear();
++        code.turnEnded();
          journal.message({ type: 'turn', ...outcome });
          await guard(journal.flush());
          ledger.turnEnded();
-@@ -1062,7 +1106,33 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
-         const owed = owedSubmissions(ctx.state(), note.turn.placed, summary.clientIds);
+@@ -1054,6 +1057,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
          if (resume && summary.dangling.length > 0) {
            // Calls the rollout has no output for get theirs from the log.
--          const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
-+          const ties = (await journal.read<{ callId: string; exec: string | null }>(NESTED_STREAM)).map((r) => r.data);
-+          const lastExec = [...summary.dangling].reverse().find((d) => d.name === 'exec')?.callId;
-+          const rolled = completedNested(lines);
-+          const items = summary.dangling.map((c) => {
-+            // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
-+            if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
-+            const facts: NestedFact[] = [];
-+            // A call whose script could not be told when it ran (an answer the proxy did not see to its end) is the last cut-off exec's.
-+            for (const tie of ties.filter((t) => t.exec === c.callId || (t.exec === null && c.callId === lastExec))) {
-+              const e = ctx.state().effects.get(toolKey(tie.callId));
-+              const fact: NestedFact = {
-+                callId: tie.callId,
-+                tool: e ? e.name.replace(/^tool\./, '') : (rolled.get(tie.callId)?.tool ?? 'a tool'),
-+                ...(e ? { store: { status: e.status === 'completed' ? 'completed' : e.status === 'failed' ? 'failed' : 'started', text: e.status === 'failed' ? (e.error?.message ?? '') : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact['store']> } : {}),
-+                ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
-+              };
-+              facts.push(fact);
-+              const settled = settle(fact);
-+              // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
-+              // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
-+              if (settled.kind === 'completed' && e?.replay === 'never') {
-+                const key = callKey(fact.tool, e.input);
-+                recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text }]);
-+              }
-+            }
-+            return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(facts) };
-+          });
+           const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
++          await code.recoverItems(items, summary.dangling, lines, note.turn.since);
            await guard(rpc.request('thread/inject_items', { threadId, items }));
            await guard(synced());
          }

@@ -58,39 +58,35 @@ index 1a5fef0..6d87a7f 100644
  export const BUILTINS_OFF: Record<string, boolean> = {
    shell_tool: false,
 diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
-index 8c1b93b..068cb7a 100644
+index 8c1b93b..b389e23 100644
 --- a/packages/harness-codex/src/harness.ts
 +++ b/packages/harness-codex/src/harness.ts
-@@ -47,8 +47,8 @@ import {
+@@ -47,8 +47,6 @@ import {
  
  /**
   * Codex on harness-world: a kernel `Harness` that drives `codex app-server
 - * --stdio` (Codex's JSON-RPC protocol for IDEs) **in the session's Vercel
 - * Sandbox VM**, never on the machine that drives the session
-+ * --stdio` (Codex's JSON-RPC protocol for IDEs) **on the session's own
-+ * machine**, never on the machine that drives the session
   * (docs/workspaces.md §1 decision 2, §5.6). Every drive acquires the
   * session's VM through the sandbox tier (`attachInDrive` with the session
   * factory's acquire, `machine.acquire`), and refuses a machine the factory
-@@ -138,7 +138,7 @@ export interface CodexHarnessOptions {
+@@ -138,7 +136,6 @@ export interface CodexHarnessOptions {
     * §5.5).
     */
    sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
 -  /** An AI Gateway model id. Default `openai/gpt-5.4-mini`. */
-+  /** The provider's model id. Default `openai/gpt-5.4-mini`. */
    model?: string;
    /** Developer instructions for the thread (`developerInstructions`). */
    instructions?: string;
-@@ -146,7 +146,7 @@ export interface CodexHarnessOptions {
+@@ -146,7 +143,6 @@ export interface CodexHarnessOptions {
    baseInstructions?: string;
    /** Reasoning effort per turn. Default Codex's. */
    effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 -  /** The Gateway credential, read per request in the Function. Default `gatewayCredential` (AI_GATEWAY_API_KEY, else the Vercel OIDC token). */
-+  /** The provider credential, read per request by the model proxy. Default `gatewayCredential` (the proxy's configured key). */
    credential?: () => Promise<string>;
    /** The Gateway's base URL. Default `gatewayUrl()`. */
    gatewayUrl?: string;
-@@ -168,10 +168,9 @@ export interface CodexHarnessOptions {
+@@ -168,10 +164,6 @@ export interface CodexHarnessOptions {
     */
    machine?: CodexMachine;
    /**
@@ -98,31 +94,26 @@ index 8c1b93b..068cb7a 100644
 -   * app-server's protocol instead of the image's `codex`. Refused outside a
 -   * test run (`DH_TEST_LOCAL_SANDBOX=1` under a test runner, not on Vercel,
 -   * not in production).
-+   * The stand-in's seam: the command that speaks app-server's protocol
-+   * instead of the pinned `codex`. Refused outside a test run
-+   * (`AGENTRUN_CODEX_STANDIN=1` under a test runner, not in production).
     */
    test?: { command: string; args?: string[] };
  }
-@@ -282,7 +281,7 @@ export class RolloutTailError extends Error {
+@@ -282,7 +274,6 @@ export class RolloutTailError extends Error {
    }
  }
  
 -/** The stand-in's guard (`test`), the same as harness-world-sandbox's. */
-+/** The stand-in's guard (`test`): only a test run with AGENTRUN_CODEX_STANDIN=1 may speak app-server's protocol with another command. */
  function testGuard(): void {
    if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
    if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-codex: a stand-in app-server runs only under a test runner');
-@@ -386,7 +385,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -386,7 +377,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
  
    return {
      name: options.name ?? 'codex',
 -    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
-+    // Each model request is reported by the model proxy (`ModelSteps.request`).
      modelCalls: 'self',
      async drive(ctx: DriveContext) {
        // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
-@@ -432,7 +431,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+@@ -432,7 +422,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
        });
      }
      // The handler asks for the credential per request, in this drive's async
