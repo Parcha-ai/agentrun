@@ -1,7 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
 // Changed by Parcha, 2026-10-27: imports from AgentRun's host layer (a local machine instead of a sandbox VM); the stand-in's guard; message prefixes; comments.
-// Changed by Parcha, 2026-10-29: a rollout's dangling calls get their outputs before any turn on a resumed thread, not only before a recovery.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -1059,19 +1058,17 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
 
       // An earlier invocation that ended before its snapshot: the manifest catches up first.
       await driveFiles.catchUp();
-      // Calls the rollout has no output for get theirs from the log, before any turn is sent: a recovery's, or a new turn's
-      // after a turn that ended without them (one settled, not resumed, or interrupted mid-call), whose history the
-      // provider would refuse with a call left unanswered.
-      const summary = summarizeRollout(lines);
-      if (resume && summary.dangling.length > 0) {
-        const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
-        await guard(rpc.request('thread/inject_items', { threadId, items }));
-        await guard(synced());
-      }
       // A turn a crash cut off.
       const note = recoveryNote(ctx.state());
       if (note) {
+        const summary = summarizeRollout(lines);
         const owed = owedSubmissions(ctx.state(), note.turn.placed, summary.clientIds);
+        if (resume && summary.dangling.length > 0) {
+          // Calls the rollout has no output for get theirs from the log.
+          const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
+          await guard(rpc.request('thread/inject_items', { threadId, items }));
+          await guard(synced());
+        }
         // Codex finished the turn (its last turn was this one's, and completed): only the end was not in the log yet.
         const finished =
           resume &&
