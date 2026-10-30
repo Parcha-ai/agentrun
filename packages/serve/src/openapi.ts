@@ -157,14 +157,6 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["nodes", "node_tools", "adapters", "decisions"],
       properties: {
         nodes: { type: "array", items: { type: "string" } }, node_tools: { type: "array", items: { type: "string" } }, adapters: { type: "array", items: { type: "string" } },
-        decisions: {
-          type: "object", additionalProperties: false, required: ["providers"],
-          description: "The decision providers a workflow's typed questions (judge, pick, sift, route, ask) run on, and whether this server runs each: when not, why (`reason`); when it runs in a way an operator should know of, a `note`. `runJudge` is among `adapters` once one runs.",
-          properties: {
-            providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev", "parallel"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" } } } },
-          },
-          "x-agentrun-serve": "decisions/1",
-        },
       },
       description: "What a workflow revision's run gets: the model nodes it runs, the tools they may name, the adapters it binds, and the decision providers its typed questions run on.",
       "x-agentrun-serve": "serve/1",
@@ -175,6 +167,18 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       properties: { names: { type: "array", items: { type: "string" } }, handoff: { enum: ["pipe"] }, condition: { type: "string" }, limit: { type: "string" } },
       description: "How this server holds its secrets: the names it treats as secrets, handed over a pipe, the condition that rests on, and what it does not cover.",
       "x-agentrun-serve": "serve/1",
+    },
+  },
+  // decisions/2: the providers took on parallel. A client that validates against decisions/1 refuses it, so the
+  // widening is a mark of its own.
+  "Capabilities/workflows": {
+    decisions: {
+      type: "object", additionalProperties: false, required: ["providers"],
+      description: "The decision providers a workflow's typed questions (judge, pick, sift, route, ask) run on, and whether this server runs each: when not, why (`reason`); when it runs in a way an operator should know of, a `note`. `runJudge` is among `adapters` once one runs.",
+      properties: {
+        providers: { type: "array", items: { type: "object", additionalProperties: false, required: ["id", "available"], properties: { id: { enum: ["jev", "parallel"] }, available: { type: "boolean" }, reason: { type: "string" }, note: { type: "string" } } } },
+      },
+      "x-agentrun-serve": "decisions/2",
     },
   },
   "Capabilities/models": {
