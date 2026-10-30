@@ -7,7 +7,7 @@
 // the run's `Run-Id`, so a harvest again, on any host, is the same commit.
 import { constants } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CAPS, isHostOwned, isLocked, placeOf, RUN_ID } from "@parcha/agentrun-learn";
 import type { Repo } from "@parcha/pi-git-remote";
 
@@ -75,8 +75,21 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
   if (!(date instanceof Date) || !Number.isFinite(date.getTime())) throw new Error("the harvest's date must be a valid Date");
   const ignored: Ignored[] = [];
   const found = new Map<string, Buffer>();
+  // The directories read whole: a seed file is deleted only when its own directory was read and it was not there.
+  const read = new Set<string>();
+  const root = await lstat(dir).catch(() => undefined);
+  if (!root?.isDirectory()) throw new Error(`no working copy at the run's ${dir}: nothing is harvested`);
   const walk = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(dir, rel), { withFileTypes: true }).catch(() => []);
+    let entries;
+    try {
+      entries = await readdir(join(dir, rel), { withFileTypes: true });
+    } catch (error) {
+      // A directory gone since its parent listed it holds nothing to read and deletes nothing; one that cannot be read
+      // stops the harvest, since what is in it is unknown.
+      if (rel && (error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error(rel ? `the working copy's ${rel} cannot be read (${(error as NodeJS.ErrnoException).code ?? "error"}): nothing is harvested` : `no working copy at the run's ${dir}: nothing is harvested`);
+    }
+    read.add(rel);
     for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       const path = rel ? `${rel}/${entry.name}` : entry.name;
       if (!rel && entry.name === ".git") {
@@ -105,6 +118,8 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
   const left = new Set(ignored.map((i) => i.path));
   for (const entry of await repo.list("", seed)) {
     if (entry.type !== "blob" || !writable(entry.path, runId) || found.has(entry.path) || left.has(entry.path)) continue;
+    const parent = dirname(entry.path);
+    if (!read.has(parent === "." ? "" : parent)) continue;
     files[entry.path] = null;
     deleted.push(entry.path);
   }
