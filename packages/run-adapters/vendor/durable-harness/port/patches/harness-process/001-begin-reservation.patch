@@ -1,0 +1,81 @@
+Patch: 001-begin-reservation
+Reason: a built-in call begun twice before its first intent is durable (the same execution delivered twice) ran twice; the second begin now waits for the first call's outcome, or the drive's stop, and never runs it again
+Upstream: offer
+Pins: a built-in call begun twice before its intent is durable runs once: the second begin waits for its outcome and is never told to run
+Pins: a duplicate begin whose first call's outcome could not be written stops with the drive: no result made up
+---
+diff --git a/packages/harness-process/src/builtins.ts b/packages/harness-process/src/builtins.ts
+index 602487d..160428d 100644
+--- a/packages/harness-process/src/builtins.ts
++++ b/packages/harness-process/src/builtins.ts
+@@ -1,4 +1,4 @@
+-import { type DriveContext, EffectFailure, EffectInterrupted, type HostToolIO, hostToolIO, type ReplayPolicy } from 'harness-world';
++import { type DriveContext, EffectFailure, EffectInterrupted, Fatal, type HostToolIO, hostToolIO, type ReplayPolicy } from 'harness-world';
+ import { clip, failureText, toolKey, type ToolResult } from './tools.ts';
+ 
+ /**
+@@ -103,6 +103,8 @@ interface Open {
+  */
+ export class BuiltinCalls {
+   private readonly open = new Map<string, Open>();
++  /** Each call id's first `begin`, reserved before it awaits anything. */
++  private readonly begun = new Map<string, Promise<BuiltinStart>>();
+   private readonly replay: (name: string) => ReplayPolicy;
+   private readonly live: boolean;
+   private readonly outputChars: number;
+@@ -133,9 +135,31 @@ export class BuiltinCalls {
+    * the intent cannot be committed (the drive lost the session, a write
+    * failed): the drive is halted, and the hook must refuse the call.
+    */
+-  async begin(call: BuiltinCall): Promise<BuiltinStart> {
+-    if (!call.callId) throw new TypeError(`harness-world-process: a built-in ${call.name} call has no call id`);
+-    if (this.open.has(call.callId)) return { run: true };
++  begin(call: BuiltinCall): Promise<BuiltinStart> {
++    if (!call.callId) return Promise.reject(new TypeError(`harness-world-process: a built-in ${call.name} call has no call id`));
++    const first = this.begun.get(call.callId);
++    if (first) return this.again(call.callId, first);
++    const start = this.beginOnce(call);
++    this.begun.set(call.callId, start);
++    // A call that will not run is done with now; one that runs is, once its outcome is in (beginOnce's `done`).
++    start.then((s) => { if (!s.run) this.begun.delete(call.callId); }, () => this.begun.delete(call.callId));
++    return start;
++  }
++
++  /** The same call begun again: never run it twice. Wait for the first begin, then for its outcome, from the log. */
++  private async again(callId: string, first: Promise<BuiltinStart>): Promise<BuiltinStart> {
++    const start = await first;
++    if (!start.run) return start;
++    await this.open.get(callId)?.done;
++    // The first call's outcome could not be written: the drive stopped, and this caller stops with it.
++    if (this.ctx.signal.aborted) throw this.ctx.signal.reason;
++    const known = this.ctx.state().effects.get(toolKey(callId));
++    if (known?.status === 'completed') return { run: false, result: { text: String(known.output ?? ''), isError: false } };
++    if (known?.status === 'failed' && known.error) return { run: false, result: { text: failureText(known.error), isError: true, ...(known.error.interrupted ? { interrupted: true } : {}) } };
++    throw new Fatal(`harness-world-process: built-in call ${callId} has no recorded outcome`);
++  }
++
++  private async beginOnce(call: BuiltinCall): Promise<BuiltinStart> {
+     const key = toolKey(call.callId);
+     const known = this.ctx.state().effects.get(key);
+     if (known?.status === 'completed') return { run: false, result: { text: String(known.output ?? ''), isError: false } };
+@@ -194,7 +218,7 @@ export class BuiltinCalls {
+       }
+     );
+     this.open.set(call.callId, { settle, done });
+-    void done.finally(() => this.open.delete(call.callId));
++    void done.finally(() => { this.open.delete(call.callId); this.begun.delete(call.callId); });
+     await Promise.race([committed, done]);
+     if (failed !== undefined) throw failed;
+     // Settled before its intent (replayed from the log by a concurrent read), or by a wrapper that never let it run: answer from the log.
+@@ -217,6 +241,11 @@ export class BuiltinCalls {
+    */
+   async end(callId: string, result: { name?: string; input?: unknown; text: string; isError?: boolean }): Promise<void> {
+     let open = this.open.get(callId);
++    // Its begin is still committing the intent: end that call, not a second one.
++    if (!open && this.begun.has(callId)) {
++      await this.begun.get(callId)!.catch(() => undefined);
++      open = this.open.get(callId);
++    }
+     if (!open) {
+       if (this.ctx.isMemoized(toolKey(callId))) return;
+       const started = await this.begin({ callId, name: result.name ?? 'builtin', input: result.input ?? null, replay: 'safe' }).catch(() => undefined);

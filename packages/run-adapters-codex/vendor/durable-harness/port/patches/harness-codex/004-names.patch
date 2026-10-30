@@ -1,0 +1,133 @@
+Patch: 004-names
+Reason: errors, the provider and the client carry this package's name, and the messages describe a session machine instead of the platform upstream ran on
+Upstream: ours
+Pins: the harness's messages and its model provider name this package
+---
+diff --git a/packages/harness-codex/src/app-server.ts b/packages/harness-codex/src/app-server.ts
+index df53e6b..c6a1faf 100644
+--- a/packages/harness-codex/src/app-server.ts
++++ b/packages/harness-codex/src/app-server.ts
+@@ -117,7 +117,7 @@ export class AppServer {
+   }
+ 
+   /** `initialize` with the experimental API (dynamic tools, `thread/inject_items`), then `initialized`. */
+-  async initialize(clientName = 'harness-world-codex', version = '0'): Promise<{ userAgent?: string; codexHome?: string }> {
++  async initialize(clientName = 'agentrun-codex', version = '0'): Promise<{ userAgent?: string; codexHome?: string }> {
+     const result = await this.request('initialize', {
+       clientInfo: { name: clientName, version, title: null },
+       capabilities: { experimentalApi: true },
+diff --git a/packages/harness-codex/src/config.ts b/packages/harness-codex/src/config.ts
+index 7490fab..1a5fef0 100644
+--- a/packages/harness-codex/src/config.ts
++++ b/packages/harness-codex/src/config.ts
+@@ -115,7 +115,7 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
+     },
+     model_providers: {
+       gateway: {
+-        name: 'AI Gateway',
++        name: 'AgentRun model proxy',
+         base_url: options.baseUrl,
+         env_key: options.envKey,
+         wire_api: 'responses',
+@@ -177,14 +177,14 @@ export const RESERVED_CONFIG_SUFFIXES: readonly string[] = Object.freeze(['_exe'
+ /** Throw a `TypeError` naming the first key of `config` the harness reserves (a dotted key is a nested table's: `tools.web_search`). */
+ export function checkConfig(config: Record<string, TomlValue> | undefined): void {
+   if (config === undefined) return;
+-  if (!isTable(config)) throw new TypeError('harness-world-codex: config must be an object of config.toml settings');
++  if (!isTable(config)) throw new TypeError('agentrun-codex: config must be an object of config.toml settings');
+   const check = (table: Record<string, TomlValue>, prefix: string) => {
+     for (const [k, v] of Object.entries(table)) {
+       const path = `${prefix}${k}`;
+       // A dotted key in one string (`"tools.web_search"`) is the same setting as the nested one.
+       const last = path.slice(path.lastIndexOf('.') + 1);
+       if (RESERVED_CONFIG_KEYS.includes(path) || RESERVED_CONFIG_KEYS.some((r) => path.startsWith(`${r}.`)) || RESERVED_CONFIG_SUFFIXES.some((x) => last.endsWith(x))) {
+-        throw new TypeError(`harness-world-codex: config.${path} is set by the harness (docs/workspaces.md §3.3: ${RESERVED_CONFIG_KEYS.join(', ')} and any key ending ${RESERVED_CONFIG_SUFFIXES.join(', ')} are reserved)`);
++        throw new TypeError(`agentrun-codex: config.${path} is set by the harness (docs/workspaces.md §3.3: ${RESERVED_CONFIG_KEYS.join(', ')} and any key ending ${RESERVED_CONFIG_SUFFIXES.join(', ')} are reserved)`);
+       }
+       if (isTable(v)) check(v, `${path}.`);
+     }
+@@ -220,7 +220,7 @@ const key = (k: string) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k));
+ function value(v: TomlValue): string {
+   if (typeof v === 'string') return JSON.stringify(v);
+   if (typeof v === 'number') {
+-    if (!Number.isFinite(v)) throw new TypeError(`harness-world-codex: not a TOML number: ${v}`);
++    if (!Number.isFinite(v)) throw new TypeError(`agentrun-codex: not a TOML number: ${v}`);
+     return String(v);
+   }
+   if (typeof v === 'boolean') return String(v);
+diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
+index 15d7228..8c1b93b 100644
+--- a/packages/harness-codex/src/harness.ts
++++ b/packages/harness-codex/src/harness.ts
+@@ -195,7 +195,7 @@ export const DEFAULT_MODEL = 'openai/gpt-5.4-mini';
+ /** Options this harness no longer takes, with what replaced them (docs/workspaces.md §3.4). */
+ const REMOVED: Readonly<Record<string, string>> = {
+   sandbox: "`sandbox` is now `sandboxMode` (Codex's own sandbox for its commands; `sandbox()` is the session's environment, `workspace: sandbox()`)",
+-  host: "Codex runs only in the session's Vercel Sandbox VM: pass `workspace: sandbox()` (durable-harness/codex), not a host",
++  host: "Codex runs only on the session machine its adapter makes: pass `machine`, not a host",
+   cwd: "the working directory is always /workspace, the session's Drive",
+   bin: 'the codex binary is the one the sandbox image pins',
+   env: 'pass non-secret variables with sandbox({ env })',
+@@ -277,7 +277,7 @@ type Begun = BuiltinStart | typeof LAGGING;
+ /** The rollout tail failed (the file shrank, was replaced, or is not the session user's): what the drive halts with. */
+ export class RolloutTailError extends Error {
+   constructor(cause: unknown) {
+-    super(`harness-world-codex: the rollout can no longer be mirrored (${String((cause as Error)?.message ?? cause).slice(0, 200)}): the drive stops, and the next one rebuilds CODEX_HOME from the log`, { cause });
++    super(`agentrun-codex: the rollout can no longer be mirrored (${String((cause as Error)?.message ?? cause).slice(0, 200)}): the drive stops, and the next one rebuilds CODEX_HOME from the log`, { cause });
+     this.name = 'RolloutTailError';
+   }
+ }
+@@ -298,9 +298,9 @@ async function invocationDeadline(ctx: DriveContext): Promise<number> {
+ }
+ 
+ function sandboxRequired(why: string): Unavailable {
+-  return new Unavailable(`Codex runs only in a Vercel Sandbox: ${why}`, {
++  return new Unavailable(`Codex runs only on a session machine its adapter made: ${why}`, {
+     code: 'sandbox_required',
+-    hint: "Use durable-harness/codex's codex() or codexHarness() with workspace: sandbox() (the default).",
++    hint: "Run Codex through @parcha/agentrun-codex's codexAdapter(), which makes the session machine.",
+   });
+ }
+ 
+@@ -365,12 +365,12 @@ interface Invocation {
+ 
+ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+   for (const [key, why] of Object.entries(REMOVED)) {
+-    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`harness-world-codex: the ${key} option is gone: ${why}`);
++    if ((options as Record<string, unknown>)[key] !== undefined) throw new TypeError(`agentrun-codex: the ${key} option is gone: ${why}`);
+   }
+   const builtinsOn = options.builtins ?? false;
+   if (options.sandboxMode !== undefined) {
+-    if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`harness-world-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
+-    if (!builtinsOn) throw new TypeError('harness-world-codex: sandboxMode needs builtins: true (with the built-ins off, Codex runs no command)');
++    if (!SANDBOX_MODES.has(options.sandboxMode)) throw new TypeError(`agentrun-codex: sandboxMode must be 'read-only', 'workspace-write' or 'danger-full-access'`);
++    if (!builtinsOn) throw new TypeError('agentrun-codex: sandboxMode needs builtins: true (with the built-ins off, Codex runs no command)');
+   }
+   checkConfig(options.config);
+   if (options.test) testGuard();
+@@ -555,12 +555,12 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+ 
+       // Everything the drive waits on also ends when the child dies, the link is lost or the drive stops.
+       const stopped = new Promise<never>((_, reject) => {
+-        const fail = () => reject(ctx.signal.reason ?? new Error('harness-world-codex: the drive stopped'));
++        const fail = () => reject(ctx.signal.reason ?? new Error('agentrun-codex: the drive stopped'));
+         if (ctx.signal.aborted) fail();
+         else ctx.signal.addEventListener('abort', fail, { once: true });
+       });
+       const lost = new Promise<never>((_, reject) => {
+-        const fail = () => reject(new Error("harness-world-codex: the link to the session's sandbox was lost"));
++        const fail = () => reject(new Error("agentrun-codex: the link to the session's sandbox was lost"));
+         if (machine.signal.aborted) fail();
+         else machine.signal.addEventListener('abort', fail, { once: true });
+       });
+diff --git a/packages/harness-codex/src/rollout.ts b/packages/harness-codex/src/rollout.ts
+index 975fb05..e5cf871 100644
+--- a/packages/harness-codex/src/rollout.ts
++++ b/packages/harness-codex/src/rollout.ts
+@@ -221,5 +221,5 @@ export function rolloutPathIn(homes: readonly string[], absolute: string, thread
+     const rel = absolute.slice(prefix.length);
+     if (isRolloutPath(rel, threadId)) return rel;
+   }
+-  throw new Error('harness-world-codex: app-server named a rollout file the driver would not derive for the thread (outside CODEX_HOME, or not sessions/…/rollout-<ts>-<threadId>.jsonl)');
++  throw new Error('agentrun-codex: app-server named a rollout file the driver would not derive for the thread (outside CODEX_HOME, or not sessions/…/rollout-<ts>-<threadId>.jsonl)');
+ }
