@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 // agentrun-serve: the Agentrun v2 API on this machine, over the agent store in a data directory.
+// First: the secrets the launcher hands over, read and its pipe closed before anything else runs (secrets.ts). It loads
+// nothing but node:fs and node:os.
+import { secret } from "./secrets.js";
+// Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
 import "./quiet-sqlite-warning.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +56,8 @@ if (process.argv[2] === "reset-password") {
 let values;
 try {
   ({ values } = parseArgs({
+    // Named, not the default: started by the launcher, this module runs under `node -e`, where the default reads one more.
+    args: process.argv.slice(2),
     options: {
       data: { type: "string" },
       listen: { type: "string" },
@@ -89,7 +95,7 @@ if (publicName) {
   publicUrl = parsed.href.replace(/\/+$/, "");
 }
 const data = values.data ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "agentrun", "agents");
-const given = process.env.AGENTRUN_TOKEN || undefined;
+const given = secret("AGENTRUN_TOKEN") || undefined;
 // A stdout its reader closed (a pipe left behind) loses the log lines, never the server.
 process.stdout.on("error", () => undefined);
 const accounts = process.env.AGENTRUN_ACCOUNTS !== "0";
