@@ -188,7 +188,7 @@ test("with TYPESAFE_API_KEY set, a judge workflow runs on Jev and its decision i
   assert.equal(rows[0].answers.is_coi.noul, 0.92);
 });
 
-test("a System One request that fails after it was sent (a 503) is sent once, and the run escalates as an interrupted decision", async (t) => {
+test("a System One request that fails after it was sent (a 503) is sent once, and the run escalates as an interrupted decision, its cost unknown and its cost.source estimate", async (t) => {
   const seen = await withCanary(t);
   process.env.AGENTRUN_TEST_FAUX_JEV_STATUS = "503";
   const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
@@ -199,6 +199,7 @@ test("a System One request that fails after it was sent (a 503) is sent once, an
   assert.deepEqual([run.status, run.error, run.review?.kind], ["completed", null, "decision_interrupted"], "the run waits for review as an interrupted decision");
   assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"]);
   assert.equal(run.cost.usd, null, "a decision that may have been billed leaves the run's cost unknown, never $0");
+  assert.deepEqual(await sourcesOf(api, runId), ["estimate", "estimate", "estimate"], "an unknown cost is never reported: the run, the list and the timeline say estimate");
 });
 
 test("each decision Jev answers is booked at TypeSafe's published price as an estimate, and the run's cost is their sum, once", async (t) => {
