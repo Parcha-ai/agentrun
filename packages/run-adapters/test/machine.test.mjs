@@ -406,7 +406,13 @@ test("a socket directory too long for the egress proxy's socket names is refused
   const long = join(scratch(), 'r'.repeat(90));
   assert.ok(Buffer.byteLength(long) > 81);
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: long }) }), /^Error: agentrun-test: runtime_dir_too_long: the session's socket directory .* is \d+ bytes; a socket path in it must fit 107$/);
-  assert.equal(existsSync(join(long, 'model.sock')), false);
+  assert.equal(existsSync(long), false, 'nothing was made: the name alone was refused');
+  // One byte past the bound is refused too: 107 less the egress proxy's 26 is 81.
+  const base = scratch();
+  const over = join(base, 'r'.repeat(82 - Buffer.byteLength(base) - 1));
+  assert.equal(Buffer.byteLength(over), 82);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: over }) }), /runtime_dir_too_long: .* is 82 bytes/);
+  assert.equal(existsSync(over), false);
 });
 
 test("a socket directory exactly at the bound (81 bytes) is taken", async (t) => {

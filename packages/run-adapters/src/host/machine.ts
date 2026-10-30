@@ -164,15 +164,16 @@ const NOT_LOCAL: Readonly<Record<number, string>> = {
  *  0700, not a link, and on a local filesystem, so nothing else can put a socket where the box's front is looked for.
  *  `statfs` is this module's test seam, never a host's option. */
 export function socketDir(dir: string, name: string, statfs: (dir: string) => { type: number } = statfsSync): string {
+  // The egress proxy binds a temporary name (25 bytes) in the directory before it links its socket, and a socket's path
+  // holds 107 bytes: a directory longer than 81 bytes would let the model front start and the egress proxy fail. Checked
+  // on the name alone, before anything is made.
+  const bytes = Buffer.byteLength(dir);
+  if (bytes > 81) throw new Error(`${name}: runtime_dir_too_long: the session's socket directory ${dir} is ${bytes} bytes; a socket path in it must fit 107`);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
     throw new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`);
   }
-  // The egress proxy binds a temporary name (25 bytes) in the directory before it links its socket, and a socket's path
-  // holds 107 bytes: a directory longer than 81 bytes would let the model front start and the egress proxy fail.
-  const bytes = Buffer.byteLength(dir);
-  if (bytes > 81) throw new Error(`${name}: runtime_dir_too_long: the session's socket directory ${dir} is ${bytes} bytes; a socket path in it must fit 107`);
   const kind = process.platform === "linux" ? NOT_LOCAL[statfs(dir).type] : undefined;
   if (kind) throw new Error(`${name}: runtime_dir_not_local: the session's socket directory ${dir} is on ${kind}, not a local filesystem`);
   return dir;
