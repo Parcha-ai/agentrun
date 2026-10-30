@@ -23,8 +23,11 @@ async function bin(t, data, { started = true, env = {} } = {}) {
   child.stderr.on("data", (chunk) => (seen.err += chunk));
   const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
   if (!started) return { child, seen, code: await exited };
-  for (let i = 0; !/AGENTRUN_BASE_URL=\S+/.test(seen.out); i++) {
-    assert.ok(i < 200 && child.exitCode === null, `the server did not start: ${seen.out}${seen.err}`);
+  // Its address line, or its exit: a start under load takes seconds (13 s measured beside other suites), so the deadline
+  // is far past that, and an exit fails at once.
+  for (const until = Date.now() + 60_000; !/AGENTRUN_BASE_URL=\S+/.test(seen.out); ) {
+    assert.ok(child.exitCode === null && child.signalCode === null, `the server exited before it started: ${seen.out}${seen.err}`);
+    assert.ok(Date.now() < until, `the server printed no address in 60 s: ${seen.out}${seen.err}`);
     await sleep(50);
   }
   return { child, seen, exited, base: /AGENTRUN_BASE_URL=(\S+)/.exec(seen.out)[1] };
