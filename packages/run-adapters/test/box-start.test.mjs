@@ -330,3 +330,21 @@ test("the start probe's deadline runs from the spawn: a bwrap that never reports
   const pid = Number(readFileSync(pidFile, 'utf8'));
   assert.equal(startTimeOf(pid), undefined, `the stand-in ${pid} is still running`);
 });
+
+test("the start probe lends its own scratch: with a TMPDIR under the server's home, its box passes the argv's check and is spawned, never refused", { timeout: 15_000 }, async (t) => {
+  const run = mkdtempSync(join(tmpdir(), 'box-probe-home-'));
+  const home = join(run, 'home');
+  const scratch = join(home, 'tmp');
+  mkdirSync(scratch, { recursive: true });
+  const pidFile = join(run, 'bwrap.pid');
+  const bwrap = join(run, 'bwrap');
+  writeFileSync(bwrap, `#!/bin/sh\necho $$ > ${JSON.stringify(pidFile)}\nexec sleep 30\n`);
+  chmodSync(bwrap, 0o755);
+  const before = process.env.HOME;
+  process.env.HOME = home;
+  t.after(() => (before === undefined ? delete process.env.HOME : (process.env.HOME = before)));
+  // The stand-in never reports a pid 1: reaching it at all (a timeout, not a refusal) is the argv's check passing.
+  const probed = await probeBox({ scratch, bwrap, deadlineMs: 500 });
+  assert.equal(probed.error, 'box_probe_timeout', JSON.stringify(probed));
+  assert.ok(readFileSync(pidFile, 'utf8').trim() !== '', 'the stand-in was spawned');
+});

@@ -169,3 +169,9 @@ test("a pnpm install binds: the forwarder and the CLI resolve into node_modules/
   symlinkSync(dirname(store), cli);
   check(s, specOf(s, { readOnly: [s.execPath, forward, join(cli, 'claude')] }), { runtime: { execPath: s.execPath, forward } });
 });
+
+test("a socket of the spec's own is still never bound from a CLI's config: one under ~/.claude is refused by name", () => {
+  const s = server();
+  const socket = file(join(s.home, '.claude', 'agentrun.sock'));
+  refusedBy(s, specOf(s, { modelSocket: socket }), new RegExp(`--bind /run/agentrun/model.sock \\(${escape(socket)}\\) is under ${escape(join(s.home, '.claude'))}, a CLI's config`));
+});

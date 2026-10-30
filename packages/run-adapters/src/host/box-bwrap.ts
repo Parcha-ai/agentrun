@@ -327,8 +327,8 @@ export function checkBoxArgv(
       if ((runtime.packages !== undefined && isUnder(source, runtime.packages)) || source === runtime.forward) continue;
       refuse(`a read-only path ${shown(at, source)} is under the server's home ${home}, outside node's install prefix (${runtime.prefix}) and the kernel's packages (${runtime.packages ?? "none found"})`);
     }
-    if (sockets.includes(`${at}=${source}`)) continue;
     if (config !== undefined) refuse(`${named} is under ${config}, a CLI's config`);
+    if (sockets.includes(`${at}=${source}`)) continue;
     if ((data !== undefined || isUnder(source, home)) && !lent) {
       refuse(`${named} is under ${data ?? home}, and the session ${session} is not under the data root${hidden.length ? ` (${hidden.join(", ")})` : " (none given)"}`);
     }
@@ -794,7 +794,9 @@ export async function probeBox(options: { scratch: string; bwrap?: string; reapM
   await new Promise<void>((resolveListen) => listener.listen(0, PROBE_HOST, resolveListen));
   const port = (listener.address() as { port: number }).port;
   const dir = mkdtempSync(join(options.scratch, "box-probe-"));
-  const box = bwrapBox({ bwrap, reapMs: options.reapMs ?? 5000 });
+  // The scratch is the probe's own data root: its session lies under it, so a scratch under the server's home (a TMPDIR
+  // there) is lent like a run's, and the probe binds nothing else of it.
+  const box = bwrapBox({ bwrap, reapMs: options.reapMs ?? 5000, hidden: [options.scratch] });
   try {
     const socket = join(dir, "model.sock");
     write(socket, "");
