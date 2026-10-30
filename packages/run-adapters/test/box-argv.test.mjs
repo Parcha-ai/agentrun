@@ -128,3 +128,17 @@ test('the box\'s first command is this server\'s node running this kernel\'s for
   assert.throws(() => boxChild(spec({ modelPort: 0 }), harness), (err) => err instanceof BoxError && err.code === 'box_refused' && /the model port 0 is not a port/.test(err.message));
   assert.throws(() => boxChild(spec({ egressSocket: s.modelSocket }), harness), (err) => err instanceof BoxError && /the egress port undefined is not a port/.test(err.message));
 });
+
+test('serve\'s data root is never shown to a box: a bind of it, or of any parent of it, is refused by name; one under it is not', () => {
+  const base = mkdtempSync(join(tmpdir(), 'box-data-'));
+  const dataRoot = join(base, 'data');
+  const hidden = [dataRoot];
+  for (const path of [dataRoot, base]) {
+    const s = spec({ readOnly: ['/usr/local/lib/node-test', path] });
+    refused(buildBoxArgv(s, boxChild(s, harness)), s, /shows .* which a box never sees/);
+    assert.throws(() => checkBoxArgv(buildBoxArgv(s, boxChild(s, harness)), s, { hidden }), (e) => e instanceof BoxError && new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} shows`).test(e.message), path);
+  }
+  // A run's own workspace under the data root shows only itself.
+  const s = spec({ workspace: join(dataRoot, 'runs', 'r1', 'work') });
+  checkBoxArgv(buildBoxArgv(s, boxChild(s, harness)), s, { hidden });
+});

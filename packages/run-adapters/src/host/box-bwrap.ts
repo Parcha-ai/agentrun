@@ -157,7 +157,11 @@ export function boxChild(spec: BoxSpec, harness: { command: string; args: readon
   return { command: process.execPath, args: [BOX_FORWARD, ...forwardListens(spec).flatMap((listen) => ["--listen", listen]), "--", harness.command, ...harness.args] };
 }
 
-export function checkBoxArgv(argv: readonly string[], spec: BoxSpec): void {
+/** `hidden`: paths a box must never see, whatever it binds. Serve's data root is one: a run's mark and command records
+ *  live under it, and pi-durable-disk forgets a record written in another pid namespace only by its rule that a reader
+ *  whose PID 1 started after the record was written is a later incarnation, which holds only while no box (a child
+ *  namespace whose PID 1 also starts later) can read those records. */
+export function checkBoxArgv(argv: readonly string[], spec: BoxSpec, options: { hidden?: readonly string[] } = {}): void {
   const refuse = (why: string): never => {
     throw new BoxError("box_refused", `the box's argv is refused: ${why}`);
   };
@@ -206,6 +210,8 @@ export function checkBoxArgv(argv: readonly string[], spec: BoxSpec): void {
       for (const root of FORBIDDEN_ROOTS) if (path === root && !(m[0] === "--proc" && path === "/proc") && !(m[0] === "--dev" && path === "/dev")) refuse(`${m[0]} names ${root}`);
       if (path === "/" || path === "") refuse(`${m[0]} binds the root`);
       for (const root of privateRoots()) if (isUnder(path, root)) refuse(`${m[0]} ${path} is the server's own (${root})`);
+      // A bind that is a hidden path or holds one (its parent, or the root) shows it to the box; one under it does not.
+      for (const hidden of options.hidden ?? []) if (isUnder(hidden, path)) refuse(`${m[0]} ${path} shows ${hidden}, which a box never sees`);
     }
   }
   // Exactly the allowlist: the same mounts, the same number of times, in any order.
@@ -342,6 +348,8 @@ export interface BwrapBoxOptions {
   /** The delegated cgroup v2 subtree (the operator's), under which every box's cgroup is made. A spec with a cgroup is
    *  refused without it, and a reap reads a missing box cgroup as emptied only while this root itself reads. */
   cgroupRoot?: string;
+  /** Paths no box may see (serve's data root): a bind that is one or holds one is refused before the spawn. */
+  hidden?: readonly string[];
   /** How long a reap waits for the kernel to empty the box. */
   reapMs?: number;
   /** For tests: the spawn (node's by default). */
@@ -451,7 +459,7 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
 
   function start(spec: BoxSpec, child: { command: string; args: string[] }, recorder: BoxRecorder): BoxedChild {
     const argv = (options.buildArgv ?? buildBoxArgv)(spec, child);
-    checkBoxArgv(argv, spec);
+    checkBoxArgv(argv, spec, { hidden: options.hidden });
     const record: BoxRecord = {
       id: randomUUID(),
       ...(spec.cgroup !== undefined ? { cgroup: spec.cgroup } : {}),
