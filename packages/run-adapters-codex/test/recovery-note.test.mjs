@@ -49,3 +49,17 @@ test("a cut-off call's output says what the recovery note of the same turn says 
   assert.match(repairOutput(state, call('c1', 'fetch_page')), /It is safe to repeat\./);
   assert.doesNotMatch(repairOutput(state, call('c2', 'pay')), /safe to repeat/);
 });
+
+test("a call still running in the drive that holds the session is never told it is safe to repeat, whatever its policy", async () => {
+  // A call this drive started and has not finished: it may still be running, so even a safe one may have taken effect.
+  const store = memorySessionStore();
+  const drive = await openDrive({ writer: await store.open('live'), signal: new AbortController().signal });
+  await drive.submit({ id: 's1', kind: 'prompt', text: 'Look it up.' });
+  await placeSubmissions(drive, [drive.pending()[0]]);
+  void toolBridge(drive, [tool('fetch_page', 'safe', hang)], { live: false }).call('fetch_page', {}, 'c3').catch(() => {});
+  await pause(30);
+  const state = drive.state();
+  assert.deepEqual([state.effects.get('tool:c3')?.status, state.effects.get('tool:c3')?.replay], ['running', 'safe']);
+  assert.equal(recoveryNote(state).calls.find((c) => c.callId === 'c3')?.status, 'running');
+  assert.equal(repairOutput(state, call('c3', 'fetch_page')), 'Interrupted: the session stopped while this call ran. It may have taken effect: check before repeating it.');
+});
