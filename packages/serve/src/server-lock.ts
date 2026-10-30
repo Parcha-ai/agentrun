@@ -33,8 +33,10 @@ export interface ServerLock {
   release(): void;
 }
 
-/** Takes the data root's server lock, or throws ServerLockHeldError while another server (in any process) holds it. */
-export function takeServerLock(dataRoot: string): ServerLock {
+/** Takes the data root's server lock, or throws ServerLockHeldError while another server (in any process) holds it.
+ *  Anything that fails after the lock is taken (its mode, on a filesystem that refuses one) closes the connection, so
+ *  the lock is dropped before the error reaches the caller. `options.chmod` is for tests. */
+export function takeServerLock(dataRoot: string, options: { chmod?: (file: string, mode: number) => void } = {}): ServerLock {
   const file = join(dataRoot, SERVER_LOCK);
   const db = new DatabaseSync(file, { timeout: 0 });
   try {
@@ -42,16 +44,16 @@ export function takeServerLock(dataRoot: string): ServerLock {
     db.exec("PRAGMA journal_mode = MEMORY");
     db.exec("BEGIN EXCLUSIVE");
     db.exec("COMMIT");
+    (options.chmod ?? chmodSync)(file, 0o600);
   } catch (error) {
     try {
       db.close();
     } catch {
-      // the lock was never ours; the refusal is the error to report
+      // the lock is dropped with the connection; the error that got here is the one to report
     }
     if (sqliteBusy(error)) throw new ServerLockHeldError(file, { cause: error });
     throw error;
   }
-  chmodSync(file, 0o600);
   let held = true;
   return {
     file,

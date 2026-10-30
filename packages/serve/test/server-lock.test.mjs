@@ -7,7 +7,7 @@ import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ServerLockHeldError, startServe } from "../dist/index.js";
+import { ServerLockHeldError, startServe, takeServerLock } from "../dist/index.js";
 import { client, FAUX, scratch } from "./support.mjs";
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
@@ -97,6 +97,23 @@ test("a start that fails after taking the lock releases it: the next start on th
   const next = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => next.close());
   assert.equal((await client(next.baseUrl, next.token)("GET", "/agents")).status, 200);
+});
+
+test("a lock whose mode cannot be set (a filesystem that refuses chmod) is dropped before the error is thrown: the next take on the same root, in the same process, holds it", async (t) => {
+  const data = await scratch(t);
+  const refused = Object.assign(new Error("EPERM: operation not permitted, chmod"), { code: "EPERM" });
+  assert.throws(
+    () =>
+      takeServerLock(data, {
+        chmod: () => {
+          throw refused;
+        },
+      }),
+    (error) => error === refused,
+  );
+  const lock = takeServerLock(data);
+  t.after(() => lock.release());
+  assert.equal(lock.file, join(data, "server.lock"));
 });
 
 test("the CLI drops node:sqlite's ExperimentalWarning only: another warning still prints, and the library entry filters nothing", { timeout: 60_000 }, async (t) => {
