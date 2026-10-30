@@ -147,3 +147,49 @@ test("a reap that could not count (it throws) never frees the slot: the next sta
   assert.equal(opened.state, "full");
   assert.throws(() => opened.start(scripted().start, box.recorder), named("box_busy"));
 });
+
+test("a box that exits while its started record is still being written is reaped by that record, once written; nothing it records after lands", async () => {
+  const log = [];
+  const write = deferred();
+  const reaps = [];
+  const recorder = {
+    ahead: (r) => log.push(`ahead ${r.id}`),
+    started: async (r) => {
+      log.push(`writing ${r.id} pid ${r.pid}`);
+      if (r.id === "box-1") await write.promise;
+      log.push(`written ${r.id} pid ${r.pid}`);
+    },
+  };
+  const exited = deferred();
+  let late;
+  const slot = boxSlot({ reap: async (r) => (reaps.push(r), { empty: true, left: 0, by: r.pid ? "pidns" : "none" }) });
+  const { reaped } = slot.start((rec) => {
+    rec.ahead({ id: "box-1" });
+    void rec.started({ id: "box-1", pid: 4242, pidns: "pid:[1]" }).catch(() => {});
+    late = rec;
+    return { ready: new Promise(() => {}), exited: exited.promise };
+  }, recorder);
+  // bwrap exits while the started record is still on its way to disk.
+  exited.resolve({ code: 1 });
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(reaps, [], "no reap while a record write is in flight");
+  assert.throws(() => slot.start(() => ({}), recorder), named("box_busy"), "and nothing else starts");
+  write.resolve();
+  await reaped;
+  assert.deepEqual(reaps.map((r) => [r.id, r.pid]), [["box-1", 4242]], "reaped by the record that was written, its pid namespace counted");
+  // A record the ended box tries to write now is refused, and never reaches the next box's file.
+  await assert.rejects(late.started({ id: "box-1", pid: 9999 }), named("box_record_failed"));
+  assert.throws(() => late.ahead({ id: "box-1" }), named("box_record_failed"));
+  const next = deferred();
+  slot.start((rec) => {
+    rec.ahead({ id: "box-2" });
+    void rec.started({ id: "box-2", pid: 5151 });
+    return { ready: new Promise(() => {}), exited: next.promise };
+  }, recorder);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(!log.includes("writing box-1 pid 9999"), `the ended box wrote nothing more: ${log}`);
+  next.resolve({ code: 0 });
+  await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(reaps.map((r) => [r.id, r.pid]).at(-1), ["box-2", 5151], "the next box is reaped by its own record");
+});
