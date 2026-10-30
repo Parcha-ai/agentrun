@@ -12,6 +12,8 @@ import type { DecisionCapabilities, DecisionContext, DecisionEvidence, DecisionO
 export const PARALLEL_LIST_PRICE_USD = 0.001;
 
 const KEY_VARIABLE = "PARALLEL_API_KEY";
+/** The one model this provider asks for, as Parallel names it in an answer: a node may pin it and no other. */
+const MODEL = "parallel-fast";
 const BASE_URL = "https://api.parallel.ai";
 /** Parallel's documented limits: options per choice, levels per score, and characters per rendered question. */
 const LIMITS = { minOptions: 2, maxOptions: 255, minLevels: 2, maxLevels: 10, renderedChars: 5_000 } as const;
@@ -107,7 +109,7 @@ function retryAfterMs(response: Response): number | undefined {
 export function parallelProvider(options: ParallelOptions = {}): DecisionProvider {
   const capabilities: DecisionCapabilities = {
     types: ["noul", "choice", "score"], inputs: ["text", "json", "url"], evidence: "citations", probability: "model", grounding: true,
-    replay: "never", maxQuestions: 100, maxStateBytes: 96_000,
+    replay: "never", maxQuestions: 100, maxStateBytes: 96_000, models: [MODEL],
   };
   const timeoutMs = options.timeoutMs ?? 30_000;
   const maxAttempts = options.maxAttempts ?? 3;

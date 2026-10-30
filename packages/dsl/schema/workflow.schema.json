@@ -1603,6 +1603,33 @@
                         "predicate",
                         "values"
                       ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "predicate": {
+                          "type": "string",
+                          "const": "field_type",
+                          "title": "predicate"
+                        },
+                        "path": {
+                          "type": "string",
+                          "title": "path"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/FieldType",
+                          "title": "type"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "predicate",
+                        "type"
+                      ]
+                    },
+                    {
+                      "$ref": "#/definitions/NotPredicate",
+                      "description": "Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation."
                     }
                   ],
                   "title": "fail_when"
@@ -1884,6 +1911,33 @@
           "properties": {
             "predicate": {
               "type": "string",
+              "const": "field_type",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "type": {
+              "$ref": "#/definitions/FieldType",
+              "title": "type"
+            }
+          },
+          "required": [
+            "path",
+            "predicate",
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/definitions/NotPredicate",
+          "description": "Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
               "const": "ask",
               "title": "predicate"
             },
@@ -1943,8 +1997,19 @@
         }
       ]
     },
+    "FieldType": {
+      "title": "FieldType",
+      "enum": [
+        "array",
+        "boolean",
+        "null",
+        "number",
+        "object",
+        "string"
+      ],
+      "type": "string"
+    },
     "AcceptPredicate": {
-      "description": "A predicate a `call` evaluates against ITS OWN RESULT: paths are result-relative.",
       "title": "AcceptPredicate",
       "anyOf": [
         {
@@ -2126,7 +2191,54 @@
             "predicate",
             "values"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "predicate": {
+              "type": "string",
+              "const": "field_type",
+              "title": "predicate"
+            },
+            "path": {
+              "type": "string",
+              "title": "path"
+            },
+            "type": {
+              "$ref": "#/definitions/FieldType",
+              "title": "type"
+            }
+          },
+          "required": [
+            "path",
+            "predicate",
+            "type"
+          ]
+        },
+        {
+          "$ref": "#/definitions/NotPredicate",
+          "description": "Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation."
         }
+      ]
+    },
+    "NotPredicate": {
+      "description": "Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation.",
+      "title": "NotPredicate",
+      "type": "object",
+      "properties": {
+        "predicate": {
+          "type": "string",
+          "const": "not",
+          "title": "predicate"
+        },
+        "of": {
+          "$ref": "#/definitions/AcceptPredicate",
+          "title": "of"
+        }
+      },
+      "required": [
+        "of",
+        "predicate"
       ]
     },
     "Workflow": {

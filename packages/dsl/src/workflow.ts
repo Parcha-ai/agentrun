@@ -2,7 +2,7 @@ import { observerSnapshot } from "./observer-snapshot.js";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
-import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
+import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, FIELD_TYPES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
 import { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
@@ -328,8 +328,8 @@ export type WorkflowDeps = {
    *  which is not a sandbox: a host that runs code from an untrusted author supplies this. */
   runCode?: (node: CodeNode, state: Record<string, unknown>, ctx: { sop: string; label: string; executionPath: string; item?: MapItem; signal?: AbortSignal }) => Promise<unknown>;
   /** The host's decision providers by id, and the one a node that names none gets. A run checks every decision node
-   *  against them before any node runs: a provider the host lacks, evidence it cannot give, a question type it does not
-   *  answer. */
+   *  against them before any node runs: a provider the host lacks, evidence it cannot give, a model it does not serve, a
+   *  question type it does not answer. Without them, a node that names a provider or sets timeoutMs is refused. */
   decisionProviders?: { providers: Readonly<Record<string, DecisionProvider>>; default: string };
   runJudge?: (params: {
     label: string;
@@ -503,7 +503,7 @@ function containsReportNode(node: WorkflowNode | undefined): boolean {
 }
 const PREDICATES: ReadonlySet<string> = new Set(WORKFLOW_PREDICATES);
 
-function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; instructions?: unknown; gte?: unknown; state?: unknown }): string[] {
+function predicateShapeErrors(pred: { predicate: string; path?: string; values?: unknown; n?: unknown; type?: unknown; of?: unknown; instructions?: unknown; gte?: unknown; state?: unknown }): string[] {
   const out: string[] = [];
   if (pred.predicate === "in") {
     if (!String(pred.path || "").trim()) out.push("in needs a path");
@@ -513,6 +513,11 @@ function predicateShapeErrors(pred: { predicate: string; path?: string; values?:
     if (!String(pred.path || "").trim()) out.push(`${pred.predicate} needs a path`);
     if (typeof pred.n !== "number" || !Number.isFinite(pred.n)) out.push(`${pred.predicate} needs a finite number n`);
   }
+  if (pred.predicate === "field_type") {
+    if (!String(pred.path || "").trim()) out.push("field_type needs a path");
+    if (!(FIELD_TYPES as readonly unknown[]).includes(pred.type)) out.push(`field_type needs a type of ${FIELD_TYPES.join("|")}, not ${JSON.stringify(pred.type) ?? "none"}`);
+  }
+  if (pred.predicate === "not" && (!pred.of || typeof pred.of !== "object" || Array.isArray(pred.of))) out.push(`not needs "of", one mechanical predicate`);
   if (pred.predicate === "ask") {
     if (typeof pred.instructions !== "string" || !pred.instructions.trim()) out.push("ask needs instructions (the yes/no question)");
     // A yes/no gate sits above the fence: at 0.5 or below it would hold on an answer that is not a
@@ -534,6 +539,12 @@ function decisionFieldProblems(raw: Record<string, unknown>): string[] {
     out.push(`timeoutMs must be a whole number of milliseconds from 1 to ${DECISION_TIMEOUT_MAX_MS}`);
   }
   return out;
+}
+
+/** The predicate under any number of `not`s: the one that reads a value. */
+function negated(pred: unknown): unknown {
+  while (pred && typeof pred === "object" && (pred as { predicate?: unknown }).predicate === "not") pred = (pred as { of?: unknown }).of;
+  return pred;
 }
 
 function resultPathMissing(shape: unknown, dotted: string): boolean {
@@ -908,6 +919,7 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
   };
   // A mechanical predicate reads one state key; when no input key or earlier node writes it, the guard can never fire.
   const checkPredicateHead = (pred: unknown, label: string, path: string, field: string, produced?: ReadonlySet<string>): void => {
+    pred = negated(pred);
     if (!reachability || reachability.unknowable || !pred || typeof pred !== "object") return;
     const available = produced ?? reachability.available;
     const { predicate, path: at, key } = pred as { predicate?: unknown; path?: unknown; key?: unknown };
@@ -995,7 +1007,8 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
     if (compiled.ok === false) { for (const e of compiled.errors) fail("SCHEMA_INVALID", `/schemas/${pointerKey(schemaId)}`, `${path} (${label}): schema "${schemaId}": ${e}`); return null; }
     return compiled.questions;
   };
-  const checkPredicate = (pred: unknown, label: string, path: string, field: string, mechanicalOnly = false): boolean => {
+  // `within` names what takes only a mechanical predicate: a poll, or a `not`.
+  const checkPredicate = (pred: unknown, label: string, path: string, field: string, within?: "poll" | "not"): boolean => {
     const name = (pred as any)?.predicate;
     // A predicate with no `predicate` field is the shape mistaken, not an unknown name: say the shape
     // (GRE-2809), naming a predicate the object used as a key when it did.
@@ -1004,9 +1017,17 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
       fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: a predicate names itself in its "predicate" field beside its own fields, e.g. {"predicate": "${keyed ?? "field_true"}", "path": "..."}${keyed ? `, not {"${keyed}": {...}}` : ""}`);
       return false;
     }
-    if (!pred || !PREDICATES.has(name) || (mechanicalOnly && !MECHANICAL_PREDICATE_NAMES.has(name))) { fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: unknown predicate "${name}"${mechanicalOnly && name === "ask" ? " (a poll reads a value, never asks a question)" : ""}`); return false; }
-    for (const e of predicateShapeErrors(pred as any)) fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: ${e}`);
+    if (!pred || !PREDICATES.has(name)) { fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: unknown predicate "${name}"`); return false; }
+    if (within && !MECHANICAL_PREDICATE_NAMES.has(name)) {
+      fail("PREDICATE_INVALID", ptrOf(path), within === "poll" ? `${path} (${label}): ${field}: unknown predicate "${name}" (a poll reads a value, never asks a question)` : `${path} (${label}): ${field}: not takes only a mechanical predicate, not "${name}"`);
+      return false;
+    }
+    const errors = predicateShapeErrors(pred as any);
+    for (const e of errors) fail("PREDICATE_INVALID", ptrOf(path), `${path} (${label}): ${field}: ${e}`);
     if (name === "ask") checkStateMap((pred as any).state, label, path, `${field}.state`);
+    // A predicate whose shape is wrong is refused: no caller reads inside it (a poll's path, a not's of).
+    if (errors.length) return false;
+    if (name === "not") return checkPredicate((pred as { of: unknown }).of, label, path, `${field}.of`, "not");
     return true;
   };
   const walk = (node: WorkflowNode, path: string, ptr: string): void => {
@@ -1156,7 +1177,7 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
         checkPredicate(node.when, node.label, path, "when");
         if (!node.kind?.trim() || !node.stage?.trim() || !node.summary?.trim()) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${node.label}): kind, stage, summary required`);
         checkPredicateHead(node.when, node.label, path, "when");
-        checkPredicatePath(node.when as { path?: string }, node.label, path);
+        checkPredicatePath(negated(node.when) as { path?: string }, node.label, path);
         return;
       case "judge": {
         const label = node.label || "judge";
@@ -1343,8 +1364,8 @@ export function validateWorkflow(workflow: Workflow, opts?: ValidateWorkflowOpti
             const resultShape = node.via === "shell" ? shapeFromSchema(SHELL_RESULT_SCHEMA) : node.out && (Object.hasOwn(workflow.schemas, node.out) ? workflow.schemas[node.out] : undefined) ? shapeFromSchema(workflow.schemas[node.out] as Record<string, unknown>) : undefined;
             for (const [name, pred] of [["until", p.until], ["fail_when", p.fail_when]] as const) {
               if (pred === undefined) { if (name === "until") fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.until is required`); continue; }
-              if (!checkPredicate(pred, label, path, `poll.${name}`, true)) continue;
-              const predPath = (pred as { path?: string }).path;
+              if (!checkPredicate(pred, label, path, `poll.${name}`, "poll")) continue;
+              const predPath = (negated(pred) as { path?: string }).path;
               if (resultShape && typeof resultShape === "object" && predPath && resultPathMissing(resultShape, predPath)) fail("STATE_PATH_EXCLUDED", ptrOf(path), `${path} (${label}): poll.${name} path "${predPath}" is not in the declared result shape (${Object.keys(resultShape as object).join(", ")}); the poll could never settle`);
             }
             if (!(Number.isFinite(p.interval_s) && p.interval_s >= 0.1)) fail("NODE_FIELD_INVALID", ptrOf(path), `${path} (${label}): poll.interval_s must be a finite number of at least 0.1 seconds`);
@@ -2199,8 +2220,8 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
   const set = questionSetOf(workflow, node);
   const ids = Object.keys(set.questions);
   const [keepId, keepTail] = node.keep ? node.keep.path.split(".") : [];
-  const values: Record<string, unknown>[] = []; const sidecars: AnswersSidecar[] = []; const kept: number[] = [];
-  let metering: { model: string | null; cost_usd: number | null; requests?: number; replayed?: true } | null = null;
+  const values: Record<string, unknown>[] = []; const sidecars: (AnswersSidecar & { evidence?: DecisionEvidence[] })[] = []; const kept: number[] = [];
+  let metering: { model: string | null; cost_usd: number | null; requests?: number; replayed?: true; provider?: string; evidence?: DecisionEvidence[] } | null = null;
   const decisionIds: string[] = [];
   if (items.length) {
     const base = node.state ? interpolateValue(node.state, state, node.label) as Record<string, unknown> : {};
@@ -2254,14 +2275,22 @@ async function runSiftNode(node: SiftNode, state: Record<string, unknown>, workf
       if (failure) throw failure.error;
     }
     const models = new Set(results.map((r) => r.model));
+    const providers = new Set(results.map((r) => r.provider));
+    const evidence = results.flatMap((r) => r.evidence ?? []);
     metering = {
       model: models.size === 1 ? results[0].model : null,
       cost_usd: results.every((r) => r.cost_usd !== null) ? results.reduce((sum, r) => sum + (r.cost_usd as number), 0) : null,
       ...(chunks.length > 1 ? { requests: chunks.length } : {}),
       ...(results.every((r) => r.replayed) ? { replayed: true as const } : {}),
+      ...(providers.size === 1 && results[0].provider ? { provider: results[0].provider } : {}),
+      ...(evidence.length ? { evidence } : {}),
     };
-    // Chunks cover the list in order, so their results concatenate into list order.
-    for (const r of results) { values.push(...r.value.values); sidecars.push(...r.value.sidecars); kept.push(...r.value.kept); decisionIds.push(r.id); }
+    // Chunks cover the list in order, so their results concatenate into list order. An item's sidecar carries the
+    // evidence of the request that answered it.
+    for (const r of results) {
+      values.push(...r.value.values); kept.push(...r.value.kept); decisionIds.push(r.id);
+      sidecars.push(...r.value.sidecars.map((sidecar) => r.evidence ? { ...sidecar, evidence: r.evidence } : sidecar));
+    }
   }
   const value = { items: kept.map((i) => items[i]), values, answers: sidecars, kept };
   deps.onEvent?.({ type: "judge.answered", label: node.label, detail: { kind: "sift", as: node.as, value, count: items.length, kept: kept.length, ...(metering ?? {}), decision_ids: decisionIds } });
@@ -2900,11 +2929,11 @@ function resolveSopSections(node: { node: string; label?: string; sopSection?: s
 }
 
 /** Refuses, before any node runs, a decision node (or an `ask` predicate) the host's providers cannot answer as asked:
- *  a provider it lacks, `evidence: "required"` on a provider that gives none, a question type it does not answer, or
- *  more questions than one of its requests may hold. A host that names no providers is not checked here. */
+ *  a provider it lacks, `evidence: "required"` on a provider that gives none, a model it does not serve, a question type
+ *  it does not answer, or more questions than one of its requests may hold. A host that names no providers has a judge
+ *  that may honour neither a node's provider nor its timeoutMs, so a node that sets either is refused. */
 function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow?: Workflow): void {
   const registry = deps.decisionProviders;
-  if (!registry) return;
   const label = "label" in node ? node.label : node.node;
   const asked: Array<{ choice: DecisionChoice; types: string[]; count: number | null; what: string }> = [];
   const questionsOf = (out: string): string[] => {
@@ -2919,11 +2948,17 @@ function checkDecisionProviders(node: WorkflowNode, deps: WorkflowDeps, workflow
     if ((pred as AskPredicate | undefined)?.predicate === "ask") asked.push({ choice: pred as AskPredicate, types: ["noul"], count: 1, what: `${node.node} node "${label}" (ask predicate)` });
   }
   for (const { choice, types, count, what } of asked) {
+    if (!registry) {
+      if (choice.provider !== undefined) throw new Error(`${what} names the decision provider ${choice.provider}, and this host names no decision providers`);
+      if (choice.timeoutMs !== undefined) throw new Error(`${what} sets timeoutMs, and this host names no decision providers to bound it with`);
+      continue;
+    }
     const id = choice.provider ?? registry.default;
-    const provider = registry.providers[id];
+    const provider = Object.hasOwn(registry.providers, id) ? registry.providers[id] : undefined;
     if (!provider) throw new Error(`${what} names the decision provider ${id}, which this host does not have`);
     const capabilities = provider.capabilities;
     if (choice.evidence === "required" && capabilities.evidence === "none") throw new Error(`${what} requires evidence, and the decision provider ${id} gives none`);
+    if (choice.model !== undefined && capabilities.models && !capabilities.models.includes(choice.model)) throw new Error(`${what} pins the model ${choice.model}, which the decision provider ${id} does not answer with`);
     const missing = [...new Set(types.filter((type) => !(capabilities.types as string[]).includes(type)))];
     if (missing.length) throw new Error(`${what} asks ${missing.join(", ")} questions, which the decision provider ${id} does not answer`);
     if (count !== null && capabilities.maxQuestions !== null && count > capabilities.maxQuestions) throw new Error(`${what} asks ${count} questions, more than the ${capabilities.maxQuestions} one request to ${id} may hold`);

@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, inputPreview, labelOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, endsTurn, inputPreview, labelOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 
 export type TimelineKind =
@@ -99,6 +99,9 @@ function createProjector(options: TimelineOptions) {
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   const previous = new Map<number, string>();
+  // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
+  // the person's next message, not a steer.
+  const ended = new Map<number, boolean>();
   const systems = new Set<number>();
   const browsers = new Set<number>();
   const children = new Map<number, string>();
@@ -245,8 +248,10 @@ function createProjector(options: TimelineOptions) {
       const id = str(message.toolCallId) ?? "";
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
-      const args = call?.args ?? {};
       const view = viewOf(message);
+      // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
+      ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
+      const args = call?.args ?? {};
       const named = label(name, args, view);
       if (call) {
         call.done = true;
@@ -288,7 +293,7 @@ function createProjector(options: TimelineOptions) {
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
-      const steer = previous.get(conv) === "pi.tool-result";
+      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
     }

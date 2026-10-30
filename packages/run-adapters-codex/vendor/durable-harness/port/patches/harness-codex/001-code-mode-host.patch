@@ -1,0 +1,38 @@
+Patch: 001-code-mode-host
+Reason: a code-mode model (luna) is offered only code mode's exec and wait, so without code mode's host on it has no way to call a tool; its sub-agent tools are removed by agents.max_depth, and agents becomes a reserved config key
+Upstream: ours
+Pins: the config turns code mode's host on, allows no sub-agents, and reserves the agents key
+---
+diff --git a/packages/harness-codex/src/config.ts b/packages/harness-codex/src/config.ts
+index fc464ab..7490fab 100644
+--- a/packages/harness-codex/src/config.ts
++++ b/packages/harness-codex/src/config.ts
+@@ -24,7 +24,10 @@ export const BUILTINS_OFF: Record<string, boolean> = {
+   browser_use_external: false,
+   computer_use: false,
+   in_app_browser: false,
+-  code_mode_host: false,
++  // Code mode's JavaScript runtime (no Node, no file system, no network): the only way a code-mode model such as luna
++  // calls a tool. Its nested tools are the dynamic tools plus Codex's own apply_patch and MCP resource readers, which
++  // run nothing here (read-only, approvals declined, no MCP server); its sub-agent tools are removed by agents.max_depth.
++  code_mode_host: true,
+   tool_suggest: false,
+   skill_search: false,
+   skill_mcp_dependency_install: false,
+@@ -122,6 +125,8 @@ export function codexConfig(options: CodexConfigOptions): Record<string, TomlVal
+     ...(options.cwd ? { projects: { [options.cwd]: { trust_level: 'untrusted' } } } : {}),
+     features: { ...BUILTINS_OFF },
+     analytics: { enabled: false },
++    // No sub-agents: with code mode's host on, `multi_agent = false` alone still leaves its multi_agent_v1 tools.
++    agents: { max_depth: 0 },
+   };
+   return merge(base, options.extra ?? {});
+ }
+@@ -163,6 +168,7 @@ export const RESERVED_CONFIG_KEYS: readonly string[] = Object.freeze([
+   'history',
+   'project_root_markers',
+   'allow_symlinked_codex_home',
++  'agents',
+ ]);
+ 
+ /** Key suffixes reserved at any depth: a binary, a file or a directory Codex would use (`codex_linux_sandbox_exe`, `zsh_path`, `model_instructions_file`, `experimental_compact_prompt_file`, `sqlite_home`, `log_dir`, ...). */

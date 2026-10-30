@@ -18,6 +18,45 @@ export const INSTALL: Record<string, string> = {
  *  takes it only under its own guard (AGENTRUN_CODEX_STANDIN=1, under a test runner). */
 export const CODEX_STANDIN_ENV = "AGENTRUN_SERVE_CODEX_STANDIN";
 
+/** The event of a harness's own lines in the run's log (its model proxy's refusals and failures): a failed run's message
+ *  is never taken from one (runs.ts lastLogLine). */
+export const HARNESS_LOG_EVENT = "harness";
+
+/** Names whose values are secrets: no line of the run's log carries one. */
+const SECRET_NAME = /(_API_KEY|_TOKEN)$|SECRET/i;
+
+/**
+ * A harness's log, into the run's log: the run process's stderr, which serve opens on the run's process.log. One JSON
+ * line per call, as pi-durable-disk writes them (`{at, event, message, ...}`). A request's path loses its query string,
+ * and every value of the environment's key-shaped variables is cut out of the line, so a key a client sent in either
+ * place, or one serve holds, never reaches the log.
+ */
+export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line: string) => void = (line) => void process.stderr.write(line)) {
+  // Every own name, enumerable or not: an environment object may hold a key it does not list.
+  const secrets = Object.getOwnPropertyNames(env)
+    .map((name) => [name, env[name]] as const)
+    .filter(([name, value]) => SECRET_NAME.test(name) && typeof value === "string" && value.length >= 8)
+    .map(([, value]) => value as string);
+  const cut = (text: string) => secrets.reduce((out, secret) => out.split(secret).join("[redacted]"), text);
+  // Every string is cut before it is serialized, field names included: JSON escapes a quote or a backslash, and a
+  // secret holding one would no longer match in the line. An object that serializes itself (toJSON) is cut as what it
+  // gives. The line is cut again after, as a backstop.
+  // toJSON is called once per value, as JSON.stringify does: what it returns is not asked again (one that returns
+  // `this` would never end), though the values inside it are.
+  const scrub = (value: unknown, asked = false): unknown => {
+    if (typeof value === "string") return cut(value);
+    if (!asked && value !== null && typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") return scrub((value as { toJSON(): unknown }).toJSON(), true);
+    if (Array.isArray(value)) return value.map((inner) => scrub(inner));
+    if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [cut(name), scrub(inner)]));
+    return value;
+  };
+  return (message: string, fields: Record<string, unknown> = {}): void => {
+    const { path, ...rest } = fields;
+    const line = JSON.stringify(scrub({ at: new Date().toISOString(), event: HARNESS_LOG_EVENT, harness, message, ...rest, ...(typeof path === "string" ? { path: path.split("?")[0] } : {}) }));
+    write(`${cut(line)}\n`);
+  };
+}
+
 /** Why this server cannot run a harness here, in words a person can act on. */
 export class HarnessUnavailable extends Error {}
 
@@ -35,15 +74,40 @@ export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
   return (child) => ({ command: prefix[0]!, args: [...prefix.slice(1), child.command, ...child.args] });
 }
 
-/** Where Codex's model requests go: OpenAI with its key, or a gateway at its origin (the proxy sends the Responses API
- *  to origin + /v1/responses, so a gateway under another path cannot be reached yet). */
-export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
-  if (env.AGENT_MODEL_BASE_URL) {
-    const url = new URL(env.AGENT_MODEL_BASE_URL);
-    const path = url.pathname.replace(/\/+$/, "");
-    if (path !== "" && path !== "/v1") throw new HarnessUnavailable(`codex sends the Responses API to the gateway's origin + /v1/responses; AGENT_MODEL_BASE_URL has the path ${path}, which it cannot reach yet.`);
-    return { origin: url.origin, credential: () => env.AGENT_MODEL_API_KEY || "none" };
+/** Hosts a gateway may be reached at over plain http: this machine. */
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
+/**
+ * The base `setting` (a gateway's URL) gives the model proxy: its origin and its path, one trailing `/v1` taken off, since
+ * every route the proxy sends to begins with `/v1/`. So `https://openrouter.ai/api` and `https://openrouter.ai/api/v1` both
+ * send to `https://openrouter.ai/api/v1/...`. A provider's key goes wherever this points, so a value that could point
+ * somewhere other than it reads is refused, by the setting's name: userinfo, a query or a fragment, a "." or ".." path
+ * segment (raw or percent-encoded), a backslash, whitespace, or plain http to anything but this machine.
+ */
+export function gatewayBase(setting: string, value: string): string {
+  const wrong = (why: string) => new HarnessUnavailable(`${setting} must be an https URL of a gateway, with a path if it serves the API under one; it ${why}.`);
+  if (/\s/.test(value)) throw wrong("holds whitespace");
+  // The URL parser reads a backslash as a path separator, so a ".." between backslashes would resolve where "/../" is refused.
+  if (value.includes("\\")) throw wrong("holds a backslash");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw wrong("is not a URL");
   }
+  if (url.username || url.password) throw wrong("names a user");
+  if (url.search || url.hash || /[?#]/.test(value)) throw wrong("has a query or a fragment");
+  // The URL parser resolves dot segments, so they are looked for in the text as given.
+  const path = value.slice(value.indexOf("//") + 2).replace(/^[^/]*/, "");
+  if (path.split("/").some((segment) => /^(\.|%2e){1,2}$/i.test(segment))) throw wrong("has a . or .. path segment");
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) throw wrong(`is ${url.protocol.replace(/:$/, "")}, not https`);
+  return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
+}
+
+/** Where Codex's model requests go: OpenAI with its key, or a gateway at AGENT_MODEL_BASE_URL's base (gatewayBase: the
+ *  proxy sends the Responses API to <base>/v1/responses). */
+export function codexProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
+  if (env.AGENT_MODEL_BASE_URL) return { origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL), credential: () => env.AGENT_MODEL_API_KEY || "none" };
   if (model.provider !== "openai") throw new HarnessUnavailable(`codex runs OpenAI models; the run's model is ${model.provider}/${model.modelId}.`);
   if (!env.OPENAI_API_KEY) throw new HarnessUnavailable("codex needs OPENAI_API_KEY, or a gateway in AGENT_MODEL_BASE_URL.");
   return { origin: "https://api.openai.com", credential: () => env.OPENAI_API_KEY ?? "" };
@@ -59,18 +123,13 @@ export function priceOf(needs: AdapterNeeds) {
   };
 }
 
-/** Where claude-agent's requests go: Anthropic Messages only, at ANTHROPIC_BASE_URL's origin (an Anthropic-compatible
- *  endpoint) or api.anthropic.com, with ANTHROPIC_API_KEY. Its own settings only: AGENT_MODEL_BASE_URL is the other
+/** Where claude-agent's requests go: Anthropic Messages only, at ANTHROPIC_BASE_URL's base (an Anthropic-compatible
+ *  endpoint, with its path: <base>/v1/messages) or api.anthropic.com, with ANTHROPIC_API_KEY. Its own settings only: AGENT_MODEL_BASE_URL is the other
  *  harnesses' gateway, and Claude's requests never go there. */
 export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origin: string; credential: () => string } {
   if (model.provider !== "anthropic") throw new HarnessUnavailable(`claude-agent runs Anthropic models; the run's model is ${model.provider}/${model.modelId}.`);
   if (!env.ANTHROPIC_API_KEY) throw new HarnessUnavailable("claude-agent needs ANTHROPIC_API_KEY.");
-  let origin = "https://api.anthropic.com";
-  if (env.ANTHROPIC_BASE_URL) {
-    const url = new URL(env.ANTHROPIC_BASE_URL);
-    if (url.pathname.replace(/\/+$/, "") !== "") throw new HarnessUnavailable(`claude-agent sends Anthropic Messages to the endpoint's origin + /v1/messages; ANTHROPIC_BASE_URL has the path ${url.pathname}, which it cannot reach yet.`);
-    origin = url.origin;
-  }
+  const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : "https://api.anthropic.com";
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "" };
 }
 
@@ -89,18 +148,30 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
  *  only by the person who wants it (its SDK is an optional peer). */
 const CLAUDE_PACKAGE = "@parcha/agentrun-claude-agent";
 
-async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const claude = (await import(CLAUDE_PACKAGE).catch(() => {
+/** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
+export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = () => import(CLAUDE_PACKAGE)): Promise<AgentAdapter> {
+  const claude = (await load().catch(() => {
     throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`);
   })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
-  const provider = claudeProvider(env, needs.model);
+  // What no key fixes is said first: the adapter is built before the provider's refusal is thrown, and its construction
+  // checks the SDK's version, zod and the pinned CLI (claude --version, once). The provider is read only when a session
+  // opens, so an adapter built with an unusable one is never returned.
+  let provider: ReturnType<typeof claudeProvider> | undefined;
+  let refused: unknown;
   try {
-    // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once).
-    return claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider, price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}) });
+    provider = claudeProvider(env, needs.model);
+  } catch (error) {
+    refused = error;
+  }
+  let adapter: AgentAdapter;
+  try {
+    adapter = claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
   }
+  if (refused !== undefined) throw refused;
+  return adapter;
 }
 
 /** The run's thinking level as the harness takes it: serve's levels run to max; Codex's reasoning efforts stop at xhigh. */
@@ -123,7 +194,7 @@ async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Age
   }
   // The id as model.ts chose it: a gateway's own name for the model, whole (AGENT_MODEL_GATEWAY_IDS says whether it is
   // provider-qualified), or OpenAI's model id, which chooseModel has already taken out of "openai/<id>".
-  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
+  return codex.codexAdapter({ model: needs.model.modelId, provider: codexProvider(env, needs.model), price: priceOf(needs), log: harnessLog("codex", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {

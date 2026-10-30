@@ -12,14 +12,23 @@ const MODE: Record<MessageMode, { placeholder: string; does: string }> = {
 
 /** The follow-up box, posting to the same run (`POST /v2/runs/{id}/messages`). Sent is not done: it says "Sent"
  *  until the timeline shows the message. */
-export function Composer({ mode, onSend, sending, sent }: { mode: MessageMode; onSend?: (text: string) => void; sending?: boolean; sent?: boolean }) {
+export function Composer({ mode, onSend, sending: sendingProp, sent }: { mode: MessageMode; onSend?: (text: string) => void | boolean | Promise<void | boolean>; sending?: boolean; sent?: boolean }) {
   const [text, setText] = useState("");
-  const send = () => { if (text.trim() && onSend) { onSend(text.trim()); setText(""); } };
+  const [busy, setBusy] = useState(false);
+  const sending = sendingProp || busy;
+  // The draft stays until the server takes the message: a send that fails (it resolves false) keeps it to send again.
+  const send = async () => {
+    if (!text.trim() || !onSend || sending) return;
+    setBusy(true);
+    const ok = await onSend(text.trim());
+    setBusy(false);
+    if (ok !== false) setText("");
+  };
   return (
-    <form className="border bg-card" onSubmit={(e) => { e.preventDefault(); send(); }}>
+    <form className="border bg-card" onSubmit={(e) => { e.preventDefault(); void send(); }}>
       <label className="sr-only" htmlFor="composer">Message</label>
-      <textarea id="composer" rows={2} value={text} onChange={(e) => setText(e.target.value)} placeholder={MODE[mode].placeholder}
-        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+      <textarea id="composer" rows={2} value={text} readOnly={sending} aria-busy={sending} onChange={(e) => setText(e.target.value)} placeholder={MODE[mode].placeholder}
+        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }}
         className="block w-full resize-none bg-transparent px-4 pt-3 font-mono text-[13px] outline-none placeholder:text-muted-foreground" />
       <div className="flex items-center justify-between gap-3 px-3 pb-3">
         <span className="min-w-0 text-[11px] text-muted-foreground">{sent ? "Sent. It appears on the timeline when the run takes it." : <><code className="font-mono text-foreground">{mode}</code> · {MODE[mode].does}</>}</span>
