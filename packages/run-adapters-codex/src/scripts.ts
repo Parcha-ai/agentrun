@@ -154,7 +154,8 @@ export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly
   const apart = loose.length
     ? `\n${loose.length} ${loose.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`)).join("\n")}`
     : "";
-  if (facts.length === 0) return `The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.${apart}`;
+  if (facts.length === 0 && loose.length > 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}`;
+  if (facts.length === 0) return `The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.`;
   const lines = facts.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
   return `The exec was cut short after these calls (the session stopped), and nothing was run again. Their outcomes, in order:\n${lines.join("\n")}${apart}`;
 }

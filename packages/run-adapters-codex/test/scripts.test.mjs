@@ -162,3 +162,14 @@ test("no slot of the model's takes the full recovery note: the harness never fal
   assert.match(built, /system !== undefined && !noted/, 'no developer item is injected without a system note');
   assert.ok(!/recoverySystemNote\(ctx\.state\(\)\)\s*\?\?/.test(built), 'no fallback after recoverySystemNote');
 });
+
+test("a cut-off exec with no call of its own but unattributed ones does not say it ran none; with no calls at all it does", () => {
+  const call = { callId: 'exec-u1', tool: 'lookup', store: { status: 'completed', text: 'found' } };
+  const withLoose = execRecoveryOutput([], [call]);
+  assert.match(withLoose, /no call of its own was recorded/);
+  assert.match(withLoose, /1 call ran whose script could not be told/);
+  assert.ok(!/ran none/.test(withLoose) && !/Run it again/.test(withLoose), 'it does not tell the model to run the script again');
+  const none = execRecoveryOutput([], []);
+  assert.match(none, /ran none\. Run it again if it is still needed\./);
+  assert.ok(!/could not be told/.test(none));
+});
