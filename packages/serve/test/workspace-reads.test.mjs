@@ -181,6 +181,40 @@ test("a directory the walk cannot read is reported refused, never read as empty,
   assert.ok(!seen.some((p) => p.startsWith("locked/")), "and nothing is said of what is in it");
 });
 
+test("a directory that lists but cannot be searched (0444) reports each entry it holds refused, never skips them, and the rest of work/ is still walked", { skip: process.getuid?.() === 0 && "root reads every directory" }, async (t) => {
+  const { chmod } = await import("node:fs/promises");
+  const server = await served(t);
+  await mkdir(join(server.work, "learnings"));
+  await writeFile(join(server.work, "learnings", "one.md"), "a note");
+  await writeFile(join(server.work, "learnings", "two.md"), "another");
+  await writeFile(join(server.work, "beside.txt"), "x");
+  await chmod(join(server.work, "learnings"), 0o444);
+  const refused = [];
+  const seen = [];
+  try {
+    await walkWork(server.work, (path) => void seen.push(path), { refused: (path, reason) => void refused.push([path, reason]) });
+  } finally {
+    await chmod(join(server.work, "learnings"), 0o700);
+  }
+  assert.deepEqual(refused.sort(), [["learnings/one.md", "unreadable"], ["learnings/two.md", "unreadable"]], "each entry it holds is named, so no caller infers it is gone");
+  assert.ok(seen.includes("beside.txt") && seen.includes("learnings"), `the rest is walked: ${seen.join(", ")}`);
+});
+
+test("an entry removed between the listing and its look is gone, not refused: nothing is said of it", async (t) => {
+  const { rm } = await import("node:fs/promises");
+  const server = await served(t);
+  await writeFile(join(server.work, "stays.txt"), "x");
+  await writeFile(join(server.work, "goes.txt"), "y");
+  seam(t, "afterList", async (rel) => {
+    if (rel === ".") await rm(join(server.work, "goes.txt"));
+  });
+  const refused = [];
+  const seen = [];
+  await walkWork(server.work, (path) => void seen.push(path), { refused: (path, reason) => void refused.push([path, reason]) });
+  assert.deepEqual(refused, []);
+  assert.ok(seen.includes("stays.txt") && !seen.includes("goes.txt"), seen.join(", "));
+});
+
 test("a directory swapped for a link after the walk listed it, and before it enters, is reported as a link, and not entered", async (t) => {
   const server = await served(t);
   await mkdir(join(server.work, "inner"));
