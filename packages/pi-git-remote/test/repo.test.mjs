@@ -58,8 +58,9 @@ test("a commit given a date is the same commit from any host: author and committ
   const twoRepo = await openRepo({ dir: path.join(root, "host-two"), remote });
   const two = await twoRepo.commitTo("runs/r1", options);
   assert.equal(two.sha, one.sha);
-  const dates = (await rawGit(["log", "-1", "--format=%aI %cI", two.sha], { gitDir: path.join(root, "host-two") })).toString().trim();
-  assert.equal(dates, "2026-10-29T23:59:30+00:00 2026-10-29T23:59:30+00:00");
+  // Instants, not strings: how git prints a UTC offset differs between versions.
+  const dates = (await rawGit(["log", "-1", "--format=%at %ct", two.sha], { gitDir: path.join(root, "host-two") })).toString().trim();
+  assert.equal(dates, `${date.getTime() / 1000} ${date.getTime() / 1000}`);
   const loose = await twoRepo.makeCommit({ parent: main, files: { "a.md": "a\n" }, message: "m", date });
   assert.equal(loose, await (await openRepo({ dir: path.join(root, "host-three"), remote })).makeCommit({ parent: main, files: { "a.md": "a\n" }, message: "m", date }));
   for (const bad of [new Date(Number.NaN), "2026-10-29", 1_700_000_000_000]) {
