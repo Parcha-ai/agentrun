@@ -542,7 +542,8 @@ for (const kind of ['connect', 'http', 'socks']) {
     const lookup = (_name, _options, callback) => { asked++; void held.then(() => callback(null, [{ address: PUBLIC, family: 4 }])); };
     // An origin that keeps its side open after the proxy's end of a connection, and never answers: only the proxy closing
     // the connection itself frees the slot.
-    const silent = createNetServer({ allowHalfOpen: true }, () => {});
+    const accepted = new Set();
+    const silent = createNetServer({ allowHalfOpen: true }, (socket) => { accepted.add(socket); socket.on('error', () => {}); });
     await new Promise((ok) => silent.listen(0, LOOPBACK, ok));
     const dials = [];
     const dial = (address, port) => { dials.push(`${address}:${port}`); return connect(silent.address().port, LOOPBACK); };
@@ -567,7 +568,9 @@ for (const kind of ['connect', 'http', 'socks']) {
       next.socket.destroy();
     } finally {
       await t.close();
-      silent.close();
+      // The origin never closes what it accepted: they go here, or the server's close would wait on them forever.
+      for (const socket of accepted) socket.destroy();
+      await new Promise((ok) => silent.close(ok));
     }
   });
 }
