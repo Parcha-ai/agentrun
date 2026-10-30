@@ -20,6 +20,7 @@ import {
   Mutex,
   NativeJournal,
   placeSubmissions,
+  openTurn,
   recoveryNote,
   recoverySystemNote,
   recoveryUserTurn,
@@ -49,7 +50,7 @@ import {
   THREAD_STREAM,
   type ThreadRecord,
 } from './rollout.js';
-import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, Scripts, settle, UNWATCHED } from './scripts.js';
+import { callKey, completedNested, execRecoveryOutput, type NestedFact, NESTED_CALL, outputTextOf, recoveryFacts, Scripts, settle, UNWATCHED } from './scripts.js';
 
 /**
  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
@@ -860,7 +861,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
               const exec = execOf.get(callId) ?? (tie.kind === 'tied' || tie.kind === 'held' ? tie.exec : undefined);
               if (exec) execOf.set(callId, exec);
               // Never the unwatched-answer sentinel: a call tied to no known exec is journaled with none.
-              journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: recoveryNote(ctx.state())?.turn.since ?? -1 });
+              journal.append(NESTED_STREAM, { callId, exec: exec === undefined || exec === UNWATCHED ? null : exec, since: openTurn(ctx.state())?.since ?? -1 });
             }
             const text = takeSaid(active);
             journal.message({ type: 'message', role: 'assistant', text, toolCalls: [{ id: callId, name: String(p.tool) }] });
@@ -1114,34 +1115,35 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         if (resume && summary.dangling.length > 0) {
           // Calls the rollout has no output for get theirs from the log.
           const ties = (await journal.read<{ callId: string; exec: string | null; since?: number }>(NESTED_STREAM)).map((r) => r.data);
-          const dangling = summary.dangling.filter((d) => d.name === 'exec');
-          const lastExec = dangling.at(-1)?.callId;
+          const execs = summary.dangling.filter((d) => d.name === 'exec').map((d) => d.callId);
           const rolled = completedNested(lines);
+          const factOf = (tie: { callId: string }): NestedFact => {
+            const e = ctx.state().effects.get(toolKey(tie.callId));
+            return {
+              callId: tie.callId,
+              tool: e ? e.name.replace(/^tool\./, '') : (rolled.get(tie.callId)?.tool ?? 'a tool'),
+              ...(e ? { store: { status: e.status === 'completed' ? 'completed' : e.status === 'failed' ? 'failed' : 'started', text: e.status === 'failed' ? (e.error?.message ?? '') : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact['store']> } : {}),
+              ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
+            };
+          };
+          // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its
+          // end) is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
+          const listed = recoveryFacts(execs, ties, note.turn.since, factOf);
           const items = summary.dangling.map((c) => {
             // An `exec` is a custom tool call: its output is one, built from the nested calls the log holds for it, and nothing runs.
             if (c.name !== 'exec') return { type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) };
-            const facts: NestedFact[] = [];
-            // A call whose script could not be told when it ran (an answer the proxy did not see to its end) belongs to this interrupted turn
-            // only if it ran in it; with a single cut-off exec it is that exec's, with more it is listed apart.
-            const unplaced = (t: { exec: string | null; since?: number }) => t.exec === null && t.since === note.turn.since;
-            for (const tie of ties.filter((t) => t.exec === c.callId || (unplaced(t) && c.callId === lastExec && dangling.length === 1))) {
-              const e = ctx.state().effects.get(toolKey(tie.callId));
-              const fact: NestedFact = {
-                callId: tie.callId,
-                tool: e ? e.name.replace(/^tool\./, '') : (rolled.get(tie.callId)?.tool ?? 'a tool'),
-                ...(e ? { store: { status: e.status === 'completed' ? 'completed' : e.status === 'failed' ? 'failed' : 'started', text: e.status === 'failed' ? (e.error?.message ?? '') : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact['store']> } : {}),
-                ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
-              };
-              facts.push(fact);
+            const { own, loose } = listed.get(c.callId)!;
+            // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
+            // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
+            for (const fact of [...own, ...loose]) {
+              const e = ctx.state().effects.get(toolKey(fact.callId));
               const settled = settle(fact);
-              // The log's word for a `never` call that completed: the session's record or, when it lost the end, the rollout's (Codex writes
-              // that line only after our tool answered, so the effect happened). Each completion answers one re-issue.
               if (settled.kind === 'completed' && e?.replay === 'never') {
                 const key = callKey(fact.tool, e.input);
                 recovered.set(key, [...(recovered.get(key) ?? []), { tool: fact.tool, text: settled.text }]);
               }
             }
-            return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(facts) };
+            return { type: 'custom_tool_call_output', call_id: c.callId, output: execRecoveryOutput(own, loose) };
           });
           await guard(rpc.request('thread/inject_items', { threadId, items }));
           await guard(synced());

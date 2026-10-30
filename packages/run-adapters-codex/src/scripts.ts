@@ -122,18 +122,41 @@ export function settle(fact: NestedFact): Settled {
 
 const quoted = (text: string) => JSON.stringify(text.length > 2000 ? `${text.slice(0, 2000)}… [${text.length - 2000} more characters]` : text);
 
-/** The output a cut-off `exec` is answered with: its nested calls, in order, each with what it came to, and that nothing was
- *  run again. A completed call's effect is done, a never tool's included; a call with no end is interrupted. */
-export function execRecoveryOutput(facts: readonly NestedFact[]): string {
-  if (facts.length === 0) return "The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.";
-  const lines = facts.map((fact, i) => {
-    const settled = settle(fact);
-    const name = `${i + 1}. ${fact.tool}`;
-    if (settled.kind === "completed") return `${name} completed: ${quoted(settled.text)}. Its effect is done; it was not run again.`;
-    if (settled.kind === "failed") return `${name} failed: ${quoted(settled.text)}. It was not run again.`;
-    return `${name} was started and did not report a result, so it may have taken effect: check before calling it again. It was not run again.`;
-  });
-  return `The exec was cut short after these calls (the session stopped), and nothing was run again. Their outcomes, in order:\n${lines.join("\n")}`;
+/** A tie record of a nested call: the `exec` it ran under (none when the answer that wrote the script could not be read to its end,
+ *  so which script it was cannot be told) and the turn it ran in. */
+export interface NestedTie {
+  callId: string;
+  exec: string | null;
+  since?: number;
+}
+
+/** The nested calls to list for each cut-off `exec` of the interrupted turn `since`: its own, in order; and the calls whose
+ *  script could not be told, which ran in that turn, under the LAST cut-off exec only, apart from its own, so each is listed once. */
+export function recoveryFacts<T>(execs: readonly string[], ties: readonly NestedTie[], since: number, factOf: (tie: NestedTie) => T): Map<string, { own: T[]; loose: T[] }> {
+  const out = new Map<string, { own: T[]; loose: T[] }>();
+  const last = execs.at(-1);
+  const loose = ties.filter((t) => t.exec === null && t.since === since).map(factOf);
+  for (const exec of execs) out.set(exec, { own: ties.filter((t) => t.exec === exec).map(factOf), loose: exec === last ? loose : [] });
+  return out;
+}
+
+const describeCall = (fact: NestedFact, label: string): string => {
+  const settled = settle(fact);
+  if (settled.kind === "completed") return `${label} completed: ${quoted(settled.text)}. Its effect is done; it was not run again.`;
+  if (settled.kind === "failed") return `${label} failed: ${quoted(settled.text)}. It was not run again.`;
+  return `${label} was started and did not report a result, so it may have taken effect: check before calling it again. It was not run again.`;
+};
+
+/** The output a cut-off `exec` is answered with: its nested calls, in order, each with what it came to, and that nothing was run
+ *  again. A completed call's effect is done, a never tool's included; a call with no end is interrupted. `loose`: calls of this turn
+ *  whose script could not be told (given to the last cut-off exec only), listed apart under their own heading. */
+export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): string {
+  const apart = loose.length
+    ? `\n${loose.length} ${loose.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`)).join("\n")}`
+    : "";
+  if (facts.length === 0) return `The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.${apart}`;
+  const lines = facts.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
+  return `The exec was cut short after these calls (the session stopped), and nothing was run again. Their outcomes, in order:\n${lines.join("\n")}${apart}`;
 }
 
 /** The text of a tool's recorded output (a string, or `{ text }` with images). */
