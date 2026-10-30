@@ -32,7 +32,7 @@ const runNode = createHarnessRunner(
   named back to the host's own names. Every call, the host's or the CLI's own, is a kernel effect whose intent is
   recorded before it runs, so a call a crash cut off is reported, never repeated. A `PreToolUse` hook denies every other
   call, and every error inside it is a deny. With the CLI's own tools on, they run only in the host's box (`box`, a
-  `MachineBox` from `@parcha/agentrun-kernel/host`), where Claude Code's own sandbox is off; with no box the turn fails
+  `MachineBox` from `@parcha/agentrun-kernel/host`), where the CLI's own sandbox is off; with no box the turn fails
   by name (`box_unavailable`), unless `box: "unsandboxed"` says the operator chose none.
   Sub-agents, scheduled jobs, worktrees, background shells, settings, plugins and MCP servers from
   settings are off by option, and `test/tool-off.test.mjs` runs the pinned CLI against a scripted model that tries each
