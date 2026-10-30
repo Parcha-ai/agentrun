@@ -135,7 +135,9 @@ export class Agents {
    *  one revision. The store keeps an agent's id, name and description from its creation. `ifCurrent` (from If-Match)
    *  is the current revision the caller read, null for none: the store compares it in the commit's own transaction.
    *  `check` sees the revision, the current one's included, before anything is written, and may refuse it. */
-  async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent, check }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void> } = {}): Promise<AgentEntry> {
+  /** `contract`: the contract's edit, whose version the caller has checked is past the current one. It always makes a new
+   *  revision, the same definition included, numbered as this store numbers them (the next), whatever version it named. */
+  async commit(read: AgentEntry, { definition, skills, note }: DefinitionBody, { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: (revision: NewRevision) => Promise<void>; contract?: boolean } = {}): Promise<AgentEntry> {
     const held = (now: AgentEntry) => {
       if (ifCurrent !== undefined && (now.revision?.id ?? null) !== ifCurrent) storeError(new AgentHomeError("stale", "the agent's current revision is not the one the commit expects"));
       return now;
@@ -164,11 +166,11 @@ export class Agents {
     // checks again, and the store refuses the commit if another writer moved the current revision after this read.
     const attempt = async (): Promise<AgentEntry | undefined> => {
       const now = held(this.entry(agent.id) ?? entry);
-      if (now.revision && sameRevision(now.revision, revision)) {
+      if (!contract && now.revision && sameRevision(now.revision, revision)) {
         this.checkVersion(definition, now.version);
         return now;
       }
-      this.checkVersion(definition, now.revisions + 1);
+      if (!contract) this.checkVersion(definition, now.revisions + 1);
       await this.store.commitRevision(agent.id, revision, { setCurrent: true, ifCurrent: now.revision?.id ?? null });
       return undefined;
     };

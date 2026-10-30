@@ -504,7 +504,7 @@ with it. The agents are rows in `store.sqlite`, not one home each; the beta.24 h
 turns a home into an agent.
 
 ```
-my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes
+my-agents/store.sqlite       agents, revisions, skills, runs, archive_changes, run_imports
 my-agents/runs/<run id>/     each run's own store and work directory
 ```
 
@@ -518,6 +518,8 @@ CREATE TABLE runs      (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES a
                         started_at TEXT NOT NULL, ended_at TEXT, cost_usd REAL, summary TEXT);
 CREATE TABLE archive_changes (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('agent', 'run')), id TEXT NOT NULL,
                         archived INTEGER NOT NULL CHECK (archived IN (0, 1)), at TEXT NOT NULL);
+CREATE TABLE run_imports (run_id TEXT PRIMARY KEY REFERENCES runs(id), source TEXT NOT NULL CHECK (source IN ('claude-code', 'codex', 'pi')),
+                        session TEXT NOT NULL, at TEXT NOT NULL, UNIQUE (source, session));
 ```
 
 ```js
@@ -544,6 +546,15 @@ once, like revisions: the database refuses an `UPDATE` or a `DELETE`. An item's 
 `archivedAt` while it is archived, and a run's is its own, else its agent's. The table came without a new store version: a store an
 earlier version wrote opens and reads with nothing archived, gets the table from the first `openStore`, and an earlier version still
 opens a store that has it and ignores it.
+
+A session another harness ran on this machine comes in as a run that has already ended:
+`store.importRun({ agent, revision, state, startedAt, endedAt, costUsd?, summary?, source, session })` writes its `runs` row at the
+source's own times and its `run_imports` row (the source, `claude-code`, `codex` or `pi`, and the session's own id) in one
+transaction, and returns `{ runId, dir, storePath }`: the store mints the id, and makes the run's directory and its store directory
+0700. Nothing ran here, so there is no work directory; the caller writes the transcript at `storePath`. The same source and session
+imports once: again, it returns undefined and writes nothing. The reads carry `importedFrom: { source, session }`. An imported run
+is read-only: `reopenRun` and `carryBack` refuse it by name, and a trigger in the file refuses any `UPDATE` of its row, so a version
+that ignores `run_imports` cannot change it either. Like `archive_changes`, the table came without a new store version.
 
 A workflow revision whose call nodes name a tool that is not a `tool` call passes the commit check on purpose: whether it runs is the host's to decide. `openStoreReader(folder)` reads `store.sqlite` in place, read-only: it writes nothing and makes no copy. On a store a run was stopped in the middle of writing, it says so in one line and changes no file; open the store once with write access to roll the write back.
 
@@ -638,7 +649,7 @@ The types the package exports:
   `CapturedState`, `VaultCookie` and `VaultEntry`.
 - **Runs.** `RunPaths`, `RunStart`, `RunSeed` (plain data, so a host can carry it to the run's side), `CarryBack`,
   `ProfileStore` and `ProfileTarget` (the host's Harness, or any Session on the run store).
-- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState` and `ArchiveKind` (`"agent" | "run"`).
+- **Store.** `Agent`, `AgentRow`, `Revision`, `RevisionRow`, `RevisionKind`, `AgenticBody`, `WorkflowBody`, `NewRevision`, `StartedRun`, `RunRow`, `RunState`, `ArchiveKind` (`"agent" | "run"`), and for an imported run `ImportedRun`, `ImportedFrom` and `ImportSource` (`"claude-code" | "codex" | "pi"`).
 - **Packs.** `PackOptions`, `Skipped`, `HomeManifest` (the manifest's fields, in [Moving a home](#moving-a-home)),
   `ImportOptions`, `ImportReport`, and `HomeCheck` (`{ name, status, message, detail? }`, `status` being `ok`, `warn`
   or `fail`). `ImportStep` and `ImportOptions.inject` belong to this package's tests and are not part of its contract.
