@@ -4,7 +4,7 @@
 //
 // On the scripted Agent SDK (./testing), with a box for the tests that runs the stand-in CLI as itself. No key, no network.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -49,9 +49,14 @@ function fakeBox(isolation = { mode: 'bwrap', cgroup: false }) {
   box.reap = async () => ({ empty: true, left: 0, by: 'pidns' });
   return box;
 }
-const machineBox = async (box) => ({ box, recorder: { ahead: () => {}, started: async () => {} }, readOnly: [], modelPort: await freePort() });
+// The session's sockets in a short directory of their own, outside the session (as serve's run box gives them): under a
+// TMPDIR inside the session, the machine's default would be too long for a socket's path.
+const SOCKETS = mkdtempSync('/tmp/cbx-');
+after(() => rmSync(SOCKETS, { recursive: true, force: true }));
+let sockets = 0;
+const machineBox = async (box) => ({ box, recorder: { ahead: () => {}, started: async () => {} }, readOnly: [], modelPort: await freePort(), runtimeDir: join(SOCKETS, `s${sockets++}`) });
 
-async function run(t, extra) {
+async function run(t, extra, runner = {}) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
   const seen = [];
@@ -65,7 +70,7 @@ async function run(t, extra) {
     log: (message) => logs.push(message),
     ...extra,
   });
-  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] });
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [], ...runner });
   return { result: runNode(node), seen, logs };
 }
 
@@ -82,9 +87,20 @@ test('a box the probe found unavailable says why, by its error, and runs nothing
   assert.deepEqual(box.started, []);
 });
 
+/** A session directory of the test's own, and this process's TMPDIR inside it (as serve gives a boxed run's process): the
+ *  CLI's config directory is made there, so it is a bind the kernel admits. Restored after. */
+function sessionWithTmp(t, tmpInside = true) {
+  const session = join(scratch(), 'session');
+  mkdirSync(join(session, 'proc-tmp'), { recursive: true });
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = tmpInside ? join(session, 'proc-tmp') : scratch();
+  t.after(() => (saved === undefined ? delete process.env.TMPDIR : (process.env.TMPDIR = saved)));
+  return { sessionDir: () => session };
+}
+
 test("in the host's box the CLI starts through it, with its own tools and none of the CLI's own sandbox, reaching its model through the box's forwarder", async (t) => {
   const box = fakeBox();
-  const { result, seen } = await run(t, { box: await machineBox(box) });
+  const { result, seen } = await run(t, { box: await machineBox(box) }, sessionWithTmp(t));
   assert.deepEqual(await result, { answer: 'ok' });
   assert.deepEqual(box.started, [process.execPath], 'the CLI started in the box');
   assert.equal(seen[0].sandbox, undefined, "Claude Code's own sandbox is off: the box is the boundary");
