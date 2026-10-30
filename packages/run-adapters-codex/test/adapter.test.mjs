@@ -278,71 +278,11 @@ test('a session runs exactly the binary that was checked when the adapter was ma
   }
 });
 
-test("a model Codex runs in code mode is refused when the session is checked, and one that runs classic function tools is not", { skip: !pinned && 'the pinned Codex binary is not installed here', timeout: 60_000 }, async () => {
+test("a model Codex runs in code mode is checked like any other: the check refuses nothing for its model", { skip: !pinned && 'the pinned Codex binary is not installed here', timeout: 60_000 }, () => {
   const dir = scratch();
   const make = (model) => codexAdapter({ model, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
   const spec = { key: 'step:mode', label: 'x', system: [], tools: [], context: 'fresh' };
-  assert.deepEqual(make('gpt-5.4-mini').check(spec), [], 'a classic model');
-  const problems = make('gpt-5.6-luna').check(spec);
-  assert.equal(problems.length, 1, JSON.stringify(problems));
-  assert.match(problems[0], /runs tools in code mode, which this adapter does not support yet/);
-  assert.match(problems[0], /gpt-5\.6-luna/);
-  // A tier names the model that counts.
-  const tiered = codexAdapter({ model: { default: 'gpt-5.4-mini', strong: 'gpt-5.6-luna' }, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
-  assert.deepEqual(tiered.check(spec), []);
-  assert.equal(tiered.check({ ...spec, tier: 'strong' }).length, 1);
-  await assert.rejects(make('gpt-5.6-luna').open(spec, { writer: await memorySessionStore().open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} }), /code mode/);
-});
-
-test("the models Codex's catalog says run tools only in code mode are read from it, and nothing else is", async () => {
-  const { codeModeModels } = await import('../dist/code-mode.js');
-  const catalog = JSON.stringify({ models: [{ slug: 'a', tool_mode: 'code_mode_only' }, { slug: 'b' }, { slug: 'c', tool_mode: 'classic' }, { slug: 'd', tool_mode: 'code_mode_only' }] });
-  assert.deepEqual([...codeModeModels(catalog)].sort(), ['a', 'd']);
-  assert.deepEqual([...codeModeModels('{"models":[]}')], []);
-  assert.throws(() => codeModeModels('not json'), /catalog/);
-  assert.throws(() => codeModeModels('{"nope":1}'), /catalog/);
-});
-
-test('a catalog read that fails fails closed: the check throws before any turn, and nothing reaches the provider', { skip: !pinned && 'the pinned Codex binary is not installed here', timeout: 60_000 }, async () => {
-  const { readCodeModeModels } = await import('../dist/code-mode.js');
-  const dir = scratch();
-  const standIn = (name, body) => {
-    const path = join(dir, name);
-    writeFileSync(path, `#!/bin/sh\n${body}\n`);
-    chmodSync(path, 0o755);
-    return path;
-  };
-  const broken = {
-    'prints something that is not JSON': standIn('not-json', 'echo "no catalog today"'),
-    'exits non-zero': standIn('fails', 'echo \'{"models":[]}\'; exit 3'),
-    'prints JSON with no models': standIn('no-models', 'echo \'{"error":"x"}\''),
-  };
-  for (const [what, path] of Object.entries(broken)) {
-    assert.throws(() => readCodeModeModels(path), /catalog|Command failed/, `a binary that ${what}`);
-    const seen = [];
-    const codex = codexAdapter({
-      model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'),
-      fetch: async (url, init) => { seen.push(url); throw new Error('no request should leave'); },
-      readCodeModeModels: () => readCodeModeModels(path),
-    });
-    const spec = { key: `step:closed-${what.length}`, label: 'x', system: [], tools: [], context: 'fresh' };
-    assert.throws(() => codex.check(spec), /catalog|Command failed/, `check, a binary that ${what}`);
-    await assert.rejects(codex.open(spec, { writer: await memorySessionStore().open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} }), /catalog|Command failed/, `open, a binary that ${what}`);
-    assert.deepEqual(seen, [], `nothing reached the provider, a binary that ${what}`);
-  }
-});
-
-test('the catalog reader is test-only: passed outside the stand-in guard, the adapter refuses to be made, so a host cannot switch off the code-mode refusal', () => {
-  const options = { model: 'gpt-5.4-mini', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: scratch(), readCodeModeModels: () => new Set() };
-  const saved = { standin: process.env.AGENTRUN_CODEX_STANDIN, node: process.env.NODE_ENV };
-  try {
-    delete process.env.AGENTRUN_CODEX_STANDIN;
-    assert.throws(() => codexAdapter(options), (error) => error instanceof TypeError && /readCodeModeModels is test-only/.test(error.message), 'without AGENTRUN_CODEX_STANDIN=1');
-    process.env.AGENTRUN_CODEX_STANDIN = '1';
-    process.env.NODE_ENV = 'production';
-    assert.throws(() => codexAdapter(options), (error) => error instanceof TypeError && /test-only/.test(error.message), 'in production');
-  } finally {
-    if (saved.standin === undefined) delete process.env.AGENTRUN_CODEX_STANDIN; else process.env.AGENTRUN_CODEX_STANDIN = saved.standin;
-    if (saved.node === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved.node;
-  }
+  for (const model of ['gpt-5.4-mini', 'gpt-6-sol', 'gpt-5.6-luna']) assert.deepEqual(make(model).check(spec), [], model);
+  const tiered = codexAdapter({ model: { default: 'gpt-5.4-mini', strong: 'gpt-6-sol' }, provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
+  assert.deepEqual(tiered.check({ ...spec, tier: 'strong' }), []);
 });
