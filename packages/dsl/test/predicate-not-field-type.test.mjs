@@ -15,7 +15,7 @@ const guarded = (when) => ({
   ] },
 });
 const run = (when, score) => runWorkflow(guarded(when), { score }, { runCode: async (node, state) => ({ accepted: { score: state.score } }) });
-const errorsOf = (when) => { const checked = validateWorkflow(guarded(when), { executeCode: false }); return checked.ok ? [] : checked.errors; };
+const errorsOf = (when) => { const checked = validateWorkflow(guarded(when), { executeCode: false, input: { score: 3 } }); return checked.ok ? [] : checked.errors; };
 
 test('an escalate on not field_type number fires on a present value that is not a number', async () => {
   const result = await run(notNumber, 'abc');
