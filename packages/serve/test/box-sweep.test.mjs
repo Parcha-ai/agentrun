@@ -445,3 +445,20 @@ test("a box that cannot be let go never holds up its run's end: an archived run 
   assert.ok(reaped.includes("box-stuck"), "its box was reaped");
   assert.equal(JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped, undefined, "its record left unmarked, for the next start to try again");
 });
+
+test("an archived run that is then cancelled has its box let go once the cancel settles", linux, async (t) => {
+  const reaped = [];
+  const box = { reap: async (r) => (reaped.push(r.id), { empty: true, left: 0, by: "pidns" }) };
+  const { api, data } = await serve(t, { box });
+  assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
+  const id = (await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
+  await follow(api, id, ["input_required"]);
+  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-cancelled", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
+  assert.deepEqual(reaped, [], "its process lives, so its box is its own");
+  assert.equal((await api("POST", `/runs/${id}/cancel`)).status, 202);
+  await follow(api, id, ["cancelled"]);
+  const mark = async () => JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped;
+  for (const deadline = Date.now() + 15_000; !(await mark()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `let go once the cancel settled: ${reaped}`);
+  assert.deepEqual(reaped, ["box-cancelled"]);
+});
