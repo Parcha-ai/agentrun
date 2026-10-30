@@ -618,6 +618,8 @@ export class Runs {
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
   private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
     const deadline = Date.now() + timeoutMs;
+    // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
+    await this.sweepOnce();
     for (let launched = false; ; await sleep(100)) {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
