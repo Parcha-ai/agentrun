@@ -320,6 +320,29 @@ test('T4c: a sift carries each request\'s evidence into the sidecars of its item
     assert.deepEqual(outcome.result.state.kept.answers.map((sidecar) => sidecar.evidence), sidecars, `${what}: each item's sidecar holds its request's evidence`);
     assert.deepEqual(events.map((event) => [event.detail.provider, event.detail.evidence]), [['parallel', all]], `${what}: judge.answered names the provider and every request's evidence`);
   }
+  // Requests answered by different providers: the first two replay what Jev answered under the old default, the third is
+  // asked of the new one, so the event names no one provider.
+  const cited = (id, by) => ({ url: `https://registry.example/${by}/${id}`, title: null, excerpts: [], scope: 'call' });
+  /** A provider that cites, for each item it is asked about, a source under its own name. */
+  const citing = (id) => { const base = provider(id); return { ...base, decide: async (request, ctx) => ({ ...(await base.decide(request, ctx)), evidence: request.state.items.map((named) => cited(named.item.id, id)) }) }; };
+  const jev = citing('jev'), parallel2 = citing('parallel');
+  const receipts = [];
+  // A host that keeps decision receipts and answers from them: the second run replays the requests the first answered.
+  const kept = { recordDecision: async (receipt) => { receipts.push(receipt); }, recovery: { supportsExecutionPaths: true, resume: async () => undefined, commit: async () => {},
+    pollStartedAt: () => Date.now(), wait: async () => {}, decision: async (id) => receipts.find((receipt) => receipt.id === id && receipt.status === 'answered') } };
+  const unpinned = { node: 'sift', label: 'siftThem', itemsPath: 'filings', out: 'Item', as: 'kept', evidence: 'if_supported' };
+  const first = await outcomeOf(runWorkflow(doc([unpinned]), INPUT, { ...hosted([jev, parallel2], { fallback: 'jev' }), ...kept, maxQuestionsPerRequest: 1 }));
+  assert.equal(first.status, 'complete', JSON.stringify(first).slice(0, 300));
+  const answered = [];
+  const input = { ...INPUT, filings: [...INPUT.filings, { id: 'c' }] };
+  const second = await outcomeOf(runWorkflow(doc([unpinned]), input, { ...hosted([jev, parallel2], { fallback: 'parallel' }), ...kept, maxQuestionsPerRequest: 1,
+    onEvent: (event) => { if (event.type === 'judge.answered') answered.push(event); } }));
+  assert.equal(second.status, 'complete', JSON.stringify(second).slice(0, 300));
+  assert.deepEqual([jev.asked.length, parallel2.asked.length], [2, 1], 'the first two requests replay what Jev answered; the new one goes to the new default');
+  assert.deepEqual(second.result.state.kept.answers.map((sidecar) => sidecar.evidence), [[cited('a', 'jev')], [cited('b', 'jev')], [cited('c', 'parallel')]], 'each item keeps its own request\'s evidence');
+  assert.equal(answered.length, 1);
+  assert.equal(answered[0].detail.provider, undefined, 'no one provider answered the sift, so its event names none');
+  assert.deepEqual(answered[0].detail.evidence, [cited('a', 'jev'), cited('b', 'jev'), cited('c', 'parallel')]);
 });
 
 test('T2d: a provider named by an inherited property is unknown: the run is refused before any node runs, and the judge refuses it, both by name', async () => {
