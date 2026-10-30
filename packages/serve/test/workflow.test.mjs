@@ -86,23 +86,25 @@ test("each model node runs on its tier's model: fast on AGENT_MODEL_FAST, the re
   assert.equal(storeRun(data, started.run_id).summary, "draft, answer");
 });
 
-test("an escalated workflow run is failed on /v2 with error escalated and its summary, in the run and in the lists, before and after a restart", async (t) => {
+test("an escalated workflow run is completed on /v2 with no error and a review, in the run and in the lists, before and after a restart", async (t) => {
   const { api, data, close } = await serve(t);
   const gated = answerFlow();
   gated.schemas.In.properties.amount = { type: "number" };
   gated.root.steps.unshift({ node: "escalate", label: "too big", when: { predicate: "gte", path: "amount", n: 500 }, kind: "review", stage: "gate", summary: "needs a person" });
   const started = await start(api, "gated", { question: "What is six times seven?", amount: 600 }, gated);
-  await follow(api, started.run_id, ["failed"]);
-  const escalated = { code: "escalated", message: "escalated at too big", retryable: false };
-  assert.deepEqual((await api("GET", `/runs/${started.run_id}`)).body.error, escalated);
-  assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs.map((r) => r.error), [escalated]);
+  await follow(api, started.run_id, ["completed"]);
+  const run = (await api("GET", `/runs/${started.run_id}`)).body;
+  const review = { kind: "review", node: "too big", reason: "needs a person", at: run.review?.at };
+  assert.deepEqual([run.status, run.error, run.review], ["completed", null, review]);
+  assert.deepEqual((await api("GET", "/runs?status=completed")).body.runs.map((r) => [r.error, r.review]), [[null, review]]);
+  assert.deepEqual((await api("GET", "/runs?status=failed")).body.runs, [], "an escalated run is not a failed one");
   assert.equal(storeRun(data, started.run_id).state, "escalated");
   await close();
   const again = await startServe({ data, port: 0, faux: FAUX });
   t.after(() => again.close());
   const read = client(again.baseUrl, again.token);
-  assert.deepEqual((await read("GET", "/runs")).body.runs.map((r) => [r.status, r.error]), [["failed", escalated]], "read from the store's row");
-  assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.error, escalated);
+  assert.deepEqual((await read("GET", "/runs")).body.runs.map((r) => [r.status, r.error, r.review]), [["completed", null, review]], "read from the store's row and serve.json");
+  assert.deepEqual((await read("GET", `/runs/${started.run_id}`)).body.review, review);
 });
 
 test("a run loads only the tiers its revision uses: a fast-only workflow runs on AGENT_MODEL_FAST with no AGENT_MODEL", async (t) => {

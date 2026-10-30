@@ -12,6 +12,7 @@ import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD } from "../dist/decisions.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
@@ -195,9 +196,8 @@ test("a System One request that fails after it was sent (a 503) is sent once, an
   await follow(api, runId, ["completed", "failed"]);
   const run = (await api("GET", `/runs/${runId}`)).body;
   assert.equal((await seen()).length, 1, "a request that may have been answered and billed is never sent again");
-  assert.equal(run.status, "failed");
-  assert.equal(run.error?.code, "escalated", JSON.stringify(run.error));
-  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"], "the run waits for review as an interrupted decision");
+  assert.deepEqual([run.status, run.error, run.review?.kind], ["completed", null, "decision_interrupted"], "the run waits for review as an interrupted decision");
+  assert.deepEqual(escalations(join(data, "runs", runId, "store", "run.sqlite")), ["decision_interrupted"]);
   assert.equal(run.cost.usd, null, "a decision that may have been billed leaves the run's cost unknown, never $0");
 });
 
@@ -311,6 +311,32 @@ test("a decision whose cost the provider reports is on its row, and the run's to
   assert.equal(usage.usage.usd, run.cost.usd, "the timeline's usage row and the run's cost agree");
   assert.equal(run.cost.usd, 0.00003, "the model node is free under the fake, so the run's cost is the decision's, counted once");
   assert.equal(storeRun(data, runId).costUsd, 0.00003, "and the store keeps the same total");
+});
+
+test("a workflow that escalates ends completed and waits for review: no error, no output, and review names its kind, node and reason", async (t) => {
+  await withCanary(t);
+  const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
+  const gate = { node: "escalate", label: "review_is_coi", when: { predicate: "gte", path: "coi$answers.answers.is_coi.noul", n: 0.9 }, kind: "coi_review", stage: "coi", summary: "Review: is_coi is at least 0.9, so a person looks." };
+  const runId = await startFlow(api, [judge, gate, probe()]);
+  await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.state, run.error, run.result?.output ?? null], ["completed", "idle", null, null], JSON.stringify(run.error));
+  const { at, ...review } = run.review ?? {};
+  assert.deepEqual(review, { kind: "coi_review", node: "review_is_coi", reason: "Review: is_coi is at least 0.9, so a person looks." });
+  assert.ok(Number.isFinite(Date.parse(at)), "review.at is a time");
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, run.review), [], "the review meets the served document");
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, null), [], "and so does no review");
+  const listed = (await api("GET", "/runs")).body.runs.find((row) => row.run_id === runId);
+  assert.deepEqual([listed.status, listed.error, listed.review], ["completed", null, run.review], "the list says the same");
+  // A workflow run takes no messages here, escalated or not: the refusal it always had.
+  const message = await api("POST", `/runs/${runId}/messages`, { content: "approved" });
+  assert.deepEqual([message.status, message.body.error?.code], [501, "unsupported_here"]);
+  // A run that did not escalate has no review.
+  assert.equal((await api("POST", "/agents", flowAgent("plain", flow([judge, probe()])))).status, 201);
+  const plain = (await api("POST", "/agents/plain/runs", { input: { question: QUESTION } })).body.run_id;
+  await follow(api, plain, ["completed", "failed"]);
+  assert.equal((await api("GET", `/runs/${plain}`)).body.review, null);
 });
 
 test("the Parallel key never reaches a run's tools, model or programs: not in its environment, its descriptors, a child process or a file", async (t) => {
