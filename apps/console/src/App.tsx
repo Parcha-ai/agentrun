@@ -7,6 +7,8 @@ import { Playground, type StartResult } from "@/components/Playground";
 import type { Agent } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
+import { SignIn } from "@/components/SignIn";
+import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
@@ -26,9 +28,49 @@ function route(): Where {
   return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
 }
 
-/** The console over the server it is served from: agents, runs, and a run followed live. */
+/** The setup link's code, taken from the address once per page load and then kept: React may run a state initializer
+ *  twice (StrictMode, in development), and a second read of an address already cleared would lose the code. */
+let capturedSetup: { code: string | null } | undefined;
+function setupCodeOnce(): string | null {
+  if (!capturedSetup) {
+    const { code, rest } = takeSetupCode(location.hash);
+    if (code !== null) history.replaceState(null, "", `${location.pathname}${location.search}${rest}`);
+    capturedSetup = { code };
+  }
+  return capturedSetup.code;
+}
+
+/** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. */
 export function App() {
   const v2 = useMemo(() => createClient(), []);
+  const [auth, setAuth] = useState<AuthMode | null>(null);
+  // The setup code, taken from the address once and removed from it (and from the history entry).
+  const [setupCode] = useState(setupCodeOnce);
+  const readSession = async () => {
+    const r = await v2.session();
+    // A server without accounts: a protected read tells whether this browser is in already (a token it sends).
+    const probe = r.status === 404 ? await v2.listAgents().then(() => 200, (e) => (e instanceof ClientError ? e.status : 0)) : undefined;
+    setAuth(authMode(r, probe));
+  };
+  useEffect(() => { readSession().catch(() => setAuth("sign_in")); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (auth === null) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading...</p>;
+  if (auth !== "signed_in") {
+    return (
+      <SignIn key={auth} mode={auth} code={setupCode} onSubmit={async (password, code) => {
+        try { await (auth === "setup" ? v2.setup(password, code) : v2.signIn(password)); setAuth("signed_in"); return null; }
+        catch (e) {
+          // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
+          if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
+          return e instanceof ClientError ? signInProblem(e) : String(e);
+        }
+      }} />
+    );
+  }
+  return <Console v2={v2} onSignedOut={() => setAuth("sign_in")} />;
+}
+
+function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onSignedOut: () => void }) {
+  const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(route);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [runs, setRuns] = useState<Run[] | null>(null);
@@ -103,7 +145,11 @@ export function App() {
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   return (
-    <Shell active={where.section} onNavigate={nav}>
+    <Shell active={where.section} onNavigate={nav} onSignOut={() => {
+      // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
+      v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
+    }}>
+      {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {(where.section === "operator" || where.section === "playground") && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
         : where.section === "operator"
