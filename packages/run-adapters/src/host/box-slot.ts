@@ -44,8 +44,6 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
   let state: BoxSlotState = "empty";
   // The box's latest record: the one its reap is given.
   let latest: BoxRecord | undefined;
-  // Each box's start counts one up: a record of an earlier box never lands as this one's.
-  let generation = 0;
 
   const settle = async (record: BoxRecord): Promise<void> => {
     state = "reaping";
@@ -73,30 +71,14 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
       if (state !== "empty") throw busy(state);
       state = "live";
       latest = undefined;
-      const box = ++generation;
-      // Once the box has ended (its reap is on its way), it records nothing more: a late record would replace the next
-      // box's on disk. Its reap waits for every record write already in flight, and counts by the newest.
-      let ended = false;
-      // The seam's order: the ahead record before the spawn, the started one after. A started record with no ahead one
-      // before it is refused, so no write can be on its way for a box that was never recorded.
-      let recorded = false;
-      let writing: Promise<unknown> = Promise.resolve();
-      const refused = () => new BoxError("box_record_failed", "box_record_failed: the box has ended; its record is not written");
       const wrapped: BoxRecorder = {
         ahead: (record) => {
-          if (ended || box !== generation) throw refused();
           recorder.ahead(record);
           latest = record;
-          recorded = true;
         },
-        started: (record) => {
-          if (!recorded) return Promise.reject(new BoxError("box_record_failed", "box_record_failed: a started record before the box's ahead record; it is not written"));
-          if (ended || box !== generation) return Promise.reject(refused());
-          const write = recorder.started(record).then(() => {
-            if (box === generation) latest = record;
-          });
-          writing = Promise.all([writing, write.catch(() => {})]);
-          return write;
+        started: async (record) => {
+          await recorder.started(record);
+          latest = record;
         },
       };
       let boxed: P;
@@ -104,8 +86,7 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
         boxed = start(wrapped);
       } catch (error) {
         // Recorded, so something may run in it: reaped, and the slot says how that went. Unrecorded: nothing spawned.
-        ended = true;
-        if (latest !== undefined) writing.then(() => settle(latest!)).catch(() => {});
+        if (latest !== undefined) settle(latest).catch(() => {});
         else state = "empty";
         throw error;
       }
@@ -117,7 +98,7 @@ export function boxSlot<P extends SlotChild>(options: { reap: (record: BoxRecord
       // The first of these ends the box: its process exited, or it was never let go. Either way it is reaped, once,
       // by its latest record, and its exit status is not read.
       let once: Promise<void> | undefined;
-      const end = () => (once ??= ((ended = true), writing.then(() => settle(latest!))));
+      const end = () => (once ??= settle(latest!));
       const reaped = Promise.race([boxed.exited, boxed.ready.then(() => boxed.exited)]).then(end, end);
       // Unhandled until the caller asks: a box left full is the caller's to see, not the process's to crash on.
       reaped.catch(() => {});

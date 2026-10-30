@@ -1,5 +1,7 @@
 // The small JSON files the server reads and writes beside the agent store.
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { closeSync, fsyncSync, openSync, renameSync, writeSync } from "node:fs";
+import { open, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
@@ -19,4 +21,44 @@ export async function writeWhole(path: string, text: string, mode = 0o600): Prom
   const temp = `${path}.tmp`;
   await writeFile(temp, text, { mode });
   await rename(temp, path);
+}
+
+/** Writes `text` to `path` whole and durably: the temporary file is synced before the rename, and the directory after it,
+ *  so once this resolves a crash, even of the machine, leaves the new text in place, never the old or none. */
+export async function writeDurable(path: string, text: string, mode = 0o600): Promise<void> {
+  const temp = `${path}.tmp`;
+  const file = await open(temp, "w", mode);
+  try {
+    await file.writeFile(text);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await rename(temp, path);
+  const dir = await open(dirname(path), "r");
+  try {
+    await dir.sync();
+  } finally {
+    await dir.close();
+  }
+}
+
+/** writeDurable, synchronously: on disk, the file and then its directory synced, when it returns. For a record that
+ *  must be durable before the next line runs, with nothing between them that could let anything else happen first. */
+export function writeDurableSync(path: string, text: string, mode = 0o600): void {
+  const temp = `${path}.tmp`;
+  const file = openSync(temp, "w", mode);
+  try {
+    writeSync(file, text);
+    fsyncSync(file);
+  } finally {
+    closeSync(file);
+  }
+  renameSync(temp, path);
+  const dir = openSync(dirname(path), "r");
+  try {
+    fsyncSync(dir);
+  } finally {
+    closeSync(dir);
+  }
 }

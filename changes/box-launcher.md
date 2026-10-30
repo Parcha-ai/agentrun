@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-adapters, @parcha/agentrun-serve
+kind: feature
+---
+`boxSlot` (`@parcha/agentrun-adapters/host`) runs one session's harness boxes one at a time, whatever the isolation: how a box starts and how it is reaped are its arguments, in the shapes of the kernel's new `Box` (`host/box.ts`: `BoxSpec`, `BoxRecord`, `BoxRecorder`, `BoxedChild`, `Reaped`, `BoxError`).
+- `start` is synchronous. It is refused with `BoxError` `box_busy` while the session's last box is live, being reaped, or was not counted empty. The box's start writes its record before the spawn (`ahead`) and before its first process is let go (`started`).
+- The box is reaped as soon as its process exits or is never let go. Only the reap's own count frees the slot. The box's exit status and output are never read, since anything in the box can forge them. A box left with processes, or one nothing could count, rejects with `box_not_empty` and keeps the session from starting another. `adopt` reaps the record a session's last box left before anything starts.
+- serve's `writeDurableSync` and `writeDurable` sync the new file and its directory before they return. `boxRecorder` writes a run's `box.json` with them, and refuses a record that names no writer, since such a record could never be cleared safely.
