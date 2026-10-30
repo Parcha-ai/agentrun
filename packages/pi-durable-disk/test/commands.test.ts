@@ -37,10 +37,26 @@ function killGroup(pid: number): void {
   }
 }
 
+/** Waits for `check` to hold, and passes on the value it saw: never a second read, since a check can turn false again
+ *  (a process's environment reads empty while it is inside an exec). */
 async function until(check: () => boolean, ms = 5_000): Promise<void> {
-  for (const end = Date.now() + ms; !check() && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.ok(check(), "in time");
+  let held = check();
+  for (const end = Date.now() + ms; !held && Date.now() < end; held = check()) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(held, "in time");
 }
+
+describe("until()", () => {
+  it("passes on the value it saw: a check that turns false again after it held is not read twice", async () => {
+    const seen = [false, true, false];
+    let i = 0;
+    await until(() => seen[Math.min(i++, seen.length - 1)]!);
+    assert.equal(i, 2, "read until it held, and no more");
+  });
+
+  it("fails in time when the check never holds", async () => {
+    await assert.rejects(until(() => false, 50), (error: unknown) => error instanceof assert.AssertionError && error.message === "in time");
+  });
+});
 
 const tables: { name: string; kind: "machine" | "ps"; table: ProcessTable }[] = [{ name: "this machine's process table", kind: "machine", table: processTable() }];
 if (process.platform === "linux") tables.push({ name: "ps, as on macOS (procps over /proc)", kind: "ps", table: psTable(linuxPs) });
@@ -1023,8 +1039,11 @@ describe("a recorder's mark", () => {
       await until(() => alive(pid));
       assert.equal(marked(), false, "held before its exec, the command does not carry the mark yet");
       writeFileSync(fifo, "go\n");
-      // The reap looks for the mark, so it runs only once the command carries it.
-      await until(marked);
+      // The reap looks for the mark, so it runs only once the command carries it, in its final image: the command execs
+      // twice (the shell, then sleep), and a read of its environment inside an exec finds none. Once it is sleep, nothing
+      // swaps its environment again.
+      const final = () => processTable().snapshot().commandLine(pid) === "sleep 600" && marked();
+      await until(final);
       assert.ok(marked(), "the command carries the mark");
       // A kill that does nothing: the marked command outlives the first reap's deadline.
       await assert.rejects(reapOrRefuse(records, { kill: () => {}, timeoutMs: 100 }), (error: unknown) => error instanceof HeldError && error.holder === "commands");
