@@ -7,7 +7,7 @@
 // request in flight holds its worst case until it answers.
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
-import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING } from "@parcha/pi-durable-agent/timeline";
+import { type EntryLike, timelineOf } from "@parcha/pi-durable-agent/timeline";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Models, Usage } from "@earendil-works/pi-ai";
 
 /** A run's cap in USD, passed to its process. */
@@ -24,33 +24,24 @@ export function capOf(env: NodeJS.ProcessEnv): number | undefined {
   return cap;
 }
 
-/** What the run's store says its model requests cost: every response of every conversation in it, and each cost
- *  written apart from a response (a compaction summary's; a harness request's that came in after its answer), counted
- *  as the run's timeline counts them (pi-durable-agent's timeline.ts). Unknown (null) while any cost is: a response or
- *  a booked request whose cost is not a number, or a harness answer's cost still pending; under a cap, never $0. */
+/** What the run's store says its model requests cost, across every conversation in it: the total the run's own
+ *  timeline gives (pi-durable-agent's timelineOf), read as a settled run, since the process that wrote it is gone. So
+ *  every rule the timeline keeps for a cost no one knows holds here: a cost that is not a number, a harness answer's
+ *  cost still pending, an aborted answer, and a request or compaction marked as sent with no answer (a crash cut it,
+ *  and it may have been billed). Unknown is null, which a cap never reads as $0. */
 export function spentIn(storeFile: string): number | null {
   if (!existsSync(storeFile)) return 0;
   const db = new DatabaseSync(storeFile, { readOnly: true });
+  const entries: EntryLike[] = [];
   try {
-    let known = 0;
-    let unknown = 0;
-    let pending = 0;
-    const add = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
-    for (const row of db.prepare("SELECT record FROM entries").iterate()) {
-      const entry = JSON.parse(String((row as { record: string }).record)) as { kind?: string; model?: { usage?: { cost?: { total?: unknown } } }[]; data?: { usd?: unknown } };
-      if (entry.kind === "pi.assistant") add(entry.model?.[0]?.usage?.cost?.total);
-      else if (entry.kind === REQUEST_COST) add(entry.data?.usd);
-      // The answer just before it was written with its cost to come: unknown until its REQUEST_COST_LATE.
-      else if (entry.kind === REQUEST_COST_PENDING && unknown > 0) (unknown -= 1), (pending += 1);
-      else if (entry.kind === REQUEST_COST_LATE) {
-        if (pending > 0) pending -= 1;
-        add(entry.data?.usd);
-      }
-    }
-    return unknown > 0 || pending > 0 ? null : known;
+    for (const row of db.prepare("SELECT record FROM entries ORDER BY rowid").iterate()) entries.push(JSON.parse(String((row as { record: string }).record)) as EntryLike);
   } finally {
     db.close();
   }
+  const row = timelineOf(entries, { settled: true }).find((event) => event.kind === "usage");
+  if (row === undefined) return 0;
+  const usd = row.usage?.usd;
+  return typeof usd === "number" && Number.isFinite(usd) ? usd : null;
 }
 
 /** The most output tokens one request may take: the model's ceiling, else its context window. A thinking budget can

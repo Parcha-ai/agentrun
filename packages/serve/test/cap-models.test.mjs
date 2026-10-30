@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING } from "@parcha/pi-durable-agent/timeline";
+import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED } from "@parcha/pi-durable-agent/timeline";
 import { capModels, spentIn } from "../dist/cap.js";
 
 const usage = (total) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total } });
@@ -155,3 +155,36 @@ test("spent so far, read back from a run's store: a response or a booked request
   assert.equal(spentIn(storeOf("late-unknown", [answer(0.25), answer(undefined), pending, late(null)])), null, "a late cost no one knows");
 });
 
+
+test("after a crash, a request marked as sent with no answer makes the spend unknown, and the relaunched run's next request is refused", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "spent-cut-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const storeOf = (name, records) => {
+    const file = join(dir, `${name}.sqlite`);
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE entries (record TEXT)");
+    for (const record of records) db.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify(record));
+    db.close();
+    return file;
+  };
+  const answer = (total, stopReason = "stop") => ({ kind: "pi.assistant", model: [{ role: "assistant", stopReason, usage: { cost: { total } } }] });
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const compaction = { kind: REQUEST_STARTED, data: { request: "compaction" } };
+  // The previous process went down with the request in flight: it may have been billed, at a cost no one knows.
+  const cut = storeOf("cut", [started, answer(0.25), started]);
+  assert.equal(spentIn(cut), null, "a request marked and never answered");
+  assert.equal(spentIn(storeOf("cut-compaction", [started, answer(0.25), compaction])), null, "a compaction marked and never costed");
+  assert.equal(spentIn(storeOf("aborted", [started, answer(0.25), started, answer(0.1, "aborted")])), null, "an aborted answer reports no final usage");
+  assert.equal(spentIn(storeOf("answered", [started, answer(0.25), started, answer(0.5)])), 0.75, "every marked request answered");
+  // A request refused after its mark, as request-start.ts writes it: its mark withdrawn as unsent, the refusal, and
+  // pi's error answer to it. Nothing left, so nothing was spent, and the spend stays known.
+  const refusedAfterMark = [started, { kind: REQUEST_ENDED, data: { unsent: true } }, { kind: REQUEST_REFUSED, data: {} }, answer(0, "error")];
+  assert.equal(spentIn(storeOf("refused", [started, answer(0.25), ...refusedAfterMark])), 0.25, "a request refused after its mark costs 0, known");
+  // The same three for a compaction: its cost is written as REQUEST_COST, and a cancelled one withdraws its mark.
+  assert.equal(spentIn(storeOf("compaction-costed", [started, answer(0.25), compaction, { kind: REQUEST_COST, data: { request: "compaction", usd: 0.5 } }])), 0.75, "a compaction closed by its cost");
+  assert.equal(spentIn(storeOf("compaction-refused", [started, answer(0.25), compaction, { kind: REQUEST_ENDED, data: { request: "compaction", unsent: true } }])), 0.25, "a compaction refused after its mark costs 0, known");
+  const priced = model({ input: 0, output: 1, cacheRead: 0, cacheWrite: 0 });
+  const { models, sent } = fakeModels();
+  assert.match(await refusedFor(await capModels(models, 1_000, spentIn(cut)), priced, sent), /^spend_cap_reached: .*spent is unknown/);
+  assert.equal(sent.length, 0, "nothing sent after the cut");
+});
