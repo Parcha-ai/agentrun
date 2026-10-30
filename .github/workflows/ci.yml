@@ -260,8 +260,11 @@ jobs:
     # @parcha/pi-vision's suites that run programs in the environment (test/binaries: ffmpeg and poppler). They are not
     # part of the verify matrix: they need the programs, not three Node versions. A provider that cannot find its
     # program fails here instead of skipping.
+    # Its ceiling is measured, not guessed. Over 44 jobs the suite took a median of 11.6 min, p90 13.7, and 14.5 at the slowest
+    # pass, and two runs were cut at 15. test/binaries/report-skill.test.mjs is 784 s of an 805 s suite: its tests run in
+    # series, and a file is node --test's unit of parallelism. Back to 15 when report-skill.test.mjs is split.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Install ffmpeg and poppler
