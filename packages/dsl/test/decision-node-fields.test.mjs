@@ -131,6 +131,26 @@ test('T3: each node is asked through its own provider and model, an unnamed one 
   assert.equal(jev.asked[0].ctx.deadlineMs, 2000, 'and never lengthen it past the provider\'s');
 });
 
+test('T3c: a model pin outside the models a provider declares is refused before any node runs, and its judge refuses it before anything is sent, both by name', async () => {
+  const parallel = provider('parallel', { models: ['parallel-fast'] });
+  let ran = 0;
+  const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+  const outcome = await outcomeOf(runWorkflow(doc([first, judge({ provider: 'parallel', model: 'base-1' })]), INPUT, { ...hosted([parallel]), onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+  assert.equal(outcome.status, 'threw', 'the run is refused');
+  assert.match(outcome.message, /judge node "check" pins the model base-1, which the decision provider parallel does not answer with/);
+  assert.deepEqual([ran, parallel.asked.length], [0, 0], 'refused before any node runs, the provider never asked');
+  const ask = { label: 'check', kind: 'judge', state: {}, questions: { legit: { type: 'noul', instructions: 'Is it?' } }, decisionId: 'd', provider: 'parallel' };
+  await assert.rejects(dsl.judgeFromProviders({ providers: { parallel }, default: 'parallel' })({ ...ask, model: 'base-1' }),
+    (error) => error instanceof DecisionProviderError && error.code === 'invalid_request' && error.message.includes('"base-1"'));
+  assert.equal(parallel.asked.length, 0, 'nothing was sent');
+  const declared = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', model: 'parallel-fast' })]), INPUT, hosted([parallel])));
+  assert.equal(declared.status, 'complete', 'a declared model is asked');
+  assert.deepEqual(parallel.asked.map(({ request }) => request.model), ['parallel-fast']);
+  const open = provider('jev');
+  const any = await outcomeOf(runWorkflow(doc([judge({ provider: 'jev', model: 'jev-1.14.0' })]), INPUT, hosted([open])));
+  assert.equal(any.status, 'complete', 'a provider that declares no models takes any pin');
+});
+
 test('T3b: a node that names no provider is answered by the default, and its receipt and judge.answered name that provider', async () => {
   const jev = provider('jev'), parallel = provider('parallel');
   const receipts = [], events = [];
