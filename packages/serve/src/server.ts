@@ -21,6 +21,7 @@ import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js"
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { type BoxFactory, type BoxView, boxConfig, cgroupDelegation, NO_BOX, resolveBox, UNSANDBOXED_BANNER } from "./box/config.js";
+import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
 import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
 
@@ -92,6 +93,9 @@ export type ServeOptions = {
   /** How the host's box is made (4a's bwrapBox, or a provider's), for AGENTRUN_BOX's setting. None: no box, so the box
    *  reads as unavailable and runs get no tools of their harness's own. */
   boxFactory?: BoxFactory;
+  /** The box runs' harnesses run in (4a's Box: its reap; on a shared server its run cgroups): the boxes runs leave are
+   *  swept at start and let go at archive. The quarantine of boxes a reap could not empty is kept in the data directory. */
+  box?: BoxHost;
 };
 
 /** `tokenFile` is null when `options.token` gave the token; `tokenMade` says this start made the token in it. */
@@ -272,7 +276,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const caps = capabilities(env, maxRuns, await harnessOffers(env), boxView);
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, boxView, ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, boxView, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -702,6 +706,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "unarchiveAgent": {
         await needAgent(id);
         await agents.setArchived("agent", id, found.name === "archiveAgent");
+        if (found.name === "archiveAgent") await runs.archived();
         const entry = await needAgent(id);
         return send(res, 200, agentView(entry), { etag: etagOf(entry) });
       }
@@ -753,6 +758,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
       case "unarchiveRun": {
         const run = await needRun(id);
         await agents.setArchived("run", run.id, found.name === "archiveRun");
+        if (found.name === "archiveRun") await runs.archived();
         return send(res, 200, await runs.view(run));
       }
       case "listRunFiles": {

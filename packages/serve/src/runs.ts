@@ -17,6 +17,7 @@ import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { type BoxView, UNSANDBOXED_RUN_LINE } from "./box/config.js";
+import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
@@ -244,7 +245,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; boxView?: BoxView; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; boxView?: BoxView; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
  *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
@@ -290,6 +291,8 @@ export class Runs {
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
   private starting = 0;
+  /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
+  private swept?: Promise<void>;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -497,7 +500,39 @@ export class Runs {
 
   /** At start: every run the store says is running is read, supervised when its process lives, carried back when it
    *  already ended, and opened again when its process went before it ended. */
+  /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
+   *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
+  private sweepOnce(): Promise<void> {
+    const box = this.options.box;
+    if (!box) return Promise.resolve();
+    this.swept ??= (async () => {
+      const rows = await this.options.agents.request(() => this.store.listRuns());
+      const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
+      for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
+    })();
+    return this.swept;
+  }
+
+  /** The run's box let go (archive, or its process gone after an archive): reaped by the box's own count. */
+  private async teardown(run: Run): Promise<void> {
+    const box = this.options.box;
+    if (!box || this.live(run)) return;
+    if ((await settleBox(box.host, box.quarantine, run.id, run.dir)) === "quarantined") warn(run.id, "its box could not be emptied; it is quarantined, and tried again at each start");
+  }
+
+  /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
+   *  now when its process is gone, else when it exits. */
+  async archived(): Promise<void> {
+    if (!this.options.box) return;
+    for (const row of await this.options.agents.request(() => this.store.listRuns())) {
+      if (!row.archivedAt) continue;
+      const run = await this.get(row.id);
+      if (run) await this.teardown(run);
+    }
+  }
+
   async recover(): Promise<void> {
+    await this.sweepOnce();
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (row.state !== "running") continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
@@ -772,6 +807,7 @@ export class Runs {
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
+    if ((await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined))?.archivedAt) await this.teardown(run);
   }
 
   /** A workflow run's carry back, `workflowCarry` of @parcha/pi-durable-agent/workflow on its released store, and its
@@ -889,6 +925,7 @@ export class Runs {
   }
 
   async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+    await this.sweepOnce();
     await this.takePlace();
     try {
       // Read again: the place may have been waited for, and the agent archived meanwhile.
@@ -977,6 +1014,7 @@ export class Runs {
    *  cap, taking a place under the server's. Launched here, with no wait after the place is taken, so no start takes
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
   private async reopen(run: Run): Promise<void> {
+    await this.sweepOnce();
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
