@@ -12,7 +12,7 @@
 //    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, rmSync, statfsSync, writeFileSync, type Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
@@ -169,14 +169,35 @@ export function socketDir(dir: string, name: string, statfs: (dir: string) => { 
   // on the name alone, before anything is made.
   const bytes = Buffer.byteLength(dir);
   if (bytes > 81) throw new Error(`${name}: runtime_dir_too_long: the session's socket directory ${dir} is ${bytes} bytes; a socket path in it must fit 107`);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const stat = lstatSync(dir);
-  if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+  // The name is judged by lstat before anything is made, so what someone else put there (a file, a FIFO, a socket, a link,
+  // a directory of theirs) is never followed or touched: it reads as not this user's own. Only a missing name is made; one
+  // made by someone else between the lstat and the mkdir is judged the same way, and one gone again reads as not this
+  // user's own too, never as an error of its own.
+  if (!lstatIfAny(dir)) {
+    mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
+    try {
+      mkdirSync(dir, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+  }
+  const stat = lstatIfAny(dir);
+  if (!stat || !stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
     throw Object.assign(new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`), { code: "runtime_dir_not_owned" });
   }
   const kind = process.platform === "linux" ? NOT_LOCAL[statfs(dir).type] : undefined;
   if (kind) throw new Error(`${name}: runtime_dir_not_local: the session's socket directory ${dir} is on ${kind}, not a local filesystem`);
   return dir;
+}
+
+/** `path`'s own entry (never what a link names), or undefined when there is none. */
+function lstatIfAny(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
 /** The default socket directory: its name is the session's (a relaunch finds and replaces a dead session's sockets

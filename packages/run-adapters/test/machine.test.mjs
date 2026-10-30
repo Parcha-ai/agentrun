@@ -2,8 +2,8 @@
 // git ceiling, the host's confinement, the process group ended whole, the private directories and the tail. Each adapter
 // suite covers the same machine through its own harness; this one holds the shared code where it lives.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -459,7 +459,7 @@ test("the default socket directory is short: under a 64-byte TMPDIR it still fit
 });
 
 /** A temp directory every caller can pass through, `bytes` long, and the session whose default name the test squats. */
-function squatted(t, bytes) {
+function squatted(t, bytes, plant = (name) => { mkdirSync(name, { mode: 0o755 }); chmodSync(name, 0o755); }) {
   const root = mkdtempSync('/tmp/krs-');
   t.after(() => rmSync(root, { recursive: true, force: true }));
   chmodSync(root, 0o755);
@@ -469,8 +469,7 @@ function squatted(t, bytes) {
   const dir = scratch();
   const name = join(temp, `arb-${createHash('sha256').update(dir).digest('hex').slice(0, 12)}`);
   // The squat, as it looks to this user: the default name is there, and it is not this user's own 0700 directory.
-  mkdirSync(name, { mode: 0o755 });
-  chmodSync(name, 0o755);
+  plant(name);
   return { temp, dir, name };
 }
 async function withTmp(temp, run) {
@@ -497,6 +496,26 @@ test("a default socket directory another user made first is never used and never
   mkdirSync(named, { recursive: true });
   chmodSync(named, 0o755);
   await assert.rejects(openBoxed(scratch(), fakeBox(), { runtimeDir: named }), /must be this user's own, 0700, and not a link/);
+});
+
+test("a default socket name held by a file, a FIFO or a dangling link is a squat too: never followed or touched, and the session opens beside it", async (t) => {
+  const nowhere = (name) => join(dirname(name), 'nowhere');
+  const occupants = [
+    ['a regular file', (name) => writeFileSync(name, 'not yours\n', { mode: 0o644 }), (name) => lstatSync(name).isFile() && readFileSync(name, 'utf8') === 'not yours\n'],
+    ['a FIFO', (name) => execFileSync('mkfifo', ['-m', '644', name]), (name) => lstatSync(name).isFIFO()],
+    ['a dangling link', (name) => symlinkSync(nowhere(name), name), (name) => lstatSync(name).isSymbolicLink() && !existsSync(nowhere(name))],
+  ];
+  for (const [kind, plant, unchanged] of occupants) {
+    const { temp, dir, name } = squatted(t, 40, plant);
+    const ino = lstatSync(name).ino;
+    const box = fakeBox();
+    const machine = await withTmp(temp, () => machineAt(t, dir, { box: boxOf(box) }));
+    await machine.start({ command: '/bin/true' }).exited;
+    const used = dirname(box.specs[0].spec.modelSocket);
+    assert.ok(used.startsWith(`${name}-`), `${kind}: the session opened beside it, at ${used}`);
+    assert.equal(lstatSync(name).ino, ino, `${kind} is the same entry`);
+    assert.ok(unchanged(name), `${kind} is left as it was`);
+  }
 });
 
 test("the fresh directory's name is held to the bound before anything is made: at the longest default base it is refused by name", async (t) => {
