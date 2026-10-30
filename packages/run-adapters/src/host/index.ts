@@ -6,3 +6,7 @@ export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
 export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from "./parent-death.js";
 export type { LaunchCommand, ParentWatch } from "./parent-death.js";
+export { BoxError } from "./box.js";
+export type { Box, BoxedChild, BoxErrorCode, BoxRecord, BoxRecorder, BoxSpec, Isolation, Reaped } from "./box.js";
+export { boxSlot } from "./box-slot.js";
+export type { BoxSlot, BoxSlotState, BoxStart, SlotChild } from "./box-slot.js";
