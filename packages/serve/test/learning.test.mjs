@@ -788,6 +788,47 @@ test("a tool learning adds never follows a link out of the working copy", async 
   assert.equal(await copyRefusal(work, "edit", ".agent/repo/../input.txt"), "edit is the learning copy's only here: .agent/repo/../input.txt is outside .agent/repo");
 });
 
+test("a round that holds a tool learning adds runs its calls one at a time: the next call starts only once the added one has returned", async (t) => {
+  const { onCopyOnly } = await learningModule();
+  const { BACKGROUND_CONTEXT: ctx } = await import("@earendil-works/chord/context");
+  const { createModels } = await import("@earendil-works/pi-ai/models");
+  const { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } = await import("@earendil-works/pi-ai/providers/faux");
+  const { createRegistry, defineExtension, defineTool, Harness, MemoryStorage } = await import("@earendil-works/pi-durable");
+  const work = await scratch(t);
+  await mkdir(join(work, ".agent", "repo"), { recursive: true });
+  const events = [];
+  let probeStarted;
+  const probing = new Promise((resolve) => (probeStarted = resolve));
+  const tool = (name) =>
+    defineTool({
+      name, description: name, parameters: { type: "object", properties: {}, additionalProperties: true },
+      execute: async () => {
+        events.push(`${name} started`);
+        if (name === "probe") probeStarted();
+        // The added write holds until the probe starts, or a second passes: run at once, the probe starts inside it.
+        else await Promise.race([probing, sleep(1_000)]);
+        events.push(`${name} returned`);
+        return { content: [{ type: "text", text: name }] };
+      },
+    });
+  const registry = createRegistry();
+  registry.install(defineExtension({ name: "tools", tools: [tool("write"), tool("probe")] }));
+  // As the run's process installs it (app.ts): the added tool wrapped where pi resolves it.
+  registry.install(defineExtension({ name: "learning-copy", wraps: [{ tool: "write", wrap: (registration) => onCopyOnly(registration, work) }] }));
+  const faux = fauxProvider({ models: [{ id: "faux-1" }] });
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("write", { path: ".agent/repo/learnings/L-5ca1ab1e0005.md" }, { id: "call-0" }), fauxToolCall("probe", {}, { id: "call-1" })], { stopReason: "toolUse" }),
+    fauxAssistantMessage([fauxText("Done.")], { stopReason: "stop" }),
+  ]);
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const harness = await Harness.open(new MemoryStorage(), { models, registry }, ctx);
+  t.after(() => harness.close(ctx));
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" }, instructions: "Answer." } });
+  await (await root.submit({ type: "input", content: "Write, then probe." }, ctx)).wait(ctx);
+  assert.deepEqual(events, ["write started", "write returned", "probe started", "probe returned"]);
+});
+
 test("a case value too short or too plain to be the case's own is not a refused value; a longer one, a JSON number or a nested value included, is", async () => {
   const { caseValuesOf } = await learningModule();
   assert.deepEqual(caseValuesOf({ a: "yes", b: "12", c: "123456789012", d: "True", e: "NO", f: "abcd", g: "false", h: "1234" }), ["123456789012", "abcd", "1234"]);
