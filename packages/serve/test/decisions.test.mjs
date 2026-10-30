@@ -4,7 +4,7 @@
 // tests' fake fetch (fixtures/faux-jev.mjs, fixtures/faux-parallel.mjs): no network, no real key.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { readdir, readFile, readlink, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -540,6 +540,8 @@ test("the missing-key 409's details, decisions included, meet what the served do
   const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"].agent_not_runnable;
   const blocked = shape.oneOf.find((part) => part.required.includes("unbound"));
   assert.deepEqual(schemaProblems(doc, blocked, refused.body.error.details), [], "field by field, against the blocked revision's details");
+  const stray = { ...refused.body.error.details, decisions: { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"], extra: 1 } } };
+  assert.deepEqual(schemaProblems(doc, blocked, stray), ["$.decisions.jev.extra: is not a field here"], "a provider's entry takes no other field");
   assert.deepEqual(schemaProblems(doc, shape, refused.body.error.details), [], JSON.stringify(refused.body.error.details));
 });
 
@@ -552,4 +554,28 @@ test("a node asking what its provider cannot give is refused before the run, by 
   assert.equal(last.status, "failed", JSON.stringify(run));
   assert.match(failures(join(data, "runs", runId, "store", "run.sqlite")).join("\n"), /judge node "coi" requires evidence, and the decision provider jev gives none/);
   assert.deepEqual(await seen(), [], "the request was never sent");
+});
+
+test("an ended workflow run with no store file keeps its known cost after the server restarts: a missing store is one never made", async (t) => {
+  await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  const runId = await startFlow(api, [judge, probe()]);
+  assert.equal((await follow(api, runId, ["completed", "failed"])).last.status, "completed");
+  const known = (await api("GET", `/runs/${runId}`)).body.cost.usd;
+  assert.ok(typeof known === "number" && known > 0, `the run's cost is known: ${known}`);
+  await closeFirst();
+  const store = join(data, "runs", runId, "store");
+  for (const name of await readdir(store)) await rm(join(store, name), { force: true });
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const after = await client(next.baseUrl, next.token)("GET", `/runs/${runId}`);
+  assert.equal(after.status, 200, JSON.stringify(after.body));
+  assert.equal(after.body.cost.usd, known, "the store's own total, as the agent store kept it");
 });
