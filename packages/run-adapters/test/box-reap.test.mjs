@@ -3,7 +3,7 @@
 // CI job's box tests); these use this host's processes.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -64,5 +64,58 @@ test('the count reads the kernel: this process is in its own namespace, and a ma
   assert.ok(countInPidns(pidnsOf(process.pid)) >= 1);
   // A pid 1 no process descends from (pid 2 is kthreadd): an unreadable process of another sandbox on this host (a
   // browser's) is not counted for it.
-  assert.equal(countInPidns('pid:[1]', 2), 0);
+  assert.equal(countInPidns('pid:[1]', { pid: 2, startTime: startTimeOf(2) }), 0);
+});
+
+/** A fake /proc: each process a directory with its stat, status and ns/pid link; `hidden` ones have an unreadable ns/ (as
+ *  a non-dumpable process's is), `nostat` ones an unreadable stat. */
+function fakeProc(processes) {
+  const root = mkdtempSync(join(tmpdir(), 'box-proc-'));
+  const uid = process.getuid();
+  for (const p of processes) {
+    const dir = join(root, String(p.pid));
+    mkdirSync(join(dir, 'ns'), { recursive: true });
+    symlinkSync(p.pidns, join(dir, 'ns', 'pid'));
+    const fields = ['S', String(p.parent), ...Array(17).fill('0'), String(p.start)];
+    writeFileSync(join(dir, 'stat'), `${p.pid} (proc) ${fields.join(' ')} 0 0\n`);
+    writeFileSync(join(dir, 'status'), `Name:\tproc\nUid:\t${p.uid ?? uid}\t${p.uid ?? uid}\t${p.uid ?? uid}\t${p.uid ?? uid}\nNSpid:\t${p.nested === false ? p.pid : `${p.pid}\t7`}\n`);
+    if (p.nostat) chmodSync(join(dir, 'stat'), 0o000);
+    if (p.hidden) chmodSync(join(dir, 'ns'), 0o000);
+  }
+  return root;
+}
+const BOX = 'pid:[4026539999]';
+
+test('an unreadable process of the box (non-dumpable) counts when its parents lead to pid 1 as recorded, pid and start time', () => {
+  const proc = fakeProc([
+    { pid: 500, parent: 400, start: 1000, pidns: BOX },
+    { pid: 510, parent: 500, start: 1001, pidns: BOX },
+    { pid: 520, parent: 510, start: 1002, pidns: 'x', hidden: true },
+  ]);
+  assert.equal(countInPidns(BOX, { pid: 500, startTime: '1000' }, proc), 3, 'pid 1, its child, and the hidden grandchild');
+});
+
+test('a chain that reaches the recorded pid with another start time (the pid reused) is not the box', () => {
+  const proc = fakeProc([
+    { pid: 500, parent: 1, start: 9999, pidns: 'pid:[1]', nested: false },
+    { pid: 520, parent: 500, start: 10000, pidns: 'x', hidden: true },
+  ]);
+  assert.equal(countInPidns(BOX, { pid: 500, startTime: '1000' }, proc), 0);
+});
+
+test('an unreadable process whose parent chain cannot be read to its end counts as left: unknown is never gone', () => {
+  const proc = fakeProc([
+    { pid: 600, parent: 500, start: 1, pidns: 'x', hidden: true },
+    { pid: 500, parent: 400, start: 2, pidns: 'x', hidden: true, nostat: true },
+  ]);
+  assert.equal(countInPidns(BOX, { pid: 300, startTime: '1' }, proc), 2);
+});
+
+test('another user\'s unreadable process, or one in this process\'s own namespace, is no box\'s', () => {
+  const proc = fakeProc([
+    { pid: 700, parent: 500, start: 1, pidns: 'x', hidden: true, uid: process.getuid() + 1 },
+    { pid: 710, parent: 500, start: 1, pidns: 'x', hidden: true, nested: false },
+    { pid: 500, parent: 1, start: 1000, pidns: BOX },
+  ]);
+  assert.equal(countInPidns(BOX, { pid: 500, startTime: '1000' }, proc), 1, 'pid 1 alone');
 });

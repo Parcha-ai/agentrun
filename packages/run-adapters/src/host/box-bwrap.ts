@@ -210,11 +210,12 @@ export function pidnsOf(pid: number): string | undefined {
   }
 }
 
-/** A process's parent, from /proc/<pid>/stat (always readable), or undefined when it is gone. */
-function parentOf(pid: number): number | undefined {
+/** A process's parent and start time, from <proc>/<pid>/stat (readable for any process), or undefined. */
+function statOf(pid: number, proc: string): { parent: number; startTime: string } | undefined {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    const stat = readFileSync(`${proc}/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return { parent: Number(fields[1]), startTime: fields[19]! };
   } catch {
     return undefined;
   }
@@ -222,36 +223,46 @@ function parentOf(pid: number): number | undefined {
 
 /** The processes on this host in the pid namespace `pidns`, by the kernel's own /proc. A process this one may not
  *  inspect (one that made itself non-dumpable, as a browser's sandbox does) has no readable namespace link. Every
- *  process of a box's namespace descends from its pid 1, which stays (a zombie at the last) until the namespace is
- *  empty: so an unreadable process of this uid in a nested namespace counts as left when its parents lead to `pid1`, or
- *  when `pid1` is not known. An unread process of the box is never taken for gone; another user's, or one of this
- *  process's own namespace, is no box's. */
-export function countInPidns(pidns: string, pid1?: number): number {
+ *  process of a box's namespace descends from its pid 1 (orphans there are reparented to it), which stays, a zombie at
+ *  the last, until the namespace is empty. So an unreadable process of this uid in a nested namespace counts as left:
+ *  when its parents lead to `pid1` as recorded (its pid AND its start time); when `pid1` is not known; or when its parent
+ *  chain cannot be read to the end (a link unreadable or gone mid-walk): an unread process of the box is never taken for
+ *  gone. A chain that reaches the recorded pid carrying another start time (the pid reused after the box died) is not the
+ *  box's. Another user's process, or one of this process's own namespace, is no box of this server's. */
+export function countInPidns(pidns: string, pid1?: { pid: number; startTime?: string }, proc = "/proc"): number {
   const uid = process.getuid?.();
   let n = 0;
-  for (const entry of readdirSync("/proc")) {
+  for (const entry of readdirSync(proc)) {
     if (!/^\d+$/.test(entry)) continue;
     try {
-      if (readlinkSync(`/proc/${entry}/ns/pid`) === pidns) n++;
+      if (readlinkSync(`${proc}/${entry}/ns/pid`) === pidns) n++;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EACCES") continue; // gone between the listing and the read
+      let status: string;
       try {
-        const status = readFileSync(`/proc/${entry}/status`, "utf8");
-        const nspid = /^NSpid:\s*(.*)$/m.exec(status)?.[1]?.trim().split(/\s+/) ?? [];
-        const owner = Number(/^Uid:\s*(\d+)/m.exec(status)?.[1]);
-        if (nspid.length === 1 || owner !== uid) continue;
-        if (pid1 === undefined) {
-          n++;
-          continue;
-        }
-        for (let p: number | undefined = Number(entry), hops = 0; p !== undefined && p > 1 && hops < 4096; p = parentOf(p), hops++) {
-          if (p === pid1) {
-            n++;
-            break;
-          }
-        }
+        status = readFileSync(`${proc}/${entry}/status`, "utf8");
       } catch {
-        // gone
+        continue; // gone
+      }
+      const nspid = /^NSpid:\s*(.*)$/m.exec(status)?.[1]?.trim().split(/\s+/) ?? [];
+      const owner = Number(/^Uid:\s*(\d+)/m.exec(status)?.[1]);
+      if (nspid.length === 1 || owner !== uid) continue;
+      if (pid1 === undefined) {
+        n++;
+        continue;
+      }
+      for (let p = Number(entry), hops = 0; ; hops++) {
+        const s = statOf(p, proc);
+        if (s === undefined || hops > 4096) {
+          n++; // the chain cannot be read to its end: unknown, so left
+          break;
+        }
+        if (p === pid1.pid) {
+          if (s.startTime === pid1.startTime) n++;
+          break;
+        }
+        if (s.parent <= 1) break;
+        p = s.parent;
       }
     }
   }
@@ -359,10 +370,11 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
         }
       }
       const until = Date.now() + reapMs;
-      let left = countInPidns(record.pidns, record.pid);
+      const pid1 = { pid: record.pid, ...(record.startTime !== undefined ? { startTime: record.startTime } : {}) };
+      let left = countInPidns(record.pidns, pid1);
       while (left > 0 && Date.now() < until) {
         await sleep(10);
-        left = countInPidns(record.pidns, record.pid);
+        left = countInPidns(record.pidns, pid1);
       }
       return { empty: left === 0, left, by: "pidns" };
     }
