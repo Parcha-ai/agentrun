@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { runWorkflow, DecisionProviderError } from '@parcha/agentrun-dsl';
+import { runWorkflow, DecisionProviderError, judgeFromProvider } from '@parcha/agentrun-dsl';
 // The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
 // performance.now(). A test that needs either to pass holds both clocks and moves them itself.
 const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
@@ -415,6 +415,35 @@ test('a decision that failed before it was sent is asked again by the next proce
   const second = await run(store, judged, judge);
   assert.deepEqual([asked, second.status], [2, 'complete'], 'the next process asks it again');
   assert.equal((await operator(store, judged)).state.questionSpendUsd, 0.001, 'only the answered ask is booked');
+});
+
+test('under recovery, an answer the seam rejects is in the run\'s spend at the provider\'s cost, or as an unpriced request, and the decision failed: the next process asks again', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  const capabilities = { types: ['noul', 'choice', 'score'], inputs: ['text', 'json'], evidence: 'none', probability: 'model', grounding: false, replay: 'never', maxQuestions: null, maxStateBytes: null };
+  for (const [cost_usd, spend, unpriced] of [[0.004, 0.004, undefined], [null, undefined, 1]]) {
+    const store = memoryStore();
+    let asked = 0;
+    const provider = { id: 'test', needs: [], capabilities, decide: async () => {
+      asked += 1;
+      return { answers: { legit: { type: 'noul', noul: asked === 1 ? 1.7 : 0.9 } }, model: null, usage: null, evidence: [], cost_usd, cost_basis: cost_usd === null ? 'unknown' : 'estimate', provider_request_id: null };
+    } };
+    const judge = { runJudge: judgeFromProvider(provider) };
+    await assert.rejects(run(store, judged, judge), (error) => error instanceof DecisionProviderError && error.code === 'invalid_response');
+    const first = await operator(store, judged);
+    assert.deepEqual([first.state.questionSpendUsd, first.state.unpricedQuestionCount], [spend, unpriced], 'the rejected answer was paid for: booked at its cost, or counted unpriced, never $0');
+    const second = await run(store, judged, judge);
+    assert.deepEqual([asked, second.status], [2, 'complete'], 'it failed, so the next process asks again');
+  }
+});
+
+test('under recovery, a provider\'s own malformed-response error is booked: at the cost it carries, or as an unpriced request', async () => {
+  const judged = doc([{ node: 'judge', label: 'check', state: { text: 'x' }, out: 'Flag', as: 'flag' }], { schemas: { ...SCHEMAS, Flag: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } } });
+  for (const [details, spend, unpriced] of [[{ costUsd: 0.001, costBasis: 'estimate' }, 0.001, undefined], [{}, undefined, 1]]) {
+    const store = memoryStore();
+    await assert.rejects(run(store, judged, { runJudge: async () => { throw new DecisionProviderError('invalid_response', 'Parallel returned a body that is not JSON.', { attempts: 1, ...details }); } }));
+    const journal = await operator(store, judged);
+    assert.deepEqual([journal.state.questionSpendUsd, journal.state.unpricedQuestionCount], [spend, unpriced]);
+  }
 });
 
 test('a route is decided once, only a route is decided, and its receipts are carried until the host has written them', async () => {
