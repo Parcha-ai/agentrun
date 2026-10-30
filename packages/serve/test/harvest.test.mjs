@@ -387,3 +387,13 @@ test("a value in a path the run deleted refuses the harvest too", async (t) => {
   assert.deepEqual([result.status, result.refused], ["refused", ["a path in the harvest holds a value no learning may keep"]]);
   noBranch(s);
 });
+
+test("a value no URI encoder takes (a lone surrogate) never stops the harvest, and a value percent-encoded as a URI component is still found", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", "Policies live under /policies/."));
+  assert.equal((await harvest(s, "host", { refuse: ["abcdefghijkl\ud800"] })).status, "proposed");
+  const value = "canary 5ca1ab1e/0123+x";
+  const component = await seeded(t);
+  await writeFile(join(component.work, NOTE), note("L-0a93ff12c4e7", `Send ${encodeURIComponent(value)} first.`));
+  assert.deepEqual((await harvest(component, "host", { refuse: [value] })).refused, [`${NOTE} holds a value no learning may keep`]);
+});

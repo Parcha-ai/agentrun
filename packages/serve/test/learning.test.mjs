@@ -1051,15 +1051,23 @@ test("a canary a named write plants in the learning copy is refused at harvest, 
 
 test("a learning run is told where and how to save what it learned: its working copy, its memo, and the paths a harvest takes", async (t) => {
   const { learningInstructions } = await learningModule();
-  const text = learningInstructions("run-1");
-  for (const said of [".agent/repo", ".agent/repo/memos/run-1.md", ".agent/repo/learnings/L-<12 lowercase hex digits>.md", ".agent/repo/learnings/INDEX.md", ".agent/repo/.agents/skills/<name>/SKILL.md", ".agent/repo/workflows/<name>/workflow.json", "runs/run-1", "## Proposed changes"]) {
+  const base = "0123456789abcdef0123456789abcdef01234567";
+  const text = learningInstructions("run-1", base);
+  // The note it shows is one the learning loop reads back: written as shown, it parses.
+  const { parseLearning } = await import("@parcha/pi-agent-learn");
+  const example = /<note>\n([\s\S]*?)<\/note>/.exec(text)?.[1];
+  assert.ok(example, "the instructions show a whole note");
+  const written = example.replace("L-<id>", "L-5ca1ab1e0009").replace("<the rule, in one or two sentences>", "Search both forms of the legal name.");
+  const parsed = parseLearning(written);
+  assert.deepEqual([parsed.id, parsed.type, parsed.status, parsed.provenance.runs, parsed.provenance.sha, parsed.uses, parsed.supersedes], ["L-5ca1ab1e0009", "lesson", "active", ["run-1"], base, 0, []]);
+  for (const said of [".agent/repo", ".agent/repo/memos/run-1.md", ".agent/repo/learnings/L-<id>.md", ".agent/repo/learnings/INDEX.md", ".agent/repo/.agents/skills/<name>/SKILL.md", ".agent/repo/workflows/<name>/workflow.json", "runs/run-1", "## Proposed changes"]) {
     assert.ok(text.includes(said), `the instructions name ${said}`);
   }
   const { api, data } = await serve(t);
   await api("POST", "/agents", agent("calc"));
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "How do you save what you learn?" } });
   await follow(api, run.run_id, ["completed"]);
-  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer, learningInstructions(run.run_id), "the run's model sees them");
+  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer, learningInstructions(run.run_id, tip(bareOf(data, "calc"), "main")), "the run's model sees them, with its seed");
   await stateOf(data, "calc", run.run_id);
   // A run that does not learn is not told.
   await api("POST", "/agents", agent("quiet", { learning: null }));
@@ -1193,4 +1201,22 @@ test("a read learning adds also reaches the seeded notes, and nothing else outsi
   ]);
   assert.match(await readFile(join(data, "runs", runId, "work", ".agent", "learnings", "L-0123456789ab.md"), "utf8"), /Search both forms/, "the seeded note is unchanged");
   await stateOf(data, "calc", runId);
+});
+
+test("a watch on a run whose process outlives its end leaves no listener behind on the server's signal, tick after tick", async (t) => {
+  const { harvestOnExit } = await learningModule();
+  const { getEventListeners } = await import("node:events");
+  const { api, data } = await serve(t);
+  const run = await outlived(t, api, data, "calc");
+  const closing = new AbortController();
+  const watching = harvestOnExit(data, run.agents, run.runId, closing.signal, 10);
+  let most = 0;
+  for (let i = 0; i < 30; i++) {
+    most = Math.max(most, getEventListeners(closing.signal, "abort").length);
+    await sleep(10);
+  }
+  assert.ok(most <= 1, `at most one listener at a time, saw ${most}`);
+  await run.ended();
+  await watching;
+  assert.equal(getEventListeners(closing.signal, "abort").length, 0, "none once it harvested");
 });
