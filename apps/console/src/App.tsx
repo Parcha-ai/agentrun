@@ -4,7 +4,7 @@ import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView } from "@/lib/mission";
-import { type Box, boxNotice } from "@/lib/box";
+import { type Box, boxNotice, nativeTools } from "@/lib/box";
 import { cn } from "@/lib/utils";
 import { Playground, type StartResult } from "@/components/Playground";
 import { type Agent, toolOffers } from "@/lib/agentForm";
@@ -109,7 +109,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
   const box = (caps as unknown as { box?: Box } | null)?.box;
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default, box };
-  const boxSays = boxNotice(box);
+  const boxSays = boxNotice(box, nativeTools(c?.harnesses));
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
