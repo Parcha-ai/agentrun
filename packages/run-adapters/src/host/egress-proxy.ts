@@ -62,6 +62,12 @@ type Refusal = { status: number; reason: string; socks: number };
 
 const HOP = new Set(["connection", "proxy-connection", "keep-alive", "proxy-authorization", "proxy-authenticate", "te", "trailer", "upgrade", "transfer-encoding"]);
 
+/** The headers that stay on this hop: the fixed hop-by-hop names, and every name a Connection header lists. */
+function hopHeaders(headers: IncomingHttpHeaders): Set<string> {
+  const listed = [headers.connection ?? []].flat().flatMap((value) => String(value).split(",")).map((name) => name.trim().toLowerCase()).filter(Boolean);
+  return new Set([...HOP, ...listed]);
+}
+
 /** The canonical text of an address's bytes: what is dialled. */
 function addressText(bytes: Uint8Array): string {
   if (bytes.length === 4) return [...bytes].join(".");
@@ -166,6 +172,8 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
       if (!target || !(port >= 1 && port <= 65535)) return refuseRaw(client, { status: 400, reason: "invalid target", socks: 1 });
       const reached = await reach("connect", target[1]!, port);
       if ("refused" in reached) return refuseRaw(client, reached.refused);
+      // A client that left during the lookup or the dial gets no tunnel: its socket goes, and so does its slot.
+      if (client.destroyed) return void reached.socket.destroy();
       client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length) reached.socket.write(head);
       reached.socket.pipe(client).pipe(reached.socket);
@@ -179,6 +187,9 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
   http.on("upgrade", (_req: IncomingMessage, client: Duplex) => refuseRaw(client, { status: 400, reason: "upgrade not supported", socks: 7 }));
 
   http.on("request", (req: IncomingMessage, res: ServerResponse) => {
+    // Watched from the start: a client that leaves during the lookup or the dial is gone before any listener below exists.
+    let gone = false;
+    res.once("close", () => (gone = true));
     void (async () => {
       let url: URL;
       try {
@@ -201,8 +212,10 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
       }
       const reached = await reach("http", host, port);
       if ("refused" in reached) return refuse(res, reached.refused);
+      if (gone) return void reached.socket.destroy();
       const headers: IncomingHttpHeaders = {};
-      for (const [name, value] of Object.entries(req.headers)) if (!HOP.has(name)) headers[name] = value;
+      const hop = hopHeaders(req.headers);
+      for (const [name, value] of Object.entries(req.headers)) if (!hop.has(name)) headers[name] = value;
       headers.host = url.host;
       headers.connection = "close";
       // The request goes over the socket already dialled to the checked address. Its host and port name that address too,
@@ -211,7 +224,8 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
       const upstream = httpRequest({ host: reached.address, port, method: req.method, path: `${url.pathname}${url.search}`, headers, createConnection: () => reached.socket });
       upstream.on("response", (answer) => {
         const out: Record<string, string | string[]> = {};
-        for (const [name, value] of Object.entries(answer.headers)) if (!HOP.has(name) && value !== undefined) out[name] = value;
+        const back = hopHeaders(answer.headers);
+        for (const [name, value] of Object.entries(answer.headers)) if (!back.has(name) && value !== undefined) out[name] = value;
         res.writeHead(answer.statusCode ?? 502, answer.statusMessage, out);
         answer.pipe(res);
       });
@@ -258,6 +272,7 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
       void (async () => {
         const reached = await reach("socks", host, port);
         if ("refused" in reached) return client.end(reply(reached.refused.socks));
+        if (client.destroyed) return void reached.socket.destroy();
         client.write(reply(0));
         if (rest.length) reached.socket.write(rest);
         reached.socket.pipe(client).pipe(reached.socket);
@@ -292,7 +307,10 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
   // directory is local; a connect refused there means nothing listens. So only a socket that refuses a connection is
   // removed; any other failure of the probe (EACCES, say) is thrown and the socket left, and anything that is not a socket
   // is left where it is. (On a disk shared between hosts, a live proxy's socket on another host would refuse this host's
-  // connection: that is why the directory must be local.)
+  // connection: that is why the directory must be local.) Two starts that both find the same dead socket could each
+  // remove it in turn, the second after the first has linked its live socket there; that needs two starters in one
+  // session's runtime directory, which its single claim holder rules out, so nothing here guards it (moving the socket
+  // aside to check it would leave a live one briefly missing from its path instead).
   const taken = (code: string, what: string) => Object.assign(new Error(`egress proxy: ${socketPath} ${what}`), { code });
   let found: Stats | undefined;
   try {
@@ -335,6 +353,8 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw taken("egress_socket_in_use", "was taken while this proxy started");
     throw error;
   }
+  // This socket's inode: close removes the path only while it still holds it, never a socket another start put there.
+  const mine = await lstat(making);
   await unlink(making).catch(() => {});
 
   return {
@@ -346,9 +366,10 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
       for (const socket of sockets) socket.destroy();
       http.close();
       await done;
-      await unlink(socketPath).catch((error: NodeJS.ErrnoException) => {
+      const now = await lstat(socketPath).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") throw error;
       });
+      if (now && now.dev === mine.dev && now.ino === mine.ino) await unlink(socketPath);
     },
   };
 }

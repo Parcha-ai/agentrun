@@ -148,18 +148,26 @@ const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every(
 /**
  * Whether a box may reach `address` (its bytes, or an address's text: never a name). `local` is the host's own interface
  * addresses, read by the caller at the dial: an address equal to one of them is refused as "this-host". An IPv6 address
- * that carries an IPv4 one is judged, against both, by the IPv4 inside.
+ * that carries an IPv4 one is judged by the IPv4 inside, and is then still the host's own if the host holds that IPv6
+ * address itself (the dial goes to the IPv6 address, not to the IPv4 inside it).
  */
 export function checkAddress(address: Uint8Array | string, local: readonly string[]): EgressVerdict {
   const bytes = typeof address === "string" ? addressBytes(address) : address;
   if (!bytes || (bytes.length !== 4 && bytes.length !== 16)) return { ok: false, class: "invalid" };
   for (const range of RANGES) {
     if (!within(bytes, range)) continue;
-    if (range.class === "last32") return checkAddress(bytes.slice(12, 16), local);
-    if (range.class === "6to4") return checkAddress(bytes.slice(2, 6), local);
+    if (range.class === "last32" || range.class === "6to4") {
+      const inner = checkAddress(range.class === "last32" ? bytes.slice(12, 16) : bytes.slice(2, 6), local);
+      return inner.ok ? ownAddress(bytes, local) : inner;
+    }
     return { ok: false, class: range.class };
   }
   if (bytes.length === 16 && (bytes[0]! & 0xe0) !== 0x20) return { ok: false, class: "reserved" };
+  return ownAddress(bytes, local);
+}
+
+/** Refused as "this-host" when `bytes` is one of the host's own addresses, as it is written there. */
+function ownAddress(bytes: Uint8Array, local: readonly string[]): EgressVerdict {
   for (const text of local) {
     const own = addressBytes(text);
     if (own && same(own, bytes)) return { ok: false, class: "this-host" };

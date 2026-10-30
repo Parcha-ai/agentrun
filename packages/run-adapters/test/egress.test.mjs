@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { connect } from 'node:net';
+import { connect, createServer as createNetServer } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -28,14 +28,17 @@ const NAMES = { 'origin.test': [PUBLIC], 'other.test': [PUBLIC_B], 'evil.test': 
 /** A fake origin on loopback: what every dial reaches. `/302-meta` and `/302-loop` answer redirects to local addresses. */
 async function origin() {
   const seen = [];
+  const heads = [];
   const server = createServer((req, res) => {
     seen.push(`${req.method} ${req.url} host=${req.headers.host}`);
+    heads.push(req.headers);
+    if (req.url === '/hop') return res.writeHead(200, { connection: 'close, x-back', 'x-back': 'hop only', 'x-kept': 'yes' }).end('hop');
     if (req.url === '/302-meta') return res.writeHead(302, { location: `http://${METADATA}/latest/meta-data/` }).end();
     if (req.url === '/302-loop') return res.writeHead(302, { location: `http://${LOOPBACK}/` }).end();
     res.writeHead(200, { 'content-type': 'text/plain' }).end(`origin ${req.url}`);
   });
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
-  return { seen, port: server.address().port, close: () => new Promise((ok) => { server.closeAllConnections(); server.close(ok); }) };
+  return { seen, heads, port: server.address().port, close: () => new Promise((ok) => { server.closeAllConnections(); server.close(ok); }) };
 }
 
 /** A proxy with the injected seams; `lookups` and `dials` record what it asked for. */
@@ -514,6 +517,87 @@ test('a target that cannot be a host name is refused by name (400 "invalid host"
     assert.equal((await socks(t.path, 1, 3, 'bad host.test', 443)).reply, 4);
     assert.deepEqual(t.lookups, [], 'no name was looked up');
     assert.deepEqual(t.dials, [], 'nothing was dialled');
+  } finally {
+    await t.close();
+  }
+});
+
+test("an address that carries an IPv4 one is still the host's own when the host holds that IPv6 address itself", () => {
+  const cases = [
+    '2002:808:808::1',
+    '::ffff:8.8.8.8',
+    '64:ff9b::808:808',
+  ];
+  for (const address of cases) {
+    assert.deepEqual(checkAddress(address, []), { ok: true }, `${address} alone`);
+    assert.deepEqual(checkAddress(address, [address]), { ok: false, class: 'this-host' }, `${address} held by the host`);
+  }
+});
+
+for (const kind of ['connect', 'http', 'socks']) {
+  test(`a client that leaves while its ${kind} target is looked up frees its slot: the late connection is closed at once`, async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let asked = 0;
+    const lookup = (_name, _options, callback) => { asked++; void held.then(() => callback(null, [{ address: PUBLIC, family: 4 }])); };
+    // An origin that keeps its side open after the proxy's end of a connection, and never answers: only the proxy closing
+    // the connection itself frees the slot.
+    const silent = createNetServer({ allowHalfOpen: true }, () => {});
+    await new Promise((ok) => silent.listen(0, LOOPBACK, ok));
+    const dials = [];
+    const dial = (address, port) => { dials.push(`${address}:${port}`); return connect(silent.address().port, LOOPBACK); };
+    const t = await proxy({ options: { maxTunnels: 1, lookup, dial } });
+    try {
+      const client = connect(t.path);
+      await new Promise((ok) => client.once('connect', ok));
+      if (kind === 'connect') client.write(CONNECT('slow.test:443'));
+      else if (kind === 'http') client.write('GET http://slow.test/ HTTP/1.1\r\nHost: slow.test\r\n\r\n');
+      else client.write(Buffer.concat([Buffer.from([5, 1, 0]), Buffer.from([5, 1, 0, 3, 9]), Buffer.from('slow.test'), Buffer.from([1, 187])]));
+      for (let i = 0; i < 200 && asked === 0; i++) await new Promise((ok) => setTimeout(ok, 10));
+      assert.equal(asked, 1, 'the lookup started');
+      const gone = new Promise((ok) => client.once('close', ok));
+      client.destroy();
+      await gone;
+      release();
+      for (let i = 0; i < 200 && dials.length === 0; i++) await new Promise((ok) => setTimeout(ok, 10));
+      assert.equal(dials.length, 1, 'the late dial was made');
+      await new Promise((ok) => setTimeout(ok, 100));
+      const next = await talk(t.path, CONNECT('origin.test:443'), ended);
+      assert.equal(head(next.got).status, 200, `the only slot is free again: ${head(next.got).line}`);
+      next.socket.destroy();
+    } finally {
+      await t.close();
+      silent.close();
+    }
+  });
+}
+
+test("close removes the path only while it holds this proxy's own socket, never one another start put there", async () => {
+  const t = await proxy();
+  rmSync(t.path);
+  const other = createNetServer();
+  await new Promise((ok) => other.listen(t.path, ok));
+  try {
+    await t.close();
+    assert.ok(statSync(t.path).isSocket(), 'the other socket is still at the path');
+    await new Promise((ok, fail) => { const probe = connect(t.path); probe.once('connect', () => { probe.destroy(); ok(); }); probe.once('error', fail); });
+  } finally {
+    await new Promise((ok) => other.close(ok));
+  }
+});
+
+test('headers for this hop only never travel on: the fixed hop-by-hop names, and every name a Connection header lists, each way', async () => {
+  const t = await proxy();
+  try {
+    const answer = head((await talk(t.path, 'GET http://origin.test/hop HTTP/1.1\r\nHost: origin.test\r\nConnection: close, x-private\r\nX-Private: hop only\r\nProxy-Authorization: Basic aG9wOm9ubHk=\r\nKeep-Alive: timeout=5\r\nX-Kept: yes\r\n\r\n')).got);
+    assert.equal(answer.status, 200, answer.line);
+    const sent = t.fake.heads.at(-1);
+    assert.equal(sent['x-private'], undefined, 'a header the Connection header named stays on the client hop');
+    assert.equal(sent['proxy-authorization'], undefined);
+    assert.equal(sent['keep-alive'], undefined);
+    assert.equal(sent['x-kept'], 'yes', 'an end-to-end header passes');
+    assert.doesNotMatch(answer.text, /^x-back:/im, "a header the origin's Connection header named stays on that hop");
+    assert.match(answer.text, /^x-kept: yes/im);
   } finally {
     await t.close();
   }
