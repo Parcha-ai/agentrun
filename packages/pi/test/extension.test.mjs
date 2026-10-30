@@ -598,6 +598,59 @@ test('a judge naming a provider other than Jev is refused before any node runs, 
   }));
 });
 
+test('a Jev failure on the default judge reports its fixed category, status and reason, never provider text', async () => {
+  const secret = 'PROVIDER_BODY_SENTINEL';
+  const cases = [
+    ['a 429', () => new Response(JSON.stringify({ error: { message: secret } }), { status: 429, headers: { 'content-type': 'application/json' } }), { code: 'jev_http', status: 429 }],
+    ['a 400', () => new Response(JSON.stringify({ error: { message: secret } }), { status: 400, headers: { 'content-type': 'application/json' } }), { code: 'jev_http', status: 400 }],
+    ['an answer out of range', (body) => new Response(JSON.stringify({ answers: Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 1.7 }])), model: secret, usage: { input_tokens: 10, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } }), { code: 'jev_invalid_response', reason: 'noul_probability' }],
+  ];
+  for (const [what, reply, expected] of cases) {
+    await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, async () => {
+      const sent = [], realFetch = globalThis.fetch;
+      globalThis.fetch = async (_url, init) => { const body = JSON.parse(init.body); sent.push(body); return reply(body); };
+      const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+      try {
+        await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+        await app.command('run');
+        const { status, error } = app.messages.at(-1).details;
+        assert.equal(sent.length, 1, `${what}: sent once`);
+        assert.equal(status, 'failed', what);
+        assert.deepEqual({ code: error.code, stage: error.stage, ...(error.status !== undefined ? { status: error.status } : {}), ...(error.reason !== undefined ? { reason: error.reason } : {}) },
+          { ...expected, stage: 'check-evidence' }, what);
+        assert.doesNotMatch(JSON.stringify(app.messages.at(-1)), new RegExp(secret), `${what}: no provider text`);
+      } finally { await app.shutdown(); globalThis.fetch = realFetch; }
+    });
+  }
+});
+
+test('a Jev request lost after sending on the default judge goes to review as interrupted, sent once, never reported as a plain failure', async () => {
+  await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, async () => {
+    const sent = [], realFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => { sent.push(JSON.parse(init.body)); return new Response(JSON.stringify({ error: { message: 'unavailable' } }), { status: 503, headers: { 'content-type': 'application/json' } }); };
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      await app.tool({ action: 'inspect', workflow: judgeWorkflow(), input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      const { status, escalation } = app.messages.at(-1).details;
+      assert.equal(sent.length, 1, 'sent once');
+      assert.deepEqual([status, escalation?.kind], ['escalated', 'decision_interrupted'], JSON.stringify(app.messages.at(-1).details).slice(0, 400));
+      // The run's journal books the request once, at an unknown cost: an unpriced request, never $0.
+      const journal = JSON.parse(await readFile(join(tempCwd, '.pi', 'agentrun', 'runs', app.messages.at(-1).details.receipt, 'journal.json'), 'utf8'));
+      const requests = [], unpriced = [];
+      const walk = (value) => {
+        if (!value || typeof value !== 'object') return;
+        if (value.record === 'decision.request') requests.push(value);
+        if (Number.isInteger(value.unpricedQuestionCount)) unpriced.push(value.unpricedQuestionCount);
+        for (const child of Object.values(value)) walk(child);
+      };
+      walk(journal);
+      assert.deepEqual(requests.map(request => [request.label, request.status, request.cost_usd]), [['check-evidence', 'interrupted', null]], 'booked once, at an unknown cost');
+      assert.deepEqual(unpriced, [1], 'and counted as an unpriced request');
+    } finally { await app.shutdown(); globalThis.fetch = realFetch; }
+  });
+});
+
 test('a judge\'s pinned model is the model pi sends Jev', async () => {
   await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, () => withJevFetch(async sent => {
     const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });

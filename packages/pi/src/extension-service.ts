@@ -4,7 +4,7 @@ import { RecoveryError } from '@parcha/agentrun-dsl/recovery';
 import { PiRunError } from './run-error.js';
 import { ToolInputValidationError } from './tool-input-error.js';
 import {
-  inspectWorkflow, runWorkflow, validateWorkflow, candidatePolicyErrors, EffectOutcomeUnknownError,
+  inspectWorkflow, runWorkflow, validateWorkflow, candidatePolicyErrors, EffectOutcomeUnknownError, DecisionProviderError,
   WorkflowInvalidError, WorkflowInputInvalidError, WorkflowOutputInvalidError, WorkflowCodeError, WorkflowStateError, EffectDeadlineExceededError,
   type Workflow, type WorkflowDeps, type WorkflowInspection, type Escalation,
 } from '@parcha/agentrun-dsl';
@@ -85,12 +85,25 @@ class AdapterDiagnosticError extends Error {
     this.name = 'AdapterDiagnosticError';
   }
 }
+/** The diagnostics of decision provider errors, by error: the error itself goes on to the interpreter, which books its
+ *  cost and escalates a lost outcome, and the run's report reads its diagnostic here. */
+const providerDiagnostics = new WeakMap<object, NonNullable<ExtensionRunReport['error']>>();
+/** The JevError behind `error`: itself, or the cause of a decision provider's error (a cut by a node's timeoutMs wraps
+ *  one in another). */
+function jevErrorOf(error: unknown): JevError | undefined {
+  for (let current = error, depth = 0; depth < 4; current = (current as Error).cause, depth += 1) {
+    if (current instanceof JevError) return current;
+    if (!(current instanceof DecisionProviderError)) return undefined;
+  }
+  return undefined;
+}
 /** `toolNames` are the names the node could call: a turn limit's last tool call is shown only when it is one of them,
  *  so the diagnostic never copies text an error carries. */
 async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>, toolNames?: ReadonlySet<string>): Promise<T> {
   try { return await run(); }
-  catch (error) {
+  catch (caught) {
     let diagnostic: ExtensionRunReport['error'];
+    const error = jevErrorOf(caught) ?? caught;
     if (error instanceof JevError) {
       switch (error.code) {
         case 'invalid_response': diagnostic = { code: 'jev_invalid_response', message: 'Jev returned a response that failed the adapter contract. No judgment was accepted; provider details are omitted.' }; break;
@@ -129,13 +142,14 @@ async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>, to
         case 'aborted': diagnostic = { code: 'pi_aborted', message: 'The Pi node was cancelled before an accepted submission. Check any effects already started before retrying.' }; break;
       }
     }
+    if (diagnostic && caught instanceof DecisionProviderError) { providerDiagnostics.set(caught, { ...diagnostic, stage: stage.slice(0, 200) }); throw caught; }
     if (diagnostic) throw new AdapterDiagnosticError({ ...diagnostic, stage: stage.slice(0, 200) });
     // Adapter-created runtime errors are not interpreter-owned diagnostics.
     if (error instanceof WorkflowInputInvalidError || error instanceof WorkflowOutputInvalidError
       || error instanceof WorkflowInvalidError || error instanceof WorkflowStateError || error instanceof WorkflowCodeError) {
       throw new Error('Host adapter failed.', { cause: error });
     }
-    throw error;
+    throw caught;
   }
 }
 /** The code of the first RecoveryError in an error's cause chain. */
@@ -151,6 +165,7 @@ function localDiagnostic(error: unknown): ExtensionRunReport['error'] {
     message: 'A tool call of this run has no recorded outcome. It is not repeated. Find out whether it happened, then start a new run (change the input) or reconcile it in the run journal.' };
   if (error instanceof AggregateError) return error.errors.slice(0, 100).map(localDiagnostic).find(Boolean);
   if (error instanceof AdapterDiagnosticError) return error.diagnostic;
+  if (error instanceof DecisionProviderError && providerDiagnostics.has(error)) return providerDiagnostics.get(error);
   if (error instanceof ToolInputValidationError) return {
     code: error.code, stage: error.stage,
     message: 'Tool arguments do not satisfy the registered input schema. Correct the listed schema problems before retrying; the tool implementation was not called.',
@@ -174,8 +189,9 @@ function localDiagnostic(error: unknown): ExtensionRunReport['error'] {
       ...(error.reason === 'parallel_write_conflict' ? {} : { path: error.path.slice(0, 500) }),
       reason: error.reason, message: messages[error.reason] };
   }
-  if (error instanceof JevError && error.code === 'invalid_request' && error.attempts === 0 && error.requestDiagnostic) {
-    const { reason, label, stateBytes, maxStateBytes } = error.requestDiagnostic;
+  const jev = jevErrorOf(error);
+  if (jev && jev.code === 'invalid_request' && jev.attempts === 0 && jev.requestDiagnostic) {
+    const { reason, label, stateBytes, maxStateBytes } = jev.requestDiagnostic;
     const stage = typeof label === 'string' ? label.slice(0, 200) : 'judge';
     if (reason === 'state_too_large' && Number.isSafeInteger(stateBytes) && Number.isSafeInteger(maxStateBytes)
       && stateBytes! > maxStateBytes! && maxStateBytes! > 0) return {

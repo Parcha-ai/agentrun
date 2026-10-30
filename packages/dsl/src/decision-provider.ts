@@ -80,8 +80,8 @@ export class DecisionProviderError extends Error {
    *  reached; null when unknown. */
   readonly costUsd?: number | null;
   readonly costBasis?: CostBasis;
-  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis } = {}) {
-    super(message);
+  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis; cause?: unknown } = {}) {
+    super(message, details.cause !== undefined ? { cause: details.cause } : undefined);
     this.name = "DecisionProviderError";
     this.attempts = details.attempts ?? 0;
     if (details.status !== undefined) this.status = details.status;
@@ -168,7 +168,7 @@ export function judgeFromProviders(options: { providers: Readonly<Record<string,
     } catch (error) {
       if (cut.signal.aborted && error instanceof DecisionProviderError && (error.code === "aborted" || error.code === "timeout")) {
         throw new DecisionProviderError("outcome_unknown", `${id}: cut by the node's timeoutMs (${node} ms) after it may have been sent`, {
-          attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}) });
+          attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}), cause: error });
       }
       throw error;
     } finally { if (timer !== undefined) clearTimeout(timer); }
