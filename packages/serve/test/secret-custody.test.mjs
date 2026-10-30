@@ -14,15 +14,20 @@ import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
-import { agent, client, follow, scratch } from "./support.mjs";
+import { agent, client, FAUX, flowAgent, follow, scratch } from "./support.mjs";
+import { CANARY as JEV_CANARY } from "./fixtures/faux-jev.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const CUSTODY = new URL("./fixtures/faux-custody.mjs", import.meta.url).pathname;
+const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CONFINED = existsSync("/usr/bin/setpriv");
 const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
-const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY"];
+/** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
+ *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
+const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
+const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", ...DECISION_KEYS];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
 const read = (path) => {
@@ -94,7 +99,8 @@ function canaries() {
   return { canary, secrets: Object.fromEntries([...new Set([...READ, ...SECRET_NAMES])].map((name) => [name, `${canary}-${name}`])) };
 }
 
-/** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment. */
+/** The server, started by its launcher in a session of its own, with `env` (its secrets among it) in its environment.
+ *  `args` are the server's, or, as a function of its data directory, the launcher's own (`-- COMMAND ...`). */
 async function launched(t, env, args = ["--faux", CUSTODY]) {
   // Its own directory, gone only once every process under the launcher is (below): a harness's CLI starts a session
   // of its own, which a kill of the launcher's group does not reach, and it may still be writing there.
@@ -103,7 +109,7 @@ async function launched(t, env, args = ["--faux", CUSTODY]) {
   // The launcher's own temporary directory, where its FIFO is made: the test's, so it can see that nothing is left.
   const tmp = join(dir, "tmp");
   mkdirSync(tmp);
-  const child = spawn(LAUNCHER, ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env, TMPDIR: tmp } });
+  const child = spawn(LAUNCHER, typeof args === "function" ? args(data) : ["--data", data, "--port", "0", ...args], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env, TMPDIR: tmp } });
   t.after(async () => {
     // Every process under the launcher, found before it goes (its children then belong to init), killed, and waited for.
     const tree = new Set([...treeOf(child.pid)]);
@@ -178,11 +184,12 @@ test("started by its launcher, no process of its user holds a secret in its envi
   assert.ok(read(`/proc/${root}/environ`).toString().split("\0").includes("LC_ALL=C.UTF-8"), "the server keeps the caller's LC_ALL");
   assert.equal((await api("POST", "/agents", { definition: { id: "custody", version: 1, name: "custody", instructions: "Answer.", skills: [], tools: [] } })).status, 201);
 
-  // A run's process says what it was handed: each secret but the server's own, none in its environment, its pipe closed.
+  // A run's process says what it was handed: each secret but the server's own and the decision keys, none in its
+  // environment, its pipe closed.
   const { body: run } = await api("POST", "/agents/custody/runs", { input: { content: "Report." } });
   await follow(api, run.run_id, ["completed"]);
   const report = JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer);
-  for (const name of SECRET_NAMES) assert.equal(report.handed[name], SERVER_ONLY.includes(name) ? "none" : digest(secrets[name]), `${name} handed to the run's process`);
+  for (const name of SECRET_NAMES) assert.equal(report.handed[name], [...SERVER_ONLY, ...DECISION_KEYS].includes(name) ? "none" : digest(secrets[name]), `${name} handed to the run's process`);
   assert.deepEqual(report.inEnv, [], "no secret in the run's process's environment, so none in a child's");
   assert.deepEqual(report.pipe, { fd: 3, closed: true }, "the run's process read its pipe and closed it");
 
@@ -200,6 +207,80 @@ test("started by its launcher, no process of its user holds a secret in its envi
   const runArgv = seen.find((cmdline) => cmdline.includes(" --app "))?.split(" ") ?? [];
   const preload = runArgv.indexOf("--import");
   assert.ok(preload > 0 && runArgv[preload + 1]?.endsWith("/dist/secrets.js") && runArgv.findIndex((arg) => arg.includes("pi-durable-disk")) > preload + 1, `the run's process preloads secrets.js before its CLI: ${runArgv.join(" ").slice(0, 200)}`);
+});
+
+test("under its launcher, a workflow run's judge gets the TypeSafe key the server holds, and no process holds it in its environment or command line", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const calls = join(dir, "jev-calls.jsonl");
+  const token = `not-a-secret-token-${process.pid}-${"t".repeat(24)}`;
+  // The server as the launcher's COMMAND, with the tests' fake Jev: the launcher hands it its secrets over the pipe.
+  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, drainTimeout: "5s" });
+process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
+  const { root, api } = await launched(t, { AGENTRUN_TOKEN: token, TYPESAFE_API_KEY: JEV_CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls }, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
+  const coi = {
+    v: 2, name: "coi-check",
+    schemas: {
+      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is \`doc\` a certificate of incorporation?" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Coi", path: "coi" },
+    root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
+  const { body: started } = await api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
+  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+  const run = (await api("GET", `/runs/${started.run_id}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(run.error));
+  assert.deepEqual(run.result.output, { is_coi: true });
+  const sent = readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent.map((call) => call.authorized), [true], "Jev answered on the key the server holds, handed on the decision descriptor");
+  // The launcher's own processes only: the tests' Jev key is every decision test's canary, and another file's server,
+  // started with it in its environment, may be running now.
+  const tree = treeOf(root);
+  const ours = processes().filter((p) => tree.has(p.pid));
+  assert.ok(ours.length >= 1, "the server is found");
+  for (const p of ours) {
+    assert.ok(!p.environ.includes(JEV_CANARY), `pid ${p.pid}'s environment holds the key: ${p.cmdline.toString().replaceAll("\0", " ").slice(0, 120)}`);
+    assert.ok(!p.cmdline.includes(JEV_CANARY), `pid ${p.pid}'s command line holds the key`);
+  }
+});
+
+test("under its launcher, with OPENROUTER_API_KEY its only decision key, a workflow run's Jev judge answers on that key through OpenRouter", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const calls = join(dir, "jev-calls.jsonl");
+  const token = `not-a-secret-token-${process.pid}-${"t".repeat(24)}`;
+  // The server as the launcher's COMMAND, with the tests' fake Jev. OPENROUTER_API_KEY is the model gateway's key too, and
+  // not on this launcher's list: the server and each run's process read it from their environment (decisions.ts).
+  const script = `const { startServe } = await import(${JSON.stringify(new URL("../dist/index.js", import.meta.url).href)});
+const { secret } = await import(${JSON.stringify(new URL("../dist/secrets.js", import.meta.url).href)});
+const server = await startServe({ data: process.argv[1], port: 0, token: secret("AGENTRUN_TOKEN"), faux: ${JSON.stringify(FAUX)}, fauxJev: ${JSON.stringify(FAUX_JEV)}, drainTimeout: "5s" });
+process.stdout.write("AGENTRUN_BASE_URL=" + server.baseUrl + "\\n");`;
+  // No TypeSafe key anywhere the launcher could take one from: OpenRouter is Jev's only route.
+  const typesafe = process.env.TYPESAFE_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  t.after(() => typesafe !== undefined && (process.env.TYPESAFE_API_KEY = typesafe));
+  const env = { AGENTRUN_TOKEN: token, OPENROUTER_API_KEY: JEV_CANARY, AGENTRUN_TEST_FAUX_JEV_CALLS: calls };
+  const { api } = await launched(t, env, (data) => ["--", process.execPath, "--input-type=module", "-e", script, data]);
+  const coi = {
+    v: 2, name: "coi-check",
+    schemas: {
+      In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+      Coi: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is \`doc\` a certificate of incorporation?" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Coi", path: "coi" },
+    root: { node: "chain", steps: [{ node: "judge", label: "coi", state: { doc: "{question}" }, out: "Coi", as: "coi" }] },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
+  const { body: started } = await api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
+  const { last } = await follow(api, started.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+  const run = (await api("GET", `/runs/${started.run_id}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(run.error));
+  const sent = (existsSync(calls) ? readFileSync(calls, "utf8") : "").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/api/v1/systemone", true]], "one System One request to OpenRouter, on the key the server holds");
 });
 
 test("the launcher run through a link, as a package manager installs a bin, finds the server beside its real path", async (t) => {
