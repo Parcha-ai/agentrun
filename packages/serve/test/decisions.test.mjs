@@ -535,7 +535,11 @@ test("the missing-key 409's details, decisions included, meet what the served do
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
   assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/ErrorBody" }, refused.body.error), [], "the error meets the contract's ErrorBody");
+  // The contract's details take any field; what agent_not_runnable's hold here is the server's own shape.
   const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"].agent_not_runnable;
+  const blocked = shape.oneOf.find((part) => part.required.includes("unbound"));
+  assert.deepEqual(schemaProblems(doc, blocked, refused.body.error.details), [], "field by field, against the blocked revision's details");
   assert.deepEqual(schemaProblems(doc, shape, refused.body.error.details), [], JSON.stringify(refused.body.error.details));
 });
 
