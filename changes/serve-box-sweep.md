@@ -9,3 +9,4 @@ With a box host given (`startServe({ box })`: the box's reap and, on a shared se
 - Run cgroups that no record names are reaped through the cgroup and removed.
 - No run starts or opens again before the start sweep is done.
 - A start sweep that fails is tried again by the next start, open or relaunch rather than kept, so one transient error never holds every run back until a restart. A cgroup the reap already removed counts as removed.
+- Each durable write of a box record goes through its own temporary file, so two settlements of one run's box at once (a run's archive and its agent's) never share or rename away each other's.
