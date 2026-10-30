@@ -84,6 +84,7 @@ test("ask_person makes the run input_required and waiting; a message answers it 
   const done = await follow(api, run_id, ["completed"], { after: waiting.after });
   assert.equal(done.pages.filter((p) => p.reset).length, 0);
   assert.deepEqual((await api("GET", `/runs/${run_id}`)).body.result, { output: null, final_answer: '{"region":"EU"}' });
+  assert.deepEqual(done.rows.filter((r) => r.kind === "user_message").map((r) => r.summary), ["You: EU"], "the answer is the person's next message, never a steer");
   // What the model read back for its ask_person call, as the run's store holds it: never empty, on every pi-durable this
   // package takes (1.1 reads a result's `content`, 1.2 and later its `output`).
   const db = new DatabaseSync(join(data, "runs", run_id, "store", "run.sqlite"), { readOnly: true });
