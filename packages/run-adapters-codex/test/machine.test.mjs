@@ -163,6 +163,8 @@ async function runMachine(t, runId) {
     fetch: async () => { seen.forwarded += 1; return new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }); },
   } });
   const machine = await acquire({ ctx: { runId }, model: gatewayHandler(route) });
+  // Closed when the test ends, whatever happens after: a second machine that fails to start never leaves this one open.
+  t.after(() => machine.close());
   return { machine, seen };
 }
 
@@ -176,7 +178,6 @@ async function ask(url, key) {
 test("run A's key at run B's proxy is refused by name: B books nothing, nothing reaches the provider, and each key still works at its own run's proxy", async (t) => {
   const a = await runMachine(t, 'run-a');
   const b = await runMachine(t, 'run-b');
-  t.after(() => Promise.all([a.machine.close(), b.machine.close()]));
   assert.notEqual(a.machine.modelKey, b.machine.modelKey, 'each run has a key of its own');
   for (const [client, proxy] of [[a, b], [b, a]]) {
     const refused = await ask(proxy.machine.modelUrl, client.machine.modelKey);
