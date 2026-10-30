@@ -161,7 +161,7 @@ const REVIEW: Json = {
         kind: { type: ["string", "null"], description: "The escalation's kind, as its escalate node names it (`coi_review`, say)." },
         node: { type: ["string", "null"], description: "The label of the node the run escalated at." },
         reason: { type: "string", description: "The escalation's summary: what the person is to look at." },
-        at: { type: "string", format: "date-time", description: "When the run escalated." },
+        at: { type: "string", format: "date-time", description: "When the run ended: its `ended_at`, one saved time." },
       },
     },
     { type: "null" },
