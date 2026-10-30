@@ -113,6 +113,8 @@ export async function finishRun({ home, repo, run, secrets = [], caseValues = []
 // The single writer of main. `judge` is the DSL's runJudge port; curate admits saved workflows as trials with the
 // package's own port, and this host settles their uses promoting after three clean runs (the package's default is two).
 export const PROMOTE_AFTER = 3;
-export function curateNow({ repo, judge, secrets = [], now }) {
-  return curate({ repo, judge, secrets, settleUses: usesSettler({ thresholds: { promoteAfter: PROMOTE_AFTER } }), ...(now ? { now } : {}) });
+// `screen` is the injection screen, the host's page judge and its page-injection threshold; `tools` the names of the
+// tools this host binds, which a workflow draft may name.
+export function curateNow({ repo, judge, secrets = [], now, screen, tools }) {
+  return curate({ repo, judge, secrets, screen, tools, settleUses: usesSettler({ thresholds: { promoteAfter: PROMOTE_AFTER } }), ...(now ? { now } : {}) });
 }

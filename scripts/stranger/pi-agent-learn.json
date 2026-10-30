@@ -1,7 +1,7 @@
 {
   "package": "@parcha/pi-agent-learn",
-  "install": ["dsl", "jev", "pi", "pi-git-remote", "pi-agent-learn"],
-  "companions": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev", "@parcha/agentrun-pi", "@parcha/pi-git-remote"],
+  "install": ["dsl", "jev", "pi", "pi-git-remote", "learn", "pi-agent-learn"],
+  "companions": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev", "@parcha/agentrun-pi", "@parcha/pi-git-remote", "@parcha/agentrun-learn"],
   "peers": ["@earendil-works/chord", "@earendil-works/pi-durable", "@earendil-works/pi-ai"],
   "files": [{ "name": "quickstart.mjs", "readme": "packages/pi-agent-learn/README.md", "heading": "Quickstart (no key, no network)", "fence": "js", "index": 0 }],
   "command": ["node", "quickstart.mjs"],

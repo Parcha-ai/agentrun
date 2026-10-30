@@ -21,14 +21,42 @@ import { type ServedRun, servedUse } from "./serving.js";
 import type { AdmitWorkflow, AdmitWorkflowInput, AdmitWorkflowResult, RepoRead, SettleUses, SettleUsesInput, SettleUsesResult, WorkflowUse } from "./types.js";
 import {
   checkPreconditions, currentRevision, deriveWhen, fitTrial, matches, MAX_NAME, parseTrial, type Precondition, readTrial, renderTrial, skillName, skillPath, type Trial, trialPath,
-  type Use, type UseOutcome, workflowDir, WORKFLOW_SKILL_NAME,
+  type Use, type UseOutcome, repoWorkflowDir, workflowDir, WORKFLOW_SKILL_NAME,
 } from "./trial.js";
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const RECORD = /^[0-9a-f]{64}\.json$/;
 const SKILL_PATH = new RegExp(`^${LAYOUT.skills.replaceAll(".", "\\.")}/([a-z0-9][a-z0-9-]{0,63})/(SKILL\\.md|trial\\.json)$`);
-const DIGEST_PATH = new RegExp(`^${LAYOUT.workflows.replaceAll(".", "\\.")}/([a-z0-9][a-z0-9_-]{0,63})/([0-9a-f]{64})\\.json$`);
-/** Workflows one run may hand over: two files each stay inside the guard's file cap with the inbox and uses files. */
+// A record in the repository: at workflows/<name>/, or where an older repository kept it, the store's own folder.
+const DIGEST_PATH = new RegExp(`^(?:${LAYOUT.workflows}|${LAYOUT.store.replaceAll(".", "\\.")})/([a-z0-9][a-z0-9_-]{0,63})/([0-9a-f]{64})\\.json$`);
+
+/** Every entry under a workflow folder in the repository at `sha`: the new folder's, then the old one's. */
+async function listWorkflowRecords(repo: Pick<Repo, "list">, sha: string) {
+  return [...(await repo.list(LAYOUT.workflows, sha)), ...(await repo.list(LAYOUT.store, sha))];
+}
+
+/** A file of `name`'s records in the repository at `ref`: at workflows/<name>/, else where an older repository kept it. */
+export async function readWorkflowFile(read: (path: string, ref: string) => Promise<string | undefined>, name: string, file: string, ref: string): Promise<string | undefined> {
+  return (await read(`${repoWorkflowDir(name)}/${file}`, ref)) ?? (await read(`${workflowDir(name)}/${file}`, ref));
+}
+
+/** `files` from a scratch checkout (the store's folder) as the repository holds them now: under workflows/<name>/. */
+function inRepo(files: Readonly<Record<string, string | null>>): Record<string, string | null> {
+  return Object.fromEntries(Object.entries(files).map(([file, text]) => [file.startsWith(`${LAYOUT.store}/`) ? `${LAYOUT.workflows}/${file.slice(LAYOUT.store.length + 1)}` : file, text]));
+}
+
+/** The document of `name`'s live revision at `ref`, or undefined when it has none there. */
+export async function liveRevisionAt(repo: Pick<Repo, "read">, name: string, ref: string): Promise<unknown | undefined> {
+  try {
+    const trial = await readTrial(repo, name, ref);
+    const live = trial && currentRevision(trial);
+    return live ? await readRevision(repo, name, live.sha256, ref) : undefined;
+  } catch (error) {
+    if (error instanceof LearnError) return undefined;
+    throw error;
+  }
+}
+/** Workflows one run may hand over: two files each stay inside the guard's file cap with the memo, notes and uses files. */
 export const MAX_RUN_WORKFLOWS = 8;
 export const MAX_RUN_USES = 32;
 
@@ -131,7 +159,7 @@ function skillDescription(text: string): string | undefined {
 export type FoundWorkflow = {
   readonly name: string;
   readonly sha256: string;
-  /** The DSL's records, byte for byte, by name under `inbox/<run id>/workflows/<name>/`: `<sha256>.json` and `latest`. */
+  /** The DSL's records for the revision the run ended on, byte for byte: `<sha256>.json` and `latest`. */
   readonly files: Readonly<Record<string, string>>;
 };
 export type SkippedWorkflow = { readonly name?: string; readonly reason: string };
@@ -155,7 +183,7 @@ export type CollectWorkflowsOptions = {
 
 /**
  * Host step at a run's terminal: the workflows the run saved that the agent repository did not hold at the seeded
- * commit, as the files its inbox carries. Only the revision each name ends on is handed over (what `latest` names), and
+ * commit, as the records its draft stands for. Only the revision each name ends on is handed over (what `latest` names), and
  * only when the repository does not already hold that digest, so a workflow the run was seeded with and did not change
  * is not proposed. The records are read through the DSL's store, which refuses a damaged one, then copied as they
  * are; a name the store refuses, one over the file cap, and anything past `MAX_RUN_WORKFLOWS` is left out and named in `skipped`.
@@ -166,7 +194,7 @@ export async function collectWorkflows(options: CollectWorkflowsOptions): Promis
   const seedSha = options.seedSha ?? (options.target ? (await readSeed(options.target))?.sha : undefined);
   if (typeof seedSha !== "string" || seedSha === "") throw new LearnError("invalid", "collectWorkflows needs the seeded commit: pass seedSha, or the run's store holding a seed");
   const held = new Set<string>();
-  for (const entry of await options.repo.list(LAYOUT.workflows, seedSha)) {
+  for (const entry of await listWorkflowRecords(options.repo, seedSha)) {
     const match = DIGEST_PATH.exec(entry.path);
     if (match) held.add(`${match[1]}/${match[2]}`);
   }
@@ -191,7 +219,7 @@ export async function collectWorkflows(options: CollectWorkflowsOptions): Promis
         skipped.push({ name, reason: `over the ${MAX_RUN_WORKFLOWS} workflows one run hands over` });
         continue;
       }
-      const record = await readRegular(path.join(workDir, LAYOUT.workflows, name, `${digest}.json`));
+      const record = await readRegular(path.join(workDir, LAYOUT.store, name, `${digest}.json`));
       if (record === undefined) throw new LearnError("missing", "the record is gone");
       found.push({ name, sha256: digest, files: { [`${digest}.json`]: record, latest: `${digest}\n` } });
     } catch (error) {
@@ -199,14 +227,6 @@ export async function collectWorkflows(options: CollectWorkflowsOptions): Promis
     }
   }
   return { found, records: Object.fromEntries(found.map((w) => [w.name, { files: w.files }])), skipped };
-}
-
-/** The proposal's files for what `collectWorkflows` found: `inbox/<run id>/workflows/<name>/<file>`. */
-export function inboxWorkflowFiles(runId: string, found: readonly FoundWorkflow[]): Record<string, string> {
-  if (typeof runId !== "string" || !RUN_ID.test(runId)) throw new LearnError("invalid", "the run id is not valid");
-  const out: Record<string, string> = {};
-  for (const workflow of found) for (const [file, text] of Object.entries(workflow.files)) out[`${LAYOUT.inbox}/${runId}/workflows/${skillName(workflow.name)}/${file}`] = text;
-  return out;
 }
 
 // ---------------------------------------------------------------- uses
@@ -598,7 +618,7 @@ export async function revisionOf(name: string, records: Readonly<Record<string, 
  *  the document against its digest; undefined when the record is missing or is not that revision. */
 export async function readRevision(repo: Pick<Repo, "read">, name: string, sha256: string, ref: string): Promise<unknown | undefined> {
   if (!WORKFLOW_NAME.test(name) || !/^[0-9a-f]{64}$/.test(sha256)) return undefined;
-  const record = await repo.read(`${workflowDir(name)}/${sha256}.json`, ref);
+  const record = await readWorkflowFile((p, r) => repo.read(p, r), name, `${sha256}.json`, ref);
   return record === undefined ? undefined : (await revisionOf(name, { latest: `${sha256}\n`, [`${sha256}.json`]: record }))?.workflow;
 }
 
@@ -830,7 +850,7 @@ export async function workflowsToTry(source: RepoAt, input: unknown): Promise<Wo
     if (match) (match[2] === "SKILL.md" ? skills : trials).add(match[1]!);
   }
   const records = new Set<string>();
-  for (const entry of await repo.list(LAYOUT.workflows, sha)) {
+  for (const entry of await listWorkflowRecords(repo, sha)) {
     const match = DIGEST_PATH.exec(entry.path);
     if (match) records.add(`${match[1]}/${match[2]}`);
   }
@@ -874,7 +894,7 @@ export async function seedWorkflows(options: SeedWorkflowsOptions): Promise<Seed
       const trial = await readTrial(options.repo, name, options.sha);
       const live = trial && currentRevision(trial);
       if (!live) throw new LearnError("missing", "no live revision");
-      const record = await options.repo.read(`${workflowDir(name)}/${live.sha256}.json`, options.sha);
+      const record = await readWorkflowFile((p, r) => options.repo.read(p, r), name, `${live.sha256}.json`, options.sha);
       if (record === undefined) throw new LearnError("missing", "the record is not in the repository");
       // A host that starts again, after the agent saved a better revision, must not put the old one back as `latest`.
       const present = await new WorkflowStore(into).list();
@@ -1009,7 +1029,7 @@ export function workflowAdmitter(options: WorkflowAdmitterOptions = {}): AdmitWo
     }));
     if (result.status === "refused") return { status: result.reason === "code" || result.reason === "unknown" ? "held" : "refused", reason: `${result.reason}: ${result.detail}` };
     if (result.status === "unchanged") return { status: "unchanged", reason: "the same revision and description are already on main" };
-    return { status: "admitted", files: { ...result.files }, reason: result.status === "described" ? `${name}: its skill was written from the description` : `${name}: ${result.sha256!.slice(0, 12)} is the live trial` };
+    return { status: "admitted", files: inRepo(result.files), reason: result.status === "described" ? `${name}: its skill was written from the description` : `${name}: ${result.sha256!.slice(0, 12)} is the live trial` };
   };
 }
 
@@ -1042,7 +1062,7 @@ export function usesSettler(options: UsesSettlerOptions = {}): SettleUses {
           const trial = parseTrial(text, name);
           await writeRegular(dir, trialPath(name), text);
           for (const revision of trial.revisions.filter((r) => r.status === "superseded")) {
-            const record = await input.read(`${workflowDir(name)}/${revision.sha256}.json`, input.main);
+            const record = await readWorkflowFile(input.read, name, `${revision.sha256}.json`, input.main);
             if (record !== undefined) await writeRegular(dir, `${workflowDir(name)}/${revision.sha256}.json`, record);
           }
         } catch (error) {
@@ -1057,6 +1077,6 @@ export function usesSettler(options: UsesSettlerOptions = {}): SettleUses {
       decisions.push({ name, action: decision.action, reason: decision.reason, ...(decision.action === "demote" && decision.rollbackTo ? { rollbackTo: decision.rollbackTo } : {}) });
     }
     for (const { name, reason } of result.held) decisions.push({ name, action: "hold", reason });
-    return { files: { ...result.files }, decisions };
+    return { files: inRepo(result.files), decisions };
   };
 }

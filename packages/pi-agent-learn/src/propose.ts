@@ -1,13 +1,13 @@
 import type { Session } from "@earendil-works/pi-durable";
 import type { Repo } from "@parcha/pi-git-remote";
 import { type Caps, createGuard } from "./guard.js";
-import { renderInbox } from "./inbox.js";
-import { COMMIT_SHA, inboxPath, inboxWorkflowDir, RUN_ID, runBranch, usesPath, WORKFLOW_NAME } from "./layout.js";
-import { readSeed } from "./seed.js";
+import { type Draft, runBranchFiles } from "./branch.js";
+import { COMMIT_SHA, RUN_ID, runBranch, WORKFLOW_NAME } from "./layout.js";
+import { learningsAt, readSeed } from "./seed.js";
 import type { ServedRun } from "./serving.js";
 import { collectCandidates } from "./tool.js";
 import type { Candidate, Refusal } from "./types.js";
-import { collectUses, collectWorkflows, COPIED_TEXT, copiesRead, revisionOf } from "./workflows.js";
+import { collectUses, collectWorkflows, COPIED_TEXT, copiesRead, liveRevisionAt, revisionOf } from "./workflows.js";
 
 /** What `collectCandidates` reads: a pi-durable Harness or a session. */
 export type ProposeTarget = Parameters<typeof collectCandidates>[0];
@@ -26,8 +26,10 @@ export type ProposeResult =
 export type ProposeFilesOptions = {
   readonly repo: Repo;
   readonly runId: string;
-  /** Path to text, as the run's branch will hold it: the guard allows only this run's inbox and uses files. */
+  /** Path to text, as the run's branch will hold it: the guard allows only what a run writes on the shared layout. */
   readonly files: Readonly<Record<string, string>>;
+  /** The commit a new branch starts from. Default: main. */
+  readonly parent?: string;
   readonly candidates?: readonly Candidate[];
   /** Plaintext values the host holds as secrets now. */
   readonly secrets?: Iterable<string>;
@@ -52,6 +54,7 @@ export async function proposeFiles(options: ProposeFilesOptions): Promise<Propos
     files,
     message: `learn: run ${runId} proposes ${count} candidate(s)`,
     trailers: { "Run-Id": runId },
+    ...(options.parent === undefined || (await repo.resolve(branch)) !== undefined ? {} : { parent: options.parent }),
   });
   // An unchanged tree makes no commit and returns the branch's base: that is not a proposal for this run.
   if (!created && !(await repo.log({ ref: sha, max: 1 }))[0]?.trailers["Run-Id"]?.includes(runId)) return { status: "empty" };
@@ -70,10 +73,14 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   /** The run's store: where `collectCandidates` reads the `learn` calls. */
   readonly target: ProposeTarget;
   readonly uses?: UsesSource;
-  /** Committed under `inbox/<run id>/workflows/<name>/`. Whatever is not a workflow name or a record name is refused. */
+  /** Proposed as drafts, `workflows/<name>/workflow.json` with a `README.md`: the document `latest` names. */
   readonly workflows?: WorkflowRecords;
-  /** Set when the run read untrusted content: every candidate is marked untrusted in the inbox. */
+  /** Set when the run read untrusted content: the memo and every note say so. */
   readonly untrusted?: boolean;
+  /** How the run ended, for the memo. Default `completed`. */
+  readonly outcome?: "completed" | "failed" | "stopped";
+  /** What the run cost, when the host knows it, for the memo. */
+  readonly costUsd?: number;
   /**
    * The untrusted texts the run read (the pages its tools fetched, say). A saved workflow any `COPIED_TEXT` characters of
    * whose strings (case and whitespace folded) appear in one is withheld: its records stay out of the proposal and the result
@@ -94,10 +101,11 @@ export type ProposeOptions = Omit<ProposeFilesOptions, "files" | "candidates"> &
   readonly served?: readonly ServedRun[];
 };
 
-/** The host step at a run's terminal: collect the run's candidates (and uses), render `inbox/<run id>.md` with the run's
- *  seed commit (and `uses/<run id>.json`), add the workflow records, and propose them. */
+/** The host step at a run's terminal: collect the run's candidates (and uses and saved workflows) and propose them as the run's
+ *  branch on the shared layout, from the commit the run was seeded from: the memo, a note per lesson, fact or correction,
+ *  one more use on each note it used, the index, a draft per workflow, and `uses/<run id>.json`. */
 export async function proposeLearning(options: ProposeOptions): Promise<ProposeResult> {
-  const { target, uses: usesSource, workflows, untrusted, read, workDir, seedSha, served, ...rest } = options;
+  const { target, uses: usesSource, workflows, untrusted, read, workDir, seedSha, served, outcome, costUsd, ...rest } = options;
   const candidates = await collectCandidates(target);
   let records = workflows;
   let uses = await usesSource?.(target);
@@ -122,28 +130,39 @@ export async function proposeLearning(options: ProposeOptions): Promise<ProposeR
     records = kept;
   }
   const out = <T extends object>(result: T): T => (withheld.length ? { ...result, withheld } : result);
-  const pairs = Object.entries(records ?? {}).flatMap(([name, { files }]) => Object.entries(files).map(([file, content]) => [name, file, content] as const));
-  if (candidates.length === 0 && uses === undefined && pairs.length === 0) return out({ status: "empty" as const });
+  const described = new Map(candidates.filter((c) => c.type === "workflow" && typeof c.id === "string").map((c) => [c.id!, c.text] as const));
+  const names = [...new Set([...Object.keys(records ?? {}), ...described.keys()])].sort();
+  if (candidates.length === 0 && uses === undefined && names.length === 0) return out({ status: "empty" as const });
   if (typeof rest.runId !== "string" || !RUN_ID.test(rest.runId)) return { status: "refused", refusals: [{ reason: "invalid", detail: "the run id is not valid" }] };
-  const files: Record<string, string> = {};
-  // The commit the run was seeded from, which a reader stamps on what it learned; a run that was not seeded has none.
+  // The commit the run was seeded from: its branch starts there, and its memo and notes name it. A run that was not seeded
+  // starts from main as it is now.
   const seed = (await readSeed(target))?.sha;
   if (seed !== undefined && !COMMIT_SHA.test(seed)) return { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the run's seed is not a commit id" }] };
-  if (candidates.length) files[inboxPath(rest.runId)] = renderInbox(rest.runId, candidates, { ...(seed === undefined ? {} : { seed }), untrusted: untrusted === true });
+  if (seed !== undefined && (await rest.repo.resolve(seed)) !== seed) return { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the run's seed is not a commit of the agent repository" }] };
+  const base = seed ?? (await rest.repo.resolve("main"));
+  if (base === undefined) return { status: "refused", refusals: [{ reason: "invalid", field: "seed", detail: "the agent repository has no main" }] };
+  let json: string | undefined;
   if (uses !== undefined) {
-    let json: string | undefined;
     try {
       json = JSON.stringify(uses, null, 2);
     } catch {
       // A bigint or a cycle has no JSON form.
     }
     if (json === undefined) return { status: "refused", refusals: [{ reason: "invalid", field: "uses", detail: "the uses are not JSON" }] };
-    files[usesPath(rest.runId)] = `${json}\n`;
   }
-  for (const [name, file, content] of pairs) {
+  const drafts: Draft[] = [];
+  for (const name of names) {
     if (!WORKFLOW_NAME.test(name)) return { status: "refused", refusals: [{ reason: "invalid", field: "workflows", detail: "a workflow name is not valid" }] };
-    files[`${inboxWorkflowDir(rest.runId, name)}${file}`] = content;
+    const files = records?.[name]?.files;
+    const workflow = files ? (await revisionOf(name, files))?.workflow : await liveRevisionAt(rest.repo, name, base);
+    if (files && workflow === undefined) return { status: "refused", refusals: [{ reason: "invalid", field: "workflows", detail: "a workflow's records are not the DSL's" }] };
+    drafts.push({ name, ...(workflow === undefined ? {} : { workflow }), ...(described.has(name) ? { description: described.get(name)! } : {}) });
   }
-  const result = await proposeFiles({ ...rest, files, candidates });
+  const { learnings } = await learningsAt(rest.repo, base);
+  const files = runBranchFiles({
+    runId: rest.runId, base, seeded: seed !== undefined, candidates, untrusted: untrusted === true, learnings, drafts,
+    ...(json === undefined ? {} : { uses: `${json}\n` }), ...(outcome ? { outcome } : {}), ...(costUsd === undefined ? {} : { costUsd }),
+  });
+  const result = await proposeFiles({ ...rest, files, candidates, parent: base });
   return result.status === "refused" ? result : out(result);
 }

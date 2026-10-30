@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CAPS, createGuard, guard, LEARN_TYPES, renderInbox } from "../dist/index.js";
+import { CAPS, createGuard, guard, LEARN_TYPES, learningId, renderLearning, runBranchFiles } from "../dist/index.js";
 import { cases, RUN_ID } from "./fixtures/guard-corpus.mjs";
 import { cases as workflowCases } from "./fixtures/guard-workflow-corpus.mjs";
 
@@ -18,7 +18,7 @@ const verdict = (input) => {
   const asCurate = refusals("curate", input);
   return { allowed: asRun.length === 0 || asCurate.length === 0, asRun, asCurate };
 };
-const ownRole = (path) => (path.startsWith("inbox/") || path.startsWith("uses/") ? "run" : "curate");
+const ownRole = (path) => (path.startsWith("memos/") || path.startsWith("uses/") || /^workflows\/[^/]+\/(?:workflow\.json|README\.md)$/.test(path) ? "run" : "curate");
 const FAMILY = {
   secret: ["secret_value", "secret_shape"],
   unicode: ["invisible_unicode"],
@@ -26,10 +26,10 @@ const FAMILY = {
   path: ["rules_locked", "path_not_allowed", "invisible_unicode"],
 };
 
-test("the corpus holds 201 cases, 11 that carry the content of closed paths and 11 strict paths, with unique ids", () => {
+test("the corpus holds 201 cases, 11 that carry the content of closed paths and 10 strict paths, with unique ids", () => {
   assert.equal(cases.length, 201);
   assert.equal(cases.filter((c) => c.id.startsWith("allow.moved.")).length, 11);
-  assert.equal(cases.filter((c) => c.id.startsWith("path.strict.")).length, 11);
+  assert.equal(cases.filter((c) => c.id.startsWith("path.strict.")).length, 10);
   assert.equal(new Set(cases.map((c) => c.id)).size, cases.length);
   for (const c of cases) {
     assert.ok(["secret", "path", "unicode", "size", "allow"].includes(c.kind), c.id);
@@ -84,7 +84,8 @@ test("every role refuses AGENTS.md and agent.json, and each role keeps to its ow
       assert.ok(reasonsOf(guard({ role, runId: RUN_ID, files: { [file]: "x" } })).has("rules_locked"), `${role} ${file}`);
     }
   }
-  assert.ok(reasonsOf(guard({ role: "run", runId: RUN_ID, files: { "learnings/L-0123456789ab.md": "x" } })).has("path_not_allowed"));
+  assert.ok(reasonsOf(guard({ role: "run", runId: RUN_ID, files: { "inbox/b2-run.md": "x" } })).has("path_not_allowed"), "the inbox is retired");
+  assert.ok(reasonsOf(guard({ role: "run", runId: RUN_ID, files: { "workflows/kyb/latest": "x" } })).has("path_not_allowed"), "a workflow's records are the curator's");
   assert.ok(reasonsOf(guard({ role: "curate", files: { "inbox/b2-run.md": "x" } })).has("path_not_allowed"));
   assert.ok(reasonsOf(guard({ role: "curate", files: { "uses/b2-run.json": "{}" } })).has("path_not_allowed"));
 });
@@ -97,10 +98,10 @@ test("trial.json is written by the curator inside a skill folder only", () => {
   assert.ok(reasonsOf(guard({ role: "run", runId: RUN_ID, files: { ".agents/skills/kyb/trial.json": "{}" } })).has("path_not_allowed"));
 });
 
-test("the curator may write DSL workflow records and nothing else under .pi", () => {
+test("the curator may write DSL workflow records under workflows/ and nothing under .pi", () => {
   const digest = "a".repeat(64);
-  assert.deepEqual(guard({ role: "curate", files: { [`.pi/agentrun/workflows/kyb/${digest}.json`]: "{}", ".pi/agentrun/workflows/kyb/latest": digest } }), []);
-  for (const file of [".pi/agentrun/workflows/kyb/notes.md", ".pi/agentrun/workflows/kyb/x/latest", ".pi/settings.json", `.pi/agentrun/workflows/../${digest}.json`]) {
+  assert.deepEqual(guard({ role: "curate", files: { [`workflows/kyb/${digest}.json`]: "{}", "workflows/kyb/latest": digest } }), []);
+  for (const file of ["workflows/kyb/notes.md", "workflows/kyb/x/latest", ".pi/settings.json", `.pi/agentrun/workflows/kyb/${digest}.json`, ".pi/agentrun/workflows/kyb/latest", `workflows/../${digest}.json`]) {
     assert.ok(guard({ role: "curate", files: { [file]: "{}" } }).length > 0, file);
   }
 });
@@ -166,8 +167,8 @@ test("case data: a case value of 4 or more characters is refused in any case, sp
   assert.ok(guard({ role: "run", caseValues: ["Acme"], candidates: [candidate({ text: "Ac\nme" })] }).some((r) => r.reason === "case_data"));
   assert.deepEqual(guard({ role: "run", caseValues: ["a b c"], candidates: [candidate({ text: "abc is short" })] }), [], "a value under 4 characters once its whitespace is gone is ignored");
   assert.ok(refused({ candidates: [candidate({ evidence: ["order 12345 failed"] })] }).has("case_data"));
-  assert.ok(refused({ files: { [`inbox/${RUN_ID}.md`]: "see 12345" } }).has("case_data"));
-  assert.ok(refused({ files: { [`inbox/${RUN_ID}.md`]: "ok", [`inbox/${RUN_ID}/workflows/12345/latest`]: "ok" } }).has("case_data"), "a workflow name is the agent's");
+  assert.ok(refused({ files: { [`memos/${RUN_ID}.md`]: "see 12345" } }).has("case_data"));
+  assert.ok(refused({ files: { [`memos/${RUN_ID}.md`]: "ok", "workflows/x12345/README.md": "ok" } }).has("case_data"), "a workflow name is the agent's");
   assert.ok(refused({ candidates: [candidate({ text: "\uff21cme Holdings GmbH" })] }).has("case_data"), "fullwidth letters fold to the value");
   assert.deepEqual([...refused({ candidates: [candidate({ text: "A rule with xy in it, and 1234 too." })] })], [], "a value under 4 characters or a near miss is not case data");
   const out = guard({ role: "run", caseValues, candidates: [candidate({ text: "Acme Holdings GmbH" })] });
@@ -183,9 +184,9 @@ test("a secret too short to match without false hits refuses everything and says
 });
 
 test("a run with files needs a valid run id", () => {
-  assert.ok(reasonsOf(guard({ role: "run", files: { "inbox/x.md": "x" } })).has("path_not_allowed"));
-  assert.ok(reasonsOf(guard({ role: "run", runId: "../x", files: { "inbox/../x.md": "x" } })).has("invalid"));
-  assert.deepEqual(guard({ role: "run", runId: "run-1", files: { "inbox/run-1.md": "x" } }), []);
+  assert.ok(reasonsOf(guard({ role: "run", files: { "memos/x.md": "x" } })).has("path_not_allowed"));
+  assert.ok(reasonsOf(guard({ role: "run", runId: "../x", files: { "memos/../x.md": "x" } })).has("invalid"));
+  assert.deepEqual(guard({ role: "run", runId: "run-1", files: { "memos/run-1.md": "x" } }), []);
   assert.deepEqual(guard({ role: "chief", runId: "run-1" }).map((r) => r.reason), ["invalid"]);
 });
 
@@ -194,10 +195,10 @@ test("the file count and byte caps are the defaults, frozen, and createGuard set
   assert.equal(CAPS.learning, 4096);
   const many = Object.fromEntries(Array.from({ length: CAPS.files + 1 }, (_, i) => [`learnings/n${i}.md`, "x"]));
   assert.deepEqual(guard({ role: "curate", files: many }).map((r) => r.reason), ["too_many"]);
-  const small = createGuard({ inbox: 100, files: 1 });
-  assert.deepEqual(small({ role: "run", runId: "r", files: { "inbox/r.md": "x".repeat(101) } }).map((r) => r.reason), ["too_large"]);
-  assert.deepEqual(small({ role: "run", runId: "r", files: { "inbox/r.md": "x".repeat(100) } }), []);
-  assert.throws(() => createGuard({ inbox: 0 }), TypeError);
+  const small = createGuard({ memo: 100, files: 1 });
+  assert.deepEqual(small({ role: "run", runId: "r", files: { "memos/r.md": "x".repeat(101) } }).map((r) => r.reason), ["too_large"]);
+  assert.deepEqual(small({ role: "run", runId: "r", files: { "memos/r.md": "x".repeat(100) } }), []);
+  assert.throws(() => createGuard({ memo: 0 }), TypeError);
   assert.throws(() => createGuard({ text: 1.5 }), TypeError);
 });
 
@@ -256,15 +257,13 @@ test("random secrets are found in every encoding at every alignment, and a near 
   }
 });
 
-test("workflow records belong to a run's inbox folder, and the DSL's store paths to the curator", () => {
+test("a run proposes a workflow as a draft, and the DSL's records in its folder are the curator's", () => {
   const digest = "0123456789abcdef".repeat(4);
-  const inbox = `inbox/run-1/workflows/kyb/${digest}.json`;
-  const store = `.pi/agentrun/workflows/kyb/${digest}.json`;
-  assert.deepEqual(guard({ role: "run", runId: "run-1", files: { [inbox]: "{}", "inbox/run-1/workflows/kyb/latest": digest } }), []);
-  assert.ok(reasonsOf(guard({ role: "run", runId: "run-1", files: { [store]: "{}" } })).has("path_not_allowed"));
-  assert.ok(reasonsOf(guard({ role: "curate", files: { [inbox]: "{}" } })).has("path_not_allowed"));
-  assert.ok(reasonsOf(guard({ role: "run", runId: "run-2", files: { [inbox]: "{}" } })).has("path_not_allowed"));
-  assert.deepEqual(guard({ role: "curate", files: { [store]: "{}" } }), []);
+  const record = `workflows/kyb/${digest}.json`;
+  assert.deepEqual(guard({ role: "run", runId: "run-1", files: { "workflows/kyb/workflow.json": "{}", "workflows/kyb/README.md": "# kyb\n" } }), []);
+  for (const file of [record, "workflows/kyb/latest", `.pi/agentrun/workflows/kyb/${digest}.json`]) assert.ok(reasonsOf(guard({ role: "run", runId: "run-1", files: { [file]: "{}" } })).has("path_not_allowed"), file);
+  assert.deepEqual(guard({ role: "curate", files: { [record]: "{}", "workflows/kyb/latest": digest, "workflows/kyb/workflow.json": "{}", "workflows/kyb/README.md": "# kyb\n" } }), []);
+  assert.ok(reasonsOf(guard({ role: "curate", files: { [`.pi/agentrun/workflows/kyb/${digest}.json`]: "{}" } })).has("path_not_allowed"), "the old store path is read, never written");
 });
 
 test("a workflow candidate names a workflow, every other candidate a learning", () => {
@@ -277,11 +276,11 @@ test("a workflow candidate names a workflow, every other candidate a learning", 
   assert.deepEqual(named("used", "L-0123456789ab"), []);
 });
 
-test("the curator writes learnings/L-<12 hex>.md, SKILL.md and trial.json, and nothing else (rulings 11 and 12)", () => {
+test("the curator writes learnings/L-<12 hex>.md and the index, a run's memo, SKILL.md and trial.json, and nothing else (rulings 11 and 12)", () => {
   const curate = (file) => guard({ role: "curate", files: { [file]: "x" } });
-  for (const file of ["learnings/L-0123456789ab.md", ".agents/skills/kyb/SKILL.md", ".agents/skills/my.skill/trial.json"]) assert.deepEqual(curate(file), [], file);
+  for (const file of ["learnings/L-0123456789ab.md", "learnings/INDEX.md", "memos/run-1.md", ".agents/skills/kyb/SKILL.md", ".agents/skills/my.skill/trial.json"]) assert.deepEqual(curate(file), [], file);
   for (const file of [
-    "learnings/INDEX.md", "learnings/notes.md", "learnings/L-0123456789AB.md", "learnings/L-0123456789a.md", "learnings/L-0123456789abc.md",
+    "learnings/notes.md", "memos/x/run-1.md", "memos/run-1.txt", "learnings/L-0123456789AB.md", "learnings/L-0123456789a.md", "learnings/L-0123456789abc.md",
     "learnings/L-0123456789ab.txt", "learnings/sub/L-0123456789ab.md", "learnings/L-0123456789ab.md/x", "learnings/ L-0123456789ab.md",
     ".agents/skills/kyb/references/checklist.md", ".agents/skills/kyb/refs/checklist.md", ".agents/skills/kyb/notes.md", ".agents/skills/kyb/skill.md",
     ".agents/skills/SKILL.md", ".agents/skills/kyb/SKILL.md/x", ".agents/skills/not a name/SKILL.md", ".agents/config.toml",
@@ -290,46 +289,41 @@ test("the curator writes learnings/L-<12 hex>.md, SKILL.md and trial.json, and n
   }
 });
 
-test("a call id, a run id, a seed and a digest are generated: a short case value in one is no case data", () => {
-  const digest = `${"0".repeat(40)}4821${"f".repeat(20)}`;
+test("a call id, a run id, a seed and a learning id are generated: a short case value in one is no case data", () => {
   const seed = `${"a".repeat(30)}4821${"b".repeat(6)}`;
   const runId = "run-4821-0f3";
   const candidates = [candidate({ callId: "fc_68ad4821e0f3" }), candidate({ callId: "call_4821|fc_4821", type: "fact", text: "Another rule." })];
-  const files = {
-    [`inbox/${runId}.md`]: renderInbox(runId, candidates, { seed }),
-    [`inbox/${runId}/workflows/kyb/${digest}.json`]: JSON.stringify({ digest }),
-    [`inbox/${runId}/workflows/kyb/latest`]: `${digest}\n`,
-  };
+  const files = runBranchFiles({ runId, base: seed, seeded: true, candidates, untrusted: false, learnings: [] });
   const out = guard({ role: "run", runId, files, candidates, caseValues: ["4821"] });
   assert.deepEqual(out, [], "nothing the model wrote holds the value");
   assert.deepEqual(guard({ role: "curate", files: { "learnings/L-48214821abcd.md": "x", ".agents/skills/kyb/SKILL.md": "x" }, caseValues: ["4821"] }), []);
 });
 
-test("the model's own text in an inbox is still checked for case data, and so is anything that is not exactly a rendering", () => {
+test("the model's own text in a note, the memo or the index is still checked for case data, and so is a file that is not exactly a rendering", () => {
   const caseValues = ["4821"];
-  const run = (content, candidates = []) => guard({ role: "run", runId: "run-1", files: { "inbox/run-1.md": content }, candidates, caseValues });
+  const run = (files, candidates = []) => guard({ role: "run", runId: "run-1", files, candidates, caseValues });
+  const branch = (found) => runBranchFiles({ runId: "run-1", base: "a".repeat(40), seeded: true, candidates: found, untrusted: false, learnings: [] });
+  const found = [candidate({ callId: "fc_1", text: "order 4821 failed" })];
+  const out = run(branch(found), found);
+  const note = `learnings/${learningId("run-1", "order 4821 failed")}.md`;
+  assert.ok(out.some((r) => r.reason === "case_data" && r.path === note), "the note's rule");
+  assert.ok(out.some((r) => r.reason === "case_data" && r.field === "candidates[0].text"));
   const clean = [candidate({ callId: "fc_4821" })];
-  const text = (field, value) => [candidate({ callId: "fc_1", [field]: value })];
-  for (const [name, found] of [["text", text("text", "order 4821 failed")], ["evidence", text("evidence", ["order 4821 failed"])], ["id", [candidate({ callId: "fc_1", type: "used", id: "L-4821abcdef01" })]]]) {
-    const out = run(renderInbox("run-1", found), found);
-    assert.deepEqual(out.map((r) => [r.reason, r.path ?? r.field]), [["case_data", "inbox/run-1.md"], ["case_data", name === "id" ? "candidates[0].id" : `candidates[0].${name === "text" ? "text" : "evidence[0]"}`]], name);
-  }
-  assert.deepEqual(run(renderInbox("run-1", clean), clean), []);
-  const rendered = renderInbox("run-1", clean);
-  // The same file with the value added outside the JSON block, or in a heading, or with the block edited, is not a rendering.
-  for (const [name, content] of [
-    ["a human section that differs from its block", rendered.replace("Search registries", "Search 4821 registries")],
-    ["a changed heading", rendered.replace("proposes 1", "proposes 4821")],
-    ["a block with another key", rendered.replace('"untrusted":false', '"untrusted":false,"note":"4821"')],
-    ["text after the block", `${rendered}more 4821\n`],
-    ["a plain note", "see 4821"],
-    ["a rendering for another run", renderInbox("run-2", clean)],
+  assert.deepEqual(run(branch(clean), clean), []);
+  const files = branch(clean);
+  const cleanNote = Object.keys(files).find((p) => p.startsWith("learnings/L-"));
+  for (const [name, path, content] of [
+    ["text after a note's rule that is not its rendering", cleanNote, `${files[cleanNote]}more 4821\n`],
+    ["a note's front matter edited", cleanNote, files[cleanNote].replace("scope: all", "scope: x4821")],
+    ["the memo's prose", "memos/run-1.md", files["memos/run-1.md"].replace("## What could be better\n", "## What could be better\n- order 4821\n")],
+    ["the index's text", "learnings/INDEX.md", `${files["learnings/INDEX.md"]}- L-0123456789ab: order 4821\n`],
   ]) {
-    assert.ok(run(content).some((r) => r.reason === "case_data"), name);
+    assert.ok(run({ ...files, [path]: content }).some((r) => r.reason === "case_data"), name);
   }
-  assert.ok(guard({ role: "run", runId: "run-1", files: { "inbox/run-1/workflows/x4821/latest": "ok" }, caseValues }).some((r) => r.reason === "case_data"), "a workflow name is the agent's");
+  assert.ok(guard({ role: "run", runId: "run-1", files: { "workflows/x4821/README.md": "ok" }, caseValues }).some((r) => r.reason === "case_data"), "a workflow name is the agent's");
   assert.ok(guard({ role: "curate", files: { ".agents/skills/x4821/SKILL.md": "ok" }, caseValues }).some((r) => r.reason === "case_data"), "so is a skill name");
   assert.ok(guard({ role: "run", runId: "run-1", files: { "uses/run-1.json": JSON.stringify({ note: "order 4821" }) }, caseValues }).some((r) => r.reason === "case_data"), "other files are checked whole");
+  assert.ok(renderLearning);
 });
 
 test("a call id is a provider's id: printable ASCII with no space, up to 256 bytes, and never scanned", () => {

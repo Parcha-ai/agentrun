@@ -7,11 +7,12 @@
 //
 // Case shape: { id, kind, input: { path, text, secrets? }, expect, reason }.
 // kind is one of secret, path, unicode, size, allow. expect is "refuse" or "allow". A case names no role: a path is
-// allowed when the run role (inbox/<RUN_ID>.md, uses/<RUN_ID>.json) or the curate role allows it. The size cases use the
-// default caps (learning 4096, inbox 16384).
+// allowed when the run role (memos/<RUN_ID>.md, uses/<RUN_ID>.json and the rest of a run's branch) or the curate role
+// allows it. The size cases use the default caps (learning 4096, memo 16384). The run's own memo stands where its inbox
+// stood before the shared layout.
 //
 // Spec changes, not edits to make code pass (rulings 11 and 12 of 2026-10-16): the curator writes learnings/L-<12 hex>.md
-// only (the index is derived at seed time and never stored, so learnings/INDEX.md is refused too), and in a skill folder
+// and learnings/INDEX.md only, and in a skill folder
 // only SKILL.md and trial.json. Eleven cases that expected a plain name under learnings/ or a subfolder in a skill folder
 // to pass now expect refuse, each marked below; their text moved into allow.moved.* cases on the run's own inbox path, so
 // the cases that a careless text check would over-refuse stay covered.
@@ -76,7 +77,7 @@ const PEM = (label) => [join("-----BEGIN ", label, "-----"), pick(`${ALNUM}+/`, 
 const URL_USERINFO = (scheme, user, pw, host) => join(scheme, user, ":", pw, "@", host);
 
 // ---- paths and fixed text
-const INBOX = `inbox/${RUN_ID}.md`;
+const INBOX = `memos/${RUN_ID}.md`;
 const LEARN = "learnings/L-0123456789ab.md";
 const ORDINARY = "Ordinary learning text.";
 const CYRILLIC_AGENTS = "\u0410G\u0415NT\u0405"; // Cyrillic A, E and S look like Latin letters
@@ -237,7 +238,7 @@ SZ("learning.over-by-one", "refuse", "learning file 4097 bytes; the cap is 4096"
 SZ("learning.exact-cap", "allow", "learning file exactly 4096 bytes", LEARN, "a".repeat(4096));
 SZ("learning.multibyte-over", "refuse", "1400 euro signs: 1400 characters but 4200 bytes, over the 4096 byte cap", LEARN, "\u20ac".repeat(1400));
 // Ruling 11: learnings/INDEX.md is refused for its path, so a size cap no longer applies to it.
-add("size.index.over-by-one", "path", "refuse", "learnings/INDEX.md of 4097 bytes; the index is derived and never stored", at("learnings/INDEX.md", "a".repeat(4097)));
+add("size.index.over-by-one", "size", "refuse", "learnings/INDEX.md of 4097 bytes; the cap is 4096", at("learnings/INDEX.md", "a".repeat(4097)));
 SZ("inbox.over-by-one", "refuse", "inbox file 16385 bytes; the cap is 16384", INBOX, "a".repeat(16385));
 
 // ---- kind: allow (expect allow; a careless guard would refuse these)
@@ -292,13 +293,13 @@ OK("whitespace.tab-crlf", "tabs and CRLF line breaks", "Tabs\tand\r\nCRLF breaks
 OK("secret.near-miss", "a value one letter away from a planted value", `Old value ${PLANT_NEAR} was rotated.`, [PLANT_A]);
 OK("secret.word-with-planted", "the word secret with a planted value held but not present", "The secret store holds the value; this note names no value.", [PLANT_A]);
 
-// Ruling 11: the curator writes learnings/L-<12 hex>.md only, so these names and INDEX.md are refused (they expected allow).
+// Ruling 11: the curator writes learnings/L-<12 hex>.md and the index only, so these names are refused (they expected allow).
 STRICT("token-name", 11, "a learnings file name containing token", "learnings/token-rotation.md", "Rotate tokens every quarter.");
 STRICT("secret-name", 11, "a learnings file name containing secret", "learnings/secret-scanning-notes.md", "Scanners flag more than secrets.");
 STRICT("agent-name", 11, "a learnings file name containing agent", "learnings/agent-notes.md", ORDINARY);
 STRICT("agents-md-name", 11, "a learnings file name containing AGENTS-md with a hyphen", "learnings/agents-md-history.md", ORDINARY);
 STRICT("agent-json-name", 11, "a learnings file name containing agent-json with a hyphen", "learnings/agent-json-notes.md", ORDINARY);
-STRICT("index", 11, "learnings/INDEX.md", "learnings/INDEX.md", "# Learned (0)\n");
+OKP("index", "the index of active learnings, which the shared layout stores", "learnings/INDEX.md", "# Learnings\n");
 STRICT("git-prefix-name", 11, "a file name starting with git but not .git", "learnings/gitignore-notes.md", ORDINARY);
 OKP("learning-id", "a learning file named by its id", LEARN, "---\nid: L-0123456789ab\n---\nText.\n\nEvidence: (none)\n");
 STRICT("spaces", 11, "a file name with spaces", "learnings/notes on retries.md", ORDINARY);

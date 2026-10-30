@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { collectWorkflows, curate, PROMOTION_DEFAULTS, proposeLearning, readTrial, renderSkill, schemaDescription, seedWorkflows, usesSource, workflowsToTry } from "../dist/index.js";
-import { agentRepo, scratch } from "./support.mjs";
+import { agentRepo, scratch, SCREEN_PASS, HOST_TOOLS } from "./support.mjs";
 import { liveRun, runStoreWith, workDirWith, workflowDoc } from "./workflow-support.mjs";
 
 const WHEN = "Quote a SKU from the price service, escalating anything over 100.";
@@ -35,7 +35,7 @@ test("through the real curator: a workflow is admitted from a run's branch, its 
   const note = { callId: "call-1", type: "workflow", id: NAME, text: WHEN, evidence: [] };
   const target = { snapshot: async () => ({ order: ["call-1"], byCall: { "call-1": note } }) };
   assert.equal((await proposeLearning({ repo, runId: "run-1", target, workflows: collected.records })).status, "proposed");
-  const first = await curate({ repo: curator, judge, now: new Date("2026-01-01T00:00:00Z") });
+  const first = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge, now: new Date("2026-01-01T00:00:00Z") });
   assert.equal(first.runs.length, 1);
   assert.deepEqual([first.runs[0].held, first.runs[0].refused], [[], []], JSON.stringify(first.runs[0]));
   const trial = await readTrial(curator, NAME, "main");
@@ -53,7 +53,7 @@ test("through the real curator: a workflow is admitted from a run's branch, its 
     await seedWorkflows({ repo: curator, sha: main, into: workDir, workflows: hints });
     const store = await runStoreWith([{ key: `k-${run}`, workflow: (await new WorkflowStore(workDir).load(NAME)).workflow, input }]);
     assert.equal((await proposeLearning({ repo: curator, runId: run, target: { snapshot: async () => ({ order: [], byCall: {} }) }, uses: usesSource({ store, workDir, run }) })).status, "proposed");
-    const report = await curate({ repo: curator, judge });
+    const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge });
     const settled = report.runs.find((r) => r.run === run).settled;
     statuses.push([(await readTrial(curator, NAME, "main")).status, settled.map((s) => [s.workflow, s.reason.split(":")[0]])]);
   }
@@ -71,7 +71,7 @@ test("a run that saves a new revision still counts its clean use of the trial it
     const workflows = saved ? (await collectWorkflows({ repo: curator, workDir, seedSha: seed })).records : undefined;
     const proposed = await proposeLearning({ repo: curator, runId: run, target: { snapshot: async () => ({ order: [], byCall: {} }) }, ...(uses ? { uses } : {}), ...(workflows ? { workflows } : {}) });
     assert.equal(proposed.status, "proposed", JSON.stringify(proposed));
-    const report = await curate({ repo: curator, judge });
+    const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge });
     return report.runs.find((r) => r.run === run);
   };
   // Run 1 saves revision one.
@@ -80,7 +80,7 @@ test("a run that saves a new revision still counts its clean use of the trial it
   const collected = await collectWorkflows({ repo, workDir: authorDir, seedSha: await repo.resolve("main") });
   const note = { callId: "call-1", type: "workflow", id: NAME, text: WHEN, evidence: [] };
   assert.equal((await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: ["call-1"], byCall: { "call-1": note } }) }, workflows: collected.records })).status, "proposed");
-  await curate({ repo: curator, judge, now: new Date("2026-01-01T00:00:00Z") });
+  await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge, now: new Date("2026-01-01T00:00:00Z") });
   /** A run seeded from main that runs the live revision cleanly and, with `next`, saves a new revision of the name too. */
   const run = async (id, next) => {
     const main = await curator.resolve("main");
@@ -110,7 +110,7 @@ test("a curate with the ports turned off holds the workflows and their uses, and
   const collected = await collectWorkflows({ repo, workDir, seedSha: await repo.resolve("main") });
   await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: [], byCall: {} }) }, workflows: collected.records });
   const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(path.join(root, "remote.git")) });
-  const report = await curate({ repo: curator, judge, admitWorkflow: null, settleUses: null });
+  const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge, admitWorkflow: null, settleUses: null });
   assert.deepEqual(report.runs[0].held.map((h) => h.reason), ["no workflow admitter is installed"]);
   assert.equal(await curator.read(`.agents/skills/${NAME}/trial.json`, "main"), undefined);
 });
@@ -127,8 +127,8 @@ test("a propose with only the run's working directory proposes the workflow it s
     const inspector = await openRepo({ dir: path.join(root, "inspector"), remote: local(bare) });
     await inspector.fetch();
     const branch = await inspector.resolve("runs/run-1");
-    const names = (await inspector.list("", branch)).map((e) => e.path).filter((p) => p.startsWith("inbox/") || p.startsWith("uses/")).sort();
-    assert.deepEqual(names, [`inbox/run-1/workflows/${NAME}/${saved[NAME]}.json`, `inbox/run-1/workflows/${NAME}/latest`, "uses/run-1.json"]);
+    const names = (await inspector.list("", branch)).map((e) => e.path).filter((p) => p.startsWith("workflows/") || p.startsWith("uses/")).sort();
+    assert.deepEqual(names, ["uses/run-1.json", `workflows/${NAME}/README.md`, `workflows/${NAME}/workflow.json`]);
     const uses = JSON.parse(await inspector.read("uses/run-1.json", branch));
     assert.deepEqual(uses.uses.map((u) => [u.name, u.sha256, u.outcome]), [[NAME, saved[NAME], "frozen"], [NAME, saved[NAME], "escalated"]]);
     // Explicit files win over what would be collected.
@@ -148,7 +148,7 @@ test("a trial.json on main that does not parse holds that workflow, and curation
   const collected = await collectWorkflows({ repo, workDir, seedSha: damaged.sha });
   await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: [], byCall: {} }) }, workflows: collected.records });
   const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(bare) });
-  const report = await curate({ repo: curator, judge });
+  const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge });
   assert.deepEqual(report.runs.map((r) => [r.run, r.held.map((h) => [h.workflow, h.reason]), r.refused]), [
     ["run-1", [[NAME, "its trial.json on main does not parse (format), so the workflow was held"]], []],
   ]);

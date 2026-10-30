@@ -16,8 +16,8 @@ promoted on receipts.
 > **What this first version is**
 >
 > - A pi-durable SDK extension that a host program installs in its `Harness`, not a `pi install` package.
-> - Installing it also installs `@parcha/pi-git-remote`, `@parcha/agentrun-dsl` and `@parcha/agentrun-pi`, and, through
->   `@parcha/agentrun-pi`, `@parcha/agentrun-jev`.
+> - Installing it also installs `@parcha/pi-git-remote`, `@parcha/agentrun-learn`, `@parcha/agentrun-dsl` and
+>   `@parcha/agentrun-pi`, and, through `@parcha/agentrun-pi`, `@parcha/agentrun-jev`.
 > - The notes loop is the core: `learn`, seeding, proposing and curating. Workflow trials, serving and promotion are
 >   experimental.
 > - Curating needs a judge: Jev (`createJevRunner` from `@parcha/agentrun-jev`) with a TypeSafe key in
@@ -111,18 +111,25 @@ repo/
   AGENTS.md                        rules tier: the standing rules; no learning writes it
   .agents/skills/<name>/SKILL.md   skills
   .agents/skills/<name>/trial.json a workflow's standing and uses; the host writes it, never a run
-  .pi/agentrun/workflows/<name>/   saved workflows, in the DSL's own layout
+  learnings/INDEX.md               one line per active learning
   learnings/<id>.md                one learning per file
-  inbox/<run id>.md                a run's candidates, on runs/<run id> only
-  inbox/<run id>/workflows/<name>/ a workflow the run saved, the DSL's records byte for byte, on runs/<run id> only
+  workflows/<name>/workflow.json   a workflow: a run's draft on its branch, the live revision on main
+  workflows/<name>/README.md       what the workflow is; on main it points at the skill
+  workflows/<name>/<sha256>.json   the DSL's saved records and `latest`, on main only; the host writes them
+  memos/<run id>.md                each run's memo: proposed on its branch, merged with the review's verdict
   uses/<run id>.json               a run's workflow uses, on runs/<run id> only
 ```
+
+This is the layout `@parcha/agentrun-learn`'s SPEC.md sets for every harness, and its checker validates a run's branch
+before curation. An older repository kept its workflow records under `.pi/agentrun/workflows/<name>/`: every read tries
+`workflows/<name>/` first and that folder second, so it keeps working with no migration, and the next curation that
+changes a workflow writes it at the new path.
 
 `RULES_LOCKED` is the frozen list `["agent.json", "AGENTS.md"]`. `isRulesLocked(path)` is true for either name in any
 segment of a path and in any spelling a file system or git could treat as the same file (case, Unicode compatibility
 forms, ignorable characters, trailing dots or spaces, an NTFS stream suffix, an 8.3 short name). `assertNotRulesLocked`
-throws for such a path; every writer calls it. `LAYOUT`, `tierOf`, `runBranch`, `inboxPath`, `usesPath`, `learningPath`
-`inboxWorkflowDir`, `WORKFLOW_NAME` and `CAPS` fix the rest of the layout and its size caps.
+throws for such a path; every writer calls it. `LAYOUT`, `tierOf`, `runBranch`, `memoPath`, `usesPath`, `learningPath`,
+`repoWorkflowDir`, `WORKFLOW_NAME` and `CAPS` fix the rest of the layout and its size caps.
 
 A learning is one file: frontmatter, then the general rule.
 
@@ -144,8 +151,8 @@ Company registries match the legal name without Inc or LLC; search both forms.
 
 `status` is `active`, `superseded`, `archived` (the least used, past the section's cap) or `retired` (taken out on
 purpose). A superseded learning also has `supersededBy: <id>` after `supersedes`, naming the one that replaced it.
-`provenance.sha` is the commit the first run was seeded from, from its inbox's `seed`; when the inbox names none (or
-one main never held), it is the main commit the run's branch starts from, and `  shaFrom: branch-base` says so.
+`provenance.sha` is the commit the first run was seeded from, which its branch starts at and its memo names as `base`;
+for a run that was not seeded, it is the main commit the run's branch starts from, and `  shaFrom: branch-base` says so.
 `renderLearning` writes exactly this and `parseLearning` reads nothing looser: an unknown, missing or repeated key, or a
 value out of shape, is a `LearnError` with code `format`. `learningId(runId, text)` is `L-` and 12 hex digits of SHA-256
 over the run id and the text, so curating the same candidate twice cannot make two learnings.
@@ -227,20 +234,19 @@ whole proposal, and the curator on what it writes.
 | `secret_value` | A value in `secrets` as written; with its whitespace removed (a value split over lines); as base64 or base64url at any of the three alignments, wrapped or not; as hex in either case; percent or form encoded. Every string inside a `.json` file is searched past its escapes. A secret of fewer than 8 characters cannot be matched without false hits, so the guard answers `invalid` to everything until the host drops it. |
 | `secret_shape` | AWS access key ids (`AKIA`, `ASIA`), Google API keys, private-key blocks (public keys and certificates are fine), GitHub tokens, `sk-` keys, Slack tokens, JWTs, and a URL with a password (`user:pass@`; `user@` alone is fine). |
 | `invisible_unicode` | Zero-width, bidirectional, tag, variation-selector, private-use and control characters, in a path or a text. U+FE0F after an emoji, a joiner inside an emoji sequence, and a joiner or non-joiner between letters of a script that needs them (Persian and Urdu, the Indic scripts, Khmer, Myanmar, Sinhala) are text. |
-| `case_data` | Any value of 4 or more characters from `caseValues`, matched without case, over Unicode compatibility forms and with whitespace ignored (a value split by a line break is still found), in what the agent wrote: candidate texts, evidence and ids, the text of any other file, and the workflow or skill name in a path. Generated text is not checked, because a short value turns up in it by chance: a call id (never scanned, only checked to be printable ASCII), the run id, seed and digests (a hex run of 32 characters or more is skipped, unless a case value is itself such a hash), and the frame of an inbox that is exactly what `renderInbox` makes of its candidates. A learning states the rule, never the case. |
+| `case_data` | Any value of 4 or more characters from `caseValues`, matched without case, over Unicode compatibility forms and with whitespace ignored (a value split by a line break is still found), in what the agent wrote: candidate texts, evidence and ids, the text of any other file, and the workflow or skill name in a path. Generated text is not checked, because a short value turns up in it by chance: a call id (never scanned, only checked to be printable ASCII), the run id, seed and digests (a hex run of 32 characters or more is skipped, unless a case value is itself such a hash), the frame of a learning file that is exactly what `renderLearning` writes, and the paths and ids the memo and the index name. A learning states the rule, never the case. |
 | `rules_locked` | `AGENTS.md` and `agent.json` for every role, in any spelling (`isRulesLocked`). |
 | `path_not_allowed` | A path outside the role's own, any `.git` segment in any spelling, and a path that is not a plain relative one (`..`, `.`, `//`, a backslash, an absolute path, a control character). |
-| `too_large`, `too_many` | Over a cap in `CAPS`: bytes per text, per evidence list, per file, per inbox; files per write; new learnings and `used` marks per run. A refused write is never truncated. |
+| `too_large`, `too_many` | Over a cap in `CAPS`: bytes per text, per evidence list, per file, per memo, for the index; files per write; new learnings and `used` marks per run. A refused write is never truncated. |
 | `invalid` | A run id, role, type, id or secret that is not well formed. |
 
-A run writes `inbox/<run id>.md`, `uses/<run id>.json`, and the DSL's saved workflow records as they are,
-`inbox/<run id>/workflows/<name>/<sha256>.json` and `inbox/<run id>/workflows/<name>/latest` (`<name>` is a workflow
-name, `WORKFLOW_NAME`: 1 to 64 lowercase letters, digits, dashes or underscores, starting with a letter or digit), and nothing else. The
-curator writes `learnings/L-<12 hex>.md` (it names every entry by its generated id; the index is derived at seed time and
-never stored, so `learnings/INDEX.md` is refused), `.agents/skills/<name>/SKILL.md` and `trial.json` (no other file or
-folder in a skill folder), and the DSL's workflow records, `.pi/agentrun/workflows/<name>/<sha256>.json` and `latest`.
-`trial.json` is the host's, so a
-run that proposes one is refused.
+A run writes its memo, `memos/<run id>.md`, its notes, `learnings/L-<12 hex>.md`, the index, `learnings/INDEX.md`, a
+draft per workflow, `workflows/<name>/workflow.json` and `README.md` (`<name>` is a workflow name, `WORKFLOW_NAME`: 1 to 64
+lowercase letters, digits, dashes or underscores, starting with a letter or digit), and `uses/<run id>.json`, and nothing
+else. The curator writes `learnings/L-<12 hex>.md` (it names every entry by its generated id) and the index, a run's memo,
+`.agents/skills/<name>/SKILL.md` and `trial.json` (no other file or folder in a skill folder), and a workflow's folder:
+the DSL's records, `workflows/<name>/<sha256>.json` and `latest`, with `workflow.json` and `README.md`. The records,
+`latest` and `trial.json` are the host's, so a run that proposes one is refused.
 
 ## Proposing a run's notes
 
@@ -248,14 +254,24 @@ run that proposes one is refused.
 const result = await proposeLearning({ repo, runId, target: harness, secrets: vault.values(), caseValues, workflows });
 ```
 
-`proposeLearning` is the host step at a run's terminal. It collects the run's candidates, renders `inbox/<run id>.md`
-(and `uses/<run id>.json` from the run's workflow uses: the `uses` option, or, with `workDir`, what the run's store
-holds; see [Workflows](#workflows)), adds the workflow records the
-host collected from the run's DSL store (`workflows`: per name, `{ files: { "<sha256>.json": text, latest: text } }`,
-committed byte for byte under `inbox/<run id>/workflows/<name>/`; a name or file name of any other shape refuses the
-proposal), guards the whole proposal as the
-`run` role, and makes one commit on `runs/<run id>` through `@parcha/pi-git-remote` with a `Run-Id` trailer, pushed by
-sha. The result is one of:
+`proposeLearning` is the host step at a run's terminal. It collects the run's candidates and writes the run's branch on
+the shared layout, from the commit the run was seeded from (main, for a run that was not seeded):
+
+- the memo, `memos/<run id>.md`: the host's facts in its front matter (`run`, `base` = that commit, `harness: pi`,
+  `outcome`, `untrusted`, and `cost_usd` when the host passes `costUsd`), then four short sections naming what the run
+  proposed, with none of the model's text;
+- one note per `lesson`, `fact` or `correction`, in the learning format above, its `supersedes` naming the learning a
+  candidate's `id` names;
+- one more use on each active learning a `used` mark names (a second mark of the same one, or one naming no active
+  learning, changes nothing);
+- `learnings/INDEX.md`, when it fits its cap;
+- a draft per workflow: `workflows/<name>/workflow.json`, the document the run's store's `latest` names (the `workflows`
+  option, per name `{ files: { "<sha256>.json": text, latest: text } }`, or, with `workDir`, what the run saved; see
+  [Workflows](#workflows)), and `README.md`, the agent's `workflow` note;
+- `uses/<run id>.json` from the run's workflow uses (the `uses` option, or what the run's store holds with `workDir`).
+
+It guards the whole proposal as the `run` role and makes one commit on `runs/<run id>` through `@parcha/pi-git-remote`
+with a `Run-Id` trailer, pushed by sha. `@parcha/agentrun-learn`'s checker accepts the branch. The result is one of:
 
 - `{ status: "proposed", sha }`: the commit was made and pushed.
 - `{ status: "already", sha }`: the branch already held a commit for this run, from this host or a restarted one with an
@@ -270,27 +286,46 @@ the rest is proposed as usual, and a `proposed`, `already` or `empty` result nam
 with a reason that names nothing the run read. `copiesRead(workflow, read)` is that check.
 
 A push the remote refuses throws a `GitRemoteError`. `proposeFiles` is the same guard-commit-push for files the caller
-has already rendered. `renderInbox` and `parseInbox` are the inbox's format: front matter (the run, and `seed`, the commit the run was seeded from,
-read from its `learn.seed` record, so a curator can stamp a learning with what the run actually saw; a run that was not
-seeded has none), the candidates for a person to read, and the candidates as one JSON line in the last fenced block, each
-with an `untrusted` mark. `proposeLearning({ untrusted: true })` marks every candidate untrusted: the host sets it when the run read
-untrusted content. `parseInbox` returns `{ run, seed?, candidates }` with `untrusted: boolean` on each candidate, and
-refuses a seed that is not a commit id.
+has already rendered. `runBranchFiles` is the branch's writer and `readRunBranch` its reader: curation reads the run's
+candidates back from its notes, its changed uses and its drafts. `proposeLearning({ untrusted: true })` marks the memo and
+every note untrusted: the host sets it when the run read untrusted content. A seed that is not a commit of the agent
+repository refuses the proposal.
 
 ## Curating
 
 ```ts
 import { createJevRunner } from "@parcha/agentrun-jev";
-const report = await curate({ repo, judge: createJevRunner(), secrets: vault.values() });
+const report = await curate({
+  repo, judge: createJevRunner(), secrets: vault.values(),
+  // The injection screen: the host's page judge. Without one, every run is refused: nothing merges unscreened.
+  screen: async ({ text }) => (await decisions.classifyPage({ url: "", status: 200, contentType: "text/markdown", text })).injection,
+  // The host's tool list, for the checker: a draft that names a tool outside it is refused.
+  tools: registeredToolNames,
+});
 ```
 
 `curate` is the host step that writes `main`, and the only one. It takes each branch `runs/<run id>` whose run no
 `Curated-Run` trailer in main's history names, in name order. It checks the branch (every commit since main carries
-this run's `Run-Id`, and it starts from main's history), reads back everything the run changed and guards it again as
-the `run` role with the host's secrets of now: a rules-tier path or any guard hit refuses the whole run, and nothing of
-it reaches the judge. Then it judges each candidate, writes the result, and makes one commit on `main` with
-`Curated-Run: <run id>` and one `Learning-Id` per learning it touched, pushed without force. Holds and refusals are in
-that commit's message, so a run that only held still gets its commit and is curated once.
+this run's `Run-Id`, and it starts from main's history), reads back everything the run changed, and refuses the whole run,
+with nothing of it reaching the judge, when:
+
+- `@parcha/agentrun-learn`'s checker refuses the branch (`checkRun`, with the host's `tools` and secrets): the layout, the
+  formats, the caps, the locked and host-owned paths, secret-shaped text, and drafts on the DSL with only the host's tools
+  and no code, shell or executor node;
+- the guard, as the `run` role with the host's secrets of now, refuses it;
+- there is no injection screen: `screen` is missing, or lacks its `classify` judge or its `threshold`.
+
+Both halves of the screen are the host's; this package holds no threshold. A Pi host passes pi-browser's page judge and
+its `INJECTION_THRESHOLD` (`import { INJECTION_THRESHOLD } from "@parcha/pi-browser"`): `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
+contentType: "text/markdown", text })).injection, threshold: INJECTION_THRESHOLD }`. The screen scores every new or
+changed note, skill and draft; a score at or over `threshold` refuses that item, and so does one the screen could not judge: it threw, took longer
+than `screenTimeoutMs` (30 s), or answered out of shape. Then curate judges each candidate and writes the result as a
+merge commit on `main`: its second parent is the run as it lands (a commit on the run's base holding exactly what curation
+took, `Landed-Run: <run id>`), so the run's own branch is never merged and nothing curation refused becomes reachable from
+main, and `git revert -m 1` takes the run back out. It carries `Curated-Run: <run id>` and one `Learning-Id` per learning
+it touched, and is pushed without force. Its message is the verdict and every reason; the run's memo lands with them as
+its `## Review` section, and `learnings/INDEX.md` is rewritten from the active learnings. Holds and refusals are in that
+message, so a run that only held still gets its commit and is curated once.
 
 The judge is the DSL's System One port, `WorkflowDeps["runJudge"]` from `@parcha/agentrun-dsl`: `createJevRunner` from
 `@parcha/agentrun-jev` is one (it comes with this package through `@parcha/agentrun-pi`; add it to your own dependencies
@@ -338,14 +373,17 @@ const report = await curate({ repo, judge });
 
 An answer between the two cuts holds the candidate; nothing uncertain is accepted. `thresholds` overrides any cut,
 `DEFAULT_THRESHOLDS` are the defaults above. A `used` mark counts one use per run for an active learning and needs no
-judgment. A workflow is judged on itself, never on the agent's note: a `learn` call of type `workflow` is asked no
-question and its text reaches no file, so a run that read untrusted content puts none of its own words into a later
-prompt. `narrowsRules` is not asked of a workflow either: a workflow is by design a slice of the job (it reads what it
+judgment. A workflow is judged on itself, never on the agent's note. The note, the text of a `learn` call of type
+`workflow`, is the draft's `README.md`: when the run wrote one, it passes the injection screen with the draft and is asked
+a note's questions (`narrowsRules` when there are rules, `fromContent` when the run is untrusted, and `general`). One that
+passes lands on main as the agent wrote it, with the workflow; one that is refused or held stays off main, the workflow is
+judged as if it had none, and the run's report says so on the workflow's line. `narrowsRules` is not asked of the
+workflow's document: a workflow is by design a slice of the job (it reads what it
 reads and hands the rest back), so measured against rules written for the agent it always looks narrower, and it cannot
-change the rules that bind the agent that runs it. Its records under `inbox/<run id>/workflows/<name>/` are read through the DSL's store, `workflowCase` is asked of
+change the rules that bind the agent that runs it. Its draft is read back as the records the DSL's store writes for it, `workflowCase` is asked of
 the document (one the store refuses, or one that runs code, goes straight to the hook, which refuses or holds it), and
 then the records go to the `admitWorkflow` hook, with no description, which answers `admitted`
-with the files to write under `.pi/agentrun/workflows/<name>/` and `.agents/skills/<name>/`, `unchanged`, `held` or
+with the files to write under `workflows/<name>/` and `.agents/skills/<name>/`, `unchanged`, `held` or
 `refused`. A run's `uses/<run id>.json` goes to the `settleUses` hook, which folds the uses into the workflows' trials
 and answers the files to write and one decision per workflow (`promote`, `demote` or `hold`). Curation guards what
 either hook returns, refuses a rules-tier path or any path outside the named workflows' folders, and holds a workflow
@@ -353,7 +391,9 @@ or the uses when its hook is turned off. Both ports (`AdmitWorkflow`, `SettleUse
 this package's types, and `workflowAdmitter()` and `usesSettler()` are their implementations: when `admitWorkflow` or
 `settleUses` is omitted, curate uses them, so a host cannot forget the workflow pieces, and `null` turns one off. When the
 `<learned>` section derived from the active learnings would pass 4,096 bytes, the least-used are archived first, this
-run's new ones last, and the report names each.
+run's new ones last, and the report names each. A workflow whose live revision changed gets its document,
+`workflows/<name>/workflow.json`, beside its records, and the run's README when it passed, else, when main has none, a
+`README.md` that points at its skill.
 
 Run branches are read from `runs` when the host keeps them apart from main (a hidden namespace for runs, as
 code.storage's ephemeral branches are); it defaults to `repo`. Curation only reads `runs` and only writes `repo`.
@@ -365,7 +405,7 @@ of shape stops it with `judge` before that run is written. The report lists, per
 `duplicates`, `used`, `held`, `refused`, `archived` and `settled`, each item with the candidate's position, the learning id and a
 reason that names no value from the case.
 
-Two ways take a learning out. A `git revert` of a curate commit on main undoes that run's learnings while nothing else
+Two ways take a learning out. A `git revert -m 1` of a curate merge on main undoes that run's learnings while nothing else
 has touched their files, and the next curate does not bring them back: the run is still named in main's history. Once
 a later run used a learning (its `uses` moved), the revert conflicts; then the host retires it:
 
@@ -373,7 +413,7 @@ a later run used a learning (its `uses` moved), the revert conflicts; then the h
 await retireLearning({ repo, id: "L-3f2a9c1d0e7b", reason: "it sent runs to the wrong registry" });
 ```
 
-`retireLearning` is the same single writer: one commit on main that sets the status to `retired`, keeps the file and its
+`retireLearning` is an operator's act outside the loop, by the same single writer: one commit on main that sets the status to `retired`, keeps the file and its
 history, carries `Retired-Learning: <id>`, and is pushed without force with the same retries. A retired learning is
 never in `<learned>` again, and curate compares every new candidate with the retired learnings of its type, so a run
 that learns it again in other words is held, naming the retired id. Retiring it twice changes nothing.

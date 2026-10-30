@@ -26,7 +26,7 @@ assert.equal(lock.lockfileVersion, 3, 'Source inventory requires package-lock v3
 // names), and it ships only where a runtime dependency requires it, which that dependency's own edge reaches. A workspace
 // package's optional peers (the host it runs in, an adapter's SDK) are followed.
 const entries = lock.packages;
-const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'pi-agent-learn', 'learn', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
+const roots = ['dsl', 'jev', 'pi', 'pi-durable-disk', 'pi-browser', 'pi-vision', 'pi-transport', 'pi-durable-agent', 'serve', 'pi-git-remote', 'learn', 'pi-agent-learn', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'harness'];
 const inventory = new Map();
 const unresolved = [];
 function resolveDependency(from, name) {

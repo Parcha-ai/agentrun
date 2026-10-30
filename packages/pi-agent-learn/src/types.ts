@@ -78,7 +78,7 @@ export type WorkflowCandidate = {
   /** The agent's when-to-use text, from its `learn` call of type `workflow`; undefined when it saved the workflow
    *  without one. Structured preconditions are `when` in `trial.json`, never this. */
   readonly description?: string;
-  /** `<sha256>.json` and `latest` as the run's branch holds them under `inbox/<run id>/workflows/<name>/`, byte-for-byte;
+  /** `<sha256>.json` and `latest` as the DSL's store writes them for the run's draft, `workflows/<name>/workflow.json`;
    *  empty when the run only described a workflow already on main. */
   readonly records: Readonly<Record<string, string>>;
   readonly untrusted: boolean;
@@ -86,7 +86,7 @@ export type WorkflowCandidate = {
 
 export type AdmitWorkflowInput = RepoRead & { readonly workflow: WorkflowCandidate };
 
-/** `admitted`: the files to commit on main, only under `.pi/agentrun/workflows/<name>/` and SKILL.md and trial.json in
+/** `admitted`: the files to commit on main, only under `workflows/<name>/` and SKILL.md and trial.json in
  *  `.agents/skills/<name>/`. `unchanged`: the same records and description are already on main. Every `reason` goes
  *  into the report and a commit message, so it names no value from the case. */
 export type AdmitWorkflowResult =

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  assertNotRulesLocked, ENTRY_TYPES, inboxPath, inboxWorkflowDir, isRulesLocked, LAYOUT, LEARN_TYPES, LearnError, learningPath, RULES_LOCKED, runBranch, tierOf, usesPath,
+  assertNotRulesLocked, ENTRY_TYPES, isRulesLocked, LAYOUT, LEARN_TYPES, LearnError, learningPath, memoPath, RULES_LOCKED, runBranch, tierOf, usesPath,
 } from "../dist/index.js";
 
 test("RULES_LOCKED is agent.json and AGENTS.md, frozen: push, assignment and splice all throw", () => {
@@ -35,18 +35,17 @@ test("tiers and paths: rules, learned, a run's own files, and ids checked before
   assert.equal(tierOf(".agents/skills/x/AGENTS.md"), "rules");
   assert.equal(tierOf("learnings/L-0123456789ab.md"), "learned");
   assert.equal(tierOf(".agents/skills/cite/SKILL.md"), "learned");
-  assert.equal(tierOf(".pi/agentrun/workflows/kyb/latest"), "learned");
-  assert.equal(tierOf("inbox/run-1.md"), "run");
+  assert.equal(tierOf("workflows/kyb/latest"), "learned");
+  assert.equal(tierOf("workflows/kyb/workflow.json"), "learned");
+  assert.equal(tierOf("memos/run-1.md"), "learned");
   assert.equal(tierOf("uses/run-1.json"), "run");
   assert.equal(tierOf("README.md"), "other");
   assert.equal(runBranch("run-1"), "runs/run-1");
-  assert.equal(inboxPath("run-1"), "inbox/run-1.md");
+  assert.equal(memoPath("run-1"), "memos/run-1.md");
   assert.equal(usesPath("run-1"), "uses/run-1.json");
   assert.equal(learningPath("L-0123456789ab"), "learnings/L-0123456789ab.md");
-  assert.equal(inboxWorkflowDir("run-1", "kyb-us-registry"), "inbox/run-1/workflows/kyb-us-registry/");
-  for (const bad of ["", "KYB", "a.b", "../x", "-x", "x".repeat(65)]) assert.throws(() => inboxWorkflowDir("run-1", bad), { code: "invalid" }, JSON.stringify(bad));
   for (const bad of ["", "../x", "a/b", "-x", "x".repeat(129), "run 1", "a..b", "run.", "run.lock", ".run"]) {
-    assert.throws(() => inboxPath(bad), (e) => e instanceof LearnError && e.code === "invalid", JSON.stringify(bad));
+    assert.throws(() => memoPath(bad), (e) => e instanceof LearnError && e.code === "invalid", JSON.stringify(bad));
     assert.throws(() => runBranch(bad), { code: "invalid" }, JSON.stringify(bad));
   }
   for (const bad of ["L-0123", "L-0123456789AB", "x-0123456789ab", "L-0123456789ab/../x"]) assert.throws(() => learningPath(bad), { code: "invalid" });

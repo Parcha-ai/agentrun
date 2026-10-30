@@ -1,12 +1,13 @@
-// A workflow a web-reading run saved is judged on itself, never on the agent's note: the note reaches no later prompt (the
-// skill is described from the workflow's input schema), a workflow that carries a page's text is withheld when the run
-// proposes it, and the curator asks one question of the document. Through the real curator, with a scripted judge.
+// A workflow a web-reading run saved is judged on itself, never on the agent's note: the skill is described from the
+// workflow's input schema, a workflow that carries a page's text is withheld when the run proposes it, and the curator asks
+// one question of the document. The note, the draft's README, passes the injection screen and a note's questions before it
+// lands, and a README that does not pass leaves the workflow be. Through the real curator, with a scripted judge.
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import * as learn from "../dist/index.js";
-import { agentRepo, scratch } from "./support.mjs";
+import { agentRepo, scratch, SCREEN_PASS, HOST_TOOLS } from "./support.mjs";
 import { workDirWith, workflowDoc } from "./workflow-support.mjs";
 
 const { collectWorkflows, curate, proposeLearning, readTrial, renderSkill, workflowsToTry } = learn;
@@ -33,7 +34,7 @@ function judge({ notes = {}, documents = {} } = {}) {
 }
 
 /** A web-reading run that saved `doc` under `name` and noted it with `note`; then one curate. */
-async function authored({ name, doc, note, read, judge: j }) {
+async function authored({ name, doc, note, read, judge: j, screen = SCREEN_PASS }) {
   const root = await scratch();
   const { bare, repo } = await agentRepo(root);
   const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(bare) });
@@ -42,7 +43,7 @@ async function authored({ name, doc, note, read, judge: j }) {
   const candidate = { callId: "call-1", type: "workflow", id: name, text: note, evidence: [] };
   const target = { snapshot: async () => ({ order: ["call-1"], byCall: { "call-1": candidate } }) };
   const proposal = await proposeLearning({ repo, runId: "run-1", target, workflows: collected.records, untrusted: true, ...(read ? { read } : {}) });
-  const report = await curate({ repo: curator, judge: j.run, now: new Date("2026-10-20T00:00:00Z") });
+  const report = await curate({ screen, tools: HOST_TOOLS, repo: curator, judge: j.run, now: new Date("2026-10-20T00:00:00Z") });
   return { curator, proposal, report, run: report.runs[0] };
 }
 
@@ -57,10 +58,12 @@ async function mainFiles(repo) {
 const holding = (files, text) => Object.entries(files).filter(([, body]) => body?.includes(text)).map(([file]) => file);
 
 test("a planted instruction from fetched content never reaches main: not through the workflow note, not through the workflow's own text", async () => {
-  // The judge is fooled about the note: on the agent's word alone, the planted instruction would be the skill's description.
+  // The judge is fooled about the note; the injection screen, the host's page judge, is not.
   const note = `Use it to quote a SKU. ${PLANTED}`;
-  const viaNote = await authored({ name: "quote-note", doc: workflowDoc({ name: "quote-note" }), note, judge: judge({ notes: { [note]: { fromContent: 0, narrowsRules: 0, general: 0.99 } } }) });
+  const screen = { classify: async ({ text }) => (text.includes(PLANTED) ? 0.97 : 0.02), threshold: 0.6 };
+  const viaNote = await authored({ name: "quote-note", doc: workflowDoc({ name: "quote-note" }), note, screen, judge: judge({ notes: { [note]: { fromContent: 0, narrowsRules: 0, general: 0.99 } } }) });
   assert.deepEqual(holding(await mainFiles(viaNote.curator), PLANTED), [], "the note reached main");
+  assert.match(viaNote.run.refused.map((r) => r.reason).join("; "), /injection screen: 0\.97 at or over 0\.60 \(a workflow draft\)/);
 
   // The workflow carries the page's sentence verbatim, and the judge is fooled about it too: the copy is caught by structure.
   const copied = workflowDoc({ name: "quote-copied" });
@@ -79,21 +82,23 @@ test("a planted instruction from fetched content never reaches main: not through
 }, { timeout: 120_000 });
 
 test("a workflow the agent authored for the job is admitted as a trial, with its skill described from its input schema", async () => {
-  // The probe's numbers for the agent's note (narrows a rule 0.16, from content 0.46) held every workflow it wrote.
+  // The probe's numbers for the agent's note (narrows a rule 0.16, from content 0.46): the README is held, the workflow is not.
   const note = "Use this workflow to quote a SKU from the price service: it reads the request and escalates large amounts.";
   const doc = workflowDoc({ name: "sku-quote" });
   const j = judge({ notes: { [note]: { narrowsRules: 0.16, fromContent: 0.46, general: 0.95 } }, documents: { "sku-quote": { workflowCase: 0.03 } } });
   const { curator, run } = await authored({ name: "sku-quote", doc, note, read: [PAGE], judge: j });
   assert.deepEqual([run.held, run.refused], [[], []], JSON.stringify(run));
   assert.deepEqual(run.accepted.map((a) => a.workflow), ["sku-quote"]);
+  assert.match(run.accepted[0].reason, /its README is not landed: unsure whether it narrows a rule \(0\.16\); unsure whether it came from content the run read \(0\.46\)$/);
+  assert.equal(await curator.read("workflows/sku-quote/README.md", "main"), "# sku-quote\n\nThe sku-quote workflow. When to use it: `.agents/skills/sku-quote/SKILL.md`.\n");
   const trial = await readTrial(curator, "sku-quote", "main");
   assert.equal(trial.status, "trial");
   const skill = await curator.read(".agents/skills/sku-quote/SKILL.md", "main");
   assert.equal(skill, renderSkill("sku-quote", learn.schemaDescription(doc)));
   assert.equal(skill.includes("price service"), false, "the note's words are not the description");
   assert.deepEqual(await workflowsToTry({ repo: curator, sha: await curator.resolve("main") }, { sku: "A-1", amount: 5 }), [{ name: "sku-quote", status: "trial" }]);
-  // The note was never asked about; the document was, with the agent's rules beside it.
-  assert.deepEqual(j.asked.filter((a) => a.state.learning).map((a) => a.q), []);
+  // The note was asked a note's questions; the document was asked about, with the agent's rules beside it.
+  assert.deepEqual(j.asked.filter((a) => a.state.learning).map((a) => a.q), ["narrowsRules", "fromContent", "general"]);
   const asked = j.asked.find((a) => a.q === "workflowCase");
   assert.equal(asked.state.workflow.name, "sku-quote");
   assert.match(asked.state.rules, /Cite every claim/);
@@ -135,7 +140,7 @@ test("withholding works on what the run's directory holds too: the clean workflo
   assert.equal(result.status, "proposed");
   assert.deepEqual(result.withheld, [{ name: "copied", reason: "40 or more characters of its text are in content the run read" }]);
   const files = (await repo.list("", result.sha)).map((e) => e.path);
-  assert.ok(files.some((f) => f.startsWith("inbox/run-1/workflows/clean/")));
+  assert.ok(files.some((f) => f.startsWith("workflows/clean/")));
   assert.equal(files.some((f) => f.includes("/copied/")), false);
   // A run whose only workflow is withheld has nothing to propose, and says which.
   const { dir: only } = await workDirWith({ copied });
@@ -154,7 +159,7 @@ test("the document question holds what it is unsure of, and is asked of a truste
   const { dir } = await workDirWith({ trusted: workflowDoc({ name: "trusted" }) });
   const j = judge({ documents: { trusted: { workflowCase: 0.9 } } });
   await proposeLearning({ repo, runId: "run-1", target: { snapshot: async () => ({ order: [], byCall: {} }) }, workDir: dir, seedSha: await repo.resolve("main") });
-  const [run] = (await curate({ repo: curator, judge: j.run })).runs;
+  const [run] = (await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge: j.run })).runs;
   assert.deepEqual(run.refused.map((r) => r.workflow), ["trusted"]);
 }, { timeout: 60_000 });
 

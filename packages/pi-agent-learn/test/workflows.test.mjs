@@ -5,12 +5,12 @@ import { test } from "node:test";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import {
-  collectUses, collectWorkflows, createGuard, inboxWorkflowFiles, LearnError, MAX_RUN_WORKFLOWS, parseRunUses, parseTrial, proposeLearning, readTrial,
+  collectUses, collectWorkflows, createGuard, LearnError, readRevision, recordsOf, MAX_RUN_WORKFLOWS, parseRunUses, parseTrial, proposeLearning, readTrial,
   readSessionUses, readTrialIn, readUses, renderSkill, schemaWhen, seedWorkflows, sessionEntries, settleWorkflowUses, usesSettler, usesSource, workflowAdmitter,
   workflowsToTry,
 } from "../dist/index.js";
 import { admitInDir } from "../dist/workflows.js";
-import { agentRepo, scratch } from "./support.mjs";
+import { agentRepo, scratch, SCREEN_PASS, HOST_TOOLS } from "./support.mjs";
 import { curateStep, runStoreWith, workDirWith, workflowDoc } from "./workflow-support.mjs";
 
 const AT = "2026-10-16T08:00:00.000Z";
@@ -55,7 +55,10 @@ const checkoutOf = async (repo, sha) => {
   return dir;
 };
 
-test("a workflow a run saved travels run, inbox, curate: its records load through the DSL's store at the new commit, with a skill and a trial beside them", async () => {
+/** Files a step wrote in a checkout's DSL store, as the curator's ports hand them to main: under workflows/<name>/. */
+const asRepo = (files) => Object.fromEntries(Object.entries(files).map(([file, text]) => [file.replace(/^\.pi\/agentrun\/workflows\//, "workflows/"), text]));
+
+test("a workflow a run saved travels run, draft, curate: its records land at workflows/<name>/ and load through the DSL's store when seeded, with a skill and a trial beside them", async () => {
   const root = await scratch();
   const { bare, repo, main } = await agentRepo(root);
   const { dir: workDir, saved } = await workDirWith({ [kyb.name]: workflowDoc() });
@@ -66,22 +69,21 @@ test("a workflow a run saved travels run, inbox, curate: its records load throug
   assert.deepEqual(collected.found.map((f) => [f.name, f.sha256, Object.keys(f.files).sort()]), [[kyb.name, digest, [`${digest}.json`, "latest"]]]);
   assert.equal(collected.found[0].files[`${digest}.json`], await readFile(path.join(workDir, ".pi/agentrun/workflows", kyb.name, `${digest}.json`), "utf8"), "the record is copied byte for byte");
   assert.equal(collected.found[0].files.latest, `${digest}\n`);
-  const inbox = inboxWorkflowFiles("run-1", collected.found);
-  assert.deepEqual(Object.keys(inbox).sort(), [`inbox/run-1/workflows/${kyb.name}/${digest}.json`, `inbox/run-1/workflows/${kyb.name}/latest`]);
   assert.deepEqual(Object.keys(collected.records), [kyb.name]);
   const proposed = await proposeLearning({ repo, runId: "run-1", target: noCandidates, workflows: collected.records });
-  assert.equal(proposed.status, "proposed", "the run's own guard admits its workflow records");
+  assert.equal(proposed.status, "proposed", "the run's own guard admits its workflow draft");
 
   // Curate is another process: it reads the run's branch from the remote and writes main.
   const curator = await openRepo({ dir: path.join(root, "curator"), remote: local(bare) });
   await curator.fetch();
-  const handed = {};
-  for (const entry of await curator.list(`inbox/run-1/workflows/${kyb.name}`, proposed.sha)) handed[path.posix.basename(entry.path)] = await curator.read(entry.path, proposed.sha);
+  // The draft's document, as the records the DSL's store writes for it: what curate hands the admitter.
+  const handed = recordsOf(kyb.name, JSON.parse(await curator.read(`workflows/${kyb.name}/workflow.json`, proposed.sha)), AT);
+  assert.deepEqual(Object.keys(handed).sort(), [`${digest}.json`, "latest"], "the draft's document is the revision the run saved");
   const admit = workflowAdmitter({ when: schemaWhen, now: () => new Date(AT) });
   const result = await admit({ ...(await readOf(curator)), workflow: { run: "run-1", name: kyb.name, description: WHEN, records: handed, untrusted: false } });
   assert.equal(result.status, "admitted");
   assert.deepEqual(Object.keys(result.files).sort(), [
-    `.agents/skills/${kyb.name}/SKILL.md`, `.agents/skills/${kyb.name}/trial.json`, `.pi/agentrun/workflows/${kyb.name}/${digest}.json`, `.pi/agentrun/workflows/${kyb.name}/latest`,
+    `.agents/skills/${kyb.name}/SKILL.md`, `.agents/skills/${kyb.name}/trial.json`, `workflows/${kyb.name}/${digest}.json`, `workflows/${kyb.name}/latest`,
   ]);
   const committed = await curator.commitTo("main", { files: result.files, message: "curate" });
   await curator.push(committed.sha, "main");
@@ -90,11 +92,12 @@ test("a workflow a run saved travels run, inbox, curate: its records load throug
 
   const fresh = await openRepo({ dir: path.join(root, "fresh"), remote: local(bare) });
   const dir = await checkoutOf(fresh, sha);
-  const store = new WorkflowStore(dir);
-  const loaded = await store.load(kyb.name);
-  assert.equal(loaded.digest, digest, "latest names the admitted revision");
-  assert.deepEqual(loaded.workflow, workflowDoc());
-  assert.deepEqual((await store.list()).map((r) => [r.name, r.digest]), [[kyb.name, digest]]);
+  assert.equal(await fresh.read(`workflows/${kyb.name}/latest`, sha), `${digest}\n`, "latest names the admitted revision");
+  assert.deepEqual(await readRevision(fresh, kyb.name, digest, sha), workflowDoc());
+  const { dir: seededDir } = await workDirWith();
+  assert.deepEqual((await seedWorkflows({ repo: fresh, sha, into: seededDir, workflows: [{ name: kyb.name, status: "trial" }] })).loaded, [{ name: kyb.name, sha256: digest }]);
+  const store = new WorkflowStore(seededDir);
+  assert.deepEqual((await store.load(kyb.name)).workflow, workflowDoc(), "seeded into a run's store, it loads through the DSL's store");
   const skill = await readFile(path.join(dir, `.agents/skills/${kyb.name}/SKILL.md`), "utf8");
   assert.equal(skill, renderSkill(kyb.name, WHEN));
   assert.match(skill, new RegExp(`^---\\nname: ${kyb.name}\\ndescription: ${JSON.stringify(WHEN).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n---\\n`));
@@ -171,7 +174,7 @@ test("promotion on receipts through git: two clean uses promote, a changed revis
   assert.deepEqual(own.result.files, {}, "nothing changed, so there is nothing to commit");
   for (const [i, run] of ["r1", "r2"].entries()) {
     const step = await settle(repo, usesOf(run, [kyb.name, d1, "frozen", at(10, i)]));
-    assert.deepEqual(guard({ role: "curate", files: step.result.files }), []);
+    assert.deepEqual(guard({ role: "curate", files: asRepo(step.result.files) }), []);
     sha = step.sha;
     assert.equal(await status(sha), i === 1 ? "active" : "trial");
   }
@@ -195,7 +198,7 @@ test("promotion on receipts through git: two clean uses promote, a changed revis
   assert.equal(await status(bad.sha), "trial", "one is not two");
   const rolled = await settle(repo, usesOf("r5", [kyb.name, d2, "failed", at(13)]));
   assert.deepEqual(rolled.result.decisions.map((d) => [d.name, d.decision.action, d.decision.rollbackTo, d.at]), [[kyb.name, "demote", d1, at(13)]]);
-  assert.deepEqual(guard({ role: "curate", files: rolled.result.files }), []);
+  assert.deepEqual(guard({ role: "curate", files: asRepo(rolled.result.files) }), []);
   assert.deepEqual(Object.keys(rolled.result.files).sort(), [`.agents/skills/${kyb.name}/SKILL.md`, `.agents/skills/${kyb.name}/trial.json`, `.pi/agentrun/workflows/${kyb.name}/latest`]);
   assert.equal(rolled.result.files[`.agents/skills/${kyb.name}/SKILL.md`], renderSkill(kyb.name, WHEN), "the skill says what the restored revision was admitted to do, not what its replacement claimed");
   trial = await readTrial(repo, kyb.name, rolled.sha);
@@ -669,8 +672,7 @@ test("end to end with no model: a run saves a workflow, curate admits it, three 
   const collected = await collectWorkflows({ repo, workDir: authorDir, seedSha: seed0 });
   assert.equal((await proposeLearning({ repo, runId: "run-1", target: noCandidates, workflows: collected.records })).status, "proposed");
   await curator.fetch();
-  const handed = {};
-  for (const entry of await curator.list(`inbox/run-1/workflows/${kyb.name}`, await curator.resolve("runs/run-1"))) handed[path.posix.basename(entry.path)] = await curator.read(entry.path, await curator.resolve("runs/run-1"));
+  const handed = recordsOf(kyb.name, JSON.parse(await curator.read(`workflows/${kyb.name}/workflow.json`, await curator.resolve("runs/run-1"))), "2026-01-01T00:00:00.000Z");
   // Admitted in the past, so that the later runs, which really happen now, come after the standing it gave the trial.
   let main = (await curateStep(curator, (dir) => admitInDir({ dir, runId: "run-1", name: kyb.name, description: WHEN, records: handed, now: () => new Date("2026-01-01T00:00:00.000Z") }))).sha;
 

@@ -9,7 +9,7 @@ import { after, test } from 'node:test';
 import { promisify } from 'node:util';
 import { recordingLines } from '@parcha/agentrun-pi/durable';
 import { WorkflowStore } from '@parcha/agentrun-pi/workflows';
-import { admitRevision, guard, parseTrial, readUses, renderInbox, renderTrial, trialPath, usesSettler, workflowAdmitter } from '@parcha/pi-agent-learn';
+import { admitRevision, guard, learningId, parseTrial, readUses, renderTrial, runBranchFiles, trialPath, usesSettler, workflowAdmitter } from '@parcha/pi-agent-learn';
 import { gitRead, ISSUES, proposalStatus, runDemo, runOnce, scriptedModel, TRIAGE_WORKFLOW } from './demo.mjs';
 
 const RULE = /In this project an issue whose body has a stack trace is labeled bug and needs-repro/;
@@ -71,7 +71,7 @@ test('a correction and a workflow go through the repository: learned, curated, a
   assert.match(out.run1.turns[1].answer, /^bug, needs-repro: /);
   assert.equal(out.run1.proposal.status, 'proposed');
   assert.equal(git('rev-parse', 'runs/run-1'), out.run1.proposal.sha, 'the run proposed on its own branch');
-  assert.match(git('show', `${out.run1.proposal.sha}:inbox/run-1.md`), RULE);
+  assert.match(git('show', `${out.run1.proposal.sha}:memos/run-1.md`), /^## What I learned\n- learnings\/L-[0-9a-f]{12}\.md: a new correction$/m);
   assert.equal(git('rev-parse', `${out.curate1.main}^`), seed, 'curation moved main by one commit');
   assert.match(out.ruleId, /^L-[0-9a-f]{12}$/);
   assert.deepEqual(out.curate1.runs.map((r) => [r.run, r.accepted.map((a) => a.id)]), [['run-1', [out.ruleId]]]);
@@ -86,14 +86,14 @@ test('a correction and a workflow go through the repository: learned, curated, a
   assert.match(out.run2.answer, /^bug, needs-repro: /);
   assert.deepEqual(out.run2.calls.map((c) => (c.name === 'agentrun' ? `agentrun ${c.arguments.action}` : `learn ${c.arguments.type}`)), ['learn used', 'agentrun inspect', 'agentrun save', 'learn workflow']);
   assert.equal(out.run2.calls[0].arguments.id, out.ruleId, 'run 2 marks the rule it used');
-  const digest = git('show', 'runs/run-2:inbox/run-2/workflows/triage-crash/latest');
-  assert.match(digest, /^[0-9a-f]{64}$/, 'the run proposed the DSL records');
-  assert.match(git('show', `runs/run-2:inbox/run-2/workflows/triage-crash/${digest}.json`), /"issues\.label"/);
+  assert.match(git('show', 'runs/run-2:workflows/triage-crash/workflow.json'), /"issues\.label"/, 'the run proposed its draft');
 
-  // Curation counts the use and admits the workflow as a trial skill, in the DSL's own layout.
+  // Curation counts the use and admits the workflow as a trial skill: its records, document and README at workflows/<name>/.
+  const digest = git('show', `${out.curate2.main}:workflows/triage-crash/latest`);
+  assert.match(digest, /^[0-9a-f]{64}$/);
   assert.deepEqual(git('diff', '--name-only', out.curate1.main, out.curate2.main).split('\n').sort(), [
-    '.agents/skills/triage-crash/SKILL.md', '.agents/skills/triage-crash/trial.json',
-    `.pi/agentrun/workflows/triage-crash/${digest}.json`, '.pi/agentrun/workflows/triage-crash/latest', `learnings/${out.ruleId}.md`,
+    '.agents/skills/triage-crash/SKILL.md', '.agents/skills/triage-crash/trial.json', 'memos/run-2.md',
+    `workflows/triage-crash/${digest}.json`, 'workflows/triage-crash/README.md', 'workflows/triage-crash/latest', 'workflows/triage-crash/workflow.json', `learnings/${out.ruleId}.md`,
   ].sort());
   assert.match(git('show', `${out.curate2.main}:learnings/${out.ruleId}.md`), /^uses: 1$/m);
   assert.deepEqual(out.curate2.runs[0].used.map((u) => u.id), [out.ruleId]);
@@ -138,7 +138,7 @@ test('a correction and a workflow go through the repository: learned, curated, a
 
   const transcript = lines.join('\n');
   assert.match(transcript, /^2\. Run 1 starts at main [0-9a-f]{7}: nothing learned yet$/m);
-  assert.match(transcript, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: its notes and triage-crash's DSL records$/m);
+  assert.match(transcript, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: its notes and triage-crash's draft$/m);
   assert.match(transcript, /^5\. Curate counts the use and admits the workflow as a trial skill$/m);
   assert.match(transcript, /^ {3}a git revert of [0-9a-f]{7}, the commit that added it, would conflict: /m);
   assert.match(transcript, /^ {3}curate again: nothing to curate, the rule does not come back; /m);
@@ -177,7 +177,7 @@ test('a trial is promoted to active on its third clean run, each use read from t
     assert.deepEqual(read.doc.uses.map((u) => [u.name, u.sha256, u.outcome]), [['triage-crash', digest, 'frozen']]);
     assert.equal(r.proposal.status, 'proposed');
     assert.deepEqual(JSON.parse(git('show', `${r.proposal.sha}:uses/${id}.json`)), read.doc);
-    assert.equal(git('diff', '--name-only', `${r.proposal.sha}^`, r.proposal.sha), `uses/${id}.json`);
+    assert.equal(git('diff', '--name-only', `${r.proposal.sha}^`, r.proposal.sha), `memos/${id}.md\nuses/${id}.json`);
   }
 
   // Curation folds each use into trial.json: two holds, then the third frozen use promotes.
@@ -189,14 +189,14 @@ test('a trial is promoted to active on its third clean run, each use read from t
   assert.equal(clean[0].run.sha, out.retire.main, 'run 5 starts where the story left main');
   assert.equal(clean[1].run.sha, clean[0].curate.main, 'each run starts at the commit that counted the one before');
   for (const [i, r] of clean.entries()) {
-    assert.equal(git('diff', '--name-only', i ? clean[i - 1].curate.main : out.retire.main, r.curate.main), TRIAL_JSON, 'a use changes trial.json and nothing else');
+    assert.equal(git('diff', '--name-only', i ? clean[i - 1].curate.main : out.retire.main, r.curate.main), `${TRIAL_JSON}\nmemos/${r.run.runId}.md`, 'a use changes trial.json, and the run\'s memo lands');
   }
   const promoted = JSON.parse(git('show', `${clean[2].curate.main}:${TRIAL_JSON}`));
   assert.equal(promoted.status, 'active');
   assert.deepEqual(promoted.revisions.map((r) => [r.sha256, r.status, r.run]), [[digest, 'active', 'run-2']]);
   assert.deepEqual(promoted.uses.map((u) => [u.run, u.sha256, u.outcome]), clean.map((r) => [r.run.runId, digest, 'frozen']));
   assert.equal(JSON.parse(git('show', `${clean[1].curate.main}:${TRIAL_JSON}`)).status, 'trial', 'two clean uses are not enough');
-  assert.equal(git('show', `${clean[2].curate.main}:.pi/agentrun/workflows/triage-crash/latest`), digest, 'the skill and the record stay as they were');
+  assert.equal(git('show', `${clean[2].curate.main}:workflows/triage-crash/latest`), digest, 'the skill and the record stay as they were');
 
   // An active workflow is offered without the trial mark.
   assert.match(out.earned.v2.learned.join('\n'), /^ *Workflows to try first for this input: triage-crash\. Run one with the agentrun tool/m);
@@ -246,12 +246,12 @@ test('a revision that escalates twice in a row is demoted and the one it replace
   assert.equal(rolled.status, 'active');
   assert.deepEqual(rolled.revisions.map((r) => [r.sha256, r.status]), [[first, 'active'], [second, 'demoted']]);
   assert.deepEqual(git('diff', '--name-only', escalated[0].curate.main, escalated[1].curate.main).split('\n').sort(), [
-    TRIAL_JSON, '.pi/agentrun/workflows/triage-crash/latest',
+    TRIAL_JSON, 'workflows/triage-crash/latest', 'workflows/triage-crash/workflow.json', `memos/${escalated[1].run.runId}.md`,
   ].sort());
-  assert.equal(git('show', `${escalated[1].curate.main}:.pi/agentrun/workflows/triage-crash/latest`), first);
+  assert.equal(git('show', `${escalated[1].curate.main}:workflows/triage-crash/latest`), first);
   const skill = git('show', `${escalated[1].curate.main}:.agents/skills/triage-crash/SKILL.md`);
   assert.match(skill, SCHEMA_DESCRIPTION);
-  assert.match(git('show', `${escalated[1].curate.main}:.pi/agentrun/workflows/triage-crash/${second}.json`), /no body to read/, 'the demoted revision stays in history and on main');
+  assert.match(git('show', `${escalated[1].curate.main}:workflows/triage-crash/${second}.json`), /no body to read/, 'the demoted revision stays in history and on main');
 
   // The next run is offered the first revision again, as active, and holds it in its own store.
   assert.equal(again.run.sha, escalated[1].curate.main);
@@ -268,7 +268,7 @@ test('a revision that escalates twice in a row is demoted and the one it replace
 
   // And if a proposal for it did reach curation, the admitter refuses it: only a changed document is tried again.
   const read = (path, sha) => { try { return gitRead(out.bare, ['show', `${sha}:${path}`]).toString('utf8'); } catch { return undefined; } };
-  const record = read(`.pi/agentrun/workflows/triage-crash/${second}.json`, escalated[1].curate.main);
+  const record = read(`workflows/triage-crash/${second}.json`, escalated[1].curate.main);
   const refused = await workflowAdmitter()({
     main: escalated[1].curate.main, read, list: async () => [],
     workflow: { run: 'run-12', name: 'triage-crash', records: { [`${second}.json`]: record, latest: `${second}\n` }, untrusted: false },
@@ -362,7 +362,7 @@ test('run 2\'s propose line and step 5 say what happened when run 2 saves a work
   assert.doesNotMatch(undescribed.text, /has no skill/);
   assert.match(undescribed.out.run3.learned.join('\n'), /Workflows to try first for this input: triage-crash \(trial\)/);
 
-  assert.match(undescribed.lines, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: triage-crash's DSL records$/m);
+  assert.match(undescribed.lines, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: triage-crash's draft$/m);
 
   const used = await step5([{ call: 'learn', args: (context) => ({ type: 'used', id: /- (L-[0-9a-f]{12}) correction/.exec(JSON.stringify(context.messages))[1], text: 'It helped.' }) }, {}]);
   assert.match(used.lines, /^ {3}proposed on runs\/run-2 at [0-9a-f]{7}: its notes$/m);
@@ -394,20 +394,25 @@ test('a made-up learning id on a new note is dropped and the note proposed; a us
   assert.equal(unknown, 'Not noted: L-ffffffffffff is not a learning you were given.', 'a used mark must name a learning it was given');
   assert.match(repeated, /^Not noted: it repeats data from this case\./, 'the text holds the issue number 4821');
   assert.equal(out.run1.proposal.status, 'proposed');
-  const inbox = gitRead(out.bare, ['show', `${out.run1.proposal.sha}:inbox/run-1.md`]).toString('utf8');
-  // The seed line holds a commit sha, which is random hex and can itself contain 4821.
-  const seed = /^seed: ([0-9a-f]{40})$/m.exec(inbox);
-  assert.ok(seed, 'the inbox names its seed commit');
-  assert.doesNotMatch(inbox.replace(seed[0], 'seed: <sha>'), /4821/, 'neither the refused note nor the dropped id reaches git');
+  const sha = out.run1.proposal.sha;
+  const memo = gitRead(out.bare, ['show', `${sha}:memos/run-1.md`]).toString('utf8');
+  // The memo's base, and each note's provenance, is a commit sha: random hex that can itself contain 4821.
+  const base = /^base: ([0-9a-f]{40})$/m.exec(memo);
+  assert.ok(base, 'the memo names the commit the run started from');
+  const branch = gitRead(out.bare, ['diff-tree', '-r', '--no-commit-id', '--name-only', `${sha}^`, sha]).toString('utf8').trim().split('\n');
+  for (const file of branch) {
+    assert.doesNotMatch(gitRead(out.bare, ['show', `${sha}:${file}`]).toString('utf8').replaceAll(base[1], '<sha>'), /4821/, `neither the refused note nor the dropped id reaches git: ${file}`);
+  }
   assert.match(lines.join('\n'), /^ {3}learn\(correction L-a4821c9e530b\) -> \[noted 1\]$/m);
   assert.match(out.run2.learned.join('\n'), /correction: In this project an issue whose body has a stack trace/);
 });
 
 test('a refused proposal names each reason and where it hit, never the value', () => {
   const candidates = [{ callId: 'call-1', type: 'correction', text: 'In this project a stack trace means needs-repro.', evidence: [], id: 'L-a4821c9e530b' }];
-  const refusals = guard({ role: 'run', runId: 'run-1', files: { 'inbox/run-1.md': renderInbox('run-1', candidates) }, candidates, caseValues: ISSUES.first.values });
+  const files = runBranchFiles({ runId: 'run-1', base: '0'.repeat(40), seeded: true, candidates, untrusted: false, learnings: [] });
+  const refusals = guard({ role: 'run', runId: 'run-1', files, candidates, caseValues: ISSUES.first.values });
   const line = proposalStatus({ status: 'refused', refusals });
-  assert.equal(line, 'refused: case_data in inbox/run-1.md; case_data in candidates[0].id');
+  assert.equal(line, `refused: case_data in learnings/${learningId('run-1', candidates[0].text)}.md; case_data in candidates[0].id`);
   assert.doesNotMatch(line, /4821/);
   assert.equal(proposalStatus({ status: 'empty' }), 'empty');
 });

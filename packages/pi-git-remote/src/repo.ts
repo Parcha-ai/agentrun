@@ -62,6 +62,9 @@ export type CommitOptions = {
   readonly parent?: string;
   /** Make the commit even when `files` change nothing, for a commit whose message and trailers are the record. */
   readonly allowEmpty?: boolean;
+  /** A second parent: the commit is a merge of it into the branch, and its tree is still the base's with `files` applied,
+   *  never the merged commit's tree. The commit must be here. */
+  readonly mergeParent?: string;
 };
 
 export type Committed = { readonly sha: string; readonly created: boolean };
@@ -106,6 +109,9 @@ export type Repo = {
   /** One commit on `branch` with `files` applied, or none when the branch already holds a commit with the same
    *  `Run-Id` trailer, here or on the remote, or when nothing changes. Local only; `push` it after. */
   commitTo(branch: string, options: CommitOptions): Promise<Committed>;
+  /** A commit of `files` applied on `parent`, written here and named by no ref: the second parent of a merge whose own
+   *  branch is never merged. Pushing a branch that reaches it carries it. */
+  makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers }): Promise<string>;
   /** Sends a commit to `branch` on the remote: by sha, never forced, never running a hook on either side. A remote that
    *  moved is a `conflict`; a remote that refuses the ref is `refused`. */
   push(sha: string, branch: string): Promise<void>;
@@ -543,9 +549,23 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     const tree = await buildTree(base ? baseTree : undefined, options.files);
     await checkIntroduced(baseTree, tree);
     if (base && tree === baseTree && options.allowEmpty !== true) return { sha: base, created: false };
-    const sha = await commitTree(tree, base ? [base] : [], message);
+    const merged = options.mergeParent === undefined ? undefined : await commitOf(options.mergeParent);
+    if (merged !== undefined && !base) throw refused("a merge needs a base commit on the branch");
+    const sha = await commitTree(tree, base ? [base, ...(merged === undefined ? [] : [merged])] : [], message);
     await moveBranch(branch, sha, localBefore);
     return { sha, created: true };
+  }
+
+  async function makeCommit(options: { readonly parent: string; readonly files: Readonly<Record<string, FileContent>>; readonly message: string; readonly trailers?: Trailers }): Promise<string> {
+    if (!options || typeof options !== "object") throw refused("makeCommit needs { parent, files, message }");
+    checkCommitFiles(options.files, limits);
+    const message = formatMessage(options.message, options.trailers);
+    await fetchAll();
+    const parent = await commitOf(options.parent);
+    const baseTree = await treeOf(parent);
+    const tree = await buildTree(baseTree, options.files);
+    await checkIntroduced(baseTree, tree);
+    return commitTree(tree, [parent], message);
   }
 
   async function push(sha: string, branchName: string): Promise<void> {
@@ -653,6 +673,7 @@ export async function openRepo(options: RepoOptions): Promise<Repo> {
     read: serial(read),
     list: serial(list),
     commitTo: serial(commitTo),
+    makeCommit: serial(makeCommit),
     push: serial(push),
     merge: serial(merge),
     revert: serial(revert),

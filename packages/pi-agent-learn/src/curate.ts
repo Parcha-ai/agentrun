@@ -1,21 +1,23 @@
 import { inspectWorkflow, type WorkflowDeps } from "@parcha/agentrun-dsl";
+import { type Change, checkRun } from "@parcha/agentrun-learn";
 import { GitRemoteError, modeRefusal, type Repo } from "@parcha/pi-git-remote";
 import { createHash } from "node:crypto";
 import { type Learning, learningId, parseLearning, renderLearning } from "./entry.js";
 import { LearnError } from "./errors.js";
 import { createGuard, guard } from "./guard.js";
-import { InboxFormatError, type InboxCandidate, parseInbox } from "./inbox.js";
-import { assertNotRulesLocked, CAPS, COMMIT_SHA, inboxPath, isRulesLocked, LAYOUT, learningPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { type BranchCandidate, readRunBranch, renderIndex } from "./branch.js";
+import { assertNotRulesLocked, CAPS, COMMIT_SHA, isRulesLocked, LAYOUT, learningPath, memoPath, RUN_ID, usesPath, WORKFLOW_NAME } from "./layout.js";
+import { repoWorkflowDir } from "./trial.js";
 import { byUse, indexLine, renderSection } from "./section.js";
 import { learningsAt } from "./seed.js";
 import type { AdmitWorkflow, Refusal, RepoRead, SettleUses, WorkflowCandidate } from "./types.js";
-import { parseRunUses, type RunUses, revisionOf, usesSettler, workflowAdmitter } from "./workflows.js";
+import { parseRunUses, readWorkflowFile, type RunUses, revisionOf, usesSettler, workflowAdmitter } from "./workflows.js";
 
 /** The judge: the DSL's System One adapter, `WorkflowDeps["runJudge"]`. `createJevRunner` from `@parcha/agentrun-jev` is one. */
 export type Judge = NonNullable<WorkflowDeps["runJudge"]>;
 
 /** What curation needs of the agent repository. A `Repo` from `@parcha/pi-git-remote` is one. */
-export type CurateRepo = Pick<Repo, "fetch" | "resolve" | "branches" | "read" | "list" | "log" | "commitTo" | "push">;
+export type CurateRepo = Pick<Repo, "fetch" | "resolve" | "branches" | "read" | "list" | "log" | "commitTo" | "makeCommit" | "push">;
 
 /** Where the run branches are read, when that is not main's repository (a hidden namespace for runs). */
 export type RunsRepo = Pick<Repo, "fetch" | "resolve" | "branches" | "read" | "list" | "log">;
@@ -88,11 +90,37 @@ export type CurateOptions = {
   /** Folds a run's workflow uses into their trials; called for every run with a `uses/<run id>.json`. Default:
    *  `usesSettler()`; `null` turns it off, and then the uses are held. */
   readonly settleUses?: SettleUses | null;
+  /**
+   * The injection screen, both halves the host's: `classify`, its page judge scoring a note, skill or workflow draft the
+   * run proposes for instructions planted in it as a probability, and `threshold`, its page-injection threshold. A score
+   * at or over `threshold` is refused, and so is a file the screen could not judge (it threw, timed out or answered out of
+   * shape). Without a screen, or with either half missing, every candidate is refused: nothing merges unscreened. A Pi
+   * host passes pi-browser's: `screen: { classify: async ({ text }) => (await classifyPage({ url: "", status: 200,
+   * contentType: "text/markdown", text })).injection, threshold: INJECTION_THRESHOLD }`.
+   */
+  readonly screen?: InjectionScreen;
+  /** How long one screen call may take, in milliseconds, before the file counts as unjudged. Default 30000. */
+  readonly screenTimeoutMs?: number;
+  /** The host's tool list, the names a workflow can bind on any harness, for the step 1 checker: a draft that names a
+   *  tool outside it, or names one when the host gave none, is refused. A Pi host passes its registered tools' names. */
+  readonly tools?: readonly string[];
   readonly signal?: AbortSignal;
 };
 
+export type InjectionScreen = {
+  readonly classify: (item: { readonly path: string; readonly text: string }) => Promise<unknown>;
+  readonly threshold: number;
+};
+
+/** The screen, when the host gave both its judge and a threshold in (0, 1]. */
+function screenOf(options: CurateOptions): InjectionScreen | undefined {
+  const screen: Partial<InjectionScreen> | undefined = typeof options.screen === "object" && options.screen !== null ? options.screen : undefined;
+  const { classify, threshold } = screen ?? {};
+  return typeof classify === "function" && typeof threshold === "number" && threshold > 0 && threshold <= 1 ? { classify, threshold } : undefined;
+}
+
 export type CurateItem = {
-  /** The candidate's position in the run's inbox, from 1. */
+  /** The candidate's position in the run's memo, from 1. */
   readonly candidate?: number;
   /** The learning made, kept or touched. */
   readonly id?: string;
@@ -131,6 +159,8 @@ export type CurateReport = {
 };
 
 const CURATED_RUN = "Curated-Run";
+/** The trailer on a merge's second parent: the run as it lands. */
+const LANDED_RUN = "Landed-Run";
 const LEARNING_ID_TRAILER = "Learning-Id";
 const WORKFLOW_TRAILER = "Workflow";
 const RUN_ID_TRAILER = "Run-Id";
@@ -249,7 +279,11 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
       let commit: { sha: string };
       try {
         // commitTo fetches first: a main that moved since `main` was read is a conflict here, before any push.
-        commit = await repo.commitTo("main", { files: plan.files, message: plan.message, trailers: plan.trailers, parent: main, allowEmpty: true });
+        // A merge whose second parent is the run as it lands: what curation took from the branch, on the commit the run
+        // started from. The run's own branch is never merged, so nothing curation refused becomes reachable from main,
+        // and `git revert -m 1` takes the run back out.
+        const landed = await repo.makeCommit({ parent: plan.base ?? main, files: plan.files, message: `curate: run ${runId} as it lands`, trailers: { [LANDED_RUN]: runId } });
+        commit = await repo.commitTo("main", { files: plan.files, message: plan.message, trailers: plan.trailers, parent: main, mergeParent: landed, allowEmpty: true });
         pushes += 1;
         await repo.push(commit.sha, "main");
       } catch (error) {
@@ -270,7 +304,7 @@ async function curateRuns(options: Resolved, thresholds: Thresholds, caps: Curat
 }
 
 export type RetireOptions = {
-  readonly repo: Pick<Repo, "fetch" | "resolve" | "read" | "commitTo" | "push">;
+  readonly repo: Pick<Repo, "fetch" | "resolve" | "read" | "list" | "commitTo" | "push">;
   readonly id: string;
   /** Why, for the commit message. It names no value from the case; one the guard would refuse is withheld. */
   readonly reason: string;
@@ -309,7 +343,10 @@ export async function retireLearning(options: RetireOptions): Promise<RetireResu
       if (text === undefined) throw new LearnError("missing", `${id} is not on main`);
       const entry = parseLearning(text);
       if (entry.status === "retired") return { status: "unchanged", main };
-      const files = { [path]: renderLearning({ ...entry, status: "retired" }) };
+      const files: Record<string, string> = { [path]: renderLearning({ ...entry, status: "retired" }) };
+      // The index stays one line per active learning.
+      const index = renderIndex((await learningsAt(repo, main)).learnings.filter((l) => l.status === "active" && l.id !== id));
+      if (index !== undefined) files[LAYOUT.index] = index;
       const refusals = guard({ role: "curate", files, secrets });
       if (refusals.length) throw new LearnError("invalid", `the retired learning's file is refused: ${refusalReason(refusals)}`);
       let commit: { sha: string };
@@ -354,7 +391,35 @@ type PlanInput = {
   readonly main: string;
 };
 
+const SCREENED = /^(?:learnings\/L-[0-9a-f]{12}\.md|\.agents\/skills\/[^/]+\/SKILL\.md|workflows\/[^/]+\/(?:workflow\.json|README\.md))$/;
+const kindOf = (path: string) => (path.startsWith("learnings/") ? "a note" : path.startsWith(".agents/") ? "a skill" : "a workflow draft");
+
+/** Each file the screen refuses, with why; empty when every one passes. */
+async function screenFiles(options: Resolved, { classify, threshold }: InjectionScreen, files: Readonly<Record<string, string | null>>): Promise<Map<string, string>> {
+  const refused = new Map<string, string>();
+  for (const [path, text] of Object.entries(files)) {
+    if (text === null || !SCREENED.test(path)) continue;
+    let score: unknown;
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), options.screenTimeoutMs ?? 30_000); });
+      try {
+        score = await Promise.race([classify({ path, text }), late]);
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      score = undefined;
+    }
+    if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 1) refused.set(path, `the injection screen could not judge it (${kindOf(path)})`);
+    else if (score >= threshold) refused.set(path, `the injection screen: ${score.toFixed(2)} at or over ${threshold.toFixed(2)} (${kindOf(path)})`);
+  }
+  return refused;
+}
+
 type Plan = {
+  /** The commit the run's branch starts from, when it starts from main's history. */
+  readonly base?: string;
   readonly files: Record<string, string | null>;
   readonly message: string;
   readonly trailers: Record<string, string | string[]>;
@@ -378,9 +443,10 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const own = (await runsRepo.log({ ref: tip })).filter((c) => !mainHistory.has(c.sha));
   if (own.length === 0) return undefined;
 
+  let landsOn: string | undefined;
   const refuseRun = (reason: string): Plan => {
     lists.refused.push({ reason });
-    return finish(input, lists, {}, [], [], budget.asked);
+    return { ...finish(input, lists, {}, [], [], budget.asked), ...(landsOn ? { base: landsOn } : {}) };
   };
 
   const ownShas = new Set(own.map((c) => c.sha));
@@ -388,6 +454,7 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   if (own.some((c) => c.parents.length !== 1 || !(c.trailers[RUN_ID_TRAILER] ?? []).includes(runId))) return refuseRun("the run branch holds a commit that is not this run's");
   const base = bases.size === 1 ? [...bases][0]! : undefined;
   if (!base || !mainHistory.has(base)) return refuseRun("the run branch does not start from main's history");
+  landsOn = base;
 
   // Everything the run's commits changed, read back and guarded as the run again, with the host's secrets of now.
   const before = new Map((await runsRepo.list("", base)).map((e) => [e.path, e]));
@@ -407,24 +474,28 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     if ((entry.size ?? 0) > CAPS.file) return refuseRun(`too_large: a file the run wrote is ${entry.size} bytes`);
     runFiles[path] = (await runsRepo.read(path, tip)) ?? "";
   }
-  const inboxText = runFiles[inboxPath(runId)];
-  let candidates: readonly InboxCandidate[] = [];
-  let seed: unknown;
-  if (typeof inboxText === "string") {
-    try {
-      const inbox = parseInbox(inboxText);
-      if (inbox.run !== runId) return refuseRun("the inbox names another run");
-      candidates = inbox.candidates;
-      seed = inbox.seed;
-    } catch (error) {
-      if (!(error instanceof InboxFormatError)) throw error;
-      return refuseRun("the inbox does not parse");
-    }
-  }
+  // The step 1 checker, on the branch as the run left it: the layout, the formats, the caps, the locked and host-owned
+  // paths, secrets, and workflow drafts on the DSL with the host's tools.
+  const changes: Change[] = changed.map((path) => {
+    const entry = after.get(path);
+    if (!entry) return { path, status: "deleted" as const };
+    return { path, status: before.has(path) ? "modified" as const : "added" as const, mode: entry.mode, ...(entry.size === undefined ? {} : { size: entry.size }), bytes: Buffer.from(runFiles[path] ?? "", "utf8") };
+  });
+  const checked = checkRun({ branch: `runs/${runId}`, changes, forkPoint: base, headFiles: [...after.keys()], ...(options.tools ? { tools: options.tools } : {}), refuseValues: [...input.secrets] });
+  if (!checked.ok) return refuseRun(`the checker refuses the run's branch: ${[...new Set(checked.problems.map((p) => p.rule))].join(", ")}`);
+  const was = new Map<string, string>();
+  for (const path of changed) if (before.has(path) && path.startsWith(`${LAYOUT.learnings}/`)) was.set(path, (await runsRepo.read(path, base)) ?? "");
+  const branch = readRunBranch(runId, runFiles, (path) => was.get(path), (options.now ?? new Date()).toISOString());
+  if (typeof branch === "string") return refuseRun(branch);
+  const candidates: readonly BranchCandidate[] = branch.candidates;
+  const seed: unknown = branch.seeded ? branch.base : undefined;
+  const screen = screenOf(options);
+  if (!screen) return refuseRun("no injection screen");
+  const screened = await screenFiles(options, screen, runFiles);
   const runRefusals = guard({ role: "run", runId, files: runFiles, candidates, secrets: input.secrets });
   if (runRefusals.length) return refuseRun(`the run's files are refused: ${refusalReason(runRefusals)}`);
 
-  // A learning names the commit its run was seeded from; an inbox that does not say gets its branch's base, marked so.
+  // A learning names the commit its run was seeded from; a run that was not seeded gets its branch's base, marked so.
   const seeded = typeof seed === "string" && COMMIT_SHA.test(seed) && mainHistory.has(seed) ? seed : undefined;
   const origin = seeded ? { sha: seeded } : { sha: base, shaFrom: "branch-base" as const };
   const { learnings } = await learningsAt(repo, main);
@@ -434,6 +505,10 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   const usedOnce = new Set<string>();
   const rules = options.rules ?? (await repo.read(LAYOUT.rules, main)) ?? "";
   const workflows = new Map<string, { candidate: number; untrusted: boolean }>();
+  /** The workflows whose README this run wrote and curation passed. */
+  const described = new Set<string>();
+  const readmeKept = new Map<string, string>();
+  const admittedHere = new Set<string>();
 
   const ask = async (q: Question, state: Record<string, unknown>): Promise<Asked> => {
     const key = sha256(JSON.stringify([q, state]));
@@ -484,9 +559,20 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     return undefined;
   };
 
+  /** Why the screen refused the file a candidate stands for, if it did. */
+  const screenedOut = (candidate: BranchCandidate): string | undefined => {
+    if (candidate.type === "workflow") return screened.get(`${repoWorkflowDir(candidate.id!)}/workflow.json`) ?? screened.get(`${repoWorkflowDir(candidate.id!)}/README.md`);
+    const id = candidate.type === "used" ? candidate.id : learningId(runId, candidate.text);
+    return id === undefined ? undefined : screened.get(learningPath(id));
+  };
   for (const [i, candidate] of candidates.entries()) {
     const at = i + 1;
     const type = candidate.type as string;
+    const blocked = screenedOut(candidate);
+    if (blocked) {
+      lists.refused.push({ candidate: at, ...(type === "workflow" ? { workflow: candidate.id } : {}), reason: blocked });
+      continue;
+    }
     if (type === "used") {
       const target = candidate.id === undefined ? undefined : entries.get(candidate.id);
       if (!target || target.status !== "active") {
@@ -513,8 +599,14 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
         lists.refused.push({ candidate: at, workflow: name, reason: `a second description of the same workflow in this run (#${workflows.get(name)!.candidate} is the one kept)` });
         continue;
       }
-      // A workflow is judged on itself below, never on the agent's note, and the note is written nowhere: a run that read
-      // untrusted content puts no words of its own into a later prompt this way.
+      // The agent's README, its words on when the workflow applies, is judged like a note and lands with the workflow when
+      // it passes; one that does not leaves the workflow to be judged on its document below, with a README that points at
+      // its skill. The admitter never sees the README.
+      if (candidate.text.trim() !== "") {
+        const verdict = await atomic({ type, text: candidate.text }, candidate.untrusted === true);
+        if (verdict) readmeKept.set(name, `its README is not landed: ${verdict.reason}`);
+        else described.add(name);
+      }
       workflows.set(name, { candidate: at, untrusted: candidate.untrusted === true });
       continue;
     }
@@ -627,15 +719,10 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
   }
 
-  // Workflows: the run's records under inbox/<run id>/workflows/<name>/. A note with no records has nothing to admit.
-  const prefix = `${LAYOUT.inbox}/${runId}/workflows/`;
+  // Workflows: the run's drafts, as the records the DSL's store would write for them. A note with no draft has nothing to
+  // admit.
   const records = new Map<string, Record<string, string>>();
-  for (const [path, text] of Object.entries(runFiles)) {
-    if (!path.startsWith(prefix) || text === null) continue;
-    const [name, file, ...rest] = path.slice(prefix.length).split("/");
-    if (!name || !file || rest.length || !WORKFLOW_NAME.test(name) || !RECORD.test(file)) continue;
-    (records.get(name) ?? records.set(name, {}).get(name)!)[file] = text;
-  }
+  for (const [name, files] of branch.records) if (Object.keys(files).length && workflows.has(name)) records.set(name, files);
   const reader: RepoRead = { main, read: (path, sha) => repo.read(path, sha), list: (p, sha) => repo.list(p, sha) };
   const workflowFiles: Record<string, string | null> = {};
   const workflowNames = new Set<string>();
@@ -713,7 +800,8 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     }
     Object.assign(workflowFiles, result.files);
     workflowNames.add(name);
-    lists.accepted.push({ ...item, reason });
+    admittedHere.add(name);
+    lists.accepted.push({ ...item, reason: readmeKept.has(name) ? `${reason}; ${readmeKept.get(name)}` : reason });
   }
 
   // The derived index stays under its cap: archive the least-used older learnings first, this run's own only after them.
@@ -732,6 +820,25 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
   }
 
   const files: Record<string, string | null> = { ...workflowFiles };
+  // Each workflow whose live revision changed: its document beside the records, and the README this run wrote and curation
+  // passed, else one that points at its skill when main has none.
+  for (const name of workflowNames) {
+    const dir = repoWorkflowDir(name);
+    const readme = admittedHere.has(name) && described.has(name) ? runFiles[`${dir}/README.md`] : undefined;
+    if (typeof readme === "string") files[`${dir}/README.md`] = readme;
+    const latest = workflowFiles[`${dir}/latest`];
+    if (typeof latest !== "string" || !/^[0-9a-f]{64}\n$/.test(latest)) continue;
+    const digest = latest.slice(0, 64);
+    const record = workflowFiles[`${dir}/${digest}.json`] ?? (await readWorkflowFile((p, ref) => repo.read(p, ref), name, `${digest}.json`, main));
+    const revision = typeof record === "string" ? await revisionOf(name, { latest, [`${digest}.json`]: record }) : undefined;
+    if (!revision) continue;
+    files[`${dir}/workflow.json`] = `${JSON.stringify(revision.workflow, null, 2)}\n`;
+    if (typeof readme !== "string" && (await repo.read(`${dir}/README.md`, main)) === undefined) files[`${dir}/README.md`] = `# ${name}\n\nThe ${name} workflow. When to use it: \`${LAYOUT.skills}/${name}/SKILL.md\`.\n`;
+  }
+  const memo = runFiles[memoPath(runId)];
+  if (typeof memo === "string") files[memoPath(runId)] = memo;
+  const index = renderIndex([...entries.values()].filter((l) => l.status === "active"));
+  if (index !== undefined) files[LAYOUT.index] = index;
   for (const id of [...touched].sort()) {
     try {
       files[learningPath(id)] = renderLearning(entries.get(id)!);
@@ -747,9 +854,9 @@ async function planRun(input: PlanInput): Promise<Plan | undefined> {
     const all = Object.values(lists).flat();
     for (const key of Object.keys(lists) as (keyof Lists)[]) lists[key] = [];
     lists.refused.push(...all.map((item) => ({ ...item, reason })), ...(all.length ? [] : [{ reason }]));
-    return finish(input, lists, {}, [], [], budget.asked);
+    return { ...finish(input, lists, {}, [], [], budget.asked), base };
   }
-  return finish(input, lists, files, [...touched].sort(), [...workflowNames].sort(), budget.asked);
+  return { ...finish(input, lists, files, [...touched].sort(), [...workflowNames].sort(), budget.asked), base };
 }
 
 /** Why files from the workflows lane may not be written: a rules-tier path, a path outside the named workflows' folders,
@@ -795,12 +902,20 @@ function finish(input: PlanInput, lists: Lists, files: Record<string, string | n
       lines.push(oneLine(`${kind}${who ? ` ${who}` : ""}: ${item.reason}`));
     }
   }
+  const message = lines.length ? `${subject}\n\n${lines.join("\n")}` : subject;
+  // The memo the run proposed lands with the review's verdict and reasons as its last section, when it still fits its cap.
+  const memoFile = memoPath(input.runId);
+  const memo = files[memoFile];
+  if (typeof memo === "string") {
+    const reviewed = `${memo.replace(/\n+$/, "")}\n\n## Review\n${message}\n`;
+    if (Buffer.byteLength(reviewed, "utf8") <= CAPS.memo) files[memoFile] = reviewed;
+  }
   const trailers: Record<string, string | string[]> = { [CURATED_RUN]: input.runId };
   if (ids.length) trailers[LEARNING_ID_TRAILER] = [...ids];
   if (workflows.length) trailers[WORKFLOW_TRAILER] = [...workflows];
   return {
     files,
-    message: lines.length ? `${subject}\n\n${lines.join("\n")}` : subject,
+    message,
     trailers,
     report: { run: input.runId, ...lists, questions },
   };

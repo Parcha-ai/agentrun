@@ -86,6 +86,9 @@ const WORKFLOW_V2_WHEN = 'Use it for an issue whose body holds a stack trace: it
 const JUDGE = { general: 0.94, narrowsRules: 0.03, fromContent: 0.03, duplicate: 0.04, supersedes: 0.04, contradicts: 0.03, workflowCase: 0.03 };
 const ASKED = { general: 'general', narrowsRules: 'narrows a rule', fromContent: 'came from content', duplicate: 'a duplicate', supersedes: 'replaces one', contradicts: 'contradicts one', workflowCase: 'names a case' };
 
+/** The tools this host binds, which a workflow draft may name. */
+export const HOST_TOOLS = ['issues.label'];
+
 export function scriptedJudge(asked = []) {
   return async ({ questions }) => {
     const answers = {};
@@ -296,14 +299,16 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   const vault = [`demo-vault-${randomBytes(16).toString('hex')}`];
   const asked = [];
   const judge = scriptedJudge(asked);
+  // The injection screen stays scripted, like the judge: it finds nothing planted in what the runs propose. A real host
+  // passes its page judge and its page-injection threshold.
+  const screen = { classify: async () => 0.02, threshold: 0.5 };
   const modelFor = (script) => (live ? liveModel(env) : scriptedModel(script));
   const proposed = (sha, runId) => {
-    const files = gitRead(bare, ['ls-tree', '-r', '--name-only', sha, '--', `inbox/${runId}.md`, `inbox/${runId}/workflows`, `uses/${runId}.json`])
-      .toString('utf8').trim().split('\n').filter(Boolean);
-    const names = [...new Set(files.map((file) => file.split('/')[3]).filter((name) => name && files.some((f) => f.startsWith(`inbox/${runId}/workflows/${name}/`))))];
+    const files = gitRead(bare, ['diff-tree', '-r', '--no-commit-id', '--name-only', `${sha}^`, sha]).toString('utf8').trim().split('\n').filter(Boolean);
+    const names = [...new Set(files.map((file) => /^workflows\/([^/]+)\/workflow\.json$/.exec(file)?.[1]).filter(Boolean))];
     const parts = [
-      ...(files.includes(`inbox/${runId}.md`) ? ['its notes'] : []),
-      ...(names.length ? [`${names.join(' and ')}'s DSL records`] : []),
+      ...(files.some((file) => /^learnings\/L-[0-9a-f]{12}\.md$/.test(file)) ? ['its notes'] : []),
+      ...(names.length ? [`${names.join(' and ')}'s draft`] : []),
       ...(files.includes(`uses/${runId}.json`) ? ['its workflow uses'] : []),
     ];
     return parts.length ? parts.join(' and ') : 'nothing of its own';
@@ -345,7 +350,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(f1.proposal.sha ? `   proposed on runs/run-1 at ${short(f1.proposal.sha)}; main has not moved` : `   proposed nothing (${proposalStatus(f1.proposal)})`);
   say();
 
-  const c1 = await curateNow({ repo, judge, secrets: vault });
+  const c1 = await curateNow({ repo, judge, secrets: vault, screen, tools: HOST_TOOLS });
   out.curate1 = c1;
   out.ruleId = c1.runs.flatMap((r) => r.accepted)[0]?.id;
   say(`3. Curate asks the judge: ${[...new Map(asked.map((a) => [a.question, a.p])).entries()].map(([q, p]) => `${ASKED[q] ?? q}? ${p}`).join('; ')}`);
@@ -372,7 +377,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
   say(f2.proposal.sha ? `   proposed on runs/run-2 at ${short(f2.proposal.sha)}: ${proposed(f2.proposal.sha, 'run-2')}` : `   proposed nothing (${proposalStatus(f2.proposal)})`);
   say();
 
-  const c2 = await curateNow({ repo, judge, secrets: vault });
+  const c2 = await curateNow({ repo, judge, secrets: vault, screen, tools: HOST_TOOLS });
   out.curate2 = c2;
   const items = c2.runs.flatMap((r) => r.accepted.concat(r.used, r.held, r.refused, r.duplicates));
   const admitted = c2.runs.flatMap((r) => r.accepted.filter((a) => a.workflow).map((a) => a.workflow));
@@ -406,7 +411,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
     out.retire = await retireLearning({ repo, id: out.ruleId, reason: 'the maintainer withdrew the rule', secrets: vault });
     say(`   main ${short(out.retire.main)} retires it: learnings/${out.ruleId}.md stays on main with status retired, and history keeps every version`);
   }
-  const c3 = await curateNow({ repo, judge, secrets: vault });
+  const c3 = await curateNow({ repo, judge, secrets: vault, screen, tools: HOST_TOOLS });
   out.curate3 = c3;
   say(`   curate again: ${c3.runs.length ? `${c3.runs.length} run(s) curated` : 'nothing to curate, the rule does not come back'}; main stays ${short(c3.main)}`);
   say();
@@ -481,7 +486,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
     let prev = c3.main;
     let before = await trialAt(prev);
     const settle = async () => {
-      const c = await curateNow({ repo, judge, secrets: vault });
+      const c = await curateNow({ repo, judge, secrets: vault, screen, tools: HOST_TOOLS });
       const after = await trialAt(c.main);
       for (const r of c.runs) say(`     curate: ${runLine(r)}`);
       say(`     main ${short(c.main)} ${changed(prev, c.main)}`);
@@ -525,7 +530,7 @@ export async function runDemo({ dir, live = false, env = process.env, log = () =
       { say: 'bug, needs-repro: the body is a crash trace.' },
     ]);
     if (t11.proposal.status === 'empty') say('     the repository already holds that revision (demoted), so the run has nothing new to propose');
-    const c12 = await curateNow({ repo, judge, secrets: vault });
+    const c12 = await curateNow({ repo, judge, secrets: vault, screen, tools: HOST_TOOLS });
     out.earned.again = { ...t11, curate: c12 };
     say(`     curate: ${c12.runs.length ? `${c12.runs.length} run(s) curated` : 'nothing to curate'}; main stays ${short(c12.main)}`);
     say();

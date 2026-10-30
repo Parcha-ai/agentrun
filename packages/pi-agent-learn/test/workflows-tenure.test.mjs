@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { WorkflowStore } from "@parcha/agentrun-pi/workflows";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { collectWorkflows, curate, proposeLearning, readTrial, seedWorkflows, usesSource, workflowAdmitter, workflowsToTry } from "../dist/index.js";
-import { agentRepo, scratch } from "./support.mjs";
+import { agentRepo, scratch, SCREEN_PASS, HOST_TOOLS } from "./support.mjs";
 import { runStoreWith, workDirWith, workflowDoc } from "./workflow-support.mjs";
 
 const NAME = "sku-quote";
@@ -47,7 +47,7 @@ async function host(t, { tenure = true, startedAt } = {}) {
   /** The run reports and curate takes it; it leaves `inFlight()` once that curate has returned. */
   const report = async (run, what) => {
     const { digest, proposed } = await propose(run, what);
-    const curated = proposed ? (await curate({ repo: curator, judge, admitWorkflow })).runs.find((r) => r.run === run.id) : undefined;
+    const curated = proposed ? (await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge, admitWorkflow })).runs.find((r) => r.run === run.id) : undefined;
     inFlight.delete(run.id);
     return { digest, curated, trial: await readTrial(curator, NAME, "main") };
   };
@@ -59,7 +59,7 @@ async function host(t, { tenure = true, startedAt } = {}) {
       out.push(await propose(run, what));
       if (early) inFlight.delete(run.id);
     }
-    const report = await curate({ repo: curator, judge, admitWorkflow });
+    const report = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: curator, judge, admitWorkflow });
     for (const [run] of list) inFlight.delete(run.id);
     return { digests: out.map((o) => o.digest), report, trial: await readTrial(curator, NAME, "main") };
   };
@@ -156,7 +156,7 @@ test("a history read that fails is no tenure decision: curate stops and the run 
   const r3 = await h.start("run-03");
   await assert.rejects(h.report(r3, { save: workflowDoc({ limit: 200 }) }));
   broken = false;
-  const again = await curate({ repo: h.curator, judge, admitWorkflow: workflowAdmitter({ tenure: { started: () => undefined, inFlight: () => [] } }) });
+  const again = await curate({ screen: SCREEN_PASS, tools: HOST_TOOLS, repo: h.curator, judge, admitWorkflow: workflowAdmitter({ tenure: { started: () => undefined, inFlight: () => [] } }) });
   assert.deepEqual(again.runs.map((r) => r.run), ["run-03"], "the run was left for the next curate");
 }, { timeout: 300_000 });
 
