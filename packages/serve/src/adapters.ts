@@ -152,7 +152,9 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
   // One provider, then the model's own id: a second segment (anthropic/anthropic/<model>, once a workaround) is refused
   // by name, never sent on to fail at the provider.
   if (modelId.includes("/")) return { why: `claude-agent runs a model named ${provider}/<model-id>; ${named} names more than one segment: name it ${provider}/${modelId.slice(modelId.lastIndexOf("/") + 1)}.`, host: ref === undefined };
-  return { model: { provider, modelId } };
+  // Anthropic's own id from here on, so the cap's model lookup, the price and the wire all name one model the catalog
+  // knows: a dotted name (OpenRouter's) would find no model, and a cap with no model would admit nothing it could price.
+  return { model: { provider, modelId: claudeModelId({ provider, modelId }) } };
 }
 
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
