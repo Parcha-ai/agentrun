@@ -51,8 +51,11 @@ async function tree(dir) {
 
 test("a pi run's tool call is journaled in its OWN records under the wire name, and nowhere else", async (t) => {
   const { api, data } = await serve(t, { fauxWeb: FAUX_WEB });
-  const before = await tree(data);
   assert.equal((await api("POST", "/agents", { definition: { id: "reader", name: "reader", instructions: "Read.", tools: ["fetch_page"] } })).status, 201);
+  // Everything the data root holds once the agent is saved and before the run starts: every path the run then adds must
+  // be under its own runs/<runId>/ directory. A path that existed here is allowed to change (the store index gets the
+  // run's row); a NEW path anywhere but runs/<runId>/ is a plane-side store and fails.
+  const before = await tree(data);
   const started = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages: ${JSON.stringify(["http://public.example/"])}` } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -81,12 +84,14 @@ test("a pi run's tool call is journaled in its OWN records under the wire name, 
   assert.equal(result.isError ?? false, false, `the tool's result is an error: ${text.slice(0, 200)}`);
   assert.match(text, /public\.example|"ok"|"status"|"title"/, `the tool ran and answered the page: ${text.slice(0, 200)}`);
 
-  // (1, asserted not just mutated) No plane-side store: every new path is under the run's directory; no other sqlite.
+  // (1, asserted not just mutated) No plane-side store: every path the run ADDED is under its own runs/<runId>/.
+  // A path that existed before the run may change (the store index takes the run's row); any NEW path elsewhere — a
+  // record or store the plane wrote outside the run — fails. The rule is "new => under runs/<runId>/", with no
+  // per-directory exception; if serve ever writes a new per-run path outside runs/, name it here with its reason.
   const after = await tree(data);
   const added = after.filter((p) => !before.includes(p));
-  const outside = added.filter((p) => !p.startsWith(`runs/${runId}/`) && !p.startsWith("agents/") && p !== "store.sqlite" && !p.startsWith("store.sqlite"));
-  assert.deepEqual(outside, [], `the run wrote outside its own directory: ${outside.join(", ")}`);
-  assert.deepEqual(after.filter((p) => p.endsWith(".sqlite") && !before.includes(p) && !p.startsWith(`runs/${runId}/`)), [], "no new sqlite store outside the run");
+  const outside = added.filter((p) => !p.startsWith(`runs/${runId}/`));
+  assert.deepEqual(outside, [], `the run added a path outside its own directory: ${outside.join(", ")}`);
 });
 
 // Gate (2): recovery honours a tool's replay class, which lives on the catalog entry the plane serves, not in the test.
