@@ -36,14 +36,14 @@ const IDENTITY: GitIdentity = { name: "agentrun-serve", email: "serve@agentrun.i
  *  server takes no uploads (capabilities `files.upload: false`), so a run has no input file to read: the change that
  *  turns uploads on must make a run that reads an input file untrusted. */
 const TRUSTED_TOOLS = new Set(["read", "write", "edit", "ask_person"]);
-/** The file tools of a learning run, whatever its revision names: every one works on the run's working copy only. */
+/** The tools a learning run has for its working copy, whatever its revision names. */
 export const LEARNING_TOOLS: readonly string[] = ["read", "write", "edit"];
 /** The run's working copy of its agent's repository, under its work. */
 export const WORKING_COPY = join(".agent", "repo");
 /** The notes the run was seeded with, which its `<learned>` section points at: `read` reaches them too. */
 const SEEDED_NOTES = join(".agent", "learnings");
-/** Why a learning run's file tool `tool` may not take `path`, or undefined: it works on the run's working copy only
- *  (`read` on the seeded notes too). `path` is read as the tool reads it, against `work`; a link anywhere on the way is
+/** Why a tool learning added (one the revision did not name) may not take `path`, or undefined: it works on the run's
+ *  working copy only (`read` on the seeded notes too). `path` is read as the tool reads it, against `work`; a link anywhere on the way is
  *  refused, never followed, so a link inside the copy cannot lead out of it. */
 export async function copyRefusal(work: string, tool: string, path: string): Promise<string | undefined> {
   const roots = tool === "read" ? [WORKING_COPY, SEEDED_NOTES] : [WORKING_COPY];
@@ -88,7 +88,7 @@ export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T
 export function learningInstructions(runId: string): string {
   return [
     "<saving-learning>",
-    `Your learning repository is checked out at ${WORKING_COPY}. Save what you learned there with your file tools, which work there only (read reaches ${SEEDED_NOTES} too). Once this run ends, the server commits what you changed there to the branch runs/${runId} for review; nothing else is kept.`,
+    `Your learning repository is checked out at ${WORKING_COPY}. Save what you learned there with your file tools; a file tool your definition does not name works there only (read reaches ${SEEDED_NOTES} too). Once this run ends, the server commits what you changed there to the branch runs/${runId} for review; nothing else you write is kept.`,
     `- Your memo: ${WORKING_COPY}/memos/${runId}.md. Keep its front matter (the server writes it) and add, in this order, ## What happened, ## What I learned, ## What could be better, and ## Proposed changes, which lists every path you changed. A memo you leave as it is proposes nothing.`,
     `- A note: ${WORKING_COPY}/learnings/L-<12 lowercase hex digits>.md, one general rule. Its front matter holds id, type (lesson, fact or correction), status (active), runs ([${runId}]) and supersedes ([] or the notes it replaces); the rule follows it. Add one line for it to ${WORKING_COPY}/learnings/INDEX.md: - L-<id>: <the rule>.`,
     `- A skill: ${WORKING_COPY}/.agents/skills/<name>/SKILL.md. A workflow draft: ${WORKING_COPY}/workflows/<name>/workflow.json with its README.md.`,

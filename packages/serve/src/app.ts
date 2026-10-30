@@ -117,14 +117,13 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   };
   if (revision.kind === "agentic") {
     const learns = learningOf(revision) !== "off";
-    // A learning run writes what it learned into its working copy with the file tools, and every file tool it has,
-    // named or added, works on that copy only: what it writes there is committed to its agent's repository.
+    // A learning run writes what it learned into its working copy with the file tools. Learning never widens what the
+    // revision named: a file tool it adds works on the working copy only, and is refused by name anywhere else.
     const named = revision.body.tools.filter((name) => !(learns && name === LEARN_NAME));
     const added = learns ? LEARNING_TOOLS.filter((name) => !named.includes(name)) : [];
     const tools = (await Promise.all([...named, ...added].map((name) => bind(name)))).flatMap((binding) => binding.tools);
-    // Wrapped where pi resolves them, so every call of a file tool passes the check.
-    const files = learns ? [...named, ...added].filter((name) => LEARNING_TOOLS.includes(name)) : [];
-    if (files.length) registry.install(defineExtension({ name: "learning-copy", wraps: files.map((name) => ({ tool: name, wrap: (tool: ToolRegistration) => onCopyOnly(tool, where.work) })) }));
+    // Wrapped where pi resolves them, so every call of an added tool passes the check.
+    if (added.length) registry.install(defineExtension({ name: "learning-copy", wraps: added.map((name) => ({ tool: name, wrap: (tool: ToolRegistration) => onCopyOnly(tool, where.work) })) }));
     // A learning run starts from its agent's repository at one commit: the notes and the skills the agent wrote there,
     // and a working copy of that commit for what it learns now.
     const learning = !learns ? undefined : await runLearning(where, run.agent, skillNames(Object.keys(revision.body.skills)), join(where.store, RUN_STORE_FILE));

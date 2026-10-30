@@ -410,10 +410,12 @@ agent does not learn.
   turns it off.
 - A revision saved before the field existed does not learn.
 - A workflow definition does not take it (`422 not_an_option`).
-- A learning run has `read`, `write` and `edit`, whether its revision names them or not, and every one works on the
-  run's working copy of the agent's repository only: inside `work/.agent/repo` (`read` also in `work/.agent/learnings`)
-  and nowhere else, never through a link. A call outside it is refused by name ("write is the learning copy's only here:
-  ... is outside .agent/repo"). The run keeps every other tool its revision names. A learning revision that names a tool
+- Learning adds `read`, `write` and `edit` on the run's working copy of the agent's repository only: a file tool the
+  revision did not name works inside `work/.agent/repo` (`read` also in `work/.agent/learnings`, the seeded notes) and
+  nowhere else, never through a link, and a call outside it is refused by name ("write is the learning copy's only here:
+  ... is outside .agent/repo"). A file tool the revision named keeps its own scope, the run's `work/`, which holds the
+  copy: whatever writes there, the harvest's scan reads every file it commits. Learning never widens what a revision may
+  do. A learning revision that names a tool
   that runs a process (`bash`, `powershell`, `code`, or a tool of the table that spawns one) is `422 not_an_option` on
   `definition.tools[i]`, so what a learning run writes never comes from a command. There is no `learn` tool. A learning
   revision may still name `learn`, as one could before; the name binds nothing. On a revision that does not learn it is
