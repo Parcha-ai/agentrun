@@ -3,3 +3,6 @@
 .account{max-width:420px}
 .said{min-height:1.5em;margin:12px 0 0;color:var(--muted);font-size:13px}
 .said.wrong{color:var(--bad,#c0392b)}
+.field.check{display:flex;gap:8px;align-items:flex-start;font-size:13px}
+.field.check input{margin:3px 0 0;border-radius:0}
+.field.check[hidden]{display:none}
