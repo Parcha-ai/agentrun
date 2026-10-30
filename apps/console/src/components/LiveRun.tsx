@@ -24,11 +24,12 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const fileReads = useRef(latest()).current;
   const messageKeys = useRef(keeper()).current;
   const toolResults = useRef(0);
-  // The run's harness decides whether a message to a working run is a steer: until it is known, no message is offered.
+  // The harness of the revision the run started from decides whether a message to a working run is a steer: until it
+  // is known, no message is offered.
   const [harness, setHarness] = useState<HarnessRead>({ state: "loading" });
   useEffect(() => {
-    if (run && harness.state === "loading") void readHarness(v2, run.agent_id).then(setHarness);
-  }, [run?.agent_id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (run && harness.state === "loading") void readHarness(v2, run).then(setHarness);
+  }, [run?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
   const offer = messageOffer(harness, caps);
 
   const refresh = async () => {

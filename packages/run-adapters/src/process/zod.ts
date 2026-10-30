@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/zod.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: the doc comment names the Claude Agent SDK.
+// Changed by Parcha, patches: 005-comments-name-the-agent-sdk
 /**
  * JSON Schema to zod, for harness SDKs whose tool APIs take zod (the Claude
  * Agent SDK's in-process MCP tools, OpenCode's plugin tools). `HostTool`s carry

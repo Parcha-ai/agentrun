@@ -1,0 +1,84 @@
+Patch: 002-message-prefix
+Reason: an error or refusal from the shared layer named a package that is not installed here; it names this package
+Upstream: ours
+Pins: the shared process layer's errors name this package
+---
+diff --git a/packages/harness-process/src/builtins.ts b/packages/harness-process/src/builtins.ts
+index 160428d..c78eec8 100644
+--- a/packages/harness-process/src/builtins.ts
++++ b/packages/harness-process/src/builtins.ts
+@@ -136,7 +136,7 @@ export class BuiltinCalls {
+    * failed): the drive is halted, and the hook must refuse the call.
+    */
+   begin(call: BuiltinCall): Promise<BuiltinStart> {
+-    if (!call.callId) return Promise.reject(new TypeError(`harness-world-process: a built-in ${call.name} call has no call id`));
++    if (!call.callId) return Promise.reject(new TypeError(`agentrun-adapters: a built-in ${call.name} call has no call id`));
+     const first = this.begun.get(call.callId);
+     if (first) return this.again(call.callId, first);
+     const start = this.beginOnce(call);
+@@ -156,7 +156,7 @@ export class BuiltinCalls {
+     const known = this.ctx.state().effects.get(toolKey(callId));
+     if (known?.status === 'completed') return { run: false, result: { text: String(known.output ?? ''), isError: false } };
+     if (known?.status === 'failed' && known.error) return { run: false, result: { text: failureText(known.error), isError: true, ...(known.error.interrupted ? { interrupted: true } : {}) } };
+-    throw new Fatal(`harness-world-process: built-in call ${callId} has no recorded outcome`);
++    throw new Fatal(`agentrun-adapters: built-in call ${callId} has no recorded outcome`);
+   }
+ 
+   private async beginOnce(call: BuiltinCall): Promise<BuiltinStart> {
+diff --git a/packages/harness-process/src/journal.ts b/packages/harness-process/src/journal.ts
+index a86848a..da75144 100644
+--- a/packages/harness-process/src/journal.ts
++++ b/packages/harness-process/src/journal.ts
+@@ -216,7 +216,7 @@ export class NativeJournal {
+     const batch: JournalBatch = { v: 1, n, streams };
+     const writer = this.writer;
+     const out = await this.ctx.effect(journalKey(n), { name: JOURNAL, replay: 'safe', input: batch }, async () => ({ n, records: queued.length, writer }));
+-    if ((out as { writer?: unknown } | undefined)?.writer !== writer) throw new Restart(`harness-world-process: journal batch ${n} was written by another drive`);
++    if ((out as { writer?: unknown } | undefined)?.writer !== writer) throw new Restart(`agentrun-adapters: journal batch ${n} was written by another drive`);
+     this.n = n + 1;
+   }
+ 
+@@ -226,7 +226,7 @@ export class NativeJournal {
+     // The transcript is what UIs read from the fold: it always stays inline.
+     if (q.stream === TRANSCRIPT) return { ...id, data: q.data };
+     const text = JSON.stringify(q.data);
+-    if (text === undefined) throw new TypeError(`harness-world-process: journal record on ${q.stream} is not JSON`);
++    if (text === undefined) throw new TypeError(`agentrun-adapters: journal record on ${q.stream} is not JSON`);
+     const bytes = encoder.encode(text).length;
+     if (bytes <= this.inlineMax) return { ...id, data: q.data };
+     const hash = await sha256Hex(text);
+@@ -255,7 +255,7 @@ export async function readJournal<T = unknown>(
+   return records.map((r) => {
+     if (!r.blob) return r;
+     const text = blobs.get(r.blob);
+-    if (text === undefined) throw new Fatal(`harness-world-process: journal blob ${r.blob} (${r.stream} #${r.seq}) is missing from ${blobStreamName(ctx.runId)}`);
++    if (text === undefined) throw new Fatal(`agentrun-adapters: journal blob ${r.blob} (${r.stream} #${r.seq}) is missing from ${blobStreamName(ctx.runId)}`);
+     return { ...r, data: JSON.parse(text) as T };
+   });
+ }
+diff --git a/packages/harness-process/src/tail.ts b/packages/harness-process/src/tail.ts
+index 0c9f118..b1c6b52 100644
+--- a/packages/harness-process/src/tail.ts
++++ b/packages/harness-process/src/tail.ts
+@@ -28,7 +28,7 @@ export class FileTail {
+     }
+     try {
+       const size = fstatSync(fd).size;
+-      if (size < this.offset) throw new Error(`harness-world-process: ${this.path} shrank from ${this.offset} to ${size} bytes`);
++      if (size < this.offset) throw new Error(`agentrun-adapters: ${this.path} shrank from ${this.offset} to ${size} bytes`);
+       if (size === this.offset) return [];
+       const buf = Buffer.alloc(size - this.offset);
+       readSync(fd, buf, 0, buf.length, this.offset);
+diff --git a/packages/harness-process/src/tools.ts b/packages/harness-process/src/tools.ts
+index f0dab38..679c7da 100644
+--- a/packages/harness-process/src/tools.ts
++++ b/packages/harness-process/src/tools.ts
+@@ -90,7 +90,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
+   const live = options.live ?? true;
+   const bridged = tools.map((tool): BridgedTool => {
+     const run = async (args: unknown, callId: string, signal?: AbortSignal): Promise<ToolResult> => {
+-      if (!callId) throw new TypeError(`harness-world-process: a call to ${tool.name} has no call id; derive a stable one`);
++      if (!callId) throw new TypeError(`agentrun-adapters: a call to ${tool.name} has no call id; derive a stable one`);
+       const key = toolKey(callId);
+       const fresh = !ctx.isMemoized(key);
+       if (fresh && tool.replay === 'never') await options.beforeNever?.({ name: tool.name, callId, args });

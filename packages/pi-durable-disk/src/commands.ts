@@ -6,7 +6,16 @@
 // are the children that lead their own group and carry its mark (COMMANDS_MARK=<its token>) in their environment:
 // another environment's commands in the same process, or the app's own helpers, are not its to record. The next open,
 // which holds the owner lock, kills whatever a previous incarnation recorded that is still the same process (pid, start
-// and boot all match), waits until it is gone, and clears the records, before the Harness opens. Only the instance writes
+// and boot all match), waits until it is gone, and clears the records, before the Harness opens. A recorded leader's
+// whole process group is ended and waited for, a member no walk recorded included; a descendant that left the group
+// (setsid or setpgid: a session or group of its own) is ended if a walk recorded it or it still carries the mark. The
+// group is listed just before its SIGKILL: a process forked in between gets the SIGKILL but is not waited for (it ends
+// at once unless it is in an uninterruptible wait). A walk runs only after a command has started, so before its first
+// command starts the recorder also writes its mark (`mark-<token>.json`), synchronously: the next open ends every live
+// process that carries a mark it finds, as a whole group when it leads one, so a command killed with its instance before
+// any walk recorded it is ended too. A process that cleared its environment carries no mark, and the mark goes once
+// nothing of the instance is running or recorded: a descendant no walk recorded that outlives its command and its
+// group's leader is out of reach from then on, as before marks. Only the instance writes
 // records: a command never does. Nothing stops a command from writing one too, and none needs stopping: a run's commands
 // run as the instance's user (or, with `runAs`, as another one that cannot write the instance's 0700 directory), so a
 // record a command forged names only what that command could already kill itself. A record grants nothing.
@@ -55,6 +64,7 @@ function same(look: ProcessSnapshot, mark: ProcessMark): boolean {
 }
 
 const RECORD = /^(\d+)-(\d+)\.json$/;
+const MARK = /^mark-([0-9a-f-]{36})\.json$/;
 
 /**
  * Records this environment's command groups under this process while commands run. `started()` and `finished()` bracket
@@ -76,6 +86,8 @@ export class CommandRecorder {
   readonly #records = new Map<string, { leader: ProcessMark; members: Map<number, ProcessMark> }>();
   /** The records on disk, by key; a group's first walk writes its record even before it has members. */
   readonly #written = new Set<string>();
+  /** Whether this recorder's mark is on disk: written before a command starts, removed once nothing of it is left. */
+  #marked = false;
   #active = 0;
   #timer: NodeJS.Timeout | undefined;
 
@@ -91,14 +103,28 @@ export class CommandRecorder {
     this.#onError = options.onError;
   }
 
-  /** A command is about to start. */
-  started(): void {
-    if (this.#boot === undefined) return; // nothing could verify a record on the next open
+  /** A command is about to start. Returns whether this recorder's mark is on disk, so the next open can name the
+   *  command even if no walk records it; false when it is not (no boot id, or a mark that cannot be written). */
+  started(): boolean {
+    if (this.#boot === undefined) return false; // nothing could verify a record on the next open
+    // Before the command exists: an instance killed before the first walk still leaves what names its commands.
+    if (!this.#marked) {
+      try {
+        this.#writeFile(`mark-${this.token}.json`, { boot: this.#boot, token: this.token });
+        this.#marked = true;
+      } catch (error) {
+        if (!this.#reported) {
+          this.#reported = true;
+          this.#onError?.(error);
+        }
+      }
+    }
     if (this.#active++ === 0) {
       this.#timer = setInterval(() => this.scan(), this.#everyMs);
       this.#timer.unref();
     }
     setTimeout(() => this.scan(), 20).unref();
+    return this.#marked;
   }
 
   /** A command ended (its result is in). The last one stops the walks after a final one. */
@@ -171,21 +197,30 @@ export class CommandRecorder {
       for (const mark of live) walk(mark.pid);
       if (grew) this.#write(key, { boot, leader: record.leader, members: [...record.members.values()] });
     }
+    // Nothing of this environment is running or recorded: its mark has nothing left to name.
+    if (this.#active === 0 && this.#records.size === 0 && this.#marked) {
+      rmSync(join(this.#dir, `mark-${this.token}.json`), { force: true });
+      this.#marked = false;
+    }
   }
 
   #write(key: string, record: CommandRecord): void {
-    mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
-    const file = join(this.#dir, `${key}.json`);
-    writeFileSync(`${file}.tmp`, JSON.stringify(record));
-    renameSync(`${file}.tmp`, file);
+    this.#writeFile(`${key}.json`, record);
     this.#written.add(key);
+  }
+
+  #writeFile(name: string, data: unknown): void {
+    mkdirSync(this.#dir, { recursive: true, mode: 0o700 });
+    const file = join(this.#dir, name);
+    writeFileSync(`${file}.tmp`, JSON.stringify(data));
+    renameSync(`${file}.tmp`, file);
   }
 }
 
 /**
  * Ends what a previous incarnation's commands left running: for each record of this boot, the leader's whole group when
  * the leader is still the recorded process, and each recorded descendant that still is. Waits up to `timeoutMs` until
- * none of them is alive. A record whose processes are all gone is removed; one that still names a live process (it did
+ * none of them is alive: every process of a killed group, one the instance never recorded included. A record whose processes are all gone is removed; one that still names a live process (it did
  * not die at the deadline: a process in an uninterruptible wait) is rewritten with just those, so the next open tries
  * again, and they are returned. Run only while holding the run (after its owner lock), before the Harness opens.
  */
@@ -194,7 +229,7 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   const signal = options.kill ?? ((target: number, name: NodeJS.Signals) => process.kill(target, name));
   let files: string[];
   try {
-    files = readdirSync(dir).filter((name) => RECORD.test(name));
+    files = readdirSync(dir).filter((name) => RECORD.test(name) || MARK.test(name));
   } catch {
     return { signalled: 0, survivors: [] };
   }
@@ -206,12 +241,20 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   const before = table.snapshot();
   const own = before.info(process.pid);
   let signalled = 0;
+  /** The groups and the pids this reap has sent SIGKILL to: a record and a mark may name the same command. */
+  const killedGroups = new Set<number>();
+  const killedPids = new Set<number>();
   /**
    * False for what is never a target: this process, its group, and a pid of 1 or below, since `kill(0)` is the caller's
-   * group and `kill(-1)` every process the user may signal.
+   * group and `kill(-1)` every process the user may signal. A target this reap already signalled (the same group, or the
+   * same pid) is still a target but gets no second SIGKILL. A member is still signalled after its group: it may have left
+   * the group since the listing.
    */
   const kill = (target: number, mark: ProcessMark): boolean => {
     if (!(mark.pid > 1) || mark.pid === process.pid || (target < 0 && -target === own?.pgrp)) return false;
+    if (target < 0 ? killedGroups.has(-target) : killedPids.has(target)) return true;
+    if (target < 0) killedGroups.add(-target);
+    else killedPids.add(target);
     try {
       signal(target, "SIGKILL");
       signalled++;
@@ -220,9 +263,40 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
     }
     return true;
   };
-  const pending: { file: string; boot: string; leader: ProcessMark | null; members: ProcessMark[] }[] = [];
+  const pending: { file: string; boot: string; leader: ProcessMark | null; members: ProcessMark[]; mark?: true }[] = [];
   for (const name of files) {
     const file = join(dir, name);
+    if (MARK.test(name)) {
+      let mark: { boot?: string; token?: string };
+      try {
+        mark = JSON.parse(readFileSync(file, "utf8")) as { boot?: string; token?: string };
+      } catch {
+        rmSync(file, { force: true }); // a torn write names nothing
+        continue;
+      }
+      if (boot === undefined || mark.boot !== boot || typeof mark.token !== "string" || `mark-${mark.token}.json` !== name) {
+        rmSync(file, { force: true });
+        continue;
+      }
+      // Every live process carrying the mark, whatever a walk saw: a leader with its whole group (its group's id is its
+      // pid, which no other process holds while it lives), any other one alone.
+      const members: ProcessMark[] = [];
+      const add = (pid: number) => {
+        const info = before.info(pid);
+        if (info && !members.some((m) => m.pid === pid)) members.push({ pid, start: info.start });
+      };
+      for (const pid of before.withMark(COMMANDS_MARK, mark.token)) {
+        const info = before.info(pid);
+        if (info === undefined) continue;
+        const self = { pid, start: info.start };
+        if (info.pgrp === pid) {
+          const group = before.group(pid);
+          if (same(before, self) && kill(-pid, self)) for (const member of group) add(member);
+        } else if (kill(pid, self)) add(pid);
+      }
+      pending.push({ file, boot, leader: null, members, mark: true });
+      continue;
+    }
     let record: CommandRecord;
     try {
       record = JSON.parse(readFileSync(file, "utf8")) as CommandRecord;
@@ -234,9 +308,23 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
       rmSync(file, { force: true }); // another boot's pids mean nothing on this one
       continue;
     }
+    // The group as it is before the kill, while its leader is still the recorded process: a group's id is its leader's
+    // pid, which no other process holds while the leader lives. The group is killed, and what was listed kept, only if
+    // the leader is still that process once the listing is read, so each process kept was this group's, never another's.
+    // SIGKILL to the group reaches all of them, a child no walk recorded yet included, but each dies when it next runs,
+    // and one can outlive its leader for a moment, or for long in an uninterruptible wait: so each is waited for by pid
+    // and start, and kept for the next open if it outlives the deadline.
+    const listed: ProcessMark[] =
+      record.leader !== null && same(before, record.leader)
+        ? before.group(record.leader.pid).flatMap((pid) => {
+            const info = pid === record.leader!.pid ? undefined : before.info(pid);
+            return info ? [{ pid, start: info.start }] : [];
+          })
+        : [];
     const leader = record.leader !== null && same(before, record.leader) && kill(-record.leader.pid, record.leader) ? record.leader : null;
     // A member that is the leader went with its group.
     const members = (record.members ?? []).filter((member) => member.pid !== record.leader?.pid && same(before, member) && kill(member.pid, member));
+    if (leader !== null) for (const mark of listed) if (!members.some((member) => member.pid === mark.pid)) members.push(mark);
     pending.push({ file, boot, leader, members });
   }
   const alive = () => {
@@ -249,16 +337,35 @@ export async function reapCommands(dir: string, options: CommandsOptions & { rea
   while (alive().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
   const survivors: ProcessMark[] = [];
   const after = pending.length === 0 ? before : table.snapshot();
+  // Every record file this reap writes goes through `keep`, which unions what this reap writes to one file (members by
+  // pid and start, a leader kept): a mark's survivors may land in the file of a record this reap rewrites, and in
+  // whatever order the two come, neither drops what the other named. Every record file in the directory is one of
+  // this reap's, so a rewrite holds just what survived, plus anything another of its writes named there.
+  const kept = new Map<string, CommandRecord>();
+  const gone = new Set<string>();
+  const keep = (file: string, boot: string, leader: ProcessMark | null, members: readonly ProcessMark[]) => {
+    const known = kept.get(file);
+    const all = [...(known?.members ?? [])];
+    for (const m of members) if (!all.some((k) => k.pid === m.pid && k.start === m.start)) all.push(m);
+    kept.set(file, { boot, leader: leader ?? known?.leader ?? null, members: all });
+  };
   for (const record of pending) {
     const leader = record.leader !== null && same(after, record.leader) ? record.leader : null;
     const members = record.members.filter((member) => same(after, member));
     if (leader === null && members.length === 0) {
-      rmSync(record.file, { force: true });
+      gone.add(record.file);
       continue;
     }
     survivors.push(...(leader ? [leader] : []), ...members);
-    writeFileSync(`${record.file}.tmp`, JSON.stringify({ boot: record.boot, leader, members } satisfies CommandRecord));
-    renameSync(`${record.file}.tmp`, record.file);
+    // A mark is kept as it is, so the next open looks for its token again. Its survivors are also recorded by pid and
+    // start: one that cleared its environment carries no mark, so once the marked leader is gone nothing else names it.
+    if (record.mark) keep(join(dir, `${members[0]!.pid}-${members[0]!.start}.json`), record.boot, null, members);
+    else keep(record.file, record.boot, leader, members);
+  }
+  for (const file of gone) if (!kept.has(file)) rmSync(file, { force: true });
+  for (const [file, record] of kept) {
+    writeFileSync(`${file}.tmp`, JSON.stringify(record));
+    renameSync(`${file}.tmp`, file);
   }
   if (survivors.length === 0) rmSync(dir, { recursive: true, force: true });
   return { signalled, survivors };
