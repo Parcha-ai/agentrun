@@ -3,6 +3,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { procTable, processTable, psTable, type CommandRunner } from "../src/process-table.ts";
 import { linuxPs, onPlatform } from "./_macos.ts";
 import { killQuietly } from "./_run-support.ts";
@@ -19,6 +22,7 @@ function scripted(listing: string, environments: Record<number, string> = {}, bo
     if (args.includes("-A")) return listing;
     const pid = Number(args[args.indexOf("-p") + 1]);
     if (environments[pid] === undefined) throw new Error(`no process ${pid}`);
+    if (args.includes("ruid=")) return `${process.getuid!()}\n`;
     if (args.includes("-E")) return environments[pid]!;
     const words = environments[pid]!.trim().split(/\s+/);
     const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
@@ -100,5 +104,90 @@ describe("the process table through ps (macOS)", () => {
     } finally {
       killQuietly(pid);
     }
+  });
+});
+
+// A mark read from /proc (procTable), when a process's environment reads empty or cannot be read: the kernel shows no
+// environment while a process is inside an exec. The rule: a zombie or a gone process carries nothing (its state is read
+// first); another user's unreadable process is none of this server's; one of this uid is read again over about 50 ms
+// (MARK_WINDOW_MS) and decided by its first environment that reads, and counts as unmarked after the window.
+describe("a mark through /proc, when an environment reads empty or unreadable", () => {
+  const MARK = "PI_DURABLE_DISK_COMMANDS";
+  const uid = process.getuid?.() ?? 0;
+  /** A fake /proc of one process: its status (state, real uid) and an environ answered by `environ()`; counts reads. */
+  function oneProcess(pid: number, state: string, ruid: number, environ: () => string, euid = ruid) {
+    const root = mkdtempSync(join(tmpdir(), "proc-env-"));
+    mkdirSync(join(root, String(pid)));
+    writeFileSync(join(root, String(pid), "status"), `Name:\tcmd\nState:\t${state} (x)\nUid:\t${ruid}\t${euid}\t${euid}\t${euid}\n`);
+    writeFileSync(join(root, String(pid), "stat"), `${pid} (cmd) ${state} 1 ${pid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 100 0 0\n`);
+    const reads = { environ: 0 };
+    const read = (path: string) => {
+      if (path.endsWith("/environ")) {
+        reads.environ++;
+        return environ();
+      }
+      return readFileSync(path, "utf8");
+    };
+    return { table: procTable(root, read), reads };
+  }
+
+  it("(1) an environment that reads empty for 30 ms (an exec) and then fills in is read again in the window, and marked", () => {
+    const start = Date.now();
+    const { table, reads } = oneProcess(4800, "S", uid, () => (Date.now() - start < 30 ? "" : `PATH=/usr/bin\0${MARK}=tok\0`));
+    assert.deepEqual(table.snapshot().withMark(MARK, "tok"), [4800]);
+    assert.ok(reads.environ > 1, "read again");
+  });
+
+  it("(2) an environment of this uid that stays empty is unmarked after the window, decided in well under 500 ms", () => {
+    const { table, reads } = oneProcess(4801, "S", uid, () => "");
+    const start = Date.now();
+    assert.deepEqual(table.snapshot().withMark(MARK, "tok"), []);
+    const took = Date.now() - start;
+    assert.ok(took < 500, `took ${took} ms`);
+    assert.equal(reads.environ, 6, "the first read and the five of the window");
+    assert.equal(oneProcess(4802, "S", uid, () => "").table.snapshot().marked(4802, MARK, "tok"), false, "the recorder's read too");
+  });
+
+  it("(3) a real zombie of a marked command carries nothing: its state is read first and its environment never", { skip: !linux && "Linux only" }, async () => {
+    // The command execs sleep, which never waits for the child it was left with: that child, once it exits, is a zombie.
+    const child = spawn("/bin/sh", ["-c", "sleep 0 & exec sleep 30"], { stdio: "ignore", env: { PATH: "/usr/bin:/bin", [MARK]: "tok" } });
+    try {
+      let zombie = 0;
+      for (let i = 0; i < 500 && !zombie; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const kids = readFileSync(`/proc/${child.pid}/task/${child.pid}/children`, "utf8").trim().split(/\s+/).filter(Boolean).map(Number);
+        zombie = kids.find((k) => /^State:\s*Z/m.test(readFileSync(`/proc/${k}/status`, "utf8"))) ?? 0;
+      }
+      assert.ok(zombie > 0, "a zombie to read");
+      const environReads = new Map<string, number>();
+      const table = procTable("/proc", (path) => {
+        if (path.endsWith("/environ")) environReads.set(path, (environReads.get(path) ?? 0) + 1);
+        return readFileSync(path, "utf8");
+      });
+      const marked = table.snapshot().withMark(MARK, "tok");
+      assert.ok(marked.includes(child.pid!), "the live command is marked");
+      assert.ok(!marked.includes(zombie), "the zombie is not");
+      assert.equal(environReads.get(`/proc/${zombie}/environ`) ?? 0, 0, "the zombie's environment is never read");
+    } finally {
+      killQuietly(child.pid!);
+    }
+  });
+
+  it("(4) another user's process whose environment cannot be read is unmarked, read once", () => {
+    const { table, reads } = oneProcess(4803, "S", uid + 1, () => {
+      throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+    });
+    assert.deepEqual(table.snapshot().withMark(MARK, "tok"), []);
+    assert.equal(reads.environ, 1);
+  });
+
+  it("a setuid exec of this uid's command (its REAL uid ours, its effective uid another) is judged by the real uid: read in the window", () => {
+    const start = Date.now();
+    const { table, reads } = oneProcess(4804, "S", uid, () => {
+      if (Date.now() - start < 20) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+      return `${MARK}=tok\0`;
+    }, uid + 1);
+    assert.deepEqual(table.snapshot().withMark(MARK, "tok"), [4804]);
+    assert.ok(reads.environ > 1);
   });
 });

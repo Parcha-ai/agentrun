@@ -431,7 +431,7 @@ describe("command records, from a scripted ps (macOS)", () => {
    *  row's state is `S` unless `options.states` names another (`Z`: a zombie). */
   /** `environments`: a process's `ps -E -o command=` line (arguments, then environment). Its arguments alone (`ps -o
    *  command=`) are `argv[pid]` when given, else the words before the first NAME=value word. */
-  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string | string[]> } = {}): CommandRunner {
+  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string | string[]>; envReads?: Record<number, string[]>; ruids?: Record<number, number> } = {}): CommandRunner {
     const lstart = (second: number) => `Thu Oct 15 06:00:${String(second).padStart(2, "0")} 2026`;
     // A list of arguments answers the process's reads without -E in turn, its last answer from then on: a process that
     // exec'd between two reads.
@@ -448,14 +448,27 @@ describe("command records, from a scripted ps (macOS)", () => {
       const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
       return (env < 0 ? words : words.slice(0, env)).join(" ");
     };
+    // A list of -E lines answers the process's -E reads in turn, its last answer from then on: an environment that reads
+    // empty (inside an exec) and then fills in.
+    const envReads = new Map<number, number>();
+    const eOf = (pid: number) => {
+      const given = options.envReads?.[pid];
+      if (given === undefined) return environments[pid];
+      const n = envReads.get(pid) ?? 0;
+      envReads.set(pid, n + 1);
+      return given[Math.min(n, given.length - 1)]!;
+    };
+    const ruidOf = (pid: number) => options.ruids?.[pid] ?? process.getuid!();
     return (file, args) => {
       if (file === "/usr/sbin/sysctl") return "boot-1\n";
       if (args.includes("-E") && args.includes("-A") && options.failMarks) throw new Error("ps: cannot list environments");
-      if (args.includes("-A") && args.includes("pid=,command=")) {
+      const columns = args.find((a) => /^pid=,(ruid=,)?command=$/.test(a));
+      if (args.includes("-A") && columns !== undefined) {
         return rows().flatMap(([pid]) => {
           const text = environments[pid!];
           if (text === undefined) return [];
-          return [`${pid} ${args.includes("-E") ? text.trim() : argvOf(pid!, text)}`];
+          const shown = args.includes("-E") ? eOf(pid!)!.trim() : argvOf(pid!, text);
+          return [columns.includes("ruid") ? `${pid} ${ruidOf(pid!)} ${shown}` : `${pid} ${shown}`];
         }).join("\n");
       }
       if (args.includes("-A")) {
@@ -465,7 +478,8 @@ describe("command records, from a scripted ps (macOS)", () => {
       const pid = Number(args[args.indexOf("-p") + 1]);
       const text = environments[pid];
       if (text === undefined) throw new Error("no such process");
-      return args.includes("-E") ? text : `${argvOf(pid, text)}\n`;
+      if (args.includes("ruid=")) return `${ruidOf(pid)}\n`;
+      return args.includes("-E") ? eOf(pid)! : `${argvOf(pid, text)}\n`;
     };
   }
   const startAt = (second: number) => Date.UTC(2026, 9, 15, 6, 0, second) / 1000;
@@ -554,6 +568,30 @@ describe("command records, from a scripted ps (macOS)", () => {
     const { run, counted } = countingEnvironments(scriptedPs(() => [[4620, 1, 4620, 5]], { 4620: "worker: idle LANG=C\n" }, { argv }));
     assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), []);
     assert.equal(counted.reads, 1);
+  });
+
+  it("(5) a -E line with no environment after its arguments (inside an exec) is read again in the window, and the mark it then shows counts", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Its first -E line holds its arguments alone; its second, its environment too.
+    const envReads = { 4900: ["sleep 600", `sleep 600 LANG=C ${word}`] };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[4900, 1, 4900, 5]], { 4900: `sleep 600 LANG=C ${word}\n` }, { argv: { 4900: "sleep 600" }, envReads }));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4900]);
+    assert.equal(counted.reads, 2);
+  });
+
+  it("a -E line of this uid that stays without an environment is unmarked after the window; another uid's is read once", () => {
+    const token = randomUUID();
+    const rows = () => [[4910, 1, 4910, 5], [4911, 1, 4911, 6]];
+    const lines = { 4910: "worker\n", 4911: "daemon\n" };
+    const own = countingEnvironments(scriptedPs(rows, lines, { ruids: { 4911: process.getuid!() + 1 } }));
+    const start = Date.now();
+    assert.deepEqual(psTable(own.run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.ok(Date.now() - start < 500);
+    assert.equal(own.counted.reads, 6, "the first listing and the five of the window, for 4910 alone");
+    const other = countingEnvironments(scriptedPs(() => [[4911, 1, 4911, 6]], { 4911: "daemon\n" }, { ruids: { 4911: process.getuid!() + 1 } }));
+    assert.deepEqual(psTable(other.run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.equal(other.counted.reads, 1, "another uid's no-environment line is not read again");
   });
 
   it("a listing of marks that fails stops the reap and keeps the mark: no command is taken for gone on a failed read", async () => {

@@ -22,11 +22,15 @@ export interface ProcessSnapshot {
   children(pid: number): number[];
   /** The live processes of the process group `pgrp`, a zombie not among them: what a killed group still has running. */
   group(pgrp: number): number[];
-  /** Whether `pid` was started with `name=value` in its environment (false when it cannot be read). */
+  /** Whether `pid` was started with `name=value` in its environment: false when it is gone or a zombie, when another
+   *  user's cannot be read, and when one of this uid still reads empty or unreadable after the re-read window. */
   marked(pid: number, name: string, value: string): boolean;
-  /** Every live process started with `name=value` in its environment, one look at all of them (none whose environment
-   *  cannot be read: another user's). Throws when the processes cannot be listed, or when a process that may carry the
-   *  mark cannot be read whole: none is ever taken for gone, or for unmarked, on a failed read. */
+  /** Every live process started with `name=value` in its environment, one look at all of them. A zombie or a gone process
+   *  carries nothing, nor does another user's whose environment cannot be read. One of this uid whose environment reads
+   *  empty or unreadable (inside an exec) is read again in a window of about 50 ms and decided by its first environment
+   *  that reads; after the window it counts as unmarked (a process of this uid with no environment, or one that turned
+   *  unreadable through a setuid exec, never holds every reap on the machine). Throws when the processes cannot be listed,
+   *  or (through ps) when a process whose listing holds the mark keeps changing its arguments. */
   withMark(name: string, value: string): number[];
   /** Its command line, for a message; `?` when it cannot be read. */
   commandLine(pid: number): string;
@@ -41,9 +45,73 @@ export interface ProcessTable {
   readonly walkMs: number;
 }
 
-/** The table on Linux: `/proc` (or another directory laid out like it, for tests). */
-export function procTable(proc = "/proc"): ProcessTable {
-  const read = (...parts: string[]) => readFileSync(join(proc, ...parts), "utf8");
+/** When an empty or unreadable environment is read again, in ms after the read before: about 50 ms in all, which a
+ *  process inside an exec outlasts only when it is preempted that long. Every pid still unread shares each wait. */
+export const MARK_WINDOW_MS: readonly number[] = [2, 4, 8, 16, 20];
+
+/** Blocks this thread for `ms`: the tables are synchronous. */
+function pause(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** What a process whose environment still reads empty or unreadable after the window counts as: unmarked. Keeping it
+ *  would hold every reap on the machine for any process of this uid that has an empty environment (env -i) or became
+ *  unreadable (a setuid exec), not only the run whose command it might be. */
+const AFTER_WINDOW_MARKED = false;
+
+/** The table on Linux: `/proc` (or another directory laid out like it, for tests; `readText` reads its files). */
+export function procTable(proc = "/proc", readText: (path: string) => string = (path) => readFileSync(path, "utf8")): ProcessTable {
+  const read = (...parts: string[]) => readText(join(proc, ...parts));
+  const uid = process.getuid?.();
+  /** A process's state letter and real uid from its status, or undefined when it is gone. */
+  const status = (pid: number): { state: string; ruid: number } | undefined => {
+    try {
+      const text = read(String(pid), "status");
+      return { state: /^State:\s*(\S)/m.exec(text)?.[1] ?? "?", ruid: Number(/^Uid:\s*(\d+)/m.exec(text)?.[1]) };
+    } catch {
+      return undefined;
+    }
+  };
+  /** One read of a process's environment: its words, or null when it reads empty or cannot be read. */
+  const environment = (pid: number): string[] | null => {
+    try {
+      const words = read(String(pid), "environ").split("\0").filter(Boolean);
+      return words.length ? words : null;
+    } catch {
+      return null;
+    }
+  };
+  /** Which of `pids` carry `word`. A zombie (checked first) or a gone process carries nothing; one of another user whose
+   *  environment cannot be read is no command of this server's. A process of this uid whose environment reads empty or
+   *  unreadable (it is inside an exec: the kernel shows no environment until the new program's is in place) is read
+   *  again in the window, all such processes together, and decided by its first environment that reads. */
+  const carrying = (pids: readonly number[], word: string): number[] => {
+    const marked: number[] = [];
+    let unread: number[] = [];
+    for (const pid of pids) {
+      const s = status(pid);
+      if (s === undefined || s.state === "Z" || s.state === "X") continue;
+      const words = environment(pid);
+      if (words !== null) {
+        if (words.includes(word)) marked.push(pid);
+      } else if (s.ruid === uid) unread.push(pid);
+    }
+    for (const ms of MARK_WINDOW_MS) {
+      if (unread.length === 0) break;
+      pause(ms);
+      const still: number[] = [];
+      for (const pid of unread) {
+        const s = status(pid);
+        if (s === undefined || s.state === "Z" || s.state === "X") continue;
+        const words = environment(pid);
+        if (words === null) still.push(pid);
+        else if (words.includes(word)) marked.push(pid);
+      }
+      unread = still;
+    }
+    if (AFTER_WINDOW_MARKED) marked.push(...unread);
+    return marked;
+  };
   const snapshot: ProcessSnapshot = {
     // `stat`'s fields after the last `)`, since the command name may hold spaces and parentheses.
     info(pid) {
@@ -83,15 +151,11 @@ export function procTable(proc = "/proc"): ProcessTable {
       return pids.map(Number).filter((pid) => snapshot.info(pid)?.pgrp === pgrp);
     },
     marked(pid, name, value) {
-      try {
-        return read(String(pid), "environ").split("\0").includes(`${name}=${value}`);
-      } catch {
-        return false;
-      }
+      return carrying([pid], `${name}=${value}`).length === 1;
     },
     withMark(name, value) {
       const pids = readdirSync(proc).filter((entry) => /^\d+$/.test(entry));
-      return pids.map(Number).filter((pid) => snapshot.info(pid) !== undefined && snapshot.marked(pid, name, value));
+      return carrying(pids.map(Number), `${name}=${value}`);
     },
     commandLine(pid) {
       try {
@@ -184,9 +248,19 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         marked(pid, name, value) {
           try {
             const argsOf = () => run(PS, ["-ww", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
-            const before = argsOf();
-            const all = run(PS, ["-ww", "-E", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
-            return environmentOf(before, all, argsOf()).includes(`${name}=${value}`);
+            for (let read = 0; ; read++) {
+              const before = argsOf();
+              const all = run(PS, ["-ww", "-E", "-p", String(pid), "-o", "command="]).replace(/\s+$/, "");
+              const after = argsOf();
+              const env = environmentOf(before, all, after);
+              if (env.length > 0) return env.includes(`${name}=${value}`);
+              // It exec'd between the reads: not marked yet (the recorder looks again on its next walk).
+              if (after !== before || !all.startsWith(before)) return false;
+              // No environment after its arguments: one of this uid is read again in the window, as withMark does.
+              if (Number(run(PS, ["-p", String(pid), "-o", "ruid="]).trim()) !== process.getuid?.()) return false;
+              if (read >= MARK_WINDOW_MS.length) return AFTER_WINDOW_MARKED;
+              pause(MARK_WINDOW_MS[read]!);
+            }
           } catch {
             return false;
           }
@@ -200,24 +274,42 @@ export function psTable(run: CommandRunner = runCommand): ProcessTable {
         // rewriting its title holds nothing up.
         withMark(name, value) {
           const word = `${name}=${value}`;
+          const uid = process.getuid?.();
+          const marked = new Set<number>();
+          let only: Set<number> | undefined;
           for (let read = 1; ; read++) {
             const before = argumentsListing(run);
-            const all = run(PS, ["-ww", "-E", "-A", "-o", "pid=,command="]);
+            const all = run(PS, ["-ww", "-E", "-A", "-o", "pid=,ruid=,command="]);
             const after = argumentsListing(run);
-            const marked: number[] = [];
+            // A process whose arguments changed between the reads (it exec'd) and whose -E line holds the word;
             const unread: number[] = [];
+            // and one of this uid whose -E line holds no environment after its arguments (inside an exec, as Linux's
+            // empty environ): each is read again; the second one in the window, as procTable does.
+            const empty: number[] = [];
             for (const line of all.split("\n")) {
-              const m = /^\s*(\d+) ?(.*?)\s*$/.exec(line);
-              if (!m || !rows.has(Number(m[1])) || !m[2]!.includes(word)) continue;
+              const m = /^\s*(\d+)\s+(\d+) ?(.*?)\s*$/.exec(line);
+              if (!m || !rows.has(Number(m[1]))) continue;
               const pid = Number(m[1]);
+              if (only !== undefined && !only.has(pid)) continue;
+              const text = m[3]!;
               const own = before.get(pid);
-              if (own === undefined || after.get(pid) !== own || !m[2]!.startsWith(own)) unread.push(pid);
-              else if (environmentOf(own, m[2]!, own).includes(word)) marked.push(pid);
+              if (own === undefined || after.get(pid) !== own || !text.startsWith(own)) {
+                if (text.includes(word)) unread.push(pid);
+                continue;
+              }
+              const env = environmentOf(own, text, own);
+              if (env.length === 0) {
+                if (Number(m[2]) === uid) empty.push(pid);
+              } else if (env.includes(word)) marked.add(pid);
             }
-            if (unread.length === 0) return marked;
-            if (read >= MARK_READS) {
+            if (unread.length > 0 && read >= MARK_READS) {
               throw new Error(`ps: cannot tell whether pid ${unread.join(", ")} carries the mark: its arguments changed in each of ${MARK_READS} reads`);
             }
+            const inWindow = read <= MARK_WINDOW_MS.length;
+            // Still empty after the window: unmarked (see AFTER_WINDOW_MARKED).
+            if (unread.length === 0 && (empty.length === 0 || !inWindow)) return [...marked];
+            only = new Set([...unread, ...(inWindow ? empty : [])]);
+            pause(MARK_WINDOW_MS[Math.min(read, MARK_WINDOW_MS.length) - 1]!);
           }
         },
         commandLine(pid) {
