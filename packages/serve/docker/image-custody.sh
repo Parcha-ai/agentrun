@@ -25,7 +25,7 @@ docker run -d --name "$name" $secrets "$@" "$image" --data /data --port 7340 --f
 docker exec -i -e CANARY="$canary" -e TOKEN="$canary-AGENTRUN_TOKEN" "$name" node --input-type=module - <<'EOF'
 import { closeSync, constants, openSync, readdirSync, readFileSync, readlinkSync, readSync } from "node:fs";
 const fail = (why) => { console.error(`image custody: ${why}`); process.exit(1); };
-const base = "http://127.0.0.1:7340/v2";
+const base = "http://127.0.0.1:7340/v2"; // # key-gate: loopback-rule the check reaches the server inside its own container, on loopback only
 const api = (method, path, body) => fetch(`${base}${path}`, { method, headers: { authorization: `Bearer ${process.env.TOKEN}`, "content-type": "application/json" }, body: body && JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 for (let i = 0; ; i++) {
