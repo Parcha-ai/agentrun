@@ -223,3 +223,25 @@ test("a link in a directory's place is left out and reported, and the seed files
   assert.deepEqual(result.deleted, []);
   assert.ok(tree(s.bare, `runs/${RUN}`).includes(OLD));
 });
+
+test("an entry that cannot be looked at stops the harvest: a readable directory that cannot be searched never reads as every note deleted", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  // Readable, not searchable: its names list, and each one under it fails with EACCES.
+  await chmod(join(s.work, "learnings"), 0o444);
+  t.after(() => chmod(join(s.work, "learnings"), 0o755).catch(() => undefined));
+  await assert.rejects(harvest(s, "host"), /the working copy's learnings\/\S+ cannot be read \(EACCES\): nothing is harvested/);
+  await chmod(join(s.work, "learnings"), 0o755);
+  assert.equal(git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
+});
+
+test("a file that cannot be opened is left out and reported, never read as deleted", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  await chmod(join(s.work, OLD), 0o000);
+  t.after(() => chmod(join(s.work, OLD), 0o644).catch(() => undefined));
+  const result = await harvest(s, "host");
+  assert.ok(result.ignored.some((i) => i.path === OLD), JSON.stringify(result.ignored));
+  assert.deepEqual(result.deleted, []);
+  assert.ok(tree(s.bare, `runs/${RUN}`).includes(OLD), "the seed note stays");
+});
