@@ -80,6 +80,11 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
   const found = new Map<string, Buffer>();
   // The directories read whole: a seed file is deleted only when its own directory was read and it was not there.
   const read = new Set<string>();
+  // The seed's files and directories: a path whose kind on disk is the other one would make a tree git cannot hold.
+  const seedFiles = (await repo.list("", seed)).filter((entry) => entry.type === "blob");
+  const files = new Set(seedFiles.map((entry) => entry.path));
+  const dirs = new Set(seedFiles.flatMap((entry) => entry.path.split("/").slice(0, -1).map((_, at, parts) => parts.slice(0, at + 1).join("/"))));
+  const swapped = (path: string, what: string, seedHas: string) => new Error(`the working copy's ${path} is ${what} where the seed has ${seedHas}: nothing is harvested`);
   const root = await lstat(dir).catch(() => undefined);
   if (!root?.isDirectory()) throw new Error(`no working copy at the run's ${dir}: nothing is harvested`);
   const walk = async (rel: string): Promise<void> => {
@@ -102,6 +107,8 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
       const stat = await lstat(join(dir, path)).catch(() => undefined);
       if (!stat) continue;
       if (stat.isSymbolicLink()) ignored.push({ path, reason: "a symbolic link: never followed" });
+      else if (stat.isDirectory() && files.has(path)) throw swapped(path, "a directory", "a file");
+      else if (stat.isFile() && dirs.has(path)) throw swapped(path, "a file", "a directory");
       else if (stat.isDirectory()) await walk(path);
       else if (!stat.isFile()) ignored.push({ path, reason: "not a regular file" });
       else if (!writable(path, runId)) ignored.push({ path, reason: "outside the layout a run may write" });
@@ -114,24 +121,24 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
     }
   };
   await walk("");
-  const files: Record<string, Uint8Array | string | null> = {};
-  for (const [path, bytes] of found) files[path] = path === `memos/${runId}.md` ? withHostHead(bytes.toString("utf8"), runId, seed, head) : new Uint8Array(bytes);
+  const commit: Record<string, Uint8Array | string | null> = {};
+  for (const [path, bytes] of found) commit[path] = path === `memos/${runId}.md` ? withHostHead(bytes.toString("utf8"), runId, seed, head) : new Uint8Array(bytes);
   // A seed file the run may write that is gone from disk: deleted. One still there but left out (a link in its place) stays.
   const deleted: string[] = [];
   const left = new Set(ignored.map((i) => i.path));
-  for (const entry of await repo.list("", seed)) {
-    if (entry.type !== "blob" || !writable(entry.path, runId) || found.has(entry.path) || left.has(entry.path)) continue;
+  for (const entry of seedFiles) {
+    if (!writable(entry.path, runId) || found.has(entry.path) || left.has(entry.path)) continue;
     const parent = dirname(entry.path);
     if (!read.has(parent === "." ? "" : parent)) continue;
-    files[entry.path] = null;
+    commit[entry.path] = null;
     deleted.push(entry.path);
   }
   // A refused value is named by the file that holds it, never quoted.
   const values = (options.refuse ?? []).filter((value) => typeof value === "string" && value.trim() !== "");
-  const holding = values.length ? Object.entries(files).filter(([, content]) => content !== null && values.some((value) => Buffer.from(content).includes(value))).map(([path]) => path) : [];
+  const holding = values.length ? Object.entries(commit).filter(([, content]) => content !== null && values.some((value) => Buffer.from(content).includes(value))).map(([path]) => path) : [];
   if (holding.length) return { status: "refused", deleted: [], ignored, refused: holding.map((path) => `${path} holds a value no learning may keep`) };
   const branch = `runs/${runId}`;
-  const sorted = Object.fromEntries(Object.keys(files).sort().map((path) => [path, files[path]!]));
+  const sorted = Object.fromEntries(Object.keys(commit).sort().map((path) => [path, commit[path]!]));
   const made = await repo.commitTo(branch, { files: sorted, message: HARVEST_MESSAGE, trailers: { "Run-Id": runId }, parent: seed, date });
   if (!made.created && made.sha === (await repo.resolve(seed))) return { status: "empty", deleted: [], ignored };
   await repo.push(made.sha, branch);
