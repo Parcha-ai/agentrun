@@ -375,6 +375,45 @@ describe("command records, from a scripted /proc", () => {
     }
   });
 
+  it("a recorded command is never dropped on an empty read of its environment (inside an exec); it leaves its record once it is a zombie", () => {
+    // Through /proc: 4200 is the instance, 4300 its command leading its own group. The first walk reads the mark and
+    // records 4300; the next reads an empty environment (an exec) and must keep the record; once 4300 is a zombie (its
+    // state read first), the record goes.
+    const dir = scratchRoot("commands-recorded-empty-read");
+    const proc = join(dir.root, "proc");
+    const records = join(dir.root, "commands");
+    const uid = process.getuid!();
+    const stat = (pid: number, state: string, ppid: number, pgrp: number, start: number) => `${pid} (cmd) ${[state, String(ppid), String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+    const status = (state: string) => `Name:\tcmd\nState:\t${state} (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`;
+    try {
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
+      writeFileSync(join(proc, "4200/stat"), stat(4200, "S", 1, 4200, 10));
+      writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
+      mkdirSync(join(proc, "4300"));
+      const recorder = new CommandRecorder(records, { proc, instance: 4200 });
+      const at = (state: string, environ: string) => {
+        writeFileSync(join(proc, "4300/stat"), stat(4300, state, 4200, 4300, 77));
+        writeFileSync(join(proc, "4300/status"), status(state));
+        writeFileSync(join(proc, "4300/environ"), environ);
+      };
+      at("S", `PATH=/usr/bin\0${COMMANDS_MARK}=${recorder.token}\0`);
+      recorder.scan();
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"], "recorded from its mark");
+      at("S", "");
+      recorder.scan();
+      recorder.scan();
+      assert.deepEqual(readdirSync(records).filter(isRecord), ["4300-77.json"], "an empty read keeps a recorded command");
+      at("Z", "");
+      recorder.scan();
+      recorder.close();
+      assert.deepEqual(readdirSync(records).filter(isRecord), [], "a zombie leaves its record");
+    } finally {
+      dir.remove();
+    }
+  });
+
   it("an open refuses the run while a process a killed incarnation left is still alive, and keeps its record", async () => {
     const dir = scratchRoot("commands-refuse");
     const proc = join(dir.root, "proc");
