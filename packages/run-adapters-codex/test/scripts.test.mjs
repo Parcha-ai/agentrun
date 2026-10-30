@@ -152,3 +152,13 @@ test("two cut-off execs and an unwatched safe call of the turn: the call is list
   const own = outputs[1].split('1 call ran whose script')[0];
   assert.ok(!own.includes('tool-u1'), 'under neither exec\'s own list');
 });
+
+test("no slot of the model's takes the full recovery note: the harness never falls back to the note's text, which holds tool outputs", async () => {
+  // recoverySystemNote cannot be stubbed in an ES module, so this reads what the built harness does with it: it injects only what
+  // recoverySystemNote returned, and nothing when that is undefined.
+  const { readFileSync } = await import('node:fs');
+  const built = readFileSync(new URL('../dist/harness.js', import.meta.url), 'utf8');
+  assert.ok(!/\bnote\.text\b/.test(built), 'note.text (the full note) is not used by the harness');
+  assert.match(built, /system !== undefined && !noted/, 'no developer item is injected without a system note');
+  assert.ok(!/recoverySystemNote\(ctx\.state\(\)\)\s*\?\?/.test(built), 'no fallback after recoverySystemNote');
+});
