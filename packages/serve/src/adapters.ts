@@ -133,21 +133,11 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origi
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "" };
 }
 
-/** The model id claude-agent sends: Anthropic's own (`claude-sonnet-5.5`), to Anthropic or to an Anthropic-compatible
- *  endpoint of its own. When ANTHROPIC_BASE_URL is the same gateway base as AGENT_MODEL_BASE_URL (one gateway for every
- *  harness), it is that gateway's own name, sent as the other harnesses send theirs: `provider/model-id` whole, as
- *  OpenRouter names its models, or Anthropic's id with AGENT_MODEL_GATEWAY_IDS=bare. The run is priced as `model` either way. */
-export function claudeModelId(env: NodeJS.ProcessEnv, model: ModelRef): string {
-  const base = (name: "ANTHROPIC_BASE_URL" | "AGENT_MODEL_BASE_URL") => {
-    try {
-      return env[name] ? gatewayBase(name, env[name]) : undefined;
-    } catch {
-      return undefined; // a setting its own harness refuses: never the same gateway
-    }
-  };
-  const claude = base("ANTHROPIC_BASE_URL");
-  const shared = claude !== undefined && claude === base("AGENT_MODEL_BASE_URL");
-  return shared && env.AGENT_MODEL_GATEWAY_IDS !== "bare" ? `${model.provider}/${model.modelId}` : model.modelId;
+/** The model id claude-agent sends, and prices: Anthropic's own, the model id with dots as dashes. Anthropic's ids hold no
+ *  dot; a gateway such as OpenRouter names the same models with dots (anthropic/claude-sonnet-5.5) and takes Anthropic's
+ *  own id too, and the catalog prices them by Anthropic's id. */
+export function claudeModelId(model: ModelRef): string {
+  return model.provider === "anthropic" ? model.modelId.replaceAll(".", "-") : model.modelId;
 }
 
 /** claude-agent's model: the revision's (or the server's default) as `provider/model-id`, its price from pi-ai's
@@ -158,7 +148,11 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
   if (!named) return { why: "The revision names no model, and this host has no default: name an anthropic/<model-id> in the definition.", host: true };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: `claude-agent runs a model named anthropic/<model-id>; the run's model is ${named}.`, host: ref === undefined };
-  return { model: { provider: named.slice(0, slash), modelId: named.slice(slash + 1) } };
+  const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
+  // One provider, then the model's own id: a second segment (anthropic/anthropic/<model>, once a workaround) is refused
+  // by name, never sent on to fail at the provider.
+  if (modelId.includes("/")) return { why: `claude-agent runs a model named ${provider}/<model-id>; ${named} names more than one segment: name it ${provider}/${modelId.slice(modelId.lastIndexOf("/") + 1)}.`, host: ref === undefined };
+  return { model: { provider, modelId } };
 }
 
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
@@ -180,9 +174,11 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   } catch (error) {
     refused = error;
   }
+  // Anthropic's own id for the model (a gateway's dotted name, dashed): sent and priced alike.
+  const native = { ...needs, model: { ...needs.model, modelId: claudeModelId(needs.model) } };
   let adapter: AgentAdapter;
   try {
-    adapter = claude.claudeAgentAdapter({ model: { default: claudeModelId(env, needs.model) }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
+    adapter = claude.claudeAgentAdapter({ model: { default: native.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(native), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);

@@ -292,11 +292,11 @@ back.
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
 
-`claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id. When
-`ANTHROPIC_BASE_URL` is the same gateway as `AGENT_MODEL_BASE_URL`, one gateway for every harness such as OpenRouter
-(`https://openrouter.ai/api` and `https://openrouter.ai/api/v1`), it sends that gateway's own name, the revision's
-`anthropic/<model-id>` whole, as the other harnesses do (Anthropic's id with `AGENT_MODEL_GATEWAY_IDS=bare`). The run is
-priced as Anthropic's model either way.
+`claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id, and prices the run
+by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such as OpenRouter names the same models with
+dots (`anthropic/claude-sonnet-5.5`) and takes Anthropic's own id (`claude-sonnet-5-5`), so one name works through it and
+direct. A model with more than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming
+the form to use.
 
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
