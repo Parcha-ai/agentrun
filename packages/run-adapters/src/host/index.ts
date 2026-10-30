@@ -6,3 +6,5 @@ export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
 export { childEnv, confined, INHERITED_ENV, openLocalMachine, startChild } from "./machine.js";
 export type { CacheFile, ChildCommand, ConfineChild, KillSignal, LocalMachine, LocalMachineSpec, MachineChild, MachineSpawn, MachineTail } from "./machine.js";
+export { BoxError } from "./box.js";
+export type { Box, BoxedChild, BoxErrorCode, BoxRecord, BoxRecorder, BoxSpec, Isolation, Reaped } from "./box.js";
