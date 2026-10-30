@@ -132,7 +132,11 @@ const importedFromOf = (r: Record<string, unknown>): { importedFrom?: ImportedFr
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 const checkTime = (value: unknown, what: string): string => {
   if (typeof value !== "string" || !ISO_TIME.test(value) || Number.isNaN(Date.parse(value))) throw invalid(`the ${what} time is not an ISO time in UTC`);
-  return new Date(value).toISOString();
+  const iso = new Date(value).toISOString();
+  // Date.parse rolls an impossible date or hour forward (02-30 reads as 03-02): the time must read back as written, up to
+  // how its fraction of a second is spelled.
+  if (iso.slice(0, 19) !== value.slice(0, 19)) throw invalid(`the ${what} time ${value} is not a time that exists`);
+  return iso;
 };
 
 /** A revision as stored, checked: the id is the hash of its content, so a row that was changed does not pass. */
@@ -385,7 +389,9 @@ export class AgentStore extends AgentStoreReader {
     const dir = path.join(this.dir, "runs", runId);
     const storePath = runStoreIn(dir);
     // The directory first, then the rows (startRun's order); each mode set after its mkdir, so no umask loosens it.
-    mkdirSync(path.dirname(dir), { recursive: true });
+    // runs/ made here (a first import, before any run) is the owner's too: a umask that strips the owner's write bit
+    // would leave it unwritable, and this run's directory never made.
+    if (mkdirSync(path.dirname(dir), { recursive: true }) !== undefined) chmodSync(path.dirname(dir), 0o700);
     try {
       for (const made of [dir, path.dirname(storePath)]) {
         mkdirSync(made, { mode: 0o700 });
