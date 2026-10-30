@@ -32,6 +32,7 @@ const targetOf = (session, counts = { settled: 0 }) => ({
   send: (text) => session.send(text),
   turnEnd: () => session.turnEnd(),
   settleOpenTurn: async () => { counts.settled += 1; },
+  interrupt: () => session.interrupt(),
 });
 const answered = async (p) => {
   await p.session.send('the task');
@@ -205,6 +206,7 @@ const scripted = (turn, sent = { n: 0 }) => (followUp) => ({
   async send() { sent.n += 1; this.ended = await turn(followUp); },
   async turnEnd() { return this.ended ?? { status: 'completed' }; },
   async settleOpenTurn() {},
+  async interrupt() {},
 });
 const request = (spentUsd, inFlight) => ({ key: SESSION, label: 'r1', model: 'faux', turn: 1, maxTurns: null, spentUsd, inFlight });
 
@@ -242,4 +244,70 @@ test('a follow-up recorded failed is answered failed, with its error, and a late
   const later = followUpOnce(options(store));
   assert.deepEqual(await later.run(scripted(async () => ({ status: 'completed' }), sent)(later), new AbortController().signal), { status: 'failed', error: 'the provider refused it' });
   assert.equal(sent.n, 1);
+});
+
+test('two runs of one follow-up at once in a process: the second waits for the first and answers from its record, so nothing is cut or sent twice', async () => {
+  const { followUpOnce } = await kernel();
+  const store = memorySessionStore();
+  const sent = { n: 0 };
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const turn = async () => { await held; return { status: 'completed' }; };
+  const one = followUpOnce(options(store));
+  const two = followUpOnce(options(store));
+  const settled = { n: 0 };
+  const target = (f) => ({ ...scripted(turn, sent)(f), async settleOpenTurn() { settled.n += 1; } });
+  const first = one.run(target(one), new AbortController().signal);
+  await settle();
+  const second = two.run(target(two), new AbortController().signal);
+  await settle();
+  release();
+  assert.deepEqual(await first, { status: 'done' });
+  assert.deepEqual(await second, { status: 'done' });
+  assert.deepEqual([sent.n, settled.n], [1, 0]);
+});
+
+test('a follow-up settled once never settles again: a later open turn is someone else\'s, and is left alone', async () => {
+  const { followUpOnce } = await kernel();
+  const store = memorySessionStore();
+  // A follow-up interrupted in an earlier process.
+  const dying = followUpOnce(options(store));
+  const abort = new AbortController();
+  void dying.run({ state: 'idle', send: () => new Promise(() => {}), turnEnd: () => new Promise(() => {}), settleOpenTurn: async () => {}, interrupt: async () => {} }, abort.signal).catch(() => {});
+  await settle();
+  abort.abort(new Error('the process died'));
+  await settle();
+  const settled = { n: 0 };
+  const open = { state: 'open_turn', send: async () => { throw new Error('nothing is sent'); }, turnEnd: async () => ({ status: 'completed' }), settleOpenTurn: async () => { settled.n += 1; }, interrupt: async () => {} };
+  assert.deepEqual(await followUpOnce(options(store)).run(open, new AbortController().signal), { status: 'interrupted' });
+  assert.equal(settled.n, 1, 'the follow-up\'s own cut turn is settled once');
+  // Later, another turn is open (a person's message the host is running): the follow-up leaves it alone.
+  assert.deepEqual(await followUpOnce(options(store)).run(open, new AbortController().signal), { status: 'interrupted' });
+  assert.equal(settled.n, 1, 'and never settles another');
+});
+
+test('a follow-up cancelled through its signal interrupts its turn, admits no request after, and never answers done', async () => {
+  const { followUpOnce, followUpState } = await kernel();
+  const store = memorySessionStore();
+  const followUp = followUpOnce(options(store));
+  const abort = new AbortController();
+  let finish;
+  const ended = new Promise((resolve) => { finish = resolve; });
+  let interrupted = 0;
+  const target = {
+    state: 'idle',
+    async send() {},
+    turnEnd: () => ended,
+    async settleOpenTurn() {},
+    // The turn ends when it is interrupted, and says completed: what a harness that finished its last step reports.
+    async interrupt() { interrupted += 1; finish({ status: 'completed' }); },
+  };
+  const running = followUp.run(target, abort.signal);
+  await settle();
+  assert.equal(followUp.beforeRequest(request(0, [])), undefined, 'admitted while it runs');
+  abort.abort(new Error('cancelled'));
+  assert.match(followUp.beforeRequest(request(0, []))?.refuse ?? '', /^follow_up_budget_reached|cancel/);
+  await assert.rejects(running, /cancelled/);
+  assert.equal(interrupted, 1);
+  assert.equal(followUpState(await store.read(followUp.key)), 'running', 'no outcome: the next process reads it interrupted');
 });
