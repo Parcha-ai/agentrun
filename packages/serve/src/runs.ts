@@ -21,7 +21,7 @@ import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { withDecisions } from "./decision-rows.js";
-import { DECISION_KEY_FD, DECISION_KEY_FD_ENV, FAUX_JEV_ENV, JEV_KEY_ENV } from "./decisions.js";
+import { DECISION_KEY_FD, DECISION_KEY_FD_ENV, FAUX_JEV_ENV, FAUX_PARALLEL_ENV, HANDED_KEYS } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -257,7 +257,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
@@ -710,18 +710,18 @@ export class Runs {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
-      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}) } : {}),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
-    // The decision key is never in a run's environment, which its tools and its model's provider read: a workflow run's
-    // process gets it once on an inherited pipe, for its judge's runner alone (decisions.ts).
-    delete env[JEV_KEY_ENV];
+    // The decision keys are never in a run's environment, which its tools and its model's provider read: a workflow run's
+    // process gets them once on an inherited pipe, by name, for its decision providers alone (decisions.ts).
+    for (const name of HANDED_KEYS) delete env[name];
     delete env[DECISION_KEY_FD_ENV];
-    const decisionKey = run.kind === "workflow" ? process.env[JEV_KEY_ENV] : undefined;
-    const handsKey = typeof decisionKey === "string" && decisionKey.trim() !== "";
+    const decisionKeys = Object.fromEntries(run.kind === "workflow" ? HANDED_KEYS.flatMap((name) => { const value = process.env[name]; return typeof value === "string" && value.trim() !== "" ? [[name, value]] : []; }) : []);
+    const handsKey = Object.keys(decisionKeys).length > 0;
     if (handsKey) env[DECISION_KEY_FD_ENV] = String(DECISION_KEY_FD);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
@@ -739,7 +739,7 @@ export class Runs {
       const keyPipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[DECISION_KEY_FD];
       // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
       keyPipe?.on("error", () => undefined);
-      keyPipe?.end(decisionKey);
+      keyPipe?.end(JSON.stringify(decisionKeys));
     }
     run.child = child;
     child.once("exit", (code) => {
