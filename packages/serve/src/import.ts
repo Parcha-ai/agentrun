@@ -6,15 +6,15 @@
 // the owner's only. Read again, it imports only the sessions it has not.
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, lstat, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, createRegistry, Harness, ROOT_CONVERSATION_ID, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { type AgentStore, type AgentStoreReader, type NewRevision, openStore, openStoreReader, type Revision, STORE_FILE } from "@parcha/pi-durable-agent";
-import { RUN_META } from "./files.js";
+import { readJson, RUN_META } from "./files.js";
 import { HARNESS_OF, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { secretCut } from "./secret-cut.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
@@ -53,7 +53,8 @@ export type ProjectPlan = {
   name: string;
   sessions: Session[];
 };
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[] };
+/** `already`: the session files an earlier import took whole, left unread. */
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number };
 export type ImportReport = {
   agents: {
     id: string;
@@ -62,25 +63,50 @@ export type ImportReport = {
     created: boolean;
     runs: number;
     already: number;
+    /** Imports an earlier one left without their transcript, finished now. */
+    finished: number;
   }[];
   skipped: Skipped[];
+  already: number;
 };
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)}`;
-/** The sessions the store holds already, as `source:session`. */
-const importedIn = (store: AgentStoreReader) => new Set(store.listRuns().flatMap((run) => (run.importedFrom ? [`${run.importedFrom.source}:${run.importedFrom.session}`] : [])));
+/** The sessions the store holds already, as `source:session`, to their run's id. */
+const importedIn = (store: AgentStoreReader) => new Map(store.listRuns().flatMap((run) => (run.importedFrom ? [[`${run.importedFrom.source}:${run.importedFrom.session}`, run.id] as const] : [])));
+/** A session file as an import read it: its size and its time, so an unchanged one is not parsed again. */
+type SourceFile = { file: string; size: number; mtime_ms: number };
+const sameFile = (seen: SourceFile | undefined, stats: { size: number; mtimeMs: number }) => seen !== undefined && seen.size === stats.size && seen.mtime_ms === stats.mtimeMs;
+/** The session files the store's imports read whole, by path: each from a run whose transcript is there. */
+async function filesIn(store: AgentStoreReader): Promise<Map<string, SourceFile>> {
+  const out = new Map<string, SourceFile>();
+  for (const run of store.listRuns()) {
+    if (!run.importedFrom || !existsSync(store.runStorePath(run.id))) continue;
+    const meta = (await readJson(join(store.dir, "runs", run.id, RUN_META))) as { source_file?: SourceFile } | null;
+    const seen = meta?.source_file;
+    if (seen && typeof seen.file === "string" && typeof seen.size === "number" && typeof seen.mtime_ms === "number") out.set(seen.file, seen);
+  }
+  return out;
+}
+const unread = (file: string, error: unknown): Skipped => ({ what: file, why: `not read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})` });
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-/** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Reads no turns. */
-export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir() }: ImportOptions): Promise<Plan> {
+/** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Reads no turns,
+ *  and no file `store`'s imports already read whole and that has not changed since. */
+export async function planImport({ home, sources = SOURCES, all = false, now = Date.now(), temp: tempDir = tmpdir() }: ImportOptions, store?: AgentStoreReader): Promise<Plan> {
   const skipped: Skipped[] = [];
+  const seen = store ? await filesIn(store) : new Map<string, SourceFile>();
+  let already = 0;
   const projects = new Map<string, ProjectPlan>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     for (const file of await sessionFiles(home, source)) {
       const stats = await stat(file).catch(() => null);
       if (!stats) continue;
+      if (sameFile(seen.get(file), stats)) {
+        already += 1;
+        continue;
+      }
       if (now - stats.mtimeMs < LIVE_MS) {
         skipped.push({
           what: file,
@@ -92,7 +118,9 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
         skipped.push({ what: file, why: `over ${MAX_SESSION_BYTES} bytes` });
         continue;
       }
-      const session = await readSession(file, source, { turns: false });
+      // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
+      const session = await readSession(file, source, { turns: false }).catch((error: unknown) => void skipped.push(unread(file, error)));
+      if (!session) continue;
       if (session.child) continue;
       if (!session.cwd) {
         skipped.push({ what: file, why: "no project directory in it" });
@@ -135,6 +163,7 @@ export async function planImport({ home, sources = SOURCES, all = false, now = D
   return {
     projects: [...projects.values()].sort((a, b) => a.cwd.localeCompare(b.cwd)),
     skipped,
+    already,
   };
 }
 
@@ -371,10 +400,23 @@ async function revisionFor(
   return store.commitRevision(agentId, revision, { setCurrent: current });
 }
 
-/** The plan, into `store`: the agents it does not hold, and the runs it does not. */
+/** A run's serve.json: its title and input, and the session file it was read from, as read. */
+async function writeMeta(dir: string, session: Session, read: SourceFile, json: (value: unknown) => unknown): Promise<void> {
+  const meta = json({
+    title: clip(session.firstPrompt ?? `${session.source} session`, 120),
+    created_at: session.startedAt ?? new Date(0).toISOString(),
+    input: { content: session.firstPrompt ?? "" },
+  }) as Record<string, unknown>;
+  const metaPath = join(dir, RUN_META);
+  await writeFile(metaPath, `${JSON.stringify({ ...meta, source_file: read })}\n`, { mode: 0o600 });
+  await chmod(metaPath, 0o600);
+}
+
+/** The plan, into `store`: the agents it does not hold, and the runs it does not. A run an earlier import made whose
+ *  transcript never landed (the process stopped between the two) has it written now. */
 export async function runImport(store: AgentStore, plan: Plan, options: ImportOptions): Promise<ImportReport> {
   const { text, json } = secretCut(options.env);
-  const report: ImportReport = { agents: [], skipped: [...plan.skipped] };
+  const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
   const held = importedIn(store);
   for (const project of plan.projects) {
     const created = !store.readAgent(project.agentId);
@@ -390,37 +432,40 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
     const revisions = new Map<Source, Revision>();
     const order = [...new Set(project.sessions.map((s) => s.source))].sort((a, b) => (a === latest.source ? 1 : 0) - (b === latest.source ? 1 : 0));
     for (const source of order) revisions.set(source, await revisionFor(store, project.agentId, source, files, project.sessions.findLast((s) => s.source === source && s.model)?.model, text, created && source === latest.source));
-    const line = {
-      id: project.agentId,
-      name: project.name,
-      cwd: project.cwd,
-      created,
-      runs: 0,
-      already: 0,
-    };
+    const line = { id: project.agentId, name: project.name, cwd: project.cwd, created, runs: 0, already: 0, finished: 0 };
     for (const listed of project.sessions) {
-      if (held.has(`${listed.source}:${listed.id}`)) {
+      const heldRun = held.get(`${listed.source}:${listed.id}`);
+      if (heldRun !== undefined && existsSync(store.runStorePath(heldRun))) {
         line.already += 1;
         continue;
       }
-      const session = await readSession(listed.file, listed.source);
-      const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
+      // Its size and time before the read: a file that changes during it is read again next time.
+      const stats = await stat(listed.file).catch(() => null);
+      const session = stats ? await readSession(listed.file, listed.source).catch((error: unknown) => void report.skipped.push(unread(listed.file, error))) : void report.skipped.push({ what: listed.file, why: "gone since it was listed" });
+      if (!session || !stats) continue;
+      const read: SourceFile = { file: listed.file, size: stats.size, mtime_ms: stats.mtimeMs };
       // The transcript is whole before its run is: written beside the store, then moved into the run's directory.
       const pending = join(store.dir, `.import-${randomUUID()}.sqlite`);
       let started: { runId: string; dir: string; storePath: string } | undefined;
       try {
         await writeTimeline(pending, session, json);
-        started = await store.importRun({
-          agent: project.agentId,
-          revision: revisions.get(session.source)!.id,
-          state: session.state,
-          startedAt: session.startedAt ?? new Date(0).toISOString(),
-          endedAt: session.endedAt ?? session.startedAt ?? new Date(0).toISOString(),
-          ...(session.costUsd !== undefined ? { costUsd: session.costUsd } : {}),
-          ...((answer ?? session.firstPrompt) ? { summary: text(answer ?? session.firstPrompt!) } : {}),
-          source: session.source,
-          session: session.id,
-        });
+        if (heldRun !== undefined) {
+          started = { runId: heldRun, dir: join(store.dir, "runs", heldRun), storePath: store.runStorePath(heldRun) };
+          if ((await mkdir(dirname(started.storePath), { recursive: true })) !== undefined) for (const made of [started.dir, dirname(started.storePath)]) await chmod(made, 0o700);
+        } else {
+          const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
+          started = await store.importRun({
+            agent: project.agentId,
+            revision: revisions.get(session.source)!.id,
+            state: session.state,
+            startedAt: session.startedAt ?? new Date(0).toISOString(),
+            endedAt: session.endedAt ?? session.startedAt ?? new Date(0).toISOString(),
+            ...(session.costUsd !== undefined ? { costUsd: session.costUsd } : {}),
+            ...((answer ?? session.firstPrompt) ? { summary: text(answer ?? session.firstPrompt!) } : {}),
+            source: session.source,
+            session: session.id,
+          });
+        }
         if (started) await rename(pending, started.storePath);
       } finally {
         await rm(pending, { force: true });
@@ -429,15 +474,9 @@ export async function runImport(store: AgentStore, plan: Plan, options: ImportOp
         line.already += 1;
         continue;
       }
-      const meta = json({
-        title: clip(session.firstPrompt ?? `${session.source} session`, 120),
-        created_at: session.startedAt ?? new Date(0).toISOString(),
-        input: { content: session.firstPrompt ?? "" },
-      });
-      const metaPath = join(started.dir, RUN_META);
-      await writeFile(metaPath, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
-      await chmod(metaPath, 0o600);
-      line.runs += 1;
+      await writeMeta(started.dir, session, read, json);
+      if (heldRun !== undefined) line.finished += 1;
+      else line.runs += 1;
     }
     report.agents.push(line);
   }
@@ -454,7 +493,7 @@ export function describePlan(plan: Plan, store?: AgentStoreReader): string[] {
     const priced = project.sessions.filter((s) => s.costUsd !== undefined).length;
     return `${project.cwd}  ${[...by].map(([source, n]) => `${source} ${n}`).join(", ")}  cost known ${priced}/${project.sessions.length}${already ? `  already imported ${already}` : ""}`;
   });
-  return [...lines, ...plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`)];
+  return [...lines, ...(plan.already ? [`already imported, unchanged: ${plan.already} session files`] : []), ...plan.skipped.map((s) => `skipped ${s.what}: ${s.why}`)];
 }
 
 /** `agentrun-serve import ARGS`: its exit code. */
@@ -499,11 +538,12 @@ export async function importCommand(
     all: values.all === true,
     env,
   };
-  const plan = await planImport(options);
   if (values["dry-run"]) {
     // A dry run writes nothing, not even a store: one there already is only read.
     const reader = existsSync(join(dir, STORE_FILE)) ? openStoreReader(dir) : undefined;
+    let plan: Plan;
     try {
+      plan = await planImport(options, reader);
       for (const line of describePlan(plan, reader)) out(line);
     } finally {
       reader?.close();
@@ -513,8 +553,9 @@ export async function importCommand(
   }
   const store = openStore(dir);
   try {
-    const report = await runImport(store, plan, options);
-    for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.already ? `, already imported ${agent.already}` : ""}`);
+    const report = await runImport(store, await planImport(options, store), options);
+    for (const agent of report.agents) out(`${agent.cwd}  ${agent.created ? "new agent" : "agent held"} ${agent.id}  imported ${agent.runs}${agent.finished ? `, finished ${agent.finished}` : ""}${agent.already ? `, already imported ${agent.already}` : ""}`);
+    if (report.already) out(`already imported, unchanged: ${report.already} session files (not read again)`);
     for (const s of report.skipped) out(`skipped ${s.what}: ${s.why}`);
     out(`${report.agents.length} agents, ${report.agents.reduce((n, a) => n + a.runs, 0)} runs imported into ${dir}`);
     return 0;

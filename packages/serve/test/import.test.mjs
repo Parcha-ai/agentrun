@@ -243,8 +243,12 @@ test("run again, it imports only what it has not; a session written lately, a ch
   assert.match(why, /code\/gone is gone/);
   assert.match(why, /scratch-project is a temp directory/);
   assert.equal(plan.projects.flatMap((p) => p.sessions).filter((s) => s.child).length, 0, "no subagent's or child thread's session");
+  // Without the store, every file is read again, and each session is found held.
   const again = await runImport(store, await planImport(options(h)), options(h));
-  assert.deepEqual(again.agents.map((a) => [a.runs, a.already, a.created]), [[0, 3, false], [0, 1, false], [0, 1, false]]);
+  assert.deepEqual(again.agents.map((a) => [a.runs, a.already, a.finished, a.created]), [[0, 3, 0, false], [0, 1, 0, false], [0, 1, 0, false]]);
+  // With it, a file its imports read whole and that has not changed is not read at all.
+  const unchanged = await planImport(options(h), store);
+  assert.deepEqual([unchanged.projects.length, unchanged.already], [0, 5]);
   const all = await planImport(options(h, { all: true }));
   assert.deepEqual(all.projects.map((p) => p.name).sort(), ["acme-site", "field-notes", "gone", "scratch-project", "test-runner"]);
 });
@@ -292,4 +296,65 @@ test("a skill folder this user cannot read, or a skills directory it cannot read
   assert.equal(why[codexSkills], "unreadable", "a skills directory at mode 000");
   const kept = store.readAgent(report.agents[0].id).revisions[0].body.skills;
   assert.deepEqual(Object.keys(kept).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"], "the readable skills still import");
+});
+
+test("an import the process left without its transcript is finished by the next one, not counted as imported", async (t) => {
+  const { h, data, store, report } = await imported(t);
+  const run = runsOf(store, report.agents[0].id)[0];
+  const dir = join(data, "runs", run.id);
+  // As a process stopped between the run's row and its transcript leaves it.
+  rmSync(join(dir, "store", "run.sqlite"));
+  rmSync(join(dir, "serve.json"));
+  const before = process.umask(0);
+  let again;
+  try {
+    again = await runImport(store, await planImport(options(h), store), options(h));
+  } finally {
+    process.umask(before);
+  }
+  // Only its file is read again: the other four, unchanged and whole, are not.
+  assert.deepEqual(again.agents.map((a) => [a.cwd, a.runs, a.finished, a.already]), [[h.site, 0, 1, 0]]);
+  assert.equal(again.already, 4);
+  assert.equal(statSync(join(dir, "store", "run.sqlite")).mode & 0o777, 0o600);
+  assert.equal(statSync(join(dir, "serve.json")).mode & 0o777, 0o600);
+  const db = new DatabaseSync(join(dir, "store", "run.sqlite"), { readOnly: true });
+  const entries = db.prepare("SELECT COUNT(*) AS n FROM entries").get().n;
+  db.close();
+  assert.ok(entries > 0, "the transcript is there");
+  assert.equal(store.listRuns().length, 5, "no second run for it");
+});
+
+test("a session file this user cannot read is named and passed over; the rest still import", { skip: process.getuid?.() === 0 ? "root reads a mode 000 file" : false }, async (t) => {
+  const root = await scratch(t);
+  const h = home(root);
+  const locked = codexSession(h.at, h.tests, 11, { prompt: "Locked away." });
+  const data = join(root, "agents");
+  const store = openStore(data);
+  t.after(() => store.close());
+  chmodSync(locked, 0o000);
+  let report;
+  try {
+    report = await runImport(store, await planImport(options(h), store), options(h));
+  } finally {
+    chmodSync(locked, 0o600);
+  }
+  assert.equal(report.skipped.find((s) => s.what === locked)?.why, "not read (EACCES)");
+  assert.equal(store.listRuns().length, 5, "the five readable sessions");
+});
+
+test("a re-import does not read a file its imports took whole and that has not changed", { skip: process.getuid?.() === 0 ? "root reads a mode 000 file" : false }, async (t) => {
+  const { h, store, report } = await imported(t);
+  const file = join(h.at, ".claude", "projects", h.site.replaceAll("/", "-"), "00000000-0000-4000-8000-000000000001.jsonl");
+  assert.ok(existsSync(file));
+  // Unreadable now, yet unchanged in size and time: a re-import that opened it would name it.
+  chmodSync(file, 0o000);
+  let plan;
+  try {
+    plan = await planImport(options(h), store);
+  } finally {
+    chmodSync(file, 0o600);
+  }
+  assert.equal(plan.skipped.find((s) => s.what === file), undefined, "never opened");
+  assert.equal(plan.already, 5);
+  assert.equal(report.agents.reduce((n, a) => n + a.runs, 0), 5);
 });
