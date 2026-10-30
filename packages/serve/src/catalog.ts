@@ -1,0 +1,48 @@
+// The tool catalog's names, and the one mapping between a catalog name and the wire name a harness calls. A catalog name
+// is what a revision writes (`read`, later `monid.discover`, `mcp:<server>/<tool>`); the wire name is what a CLI adapter
+// registers and the model API sees, and both adapters refuse anything outside /^[A-Za-z0-9_-]{1,64}$/. The map is one
+// deterministic, reversible function here, never in an adapter, so every harness gets the same wire name; the journal
+// records the wire name (recovery matches a call by it), and a reader maps it back to the catalog name on the way out.
+import { createHash } from "node:crypto";
+
+/** A wire name a CLI adapter and the model APIs accept. */
+export const WIRE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** A catalog name's wire name: itself when it already is one, else `:` and `/` to `__`, `.` to `_`, any other character
+ *  to `_`, and a `-<8 hex of the catalog name>` suffix (prefix trimmed to keep 64) when the result is too long or would
+ *  collide. The suffix makes a long or clashing name unique; the reverse is a lookup, never a parse. */
+export function wireName(catalog: string): string {
+  if (WIRE_NAME.test(catalog)) return catalog;
+  const base = catalog.replace(/[:/]+/g, "__").replace(/[^A-Za-z0-9_-]/g, "_");
+  if (base.length <= 64) return base;
+  const tag = `-${createHash("sha256").update(catalog).digest("hex").slice(0, 8)}`;
+  return base.slice(0, 64 - tag.length) + tag;
+}
+
+/** The reverse of {@link wireName} over `names`: a map from each name's wire name back to the catalog name. A collision
+ *  (two catalog names with one wire name) throws here, so a catalog that would shadow a name never loads; the save path
+ *  reports the same collision as a 422 before it reaches this. */
+export function reverseOf(names: Iterable<string>): ReadonlyMap<string, string> {
+  const reverse = new Map<string, string>();
+  for (const name of names) {
+    const wire = wireName(name);
+    const had = reverse.get(wire);
+    if (had !== undefined && had !== name) throw new Error(`the tools ${had} and ${name} both map to the wire name ${wire}`);
+    reverse.set(wire, name);
+  }
+  return reverse;
+}
+
+/** The catalog names in `names` whose wire names collide, each paired with the name it clashes with: a definition that
+ *  holds a pair is refused (a 422 on the second one), so {@link reverseOf} never throws for a loaded catalog. */
+export function collisions(names: readonly string[]): { name: string; clashesWith: string }[] {
+  const seen = new Map<string, string>();
+  const clashes: { name: string; clashesWith: string }[] = [];
+  for (const name of names) {
+    const wire = wireName(name);
+    const had = seen.get(wire);
+    if (had !== undefined && had !== name) clashes.push({ name, clashesWith: had });
+    else seen.set(wire, name);
+  }
+  return clashes;
+}
