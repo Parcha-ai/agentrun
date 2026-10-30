@@ -20,7 +20,7 @@ export function writeSession(file, records, { fresh = false } = {}) {
 }
 
 /** A Claude Code session in `cwd`: a question, a Bash call and its output, an answer, and its cost record. */
-export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, sidechain = false, interrupted = false, failed = false, env = {} } = {}) {
+export function claudeSession(home, cwd, n, { prompt = "List the files.", output = "README.md", cost = 0.0421, sidechain = false, interrupted = false, failed = false, env = {}, slug = cwd.replaceAll("/", "-") } = {}) {
   const id = sessionId(n);
   const base = {
     sessionId: id,
@@ -144,7 +144,7 @@ export function claudeSession(home, cwd, n, { prompt = "List the files.", output
       startTime: T0,
     },
   ];
-  return writeSession(join(home, ".claude", "projects", cwd.replaceAll("/", "-"), `${id}.jsonl`), records);
+  return writeSession(join(home, ".claude", "projects", slug, `${id}.jsonl`), records);
 }
 
 /** A Codex session in `cwd`: a question, a shell call and its output, an answer; tokens only, no cost. */
