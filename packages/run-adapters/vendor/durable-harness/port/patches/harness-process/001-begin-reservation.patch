@@ -1,6 +1,6 @@
 Patch: 001-begin-reservation
 Reason: a built-in call begun twice before its first intent is durable (the same execution delivered twice) ran twice; the second begin now waits for the first call's outcome, or the drive's stop, and never runs it again
-Upstream: offer
+Upstream: ours
 Pins: a built-in call begun twice before its intent is durable runs once: the second begin waits for its outcome and is never told to run
 Pins: a duplicate begin whose first call's outcome could not be written stops with the drive: no result made up
 ---
