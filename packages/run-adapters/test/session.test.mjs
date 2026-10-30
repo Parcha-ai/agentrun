@@ -273,7 +273,9 @@ test('the settled turn is recorded interrupted, with the settle named, and its t
   first.kill();
   const second = await openOn(store, counting().drive);
   await second.session.settleOpenTurn();
-  assert.deepEqual(await lastTurn(store), { type: 'turn', status: 'interrupted', error: SETTLED });
+  const { settle, ...entry } = await lastTurn(store);
+  assert.deepEqual(entry, { type: 'turn', status: 'interrupted', error: SETTLED });
+  assert.deepEqual(Object.keys(settle).sort(), ['opening', 'seen'], 'the settle names what it withdrew, in the same record');
   assert.deepEqual(second.events, [{ type: 'turn_end', status: 'interrupted' }]);
 });
 
@@ -293,4 +295,73 @@ test('a settle again, with no turn cut since the last one, withdraws nothing: a 
   await third.session.recover();
   await third.session.turnEnd();
   assert.deepEqual(harness.given, ['a person\'s message']);
+});
+
+test('a turn cut after an earlier settle is a new cut turn: its unplaced prompt is withdrawn, never sent later', async () => {
+  const store = memorySessionStore();
+  const first = await openOn(store, () => new Promise(() => {}));
+  await first.session.send('the first cut prompt');
+  await turnSoon();
+  first.kill();
+  await (await openOn(store, counting().drive)).session.settleOpenTurn();
+  // A later process sends again, and dies before its harness places the prompt.
+  const later = await openOn(store, () => new Promise(() => {}));
+  await later.session.send('the second cut prompt');
+  await turnSoon();
+  later.kill();
+  const harness = counting();
+  const next = await openOn(store, harness.drive);
+  assert.equal(next.session.state, 'open_turn');
+  await next.session.settleOpenTurn();
+  await next.session.send('next');
+  await next.session.turnEnd();
+  assert.deepEqual(harness.given, ['next']);
+});
+
+test('a settle a crash cut after its record and before its withdraw is finished by the next one: the same prompt is withdrawn, the person\'s message stays', async () => {
+  const store = memorySessionStore();
+  const first = await openOn(store, () => new Promise(() => {}));
+  await first.session.send('the cut turn\'s prompt');
+  await turnSoon();
+  first.kill();
+  await submittedMeanwhile(store, 'a person\'s message');
+  // The settle's record is written, and the process dies before it withdraws the prompt it names.
+  const drive = await openDrive({ writer: await store.open('step:s'), signal: new AbortController().signal });
+  const state = drive.state();
+  const opening = state.submissions.find((s) => s.text === 'the cut turn\'s prompt');
+  const journal = new NativeJournal(drive);
+  journal.message({ type: 'turn', status: 'interrupted', error: SETTLED, settle: { opening: opening.id, seen: state.submissions.length } });
+  await journal.flush();
+  const harness = counting();
+  const next = await openOn(store, harness.drive);
+  await next.session.settleOpenTurn();
+  await next.session.send('next');
+  await next.session.turnEnd();
+  assert.deepEqual(harness.given, ['a person\'s message', 'next']);
+});
+
+test('the faux harness says a settled turn ended, and refuses to settle a turn it recovered', async () => {
+  const store = memorySessionStore();
+  const adapter = fauxAdapter({ script: () => [{ say: 'working' }, { hang: true }, { say: 'resumed' }, { end: true }] });
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  const spec = { key: 'step:f', label: 'f', system: [], tools: [], context: 'fresh' };
+  const cut = async () => {
+    const dying = new AbortController();
+    const first = await adapter.open(spec, { writer: await store.open('step:f'), models, signal: dying.signal, onEvent: () => {} });
+    await first.send('go');
+    await turnSoon();
+    dying.abort(new Error('killed'));
+  };
+  await cut();
+  const events = [];
+  const second = await adapter.open(spec, { writer: await store.open('step:f'), models, signal: new AbortController().signal, onEvent: (e) => events.push(e) });
+  await second.settleOpenTurn();
+  assert.deepEqual(events, [{ type: 'turn_end', status: 'interrupted' }]);
+  await cut();
+  const third = await adapter.open(spec, { writer: await store.open('step:f'), models, signal: new AbortController().signal, onEvent: () => {} });
+  assert.equal(third.state, 'open_turn');
+  // Recovered: its turn runs again, so there is no cut turn left to settle.
+  await third.recover();
+  await assert.rejects(third.settleOpenTurn(), /no turn to settle/);
+  await third.close();
 });
