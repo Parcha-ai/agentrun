@@ -489,3 +489,30 @@ test("a reported decision beside a model request, even a free one, or beside a d
   assert.deepEqual(bases(withParallel), [["coi", "reported"], ["coi-parallel", "estimate"]]);
   assert.deepEqual(await sourcesOf(api, withParallel), ["estimate", "estimate", "estimate"]);
 });
+
+test("a workflow whose decision cost is unknown and whose model request is priced reads its cost unknown, before and after the server restarts", async (t) => {
+  // On this branch a TypeSafe call is booked at its published price; the OpenRouter route leaves the cost unknown.
+  withEnv(t, { OPENROUTER_API_KEY: CANARY }, KEYS);
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const before = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(before.error));
+  assert.equal(durableDecisions(join(data, "runs", runId, "store", "run.sqlite"))[0].cost_usd, null, "on the OpenRouter route the decision's cost is unknown");
+  // Its timeline's usage row sums the model's request with the decision's here, so a model-only run shows the model priced.
+  const modelOnly = (await api("GET", `/runs/${await startAs(api, "model-only", flow([probe()]))}`)).body;
+  assert.ok(modelOnly.cost.usd > 0, `the model node's request is priced: ${JSON.stringify(modelOnly.cost)}`);
+  assert.equal(before.cost.usd, null, "the decision's unknown cost is the run's");
+  await closeFirst();
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const after = (await client(next.baseUrl, next.token)("GET", `/runs/${runId}`)).body;
+  assert.equal(after.status, "completed");
+  assert.equal(after.cost.usd, null, "and still after a restart: never the model's cost alone");
+});
