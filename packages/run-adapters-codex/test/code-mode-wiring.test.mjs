@@ -4,6 +4,9 @@
 //  - WF2: an answer the proxy could not watch leaves no real exec announced, so a nested call is not tied to an earlier exec.
 //  - RI: a never call's "recorded earlier" answer belongs to the recovered turn; a later turn's same call runs.
 //  - RC: a cut-off exec's nested calls are reported in the order they were made.
+//  - SP4: an event too long in sum, though each of its lines is short, leaves the answer unwatched.
+//  - N4: a recovery note injected and then lost with the process (its rollout line never reached the store) is injected again,
+//    so the history holds it exactly once.
 // The pinned binary (WF2 needs none), through the adapter, with a scripted Responses provider behind the session's proxy.
 // No network. Without the binary the binary's tests skip; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing one fails.
 import assert from 'node:assert/strict';
@@ -137,6 +140,19 @@ test("RI: a never call answered \"recorded earlier\" in the recovered turn is a 
   assert.doesNotMatch(toldAbout(r.seen, 'call_again').join('\n'), /Recorded earlier in this turn/, 'it was not answered from the recovered turn');
 });
 
+/** The machine's model proxy in front of `fetch` (the provider), and `ask()`, which sends it one streamed request and reads the answer to its end. */
+async function proxied(fetch, runId) {
+  const acquire = localMachine({ dir: mkdtempSync(join(ROOT, `${runId}-`)), proxy: { hooks: MODELS, tools: [], fetch } });
+  const route = { routes: CODEX_ROUTES, models: { model: MODEL }, credential: () => 'provider-secret', target: 'https://provider.invalid' };
+  const machine = await acquire({ ctx: { runId }, model: gatewayHandler(route) });
+  const ask = async () => {
+    const res = await globalThis.fetch(`${machine.modelUrl}/v1/responses`, { method: 'POST', headers: { authorization: `Bearer ${machine.modelKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify({ model: MODEL, input: [], stream: true }) });
+    await res.text();
+    return res.status;
+  };
+  return { machine, ask };
+}
+
 test("WF2: an answer the proxy could not watch leaves no real exec announced, so a nested call is not tied to an exec still open from before", async () => {
   // The machine's proxy, with a provider whose first answer carries exec call_prev and whose second answer the watcher
   // cannot follow: one of its events is longer than any it reads (over 4 MiB), so it stops watching that answer.
@@ -146,15 +162,7 @@ test("WF2: an answer the proxy could not watch leaves no real exec announced, so
     const items = n === 1 ? [exec('call_prev', 'text(1)')] : [{ type: 'message', role: 'assistant', id: 'msg_x', content: [{ type: 'output_text', text: 'x'.repeat(5 * 1024 * 1024) }] }];
     return new Response(sse(n, items), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
-  const acquire = localMachine({ dir: mkdtempSync(join(ROOT, 'wf2-')), proxy: { hooks: MODELS, tools: [], fetch } });
-  const route = { routes: CODEX_ROUTES, models: { model: MODEL }, credential: () => 'provider-secret', target: 'https://provider.invalid' };
-  const machine = await acquire({ ctx: { runId: 'wf2' }, model: gatewayHandler(route) });
-  const ask = async () => {
-    const res = await fetch_(`${machine.modelUrl}/v1/responses`, { method: 'POST', headers: { authorization: `Bearer ${machine.modelKey}`, 'content-type': 'application/json', accept: 'text/event-stream' }, body: JSON.stringify({ model: MODEL, input: [], stream: true }) });
-    await res.text();
-    return res.status;
-  };
-  const fetch_ = globalThis.fetch;
+  const { machine, ask } = await proxied(fetch, 'wf2');
   try {
     assert.equal(await ask(), 200);
     assert.equal(machine.announcedExec(), 'call_prev', 'a watched answer announces its exec');
@@ -171,4 +179,86 @@ test("WF2: an answer the proxy could not watch leaves no real exec announced, so
   } finally {
     await machine.close?.();
   }
+});
+
+test("SP4: an answer whose event is too long in sum, though each of its lines is short, reads as unwatched: the exec it carries is not announced", async () => {
+  // The second answer's exec event comes as many data lines, each 1 MiB (under the 4 MiB the watcher reads at once), 6 MiB in
+  // all. Joined, they are one JSON event that carries exec call_hidden.
+  const pad = 'x'.repeat(1024 * 1024);
+  const lines = ['{"type":"response.output_item.done"', ...Array.from({ length: 6 }, (_, i) => `,"pad${i}":"${pad}"`), `,"item":${JSON.stringify(exec('call_hidden', 'text(2)'))}}`];
+  JSON.parse(lines.join('\n'));
+  const split = `event: response.output_item.done\n${lines.map((line) => `data: ${line}`).join('\n')}\n\n`;
+  let n = 0;
+  const fetch = async () => {
+    n += 1;
+    const body = n === 1 ? sse(n, [exec('call_prev', 'text(1)')]) : sse(n, []).replace('event: response.completed', `${split}event: response.completed`);
+    return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const { machine, ask } = await proxied(fetch, 'sp4');
+  try {
+    assert.equal(await ask(), 200);
+    assert.equal(machine.announcedExec(), 'call_prev', 'a watched answer announces its exec');
+    assert.equal(await ask(), 200, 'the answer still reaches the client');
+    const announced = machine.announcedExec();
+    assert.notEqual(announced, 'call_hidden', 'the exec of an event the watcher could not hold is not announced as read');
+    assert.equal(announced, UNWATCHED, `the answer reads as unwatched: ${JSON.stringify(announced)}`);
+  } finally {
+    await machine.close?.();
+  }
+});
+
+test("N4: a recovery note injected, then lost with the process before its rollout line reached the store, is injected again: the next model request holds it exactly once, as a developer message", { skip, timeout: 300_000 }, async () => {
+  const NOTE = 'The harness, not the user, adds this about the turn before this one';
+  let holding;
+  const held = new Promise((resolve) => { holding = resolve; });
+  const hold = { name: 'hold', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'never', call: (_args, { signal }) => { holding(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+  const spec = { key: 'step:n4', label: 'wait', system: [], tools: [hold], context: 'fresh' };
+  const store = memorySessionStore();
+  const seen = [];
+  const fetch = async (_url, init) => {
+    seen.push(JSON.parse(init.body));
+    const n = seen.length;
+    return new Response(sse(n, n === 1 ? [exec('call_js', 'await tools.hold({});')] : [say(n)]), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  // 1. The turn is cut off inside its exec.
+  const died = new AbortController();
+  const a = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: died.signal, onEvent: () => {} });
+  await a.send('wait');
+  await held;
+  died.abort(new Error('the process died'));
+  await a.turnEnd();
+  await a.close();
+  // 2. A second process recovers: it injects the note, and dies while the write that carries the note's rollout line to the
+  // store is held. That write never commits.
+  const writer = await store.open(spec.key);
+  const died2 = new AbortController();
+  let opened;
+  const gate = new Promise((resolve) => { opened = resolve; });
+  const gated = {
+    key: writer.key,
+    read: () => writer.read(),
+    append: (records) => {
+      if (!records.some((record) => JSON.stringify(record).includes(NOTE))) return writer.append(records);
+      opened();
+      return new Promise((_, reject) => died2.signal.addEventListener('abort', () => reject(died2.signal.reason), { once: true }));
+    },
+  };
+  const b = await adapter(fetch).open(spec, { writer: gated, models: MODELS, signal: died2.signal, onEvent: () => {} });
+  const asked = seen.length;
+  await b.recover();
+  await gate;
+  died2.abort(new Error('the process died'));
+  await b.turnEnd();
+  await b.close();
+  assert.equal(seen.length, asked, 'the second process died before it asked the model anything');
+  // 3. A third process recovers from the store alone.
+  const c = await adapter(fetch).open(spec, { writer: await store.open(spec.key), models: MODELS, signal: new AbortController().signal, onEvent: () => {} });
+  await c.recover();
+  assert.equal((await c.turnEnd()).status, 'completed', 'the recovered turn completes');
+  await c.close();
+  const request = seen[asked];
+  assert.ok(request, 'the third process asked the model');
+  const said = (role) => (request.input ?? []).filter((item) => item.role === role && JSON.stringify(item.content ?? '').includes(NOTE)).length;
+  assert.equal(said('developer'), 1, 'the note is in the history once, as a developer message: never lost, never twice');
+  assert.equal(said('user'), 0, 'the note is in no user message');
 });
