@@ -186,7 +186,8 @@ from:
   gateway that wants the id alone, `AGENT_MODEL_GATEWAY_IDS=bare` sends a revision's model without its provider. `AGENT_MODEL_API_KEY` is its key when it needs one. `AGENT_MODEL_PRICE` is `input,output,cacheRead[,cacheWrite]`
   in USD per million tokens, so a run's cost estimate has a price; `AGENT_MODEL_FAST_PRICE` and `AGENT_MODEL_STRONG_PRICE`
   price their tier's model, and default to it. With no price set, a model id pi-ai's catalog knows (`gpt-6-luna`, say)
-  takes the catalog's list price, and any other is priced at $0. A revision's `provider/model-id` takes that provider's
+  takes the catalog's list price, and any other has no price: its answers' cost is unknown, so the run's `cost.usd` is
+  `null`, never $0. A model the catalog lists at $0, or one `AGENT_MODEL_PRICE=0,0` prices, is a known $0. A revision's `provider/model-id` takes that provider's
   entry when it is paid; a bare id, a provider the catalog does not list for it, or one it lists at $0 takes the highest
   price any provider lists (one entry's whole price, the most input plus output; a $0 entry never wins over a paid one),
   as the gateway does not say whose model answers. A run's `max_cost_usd` therefore now stops a gateway run on such a model with
@@ -411,8 +412,9 @@ at the higher of the model's input and cache-write prices, since the provider ma
 input tokens are pi-ai's estimate (`estimateContextTokens`: the tokens the last response reported, plus about one token
 per 3.5 characters after it), which may run low on code or non-English text; the server's check after each response
 catches what it misses. Spent so far is read from the run's store each time its process starts, so it survives a
-restart, plus each response since; a request in flight holds its worst case until it answers. A model priced at $0 (a
-gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap. Pricing the whole output
+restart, plus each response since; a request in flight holds its worst case until it answers. A model with no price (a
+gateway id pi-ai's catalog does not know, with no `AGENT_MODEL_PRICE`) never reaches a cap, and its run's cost reads
+`null`. Pricing the whole output
 ceiling is strict: on a model with 64,000 max output tokens at $15 per million, one request's worst case is about $0.96,
 so any cap under about $1 refuses the first request; set a cap above one request's ceiling.
 
