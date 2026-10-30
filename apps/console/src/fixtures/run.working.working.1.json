@@ -1,0 +1,34 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-fb34-7e15-b661-ccce2e884118"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-fb34-7e15-b661-ccce2e884118",
+    "agent_id": "support-triage",
+    "agent_version": 2,
+    "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+    "kind": "workflow",
+    "sha": null,
+    "status": "working",
+    "state": "working",
+    "title": "Bulk import takes a while",
+    "created_at": "2026-10-28T19:33:39.746Z",
+    "updated_at": "2026-10-28T21:19:40.458Z",
+    "ended_at": null,
+    "result": null,
+    "error": null,
+    "cost": {
+      "usd": null,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 1000
+  }
+}

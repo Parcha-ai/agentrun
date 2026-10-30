@@ -128,9 +128,13 @@ test("only the policy's routes, by their exact text: an absolute URL, a foreign 
   const refused = ['http://evil.example/v1/test', '//evil.example/v1/test', '/v1/test/../files', '/v1/%74est', '/v1/test?x=1', '/v1/files', '/v1/test/', '/v1//test', '/V1/test'];
   for (const path of refused) assert.equal((await send(p.url, { path })).status, 403, path);
   for (const method of ['GET', 'PUT']) assert.equal((await send(p.url, { method })).status, 403, method);
+  // The probe a shared machine's service sends each new loopback listener: refused without the key, and not counted.
+  assert.equal((await send(p.url, { method: 'GET', path: '/', key: null })).status, 401);
   assert.equal(forwarded.length, 0, 'nothing refused reached the provider');
   // Every refusal is reported, with what was asked: a client calling a route the table lacks is seen.
-  const refusals = hooks.logged.filter((l) => /refused/.test(l.message));
+  // Each request here carries the session's key, so a keyless refusal is another local client's (a service on a shared
+  // machine probes new loopback listeners with a bare `GET /`), not counted.
+  const refusals = hooks.logged.filter((l) => /refused/.test(l.message) && l.reason !== "this session's key is required");
   assert.equal(refusals.length, refused.length + 2);
   assert.deepEqual(refusals.at(-1), { message: 'model proxy (test): refused', status: 403, method: 'PUT', path: '/v1/test', reason: 'PUT /v1/test is not in the table' });
   assert.ok(refusals.some((l) => l.path === '/v1/files' && l.method === 'POST'));
@@ -529,6 +533,42 @@ test("close() while one request is in flight and another waits on the runner: ea
   for (const end = Date.now() + 2000; ends.length < 2 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 10));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(ends.sort((a, b) => a[0] - b[0]), [[1, null], [2, 0]], 'turn 1 cut by the close (unknown), turn 2 released at nothing: each once, under its own turn');
+});
+
+test("a stop that comes while a paid request's record is being written: the request never leaves, and it is booked withdrawn at a known $0, never cut", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const writer = await store.open('chat:stop');
+  // The check before the write has passed; the stop comes while the request's record is held in its write.
+  const writing = signal();
+  const stopping = signal();
+  const append = async (records) => {
+    if (records.some((r) => r.kind === RUNNER_RECORDS.request)) { writing.fire(); await stopping.wait('the stop'); }
+    return writer.append(records);
+  };
+  let stopped;
+  const booking = await modelPortFor(writer, { key: 'chat:stop', append, stopped: () => stopped });
+  let upstream = 0;
+  const fetchStub = async () => { upstream++; return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const sent = send(p.url, { path: '/v1/test?beta=true' });
+  await writing.wait("the request's record in its write");
+  stopped = new Error('the run was cancelled');
+  stopping.fire();
+  const res = await sent;
+  assert.equal(upstream, 0, 'nothing reached the provider');
+  assert.match(res.text, /the run was cancelled/, 'refused, by the stop');
+  const turns = (await store.read('chat:stop')).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data);
+  assert.deepEqual(turns, [{ turn: 1, usd: 0, unsent: true }], 'withdrawn, at $0');
+  // A later process: nothing to book as cut, and the session's spend is known.
+  const asked = [];
+  const next = await modelPortFor(writer, { key: 'chat:stop', beforeRequest: ({ spentUsd, turn }) => void asked.push({ turn, spentUsd }) });
+  await next.bookCut();
+  assert.equal((await store.read('chat:stop')).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).length, 0, 'never booked as cut');
+  await next.models.beforeRequest({ model: 'session-model' });
+  assert.deepEqual(asked, [{ turn: 2, spentUsd: 0 }], 'the next request is turn 2, at a known $0 spent');
 });
 
 test("each booked request carries the ids its response headers gave (a gateway's call id, the provider's request id), recorded when the headers arrive: a request a crash cut after them keeps them, one cut before them has none, and nothing else of the response is kept", async (t) => {

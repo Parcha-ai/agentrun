@@ -58,6 +58,34 @@ test('a provider answer that does not match the questions is invalid_response, n
   await assert.rejects(judge(params), code('invalid_response'));
 });
 
+test('an answer the seam rejects was paid for: its invalid_response carries the provider\'s cost and basis, or null when it reported none', async () => {
+  const invalid = { ...outcome, answers: { ...outcome.answers, pick: { type: 'choice', choice: 'a', probabilities: { a: 0.9, b: 0.9 } } }, cost_usd: 0.004 };
+  await assert.rejects(judgeFromProvider(providerOf(async () => invalid))(params), (error) => {
+    code('invalid_response')(error);
+    assert.deepEqual([error.costUsd, error.costBasis], [0.004, 'estimate']);
+    return true;
+  });
+  await assert.rejects(judgeFromProvider(providerOf(async () => ({ ...invalid, cost_usd: null, cost_basis: 'unknown' })))(params), (error) => {
+    code('invalid_response')(error);
+    assert.deepEqual([error.costUsd, error.costBasis], [null, 'unknown'], 'an unknown cost stays unknown, never $0');
+    return true;
+  });
+});
+
+test('a workflow whose decision the seam rejects records the request failed at the provider\'s cost, or at an unknown one', async () => {
+  const flow = {
+    v: 2, name: 'judged', schemas: { Verdict: { type: 'object', required: ['legit'], properties: { legit: { type: 'boolean', description: 'Is it legitimate?' } } } },
+    output: { schemaId: 'Verdict', path: 'verdict' },
+    root: { node: 'judge', label: 'check', state: { doc: 'x' }, out: 'Verdict', as: 'verdict' },
+  };
+  for (const [cost_usd, booked] of [[0.004, 0.004], [null, null]]) {
+    const receipts = [];
+    const provider = providerOf(async () => ({ ...outcome, answers: { legit: { type: 'noul', noul: 1.7 } }, cost_usd }));
+    await assert.rejects(runWorkflow(flow, {}, { runJudge: judgeFromProvider(provider), recordDecision: async (receipt) => { receipts.push(receipt); } }), code('invalid_response'));
+    assert.deepEqual(receipts.map((receipt) => [receipt.status, receipt.cost_usd]), [['failed', booked]]);
+  }
+});
+
 test('a workflow runs on a provider through runJudge, and the receipt holds the derived-confidence source', async () => {
   const receipts = [];
   const flow = {

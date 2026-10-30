@@ -4,7 +4,7 @@ import { isDeepStrictEqual, types as utilTypes } from "node:util";
 import { predicateMatches, getPath, MECHANICAL_PREDICATE_NAMES, type AcceptPredicate } from "./predicates.js";
 import { DECISION_NODE_FIELDS, DECISION_TIMEOUT_MAX_MS, WORKFLOW_NODE_KINDS, NODE_FIELDS, HOST_NODE_FIELDS, IGNORED_NODE_FIELDS, WORKFLOW_PREDICATES, THINKING_LEVELS, MODEL_TIERS, AGENT_CONTEXTS, CALL_TRANSPORTS, CALL_RETRY_CLASSES, EFFECT_FAILURE_CODES, PROSE_ARTIFACT_TYPES, type WorkflowNodeKind } from "./vocabulary.js";
 import { validateAnswers, answerConfidence, answersSidecar, answersToValue, compileQuestions, refusedQuestions, SYSTEM_ONE_LIMITS, type AnswersSidecar, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
-import { DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
+import { chargedCost, DecisionProviderError, type CostBasis, type DecisionEvidence, type DecisionProvider } from "./decision-provider.js";
 import { DECISION_RECEIPT_VERSION, DECISION_INTERRUPTED, DECISION_REFUSED, type DecisionKind, type DecisionReceipt, type DecisionRule } from "./decision-receipts.js";
 import { Compile } from "typebox/compile";
 import { compileTransform, compileTransformSyntax } from "./code-exec.js";
@@ -2093,9 +2093,11 @@ async function decide<T>(
   try { result = await runJudge(request); }
   catch (error) {
     // A request sent whose outcome was lost may have been answered and billed: it is booked at the cost its provider
-    // gives, with how that was reached, never asked again, and a person decides the case.
+    // gives, with how that was reached, never asked again, and a person decides the case. One answered with what is
+    // rejected was billed, and is booked at its cost, or an unknown one.
     const lost = error instanceof DecisionProviderError && error.code === "outcome_unknown";
-    const spent: JudgeResult | undefined = lost ? { answers: {}, cost_usd: (error as DecisionProviderError).costUsd ?? null,
+    const charge = chargedCost(error);
+    const spent: JudgeResult | undefined = charge !== undefined ? { answers: {}, cost_usd: charge,
       ...((error as DecisionProviderError).costBasis !== undefined ? { cost_basis: (error as DecisionProviderError).costBasis } : {}) } : undefined;
     // The status is read before the caller reacts: a request that fails on its own is `failed`, even when
     // its failure is what cancels the others.
