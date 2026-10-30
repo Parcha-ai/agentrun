@@ -18,7 +18,7 @@ import type { FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createRegistry } from "@earendil-works/pi-durable";
 import type { Conversation, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 import { ArchilCodingTools, localRun, openDurableRun } from "@parcha/pi-durable-disk";
-import { described, judge, type Seen } from "./survivors.ts";
+import { described, endSurvivors, judge, type Seen } from "./survivors.ts";
 
 const root = join(process.cwd(), "kill-9-run");
 const work = join(root, "work");
@@ -118,22 +118,28 @@ const processes = (): Seen[] => {
     });
   }
   return readdirSync("/proc").flatMap((entry) => {
-    if (!/^\d+$/.test(entry)) return [];
-    try {
-      const stat = readFileSync(join("/proc", entry, "stat"), "utf8");
-      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" "); // after "pid (comm) ": state, ppid, pgrp, ...
-      let command = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
-      try {
-        command = readFileSync(join("/proc", entry, "cmdline"), "utf8").replace(/\0/g, " ").trim() || command;
-      } catch {
-        // its command line went with it
-      }
-      return [{ pid: Number(entry), ppid: Number(fields[1]), group: Number(fields[2]), state: fields[0]!, start: Number(fields[19]), command }];
-    } catch {
-      return []; // the process ended while it was read
-    }
+    const one = /^\d+$/.test(entry) ? fromProc(Number(entry)) : undefined;
+    return one ? [one] : [];
   });
 };
+/** One process from /proc, or undefined once it has ended (Linux). */
+const fromProc = (pid: number): Seen | undefined => {
+  try {
+    const stat = readFileSync(join("/proc", String(pid), "stat"), "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" "); // after "pid (comm) ": state, ppid, pgrp, ...
+    let command = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+    try {
+      command = readFileSync(join("/proc", String(pid), "cmdline"), "utf8").replace(/\0/g, " ").trim() || command;
+    } catch {
+      // its command line went with it
+    }
+    return { pid, ppid: Number(fields[1]), group: Number(fields[2]), state: fields[0]!, start: Number(fields[19]), command };
+  } catch {
+    return undefined; // the process ended while it was read
+  }
+};
+/** One process as a look just now sees it, or undefined once it has ended. */
+const look = (pid: number): Seen | undefined => (process.platform === "linux" ? fromProc(pid) : processes().find((p) => p.pid === pid));
 /** Now, on the clock of `processes()`'s start: clock ticks since boot (USER_HZ, 100) on Linux, seconds elsewhere. */
 const now = (): number =>
   process.platform === "linux" ? Math.floor(Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 100) : Math.floor(Date.now() / 1000);
@@ -148,15 +154,20 @@ const endAll = (): void => {
     child.kill("SIGKILL");
   }
   // Once the next open's instant is taken, only the command's own processes (see survivors.ts) are ended, each on its own
-  // (one that ends meanwhile stops none of the others), never another group that took the number; before it, the group is
-  // ended by its leader's pid, which nothing else holds while the command runs.
-  const targets = before !== undefined ? judged().survivors.map((p) => p.pid) : existsSync(join(work, "job.pid")) ? [-Number(readFileSync(join(work, "job.pid"), "utf8"))] : [];
-  for (const target of targets) {
+  // (one that ends meanwhile stops none of the others) and only while a fresh look still shows it as judged, never another
+  // group that took the number; before it, the group is ended by its leader's pid, which nothing else holds while the
+  // command runs.
+  const kill = (target: number): void => {
     try {
       process.kill(target, "SIGKILL");
     } catch {
       // already gone
     }
+  };
+  if (before !== undefined) {
+    for (const line of endSurvivors(judged().survivors, leader!, look, kill).skipped) console.error(`not signalled: ${line}`);
+  } else if (existsSync(join(work, "job.pid"))) {
+    kill(-Number(readFileSync(join(work, "job.pid"), "utf8")));
   }
 };
 process.on("exit", endAll);

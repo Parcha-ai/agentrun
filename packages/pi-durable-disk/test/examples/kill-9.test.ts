@@ -3,7 +3,7 @@
 // work/, and the agent goes on to the end. The example checks all of that itself and ends with an `ok:` line.
 import { it } from "node:test";
 import assert from "node:assert/strict";
-import { judge, type Seen } from "../../examples/kill-9/survivors.ts";
+import { endSurvivors, judge, type Seen } from "../../examples/kill-9/survivors.ts";
 import { assertExampleOk, runExample } from "./_run-example.ts";
 
 it("kill-9: the files are intact after kill -9, the cut command comes back interrupted and ran once, the agent finishes", { timeout: 120_000 }, async () => {
@@ -51,4 +51,27 @@ it("the example's check: with the command's leader gone, a holder of its group n
   // the number again.
   const holder = seen(4300, 4300, 1500, "S", "node another-test.js");
   assert.deepEqual(judge([holder], 4300, before), { survivors: [], reused: [holder] });
+});
+
+// The example's cleanup ends what the check judged only while a fresh look still shows it so. The kill is a recorder here:
+// no test of this sends a real signal.
+it("the example's cleanup: a judged survivor that a fresh look shows in another group, or with another start, is reported and never signalled; one still as judged is", () => {
+  const moved = seen(4310, 4300, 600);
+  const reborn = seen(4320, 4300, 700);
+  const kept = seen(4330, 4300, 800);
+  const gone = seen(4340, 4300, 900);
+  const fresh = new Map([
+    [4310, seen(4310, 9900, 600, "S", "node another-lane.js")],
+    [4320, seen(4320, 4300, 1500, "S", "node another-test.js")],
+    [4330, kept],
+  ]);
+  const signalled: number[] = [];
+  const { ended, skipped } = endSurvivors([moved, reborn, kept, gone], 4300, (pid) => fresh.get(pid), (pid) => signalled.push(pid));
+  assert.deepEqual(signalled, [4330]);
+  assert.deepEqual(ended, [4330]);
+  assert.deepEqual(skipped, [
+    "pid 4310: in group 9900, not the command's 4300",
+    "pid 4320: started at 1500, not at 700 as judged (the pid was handed out again)",
+    "pid 4340: gone",
+  ]);
 });

@@ -29,5 +29,32 @@ export function judge(table: readonly Seen[], group: number, before: number): { 
   return lived ? { survivors: live, reused: [] } : { survivors: [], reused: live };
 }
 
+/**
+ * Ends the survivors a judgment named, each only while a fresh look at it (`look`, taken just before its signal) still
+ * shows it in group `group` with the start it was judged by. Anything else is skipped and reported, never signalled: a
+ * pid handed out again between the judgment and the signal, or one a broken judgment named. A wrong judgment can then
+ * miss a survivor, never end another process.
+ */
+export function endSurvivors(
+  survivors: readonly Seen[],
+  group: number,
+  look: (pid: number) => Seen | undefined,
+  kill: (pid: number) => void,
+): { ended: number[]; skipped: string[] } {
+  const ended: number[] = [];
+  const skipped: string[] = [];
+  for (const judged of survivors) {
+    const now = look(judged.pid);
+    if (now === undefined) skipped.push(`pid ${judged.pid}: gone`);
+    else if (now.group !== group) skipped.push(`pid ${judged.pid}: in group ${now.group}, not the command's ${group}`);
+    else if (now.start !== judged.start) skipped.push(`pid ${judged.pid}: started at ${now.start}, not at ${judged.start} as judged (the pid was handed out again)`);
+    else {
+      kill(judged.pid);
+      ended.push(judged.pid);
+    }
+  }
+  return { ended, skipped };
+}
+
 /** One line for a process, for the example's failure message. */
 export const described = (p: Seen): string => `pid ${p.pid} (parent ${p.ppid}, state ${p.state}, started ${p.start}) ${p.command}`;
