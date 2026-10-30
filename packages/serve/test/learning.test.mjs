@@ -7,11 +7,11 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { learningId, renderLearning } from "@parcha/pi-agent-learn";
+import { renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
 import { openStoreReader } from "@parcha/pi-durable-agent";
-import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, proposeFor, readRunState, withAgentRepo } from "../dist/learning.js";
+import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, readRunState, withAgentRepo } from "../dist/learning.js";
 import { agent as offAgent, client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
 
 /** An agentic agent `id` whose definition leaves learning out, as a new agent's usually does, unless `extra` sets it. */
@@ -22,6 +22,10 @@ const agent = (id, extra = {}) => {
 };
 
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
+/** Where the faux model writes its note on it, in the run's working copy and so on the run's branch. */
+const RATE_NOTE = "learnings/L-5ca1ab1e0001.md";
+// Imported per call, so a module without it fails each test that uses it by name.
+const harvestFor = async (...args) => (await import("../dist/learning.js")).harvestFor(...args);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const bareOf = (data, id) => join(data, "agents", id, "learning.git");
 const git = (dir, ...args) => execFileSync("git", ["--git-dir", dir, ...args], { encoding: "utf8" }).trim();
@@ -84,19 +88,18 @@ test("a new agentic agent learns (auto, stored), an edit without the field keeps
   assert.equal(existsSync(bareOf(data, "f")), false);
 });
 
-test("the learn tool comes with learning: naming it while learning is off is refused at save, with the fix", async (t) => {
+test("learn is no tool: naming it is refused at save, learning on or off; a learning run has the file tools and writes its notes with them", async (t) => {
   const { api, data } = await serve(t);
-  const refused = await api("POST", "/agents", agent("named", { learning: null, tools: ["read", "learn"] }));
-  assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
-  assert.match(refused.body.error.fields[0].fix, /set definition\.learning to auto or approve/i);
-  await api("POST", "/agents", agent("quiet", { learning: null }));
-  const edit = await api("PUT", "/agents/quiet/definition", { definition: { instructions: "Answer.", skills: [], tools: ["learn"] } });
-  assert.equal(edit.status, 422, "an edit that names it while learning stays off is refused too");
-  const named = await api("POST", "/agents", agent("calc", { tools: ["learn"] }));
-  assert.equal(named.status, 201, "naming it while learning is on is allowed");
+  for (const learning of [null, "auto"]) {
+    const refused = await api("POST", "/agents", agent(`named-${learning ?? "off"}`, { learning, tools: ["read", "learn"] }));
+    assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [["definition.tools[1]", "not_an_option"]]]);
+  }
+  // It names no tool: learning gives it read, write and edit, for its working copy of the repository.
+  await api("POST", "/agents", agent("calc"));
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
   await follow(api, run.run_id, ["completed"]);
-  assert.equal((await stateOf(data, "calc", run.run_id)).state, "proposed", "and the run gets one learn tool");
+  assert.equal((await stateOf(data, "calc", run.run_id)).state, "proposed");
+  assert.match(show(bareOf(data, "calc"), `runs/${run.run_id}`, RATE_NOTE), /rate-limits/);
 });
 
 test("an agent that learns has a repository beside the store whose main holds AGENTS.md and agent.json for its current revision, one host commit per change", async (t) => {
@@ -148,6 +151,10 @@ test("a run starts from main's notes at one commit: they are in its workspace an
   assert.equal(answer.status, "completed");
   const work = join(data, "runs", run.run_id, "work");
   assert.equal(await readFile(join(work, ".agent", "learnings", "L-0123456789ab.md"), "utf8"), renderLearning(lesson("L-0123456789ab", "Search both forms of the legal name.")));
+  // Its working copy of the repository is main at that commit; the host's own git directory stays out of its reach.
+  assert.equal(await readFile(join(work, ".agent", "repo", "learnings", "L-0123456789ab.md"), "utf8"), renderLearning(lesson("L-0123456789ab", "Search both forms of the legal name.")));
+  assert.equal(await readFile(join(work, ".agent", "repo", "AGENTS.md"), "utf8"), "Answer.\n");
+  assert.equal(existsSync(join(work, ".agent", "repo", ".git")), false);
   const bare = bareOf(data, "calc");
   const branch = `runs/${run.run_id}`;
   const state = await stateOf(data, "calc", run.run_id);
@@ -157,7 +164,7 @@ test("a run starts from main's notes at one commit: they are in its workspace an
   const memo = front(show(bare, branch, `memos/${run.run_id}.md`));
   assert.deepEqual({ ...memo, cost_usd: undefined }, { run: run.run_id, base, harness: "pi", outcome: "completed", untrusted: "false", cost_usd: undefined });
   assert.ok(Number.isFinite(Number(memo.cost_usd)), "the memo says what the run cost");
-  assert.match(show(bare, branch, `learnings/${learningId(run.run_id, RATE_LIMIT)}.md`), /rate-limits at 1 request a second/);
+  assert.match(show(bare, branch, RATE_NOTE), /rate-limits at 1 request a second/, "the note the run wrote with its own write tool");
 });
 
 test("the notes are in the prompt the model sees", async (t) => {
@@ -212,7 +219,7 @@ test("a run's base stays where it was seeded when its process dies, main moves, 
   const gate = join(dir, "go");
   const { body: run } = await first.api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${gate} exists.` } });
   // The learn call's result comes after the seed is journaled: the run is past its seed when its server dies.
-  for (let i = 0; !(await first.api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "learn"); i++) {
+  for (let i = 0; !(await first.api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "write"); i++) {
     assert.ok(i < 400, "the run notes its lesson");
     await sleep(50);
   }
@@ -257,7 +264,7 @@ test("a run whose end its server never carried back is proposed once by the next
   assert.equal((await first.api("POST", "/agents", agent("calc"))).status, 201);
   const gate = join(dir, "go");
   const { body: run } = await first.api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${gate} exists.` } });
-  for (let i = 0; !(await first.api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "learn"); i++) {
+  for (let i = 0; !(await first.api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "write"); i++) {
     assert.ok(i < 400, "the run notes its lesson");
     await sleep(50);
   }
@@ -316,7 +323,7 @@ test("a proposal and the start-time catch-up of the same run at once make one co
   t.after(() => store.close());
   const reader = { store, request: async (act) => act() };
   const errors = [];
-  const [direct, caught] = await Promise.all([proposeFor(data, reader, run.run_id), catchUp(data, reader, (line) => errors.push(line))]);
+  const [direct, caught] = await Promise.all([harvestFor(data, reader, run.run_id), catchUp(data, reader, (line) => errors.push(line))]);
   assert.deepEqual(errors, []);
   assert.deepEqual(caught, [run.run_id], "the catch-up read no record either, and proposed it too");
   const state = await readRunState(data, "calc", run.run_id);
@@ -372,7 +379,8 @@ test("a writer holding the agent store makes the start-time catch-up and a propo
   // A proposal reads the store through its caller's request, which waits for the writer the same way.
   release = hold();
   const waited = { request: (act) => whenFree(act, [10, 10, 10, 10, 10], () => release()) };
-  assert.deepEqual(await proposeFor(data, { store: agents.store, request: waited.request }, run.run_id), { status: "already", sha: state.sha });
+  const again = await harvestFor(data, { store: agents.store, request: waited.request }, run.run_id);
+  assert.deepEqual([again.status, again.sha], ["already", state.sha]);
   assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), state.sha, "one commit on the run's branch");
 });
 
@@ -403,7 +411,7 @@ async function gatedLearner(t, api) {
   await api("POST", "/agents", agent("calc"));
   const gate = join(await scratch(t), "go");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${gate} exists.` } });
-  for (let i = 0; !(await api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "learn"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "write"); i++) {
     assert.ok(i < 400, "the run notes its lesson");
     await sleep(50);
   }
@@ -476,7 +484,7 @@ test("a cancelled run's memo says it stopped", async (t) => {
   const gate = join(await scratch(t), "never");
   const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: `Learn the rate limit, then answer once ${gate} exists.` } });
   const bare = bareOf(data, "calc");
-  for (let i = 0; !(await api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "learn"); i++) {
+  for (let i = 0; !(await api("GET", `/runs/${run.run_id}/timeline`)).body.rows.some((r) => r.kind === "tool_result" && r.tool_name === "write"); i++) {
     assert.ok(i < 400, "the run notes its lesson");
     await sleep(50);
   }
@@ -501,7 +509,8 @@ test("the server proposes once the run's end is written, so the memo carries the
   assert.equal(Number(front(show(bare, branch, `memos/${run.run_id}.md`)).cost_usd), ended.costUsd, "the cost the carry back wrote");
   const store = openStoreReader(data);
   t.after(() => store.close());
-  assert.deepEqual(await proposeFor(data, { store, request: async (act) => act() }, run.run_id), { status: "already", sha });
+  const again = await harvestFor(data, { store, request: async (act) => act() }, run.run_id);
+  assert.deepEqual([again.status, again.sha], ["already", sha]);
   assert.equal(tip(bare, branch), sha);
   assert.equal(git(bare, "log", "--format=%H", `main..${branch}`), sha, "one commit for the run");
 });
@@ -599,9 +608,9 @@ test("a run is untrusted when any message of any entry in its store calls an ext
   const put = (record) => db.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify(record));
   const call = (name) => ({ role: "assistant", content: [{ type: "text", text: "Looking." }, { type: "toolCall", id: `c-${name}`, name, arguments: {} }] });
   put({ kind: "pi.user", model: [{ role: "user", content: "Go." }] });
-  put({ kind: "pi.assistant", model: [call("read"), call("learn")] });
+  put({ kind: "pi.assistant", model: [call("read"), call("write")] });
   db.close();
-  assert.equal(externalUsed(file), false, "the file tools and learn bring nothing in");
+  assert.equal(externalUsed(file), false, "the file tools bring nothing in");
   const planted = new DatabaseSync(file);
   // An external call in the entry's second message, not its first.
   planted.prepare("INSERT INTO entries (record) VALUES (?)").run(JSON.stringify({ kind: "pi.assistant", model: [call("read"), call("fetch_page")] }));
@@ -611,7 +620,67 @@ test("a run is untrusted when any message of any entry in its store calls an ext
 
 test("a run's outcome on its memo, and which tools bring outside content in", () => {
   assert.deepEqual(["completed", "failed", "escalated", "stopped"].map(outcomeOf), ["completed", "failed", "failed", "stopped"]);
-  assert.deepEqual(["read", "write", "edit", "ask_person", "learn"].map(isExternal), [false, false, false, false, false]);
+  assert.deepEqual(["read", "write", "edit", "ask_person"].map(isExternal), [false, false, false, false]);
+  assert.equal(isExternal("learn"), true, "learn is no tool here: a call by that name is unknown, so external");
   assert.equal(isExternal("fetch_page"), true, "a page from the web");
   assert.equal(isExternal("snapshot"), true, "a tool this host does not know is counted as external, never as safe");
+});
+
+test("a run whose process is still live is never harvested: its working copy is read only after the process has ended", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  const { sha } = await stateOf(data, "calc", run.run_id);
+  // The run's record names a holder that is alive: a process (or, later, a box) still serving it.
+  const { spawn } = await import("node:child_process");
+  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+  t.after(() => holder.kill("SIGKILL"));
+  const recordFile = join(data, "runs", run.run_id, "run.json");
+  const record = JSON.parse(await readFile(recordFile, "utf8"));
+  await writeFile(recordFile, JSON.stringify({ ...record, holder: { ...(record.holder ?? {}), pid: holder.pid } }));
+  const bare = bareOf(data, "calc");
+  git(bare, "update-ref", "-d", `refs/heads/runs/${run.run_id}`);
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  await assert.rejects(harvestFor(data, { store, request: async (act) => act() }, run.run_id), /still live/);
+  assert.equal(branches(bare).includes(`runs/${run.run_id}`), false, "nothing was harvested");
+  holder.kill("SIGKILL");
+  await new Promise((resolve) => holder.once("exit", resolve));
+  const after = await harvestFor(data, { store, request: async (act) => act() }, run.run_id);
+  assert.equal(after.sha, sha, "once it has ended, the same commit as before");
+});
+
+test("a crash between the harvest's commit and its push: the next harvest pushes the same commit once, read as already, and a fresh clone makes the same commit", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const first = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  let closing;
+  const close = () => (closing ??= first.close());
+  t.after(close);
+  const api = client(first.baseUrl, first.token);
+  await api("POST", "/agents", agent("calc"));
+  const bare = bareOf(data, "calc");
+  // The push is refused: the commit is made in the host's clone and never reaches the repository, as a crash leaves it.
+  await chmod(join(bare, "refs", "heads"), 0o555);
+  t.after(() => chmod(join(bare, "refs", "heads"), 0o755).catch(() => undefined));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  await close();
+  await chmod(join(bare, "refs", "heads"), 0o755);
+  const hostClone = join(data, "agents", "calc", "host.git");
+  const made = git(hostClone, "rev-parse", "--verify", "-q", `refs/heads/runs/${run.run_id}`);
+  assert.ok(made, "the host's clone holds the commit");
+  assert.equal(branches(bare).includes(`runs/${run.run_id}`), false, "and the repository does not");
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  const reader = { store, request: async (act) => act() };
+  const again = await harvestFor(data, reader, run.run_id);
+  assert.deepEqual([again.status, again.sha], ["already", made], "the clone's commit is found by its Run-Id and pushed");
+  assert.equal(git(bare, "log", "--format=%H", `main..runs/${run.run_id}`), made, "one commit on the run's branch");
+  // A host with none of that (a fresh clone): the same files, the same date, the same commit.
+  const { rm } = await import("node:fs/promises");
+  await rm(hostClone, { recursive: true, force: true });
+  git(bare, "update-ref", "-d", `refs/heads/runs/${run.run_id}`);
+  const fresh = await harvestFor(data, reader, run.run_id);
+  assert.deepEqual([fresh.status, fresh.sha], ["proposed", made]);
 });

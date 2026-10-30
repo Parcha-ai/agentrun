@@ -1,5 +1,7 @@
 // A faux model for the tests and the conformance scenarios: replies chosen from the conversation, no key, no network.
 const RATE_LIMIT = "The state registry rate-limits at 1 request a second.";
+/** The run's note on it, written into its working copy of the learning repository with its own write tool. */
+const RATE_LIMIT_NOTE = { path: ".agent/repo/learnings/L-5ca1ab1e0001.md", content: `---\nid: L-5ca1ab1e0001\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\n${RATE_LIMIT}\n` };
 const textOf = (message) => (typeof message?.content === "string" ? message.content : (message?.content ?? []).map((c) => (c.type === "text" ? c.text : "")).join(""));
 
 /** Resolves after `ms`, or as an aborted reply as soon as the turn is stopped. */
@@ -56,17 +58,17 @@ export default function reply(context, faux) {
   const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap(strings)].join("\n");
   if (first.includes("What have you learned?")) return faux.message(`Learned: ${/<learned>([\s\S]*?)<\/learned>/.exec(system)?.[1]?.trim() ?? "nothing"}`);
   if (first.includes("Which skills do you have?")) return faux.message(`Skills: ${[...system.matchAll(/<skill name="([^"]+)">\n([^<]*)/g)].map((m) => `${m[1]}=${m[2].trim()}`).join(", ") || "none"}`);
-  // Notes one lesson with `learn`, then answers; "..., then answer once <file> exists." waits for the file first.
-  // Calls fetch_page (any outcome), then notes one lesson, then answers.
+  // Writes one note into its working copy, then answers; "..., then answer once <file> exists." waits for the file first.
+  // Calls fetch_page (any outcome), then writes one note, then answers.
   if (first.includes("Fetch the page, then learn")) {
     const results = context.messages.filter((m) => m.role === "toolResult").length;
     if (results === 0) return faux.message(faux.toolCall("fetch_page", { url: "https://example.com/" }), { stopReason: "toolUse" });
-    if (results === 1) return faux.message(faux.toolCall("learn", { type: "lesson", text: RATE_LIMIT }), { stopReason: "toolUse" });
+    if (results === 1) return faux.message(faux.toolCall("write", RATE_LIMIT_NOTE), { stopReason: "toolUse" });
     return faux.message("Fetched and learned.");
   }
   const learnThenWait = /^Learn the rate limit, then answer once (\S+) exists\.$/.exec(first);
   if (first.includes("Learn the rate limit")) {
-    if (!answered) return faux.message(faux.toolCall("learn", { type: "lesson", text: RATE_LIMIT }), { stopReason: "toolUse" });
+    if (!answered) return faux.message(faux.toolCall("write", RATE_LIMIT_NOTE), { stopReason: "toolUse" });
     if (!learnThenWait) return faux.message(textOf(context.messages.at(-1)));
     return new Promise((resolve) => {
       faux.signal?.addEventListener("abort", () => resolve(faux.message("", { stopReason: "aborted" })), { once: true });
