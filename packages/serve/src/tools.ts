@@ -2,7 +2,7 @@
 // environment variables it needs. A name outside the table cannot be named, and nothing is loaded from anywhere else.
 // `bash` is not in it: a run gets no shell on this machine.
 import type { TSchema } from "@earendil-works/pi-ai";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
@@ -17,6 +17,15 @@ export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ provider, driver }`, in place of
  *  Browserbase's (the tests' fake backend). */
 export const FAUX_BROWSER_ENV = "AGENTRUN_SERVE_FAUX_BROWSER";
+
+/** Set to a path only by the recovery test: the catalog then holds one extra tool, `faux_never`, whose execute blocks
+ *  while the hold file at that path exists and does nothing else. It proves the plane journals a call and honours a
+ *  tool's replay class on recovery, with a call this test can hold in-flight across a crash. The env is read once, when
+ *  the catalog is built; unset, the tool is not in the catalog at all, so it is in no capability, no registry and no
+ *  openapi document. */
+export const FAUX_NEVER_ENV = "AGENTRUN_SERVE_FAUX_NEVER";
+/** The name the faux tool takes: it says what it is, a tool whose interrupted call never runs again. */
+export const FAUX_NEVER_TOOL = "faux_never";
 
 /** What the result of `ask_person` says; the person's page shows the question as a waiting row. */
 export const asked = (question: string) => `Asked the person: ${question.slice(0, 500)}. Waiting for their answer.`;
@@ -143,6 +152,31 @@ const browserTool: ToolEntry = {
   },
 };
 
+/** The faux tool the recovery test adds: its execute blocks while the hold file at `hold` exists, then returns. Its
+ *  replay class is `unsafe` (pi's non-replayable class, the one write and edit take): a call a crash cut off is answered
+ *  interrupted, never run again, because recovery re-runs only a call whose stored and current class are both `safe`.
+ *  The class lives here, on the registration the plane serves, not in the test. */
+const fauxNeverTool = (hold: string): ToolEntry => ({
+  summary: "A test-only tool: its call blocks until the test lets it finish, and never runs again if a crash cuts it off.",
+  needs: [],
+  nodes: false,
+  bind: async (host) => {
+    const tool = defineTool({
+      name: FAUX_NEVER_TOOL,
+      description: "Block while the hold file exists.",
+      parameters: { type: "object", additionalProperties: false, properties: {} } as unknown as TSchema,
+      replay: "unsafe",
+      execute: async () => {
+        while (await access(hold).then(() => true, () => false)) await new Promise((resolve) => setTimeout(resolve, 20));
+        return forModel("faux_never: done");
+      },
+    }) as unknown as ToolRegistration;
+    const extension = defineExtension({ name: "faux-never", tools: [tool] });
+    host.install(extension);
+    return { tools: [tool], extensions: [extension] };
+  },
+});
+
 export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   read: fileTool("read", "Read a file in the run's work/."),
   write: fileTool("write", "Write a file in the run's work/."),
@@ -170,6 +204,9 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => fetchPage(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
   },
   browser: browserTool,
+  // Read once, here, as the catalog is built: when the recovery test sets the env, `faux_never` is a catalog tool like
+  // any other; unset, it is not in the catalog, so it reaches no capability, registry or openapi document.
+  ...(process.env[FAUX_NEVER_ENV] ? { [FAUX_NEVER_TOOL]: fauxNeverTool(process.env[FAUX_NEVER_ENV]) } : {}),
 });
 
 /** Every name a revision may name, those a workflow's model node may, and those a workflow's call node may run. */

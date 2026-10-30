@@ -41,6 +41,8 @@ export default function reply(context, faux) {
     const seen = (name) => `${name} ${process.env[name] ? "set" : "unset"}`;
     return faux.message(["AGENTRUN_TOKEN", "TOKEN_COPY", "OPENAI_API_KEY", "AGENT_MODEL_PRICE"].map(seen).join("; "));
   }
+  // Calls the recovery test's faux_never once, then says so: its execute blocks on the test's FIFO.
+  if (first.includes("Call faux_never")) return answered ? faux.message("Called.") : faux.message(faux.toolCall("faux_never", {}), { stopReason: "toolUse" });
   // Fetches each URL its first message lists with fetch_page, one per turn, then says so.
   const fetches = /^Fetch these pages: (.*)$/s.exec(first);
   if (fetches) {
