@@ -12,6 +12,8 @@
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
 import { openTurn, recoverySystemNote, recoveryUserTurn, toolKey } from "./host/process.js";
+// cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
+// load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
 import { repairOutput } from "./harness.js";
 import { type RolloutSummary, summarizeRollout } from "./rollout.js";
 import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
