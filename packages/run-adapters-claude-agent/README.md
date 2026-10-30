@@ -1,7 +1,7 @@
 # @parcha/agentrun-harness-claude
 
 The Claude Agent SDK as an AgentRun harness (adapter id `claude-agent`): a DSL `agent` node runs on the Claude Agent CLI
-through `@parcha/agentrun-kernel`, durable in AgentRun's own store, with the host's tools as its only tools.
+through `@parcha/agentrun-kernel`, durable in AgentRun's own store, with the host's tools and the CLI's own allowlisted ones.
 
 The host brings the SDK: `@anthropic-ai/claude-agent-sdk` is an exact optional peer dependency (0.3.286, whose CLI is
 2.1.286), used under Anthropic's terms, and this package never ships it. Install it with its optional dependencies (they
@@ -27,10 +27,12 @@ const runNode = createHarnessRunner(
   pins; a mismatch throws `ClaudeAgentPinMismatch` (which pin, expected, found), and a missing SDK or CLI throws
   `ClaudeAgentNotInstalled` ("Claude Agent SDK not installed"). An SDK that starts the CLI as another release is refused
   before the CLI starts.
-- **The host's tools only.** The CLI's built-in tools are off. The host's tools are its only tools, served in-process
-  and named back to the host's own names; each call is a kernel effect whose intent is recorded before it runs, so a
-  call a crash cut off is reported, never repeated. A `PreToolUse` hook denies every other call, and every error inside
-  it is a deny. Sub-agents, scheduled jobs, worktrees, background shells, settings, plugins and MCP servers from
+- **The host's tools, and the CLI's own on an allowlist.** `builtins` defaults to the pinned allowlist (Bash, Read,
+  Edit, Write, NotebookEdit, WebFetch); `false` leaves the host's tools only. The host's tools are served in-process and
+  named back to the host's own names. Every call, the host's or the CLI's own, is a kernel effect whose intent is
+  recorded before it runs, so a call a crash cut off is reported, never repeated. A `PreToolUse` hook denies every other
+  call, and every error inside it is a deny. With the CLI's own tools on, its command sandbox (bubblewrap) must start,
+  or the turn fails by name, unless `unsandboxedCommands: true` says something else is the boundary. Sub-agents, scheduled jobs, worktrees, background shells, settings, plugins and MCP servers from
   settings are off by option, and `test/tool-off.test.mjs` runs the pinned CLI against a scripted model that tries each
   of them: nothing runs, writes or fetches.
 - **The model behind a proxy.** The CLI talks to a model proxy on the loopback interface with a key of its session's

@@ -37,7 +37,7 @@ test("an image over the adapter's size is the call's error, by the tool's name a
   t.after(() => { delete process.env.AGENTRUN_CLAUDE_AGENT_STANDIN; });
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
-  const adapter = claudeAgentAdapter({ model: 'claude-test', provider: { origin: provider.url, credential: () => 'k' }, sessionsDir: join(mkdtempSync(join(ROOT, 'cap-')), 's'), standIn: { command: process.execPath }, maxImageBytes: 100, sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 5, script: ['call shot {}', 'call submit {"value":{"answer":"ok"}}'] }) });
+  const adapter = claudeAgentAdapter({ builtins: false, model: 'claude-test', provider: { origin: provider.url, credential: () => 'k' }, sessionsDir: join(mkdtempSync(join(ROOT, 'cap-')), 's'), standIn: { command: process.execPath }, maxImageBytes: 100, sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 5, script: ['call shot {}', 'call submit {"value":{"answer":"ok"}}'] }) });
   const shot = { name: 'shot', description: 'A screenshot.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'the page', images: [{ mimeType: 'image/png', data: 'A'.repeat(200) }] }) };
   const events = [];
   const store = memorySessionStore();
@@ -70,7 +70,7 @@ test("on the pinned CLI, a tool's image reaches the model inline in its result, 
   const spec = { key: 'step:images', label: 'shot', system: ['Look at the page.'], tools: [shot, charge], context: 'fresh' };
   const store = memorySessionStore();
   const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
-  const adapterIn = (dir) => claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir });
+  const adapterIn = (dir) => claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: dir });
 
   const died = new AbortController();
   const a = await adapterIn(mkdtempSync(join(ROOT, 'a-'))).open(spec, { store, writer: await store.open(spec.key), models, signal: died.signal, onEvent: () => {} });

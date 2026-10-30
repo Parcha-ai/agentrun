@@ -64,7 +64,7 @@ test("the host's tool schemas reach the model with every key and value, a long d
   let main = 0;
   const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL ? plan[main++] ?? { text: 'done' } : { text: 'ok' }) });
   t.after(() => provider.close());
-  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
+  const adapter = claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions') });
   const ran = { record: [], open: [] };
   const record = { name: 'record', description: LONG, inputSchema: RECORD, replay: 'safe', call: async (args) => { ran.record.push(args); return { text: 'kept' }; } };
   const open = { name: 'open', description: 'Take anything.', inputSchema: OPEN, replay: 'safe', call: async (args) => { ran.open.push(args); return { text: 'taken' }; } };

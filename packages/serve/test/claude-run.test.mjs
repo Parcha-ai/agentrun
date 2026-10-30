@@ -100,7 +100,7 @@ async function filesUnder(dir, at = "") {
 test("a run on claude-agent: through the adapter's proxy with the native model, each request booked once at serve's price, the CLI confined, in its own directory, with no key in its environment", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
   const { fake, release } = await heldFake(t);
   const { api, data } = await claudeServe(t, fake);
-  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent"), { id: "claude-agent", available: true, steer: false });
+  assert.deepEqual((await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "claude-agent"), { id: "claude-agent", available: true, steer: false, native_tools: false });
   const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const runId = run.body.run_id;
@@ -124,6 +124,9 @@ test("a run on claude-agent: through the adapter's proxy with the native model, 
   const asked = fake.messages();
   assert.ok(fake.requests.every((r) => !r.refused), "no request was refused and retried");
   assert.ok(asked.every((m) => m.path === "/v1/messages" && m.authorized && m.model === MODEL), `Anthropic Messages, with the key, the native id: ${asked.map((m) => m.model).join(", ")}`);
+  // serve's runs get none of the CLI's own tools until runs get a confined box: the model is offered only the host's.
+  const offered = [...new Set(asked.flatMap((m) => (m.body?.tools ?? []).map((tool) => tool.name)))];
+  assert.deepEqual(offered.filter((name) => !name.startsWith("mcp__")), [], `no tool of the CLI's own is offered on serve: ${offered.join(", ")}`);
   const usage = rows.findLast((r) => r.kind === "usage")?.usage;
   assert.equal(usage?.requests, asked.length, "each request the endpoint answered is one booked request, once");
   // The endpoint reports a response's input as its request body's length over 4, and 12 output tokens.

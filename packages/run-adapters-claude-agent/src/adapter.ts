@@ -1,9 +1,11 @@
 // The Claude Agent SDK as an AgentRun harness adapter (id `claude-agent`). Written for AgentRun.
 //
 // A session is the copied Claude Agent harness (harness.ts) driven over the session's own records: the kernel's
-// openDrive on the writer the runner lends (`io.writer`), on a local machine (host/machine.ts). The CLI's built-in tools
-// are off, so the host's tools, exactly those `spec.tools` names, are its only tools: each runs through the shared tool
-// bridge as a kernel effect, and a PreToolUse hook denies every other call. Its model is the session's loopback proxy
+// openDrive on the writer the runner lends (`io.writer`), on a local machine (host/machine.ts). The CLI's own tools are
+// on by default (the pinned allowlist, CLAUDE_BUILTINS, minus the tools whose state lives outside the log), beside the
+// host's tools, exactly those `spec.tools` names. A host tool runs through the shared tool bridge as a kernel effect; a
+// built-in's intent is committed by the PreToolUse hook before the CLI runs it, and its outcome after (BuiltinCalls).
+// Both kinds are counted in flight the same way, so a pause drains either. Its model is the session's loopback proxy
 // (@parcha/agentrun-kernel/host, with the Anthropic policy in host/policy.ts): every paid request passes the runner's
 // `beforeRequest` first, and its usage comes back through `afterRequest`. The runner alone accounts model spend.
 //
@@ -18,7 +20,7 @@ import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
-import { type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
+import { builtinTools, type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
@@ -159,6 +161,14 @@ export interface ClaudeAgentAdapterOptions {
   thinking?: ClaudeAgentThinking;
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
+  /** The CLI's own tools: `true` (the default) is the pinned allowlist (CLAUDE_BUILTINS: Bash, Read, Edit, Write,
+   *  NotebookEdit, WebFetch), `false` none, or a list of names. The tools whose state lives outside the log
+   *  (CLAUDE_BUILTINS_OFF) and the provider-hosted ones stay off whatever this says. */
+  builtins?: boolean | readonly string[];
+  /** Run the CLI's commands without its own sandbox when bubblewrap does not work on the machine. Off unless set: a
+   *  session whose built-ins are on then fails, with a named error, where bubblewrap does not work. Set it only where
+   *  something else is the boundary; it is never a quiet fallback. */
+  unsandboxedCommands?: boolean;
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -338,14 +348,16 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) })))] : spec.tools;
 
       const calls = new CallsInFlight();
+      const builtins = options.builtins ?? true;
+      // The built-ins this session offers the model, the Skill tool with skills: the proxy forwards exactly these.
+      const native = [...(builtinTools(builtins === true ? true : builtins === false ? false : [...builtins]) ?? []), ...(skills.length ? ["Skill"] : [])];
       const acquire = localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         proxy: {
           hooks: io.models,
           tools: tools.map((t) => t.name),
-          // The Skill tool is offered to the model only when the session has skills.
-          ...(skills.length ? { builtins: ["Skill"] } : {}),
+          ...(native.length ? { builtins: native } : {}),
           ...(options.price ? { price: options.price } : {}),
           ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
           ...(options.provider.auth ? { auth: options.provider.auth } : {}),
@@ -367,7 +379,17 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           budget: { turnUsd: Infinity, sessionUsd: Infinity },
         },
         tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
-        builtins: false,
+        builtins: builtins === true || builtins === false ? builtins : [...builtins],
+        unsandboxedCommands: options.unsandboxedCommands === true,
+        // A built-in call, counted in flight before the host hears of it, as a host tool's is: a pause the host starts on
+        // its tool_start waits for it. One a pause has begun is refused before it is counted: a refused call never ends,
+        // so counted it would hold the pause to its whole drainMs.
+        builtinAround: (call, run) => {
+          if (calls.draining) throw new Error(`${call.name} was not run: the session is pausing`);
+          calls.begin(call.callId);
+          io.onEvent({ type: "tool_start", callId: call.callId, name: call.name, args: call.input });
+          return run();
+        },
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists).
         disallowedTools: [...CLAUDE_AGENT_ALSO_OFF],

@@ -38,7 +38,8 @@ test("a tool the session doesn't have is refused by the CLI, kept in the store, 
   const store = memorySessionStore();
   const events = [];
   const logged = [];
-  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions'), log: (message, detail) => logged.push({ message, ...detail }) });
+  // The CLI's own tools off (they are on by default), so WebFetch is a built-in the session lacks.
+  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions'), log: (message, detail) => logged.push({ message, ...detail }), builtins: false });
   const lookup = { name: 'lookup', description: 'Look.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'safe', call: async () => ({ text: 'found' }) };
   const broken = { name: 'broken', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'the backend is down', isError: true }) };
   const runNode = createHarnessRunner(adapter, { store, tools: [lookup, broken], maxTurns: 20, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
@@ -77,7 +78,7 @@ test("a session tool's own error is heard once, whatever its text: a call the se
   t.after(() => provider.close());
   const events = [];
   const logged = [];
-  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions'), log: (message, detail) => logged.push({ message, ...detail }) });
+  const adapter = claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions'), log: (message, detail) => logged.push({ message, ...detail }) });
   const plain = { name: 'plain', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: 'the backend is down', isError: true }) };
   const tagged = { name: 'tagged', description: 'Fails.', inputSchema: { type: 'object' }, replay: 'safe', call: async () => ({ text: '<tool_use_error>x</tool_use_error>', isError: true }) };
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [plain, tagged], maxTurns: 20, timeoutMs: 100_000, onEvent: (e) => events.push(e) });
@@ -123,7 +124,7 @@ test("a refusal the CLI made reaches the host only once the session's store hold
     },
   };
   let atEnd;
-  const adapter = claudeAgentAdapter({ model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions') });
+  const adapter = claudeAgentAdapter({ builtins: false, model: MODEL, provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(mkdtempSync(join(ROOT, 'run-')), 'sessions') });
   const runNode = createHarnessRunner(adapter, {
     store,
     tools: [],

@@ -4,7 +4,7 @@
 //
 // On the scripted Agent SDK (./testing), behind createHarnessRunner, as a DSL host runs it. No key, no network.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test as nodeTest } from 'node:test';
@@ -22,7 +22,8 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 const SCHEMA = { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } };
 const request = { kind: 'agent', label: 'task', system: [], user: 'Search, then answer.', schema: SCHEMA, tools: ['search'], step: { sessionId: 'pause', attempt: 0, earlierSessionIds: [] } };
 
-async function claude(t, { script, sessionsDir }) {
+// The host's tools only, unless a test drives the CLI's own (`native`): those run without its sandbox, said, never by default.
+async function claude(t, { script, sessionsDir, native = false }) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
   const adapter = claudeAgentAdapter({
@@ -32,6 +33,7 @@ async function claude(t, { script, sessionsDir }) {
     sessionsDir,
     standIn: { command: process.execPath },
     sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 10, script }),
+    ...(native ? { unsandboxedCommands: true } : { builtins: false }),
   });
   return { adapter, provider };
 }
@@ -249,4 +251,34 @@ test("an immediate stop the host starts on submit's tool_start takes no answer: 
   const outcome = await runner({ ...request, tools: [], step: { sessionId: 'stop-on-submit', attempt: 0, earlierSessionIds: [] } }).then((value) => ({ value }), (error) => ({ error }));
   await stopping;
   assert.equal(outcome.error?.reason, 'aborted', JSON.stringify(outcome).slice(0, 200));
+});
+
+test("a pause the host starts on a built-in's tool_start waits for that command: it runs once, to its recorded outcome", async (t) => {
+  const sessionsDir = join(scratch(), 'sessions');
+  const { adapter } = await claude(t, { script: ['builtin Bash {"command":"sleep 0.4; printf done > native.txt","description":"x"}'], sessionsDir, native: true });
+  const spec = { key: 'step:native', label: 'task', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
+  let session;
+  let pausing;
+  // The host pauses the moment it hears the command started, as the runner's stop can.
+  const onEvent = (e) => { if (e.type === 'tool_start' && e.name === 'Bash' && !pausing) pausing = session.interrupt({ drainMs: 10_000 }); };
+  session = await adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent });
+  // Bounded: a call the pause does not wait for can leave the turn open, and the teardown must not wait on it for ever.
+  t.after(async () => { await Promise.race([session.interrupt().catch(() => {}).then(() => session.close()), new Promise((resolve) => setTimeout(resolve, 5_000))]); });
+  await session.send('go');
+  for (let i = 0; !pausing; i++) {
+    assert.ok(i < 500, 'the host heard the command start');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  // Bounded, so a pause that never returns fails here, by name, not at the test's timeout.
+  const returned = await Promise.race([pausing.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 20_000))]);
+  assert.ok(returned, 'the pause returned once the command had finished');
+  const [dir] = readdirSync(sessionsDir);
+  assert.equal(readFileSync(join(sessionsDir, dir, 'work', 'native.txt'), 'utf8'), 'done', 'the pause let the command finish');
+  const records = await store.read(spec.key);
+  const start = records.find((r) => r.kind === 'kernel.start' && r.data.name === 'tool.Bash');
+  assert.ok(start, 'the command is in the log');
+  const end = records.find((r) => r.kind === 'kernel.end' && r.data.stepId === start.data.stepId);
+  assert.equal(end?.data.status, 'completed', `its outcome is recorded, not cut: ${JSON.stringify(end?.data)}`);
 });

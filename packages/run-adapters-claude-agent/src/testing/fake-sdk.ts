@@ -36,6 +36,9 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   `ANTHROPIC_AUTH_TOKEN` as its bearer key, asking the model to say it
  *   (an echoing fake says it back), the text deltas yielded as
  *   `stream_event` deltas as they arrive.
+ * - `builtins <json [[Name, args], ...]>`: several built-ins in one turn, in flight
+ *   together, each started once the one before it is running (a `Bash` once its
+ *   command started): the model's parallel calls.
  * - With the harness's hooks (built-ins on), `builtin <Name> <json args>` is a
  *   built-in call: `PreToolUse` first (no decision is a deny, as in
  *   `dontAsk`), then the tool, then `PostToolUse` / `PostToolUseFailure`.
@@ -221,7 +224,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
         return undefined;
       };
       /** Run a built-in through its hooks. */
-      const builtinCall = async (id: string, name: string, input: any, opts: { exitDuring?: boolean } = {}): Promise<{ text: string; isError: boolean } | undefined> => {
+      const builtinCall = async (id: string, name: string, input: any, opts: { exitDuring?: boolean; started?: () => void } = {}): Promise<{ text: string; isError: boolean } | undefined> => {
         const decision = await hook('PreToolUse', { tool_name: name, tool_input: input, tool_use_id: id });
         fake.onDecision?.({ id, name, decision: decision?.permissionDecision ?? 'none', ...(decision?.updatedInput ? { updatedInput: decision.updatedInput } : {}), ...(decision?.permissionDecisionReason ? { reason: decision.permissionDecisionReason } : {}) });
         if (decision?.updatedInput) input = decision.updatedInput;
@@ -231,6 +234,7 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
         if (name === 'Bash') {
           const run = runBash(id, String(input.command));
           fake.onBuiltin?.({ id, name, pid: await run.pid });
+          opts.started?.();
           if (opts.exitDuring) return undefined;
           const r = await run.done;
           if (r.code === 0) response = { stdout: r.stdout.trimEnd(), stderr: r.stderr.trimEnd(), interrupted: false, isImage: false };
@@ -247,6 +251,9 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           } catch (err) {
             failure = (err as Error).message;
           }
+        } else if (name === 'Skill') {
+          // A skill that fails to load, as the CLI says a tool's own error: wrapped as it wraps its refusals.
+          failure = `<tool_use_error>Error: the skill ${String(input.skill)} failed to load</tool_use_error>`;
         } else failure = `No such tool available: ${name}`;
         if (failure !== undefined) {
           await hook('PostToolUseFailure', { tool_name: name, tool_input: input, tool_use_id: id, error: failure });
@@ -323,6 +330,40 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
           await mirror([{ type: 'queue-operation', operation: 'enqueue' }, u]);
           // A note the harness put before the message (the sandbox's: a lost Drive) is not part of the command.
           const command = fake.script && scripted < fake.script.length ? fake.script[scripted++]! : text.replace(/^(?!(?:builtin|exit-during-builtin|exit-during|call) )[^\n]*\n\n/, '');
+          // Several built-ins in one turn, in flight together: each starts once the one before it is running.
+          const several = /^builtins (.*)$/s.exec(command);
+          if (several) {
+            const outs: { id: string; name: string; input: unknown; result?: { text: string; isError: boolean } }[] = [];
+            const running: Promise<void>[] = [];
+            for (const [name, input] of JSON.parse(several[1]!) as [string, unknown][]) {
+              const out: (typeof outs)[number] = { id: `toolu_${randomUUID().slice(0, 8)}_${++calls}`, name, input };
+              outs.push(out);
+              const a = entry('assistant', { message: { role: 'assistant', content: [{ type: 'tool_use', id: out.id, name, input } ] } });
+              yield { type: 'assistant', parent_tool_use_id: null, uuid: a.uuid, session_id: sessionId, message: a.message };
+              await mirror([a], lag);
+              let started!: () => void;
+              const begun = new Promise<void>((resolve) => { started = resolve; });
+              // A call that fails (a Write under a directory that is not there) is the model's error result, as the CLI's is, and
+              // ends the wait for its start too.
+              running.push(builtinCall(out.id, name, input, { started }).then((result) => { if (result) out.result = result; }, (error) => { out.result = { text: String((error as Error)?.message ?? error), isError: true }; }).finally(started));
+              await begun;
+            }
+            await Promise.all(running);
+            if (signal?.aborted || outs.some((o) => !o.result)) return;
+            for (const o of outs) {
+              const r = entry('user', { message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: o.id, is_error: o.result!.isError, content: o.result!.text }] } });
+              await mirror([r]);
+              yield { type: 'user', parent_tool_use_id: null, message: r.message };
+            }
+            const reply = outs.map((o) => `${o.name} returned: ${o.result!.text}`).join('\n');
+            if (fake.remoteModel) yield* speak(reply);
+            const b = entry('assistant', { message: { role: 'assistant', content: [{ type: 'text', text: reply }] } });
+            await mirror([b]);
+            yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
+            yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
+          }
           const builtin = /^(builtin|exit-during-builtin) (\S+) (.*)$/s.exec(command);
           if (builtin) {
             const id = `toolu_${randomUUID().slice(0, 8)}_${++calls}`;

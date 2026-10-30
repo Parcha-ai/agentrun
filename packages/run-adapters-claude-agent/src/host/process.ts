@@ -12,7 +12,7 @@ export {
   BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, toolBridge, waitForSubmissions,
   zodShapeFromJsonSchema,
 } from "@parcha/agentrun-kernel/process";
-export type { JournalRecord, TranscriptEntry } from "@parcha/agentrun-kernel/process";
+export type { BuiltinCallsOptions, JournalRecord, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
 export type KillSignal = "SIGTERM" | "SIGKILL" | "SIGINT";
 
