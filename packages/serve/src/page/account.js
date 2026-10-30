@@ -18,12 +18,22 @@ if (setup) {
     setup.elements.code.value = code;
     history.replaceState(null, "", location.pathname);
   }
+  // A server on this machine offers its sessions; the box is never ticked for the owner.
+  const importField = document.getElementById("import-field");
+  fetch("/v2/setup/import", { credentials: "same-origin" })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((found) => {
+      if (!found?.sessions) return;
+      document.getElementById("import-found").textContent = `${found.projects} projects, ${found.sessions} sessions found`;
+      importField.hidden = false;
+    })
+    .catch(() => undefined);
   setup.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (setup.elements.password.value !== setup.elements.again.value) return tell(said, "The two passwords differ.", true);
     tell(said, "Setting it…");
     try {
-      const res = await post("/v2/setup", { password: setup.elements.password.value, ...(codeField.hidden ? {} : { code: setup.elements.code.value }) });
+      const res = await post("/v2/setup", { password: setup.elements.password.value, ...(codeField.hidden ? {} : { code: setup.elements.code.value }), ...(importField.hidden ? {} : { import: setup.elements.import.checked }) });
       if (res.ok) return location.assign("/");
       const answer = await res.json().catch(() => null);
       if (res.status === 403 && codeField.hidden && /setup code/.test(answer?.error?.message ?? "")) codeField.hidden = false;

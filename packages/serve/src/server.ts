@@ -4,9 +4,10 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import type { NewRevision, Revision } from "@parcha/pi-durable-agent";
+import { type NewRevision, openStore, type Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
@@ -16,6 +17,7 @@ import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from 
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
+import { planImport, runImport } from "./import.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -52,6 +54,9 @@ export type ServeOptions = {
   openSetup?: boolean;
   /** With accounts: the address people open (AGENTRUN_PUBLIC_URL), which the printed setup link uses. */
   publicUrl?: string;
+  /** With open setup: the home whose Claude Code, Codex and pi sessions the setup page offers to import (default this
+   *  user's), and the temp directory whose projects it leaves out (default the OS's). */
+  sessionsHome?: { home: string; temp?: string };
   /** With accounts: the most addresses the sign-in limit keeps at once (default 10,000); a new one past it is a 429. */
   signInAddresses?: number;
   /** The address to listen on (default 127.0.0.1). On any other address every `Host` name is served and the token is
@@ -280,6 +285,27 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const owner = options.accounts ? new Owner(data, options.openSetup === true, (line) => void process.stdout.write(`${line}\n`), options.signInAddresses) : undefined;
   // Runs an earlier server left: supervised again, carried back when they already ended, or opened again.
   void runs.recover().catch((error: Error) => void process.stderr.write(`agentrun-serve: recovery: ${error.message}\n`));
+
+  // The setup page's import of this machine's sessions: offered by a server on this machine only (no public address,
+  // listening on loopback), planned once (a listing, no transcript read), run once.
+  const offersImport = options.openSetup === true && isLoopback(host);
+  const sessionsOptions = () => ({ home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), env: process.env });
+  let planned: ReturnType<typeof planImport> | undefined;
+  const sessionsPlan = () => (planned ??= planImport(sessionsOptions()));
+  let importing: Promise<void> | undefined;
+  const importAtSetup = () =>
+    (importing ??= (async () => {
+      // A connection of its own, which waits for the store: the server's own never waits on a request's path.
+      const store = openStore(data);
+      try {
+        const report = await runImport(store, await sessionsPlan(), sessionsOptions());
+        process.stdout.write(`${logLine("import", { agents: report.agents.length, runs: report.agents.reduce((n, a) => n + a.runs, 0), skipped: report.skipped.length })}\n`);
+      } catch (error) {
+        process.stderr.write(`agentrun-serve: the import at setup stopped: ${(error as Error).message}\n`);
+      } finally {
+        store.close();
+      }
+    })());
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -576,18 +602,29 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out and GET /v2/auth/session, answered before any
    *  credential: their own checks are the setup code (or the token), the password, and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
-    const method = path === "/auth/session" ? "GET" : "POST";
+    const method = path === "/auth/session" || path === "/setup/import" ? "GET" : "POST";
     if (req.method !== method) throw new ApiError("method_not_allowed", `${req.method} is not a method of /v2${path}`, {}, { allow: method });
     switch (path) {
       case "/setup": {
         const byToken = req.headers.authorization !== undefined;
         if (byToken && !timingSafeEqual(digest(String(req.headers.authorization)), expected)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
-        const { password, body } = await passwordIn(req, ["password", "code"]);
+        const { password, body } = await passwordIn(req, ["password", "code", "import"]);
+        if (body.import !== undefined && typeof body.import !== "boolean") throw invalid([{ field: "import", reason: "wrong_type", message: "import is true or false" }]);
+        if (body.import === true && !offersImport) throw invalid([{ field: "import", reason: "not_allowed", message: "Only a server on this machine (no public address, on loopback) imports its sessions at setup: run agentrun-serve import where they are." }]);
         const made = await me.setFirst(password, body.code, byToken);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
+        // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
+        if (body.import === true) void importAtSetup();
         return send(res, 201, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+      }
+      case "/setup/import": {
+        // Before the owner is set, on a server on this machine only: how many projects and sessions the box would import.
+        if (!offersImport || me.hasPassword()) throw new ApiError("not_found", "no route /v2/setup/import");
+        fromPage(req);
+        const plan = await sessionsPlan();
+        return send(res, 200, { projects: plan.projects.length, sessions: plan.projects.reduce((n, p) => n + p.sessions.length, 0) });
       }
       case "/auth/sign-in": {
         fromPage(req);
@@ -790,7 +827,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
     // Before the page: its cookie must not stand in for the token on the owner's own routes.
-    if (owner && (raw === "/v2/setup" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
+    if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (answerPage(req, res, raw, { token, dir: data, authFailed, ...(owner ? { owner } : {}) })) return;
     if (!raw.startsWith("/v2/")) return fail(new ApiError("not_found", `no route ${raw}; the API is under /v2`));
     route(req, res, url, raw.slice(3)).catch(fail);
