@@ -69,6 +69,8 @@ const allowedExtraFiles = {
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
+  // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
+  serve: ['package/launcher/agentrun-serve'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
