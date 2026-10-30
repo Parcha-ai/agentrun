@@ -11,6 +11,12 @@ import { EffectFailure, EffectInterrupted } from "./errors.js";
 export const FOLLOW_UP_EFFECT = "follow-up";
 /** What a request the reserve refuses says, first. */
 export const FOLLOW_UP_BUDGET_REACHED = "follow_up_budget_reached";
+/** What a request asked for after the follow-up was cancelled says, first. */
+export const FOLLOW_UP_CANCELLED = "follow_up_cancelled";
+/** The effect that records the follow-up's own cut turn settled: no later run settles another turn. */
+const SETTLED_EFFECT = "follow-up.settled";
+/** The run of each follow-up key in this process: a second run waits for it, never fences it. */
+const runs = new WeakMap<SessionStore, Map<string, Promise<unknown>>>();
 
 /** The follow-up's own session key, beside the session it follows up. */
 export const followUpKey = (session: string, name: string): string => `${session}:follow-up:${name}`;
@@ -22,6 +28,8 @@ export interface FollowUpTarget {
   turnEnd(): Promise<{ status: TurnStatus; error?: string }>;
   /** Record the open turn as ended, interrupted, and send nothing. */
   settleOpenTurn(): Promise<void>;
+  /** Stop the turn in flight. */
+  interrupt(): Promise<void>;
 }
 
 export interface FollowUpOptions {
@@ -67,6 +75,7 @@ export function followUpOnce(options: FollowUpOptions): FollowUp {
   if (typeof worstUsd !== "number" || !Number.isFinite(worstUsd) || worstUsd < 0) throw new Error("worstUsd must be given, a number of dollars, 0 or more");
   const key = followUpKey(options.session, options.name);
   let active = false;
+  let signalNow: AbortSignal | undefined;
   // The session's spentUsd when the follow-up's first request asks: the reserve counts from there. Whatever the session
   // books after that counts against the reserve too: a task request whose cost was booked late (REQUEST_COST_LATE), and
   // a harness's own background requests during the follow-up's turn (a CLI's small-model calls). Both refuse the
@@ -78,41 +87,71 @@ export function followUpOnce(options: FollowUpOptions): FollowUp {
     key,
     beforeRequest({ spentUsd, inFlight }) {
       if (!active) return undefined;
+      if (signalNow?.aborted) return { refuse: `${FOLLOW_UP_CANCELLED}: the follow-up was cancelled; the request was not sent` };
       if (spentUsd === null) return refuse("what the session has spent is unknown, so the follow-up's reserve cannot be kept; the request was not sent");
       start ??= spentUsd;
       const used = spentUsd - start;
       if (used + worstUsd * (inFlight.length + 1) > reserveUsd) return refuse(`$${used.toFixed(6)} spent of a $${reserveUsd} reserve, and the next request could cost up to $${worstUsd}; the request was not sent`);
       return undefined;
     },
-    async run(target, signal) {
-      const drive = await openDrive({ writer: await store.open(key), signal });
-      const known = drive.state().effects.get(FOLLOW_UP_EFFECT);
-      if (known?.status === "completed") return { status: "done" };
-      if (known?.status === "failed") {
-        if (!known.error?.interrupted) return { status: "failed", error: known.error?.message ?? "failed" };
-        // Its turn may still be open in the session: closed unsent, never resumed.
-        if (target.state === "open_turn") await target.settleOpenTurn();
-        return { status: "interrupted" };
-      }
-      if (target.state === "open_turn") throw new Error("the session has an open turn that is not this follow-up's: recover it before the follow-up");
-      try {
-        await drive.effect(FOLLOW_UP_EFFECT, { name: options.name, replay: "never", input: { prompt } }, async () => {
-          active = true;
-          try {
-            await target.send(prompt);
-            const end = await target.turnEnd();
-            if (end.status === "interrupted") throw new EffectInterrupted(end.error ?? "the follow-up's turn was interrupted");
-            if (end.status !== "completed") throw new Error(end.error ?? "the follow-up's turn failed");
-            return null;
-          } finally {
-            active = false;
-          }
-        });
-        return { status: "done" };
-      } catch (error) {
-        if (error instanceof EffectFailure) return error.error.interrupted ? { status: "interrupted" } : { status: "failed", error: error.error.message };
-        throw error;
-      }
+    run(target, signal) {
+      const byKey = runs.get(store) ?? new Map<string, Promise<unknown>>();
+      runs.set(store, byKey);
+      const run = (byKey.get(key) ?? Promise.resolve()).then(() => runOnce(target, signal), () => runOnce(target, signal));
+      const settled = run.catch(() => undefined);
+      byKey.set(key, settled);
+      void settled.then(() => byKey.get(key) === settled && byKey.delete(key));
+      return run;
     },
   };
+
+  async function runOnce(target: FollowUpTarget, signal: AbortSignal): Promise<FollowUpResult> {
+    const drive = await openDrive({ writer: await store.open(key), signal });
+    const known = drive.state().effects.get(FOLLOW_UP_EFFECT);
+    if (known?.status === "completed") return { status: "done" };
+    if (known?.status === "failed") {
+      if (!known.error?.interrupted) return { status: "failed", error: known.error?.message ?? "failed" };
+      // Its own turn may still be open in the session: closed unsent, never resumed, and once. An open turn after that
+      // is another's, and is left alone.
+      if (drive.state().effects.get(SETTLED_EFFECT)?.status !== "completed") {
+        if (target.state === "open_turn") await target.settleOpenTurn();
+        await drive.effect(SETTLED_EFFECT, { name: SETTLED_EFFECT, replay: "safe", input: null }, async () => null);
+      }
+      return { status: "interrupted" };
+    }
+    if (target.state === "open_turn") throw new Error("the session has an open turn that is not this follow-up's: recover it before the follow-up");
+    try {
+      await drive.effect(FOLLOW_UP_EFFECT, { name: options.name, replay: "never", input: { prompt } }, async () => {
+        if (signal.aborted) throw signal.reason;
+        active = true;
+        signalNow = signal;
+        // A cancel stops the turn and ends the run at once: no outcome is written, so the next process reads the
+        // follow-up interrupted, and a turn that ends after it never answers done.
+        let onAbort = () => {};
+        const aborted = new Promise<never>((_, reject) => {
+          onAbort = () => {
+            void target.interrupt().catch(() => undefined);
+            reject(signal.reason);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+        });
+        aborted.catch(() => undefined);
+        try {
+          await Promise.race([target.send(prompt), aborted]);
+          const end = await Promise.race([target.turnEnd(), aborted]);
+          if (signal.aborted) throw signal.reason;
+          if (end.status === "interrupted") throw new EffectInterrupted(end.error ?? "the follow-up's turn was interrupted");
+          if (end.status !== "completed") throw new Error(end.error ?? "the follow-up's turn failed");
+          return null;
+        } finally {
+          active = false;
+          signal.removeEventListener("abort", onAbort);
+        }
+      });
+      return { status: "done" };
+    } catch (error) {
+      if (error instanceof EffectFailure) return error.error.interrupted ? { status: "interrupted" } : { status: "failed", error: error.error.message };
+      throw error;
+    }
+  }
 }
