@@ -63,6 +63,28 @@ test("the run's directory and its store directory are 0700, set explicitly whate
   store.close();
 });
 
+test("a first import into a fresh store, with no run before it, makes runs/ the owner's under a umask that strips the owner's write bit", async () => {
+  const { store, revision } = await seeded();
+  const before = process.umask(0o222);
+  let run;
+  try { run = store.importRun(input(revision)); } finally { process.umask(before); }
+  assert.equal(mode(path.dirname(run.dir)), 0o700, "runs/, made by this import");
+  assert.equal(mode(run.dir), 0o700);
+  assert.equal(mode(path.dirname(run.storePath)), 0o700);
+  store.close();
+});
+
+test("an impossible calendar time is refused, never rolled to another date; a time with any fraction of a second is kept", async () => {
+  const { store, revision } = await seeded();
+  for (const at of ["2026-02-30T10:00:00Z", "2026-04-31T10:00:00.000Z", "2026-10-01T24:00:00Z"]) {
+    assert.throws(() => store.importRun(input(revision, { startedAt: at, endedAt: "2026-12-01T10:00:00.000Z", session: `s-${at}` })), refused("invalid"), at);
+  }
+  assert.equal(store.listRuns().length, 0);
+  const run = store.importRun(input(revision, { startedAt: "2026-10-01T10:00:00.5Z", endedAt: "2026-10-01T10:05:00Z" }));
+  assert.equal(store.readRun(run.runId).startedAt, "2026-10-01T10:00:00.500Z");
+  store.close();
+});
+
 test("the same source and session imports once: the second call returns undefined and writes nothing; another source with that session is its own run", async () => {
   const { dir, store, revision } = await seeded();
   const first = store.importRun(input(revision));
