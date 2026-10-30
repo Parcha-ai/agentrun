@@ -97,8 +97,20 @@ export function followUpOnce(options: FollowUpOptions): FollowUp {
     run(target, signal) {
       const byKey = runs.get(store) ?? new Map<string, Promise<unknown>>();
       runs.set(store, byKey);
-      const run = (byKey.get(key) ?? Promise.resolve()).then(() => runOnce(target, signal), () => runOnce(target, signal));
-      const settled = run.catch(() => undefined);
+      const prior = byKey.get(key) ?? Promise.resolve();
+      // Waiting its turn, a run still hears its own signal: cancelled, it stops waiting and leaves the run before it alone.
+      const turn = new Promise<void>((resolve, reject) => {
+        if (signal.aborted) return reject(signal.reason);
+        const onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+        void prior.then(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        });
+      });
+      const run = turn.then(() => runOnce(target, signal));
+      // The next run of the key waits for the one before this, whether this one ran or gave up waiting.
+      const settled = prior.then(() => run.catch(() => undefined));
       byKey.set(key, settled);
       void settled.then(() => byKey.get(key) === settled && byKey.delete(key));
       return run;
