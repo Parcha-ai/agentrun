@@ -348,6 +348,8 @@ export class Runs {
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
+      // A workflow run's decisions' cost too: an unknown one keeps the run's unknown after a restart. Unread, it is unknown.
+      if (run.kind === "workflow") await this.readDecisionCost(run).catch(() => void (run.decisionCost = null));
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else if (record && this.doorOf(record)) {
@@ -773,11 +775,16 @@ export class Runs {
     if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
     else if (state === "escalated") run.error = { code: "escalated", message: summary, retryable: false };
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
-    // Its decisions' receipts carry their cost: a receipt whose cost is unknown leaves the run's unknown, never $0.
+    await this.readDecisionCost(run);
+    return { outcome: STATUS_OF[state], state, summary };
+  }
+
+  /** A workflow run's decisions' cost, from their receipts in its released store: a receipt whose cost is unknown leaves
+   *  the run's unknown, never $0. Read at its end and again when a restarted server adopts it as ended. */
+  private async readDecisionCost(run: Run): Promise<void> {
     const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
     const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
     if (receipts.length) run.decisionCost = receipts.every((cost) => typeof cost === "number") ? (receipts as number[]).reduce((a, b) => a + b, 0) : null;
-    return { outcome: STATUS_OF[state], state, summary };
   }
 
   /** Ends the run in the agent store, once: how it ended, its cost and a line for the list. A store held by another
