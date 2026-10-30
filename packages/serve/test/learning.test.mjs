@@ -643,10 +643,14 @@ test("a run whose process is still live is never harvested: its working copy is 
   t.after(() => store.close());
   await assert.rejects(harvestFor(data, { store, request: async (act) => act() }, run.run_id), /still live/);
   assert.equal(branches(bare).includes(`runs/${run.run_id}`), false, "nothing was harvested");
+  assert.deepEqual(await readRunState(data, "calc", run.run_id), { state: "waiting", reason: `the run ${run.run_id}'s process is still live, so its working copy is not harvested yet` }, "the run's learning says it waits, by name");
+  const log = [];
+  assert.deepEqual(await catchUp(data, { store, request: async (act) => act() }, (line) => log.push(line)), [], "a catch-up while it lives harvests nothing");
+  assert.equal((await readRunState(data, "calc", run.run_id)).state, "waiting");
   holder.kill("SIGKILL");
   await new Promise((resolve) => holder.once("exit", resolve));
-  const after = await harvestFor(data, { store, request: async (act) => act() }, run.run_id);
-  assert.equal(after.sha, sha, "once it has ended, the same commit as before");
+  assert.deepEqual(await catchUp(data, { store, request: async (act) => act() }, (line) => log.push(line)), [run.run_id], "a waiting run is retried, never skipped as recorded");
+  assert.deepEqual(await readRunState(data, "calc", run.run_id), { state: "proposed", branch: `runs/${run.run_id}`, base: (await stateOf(data, "calc", run.run_id)).base, sha }, "once it has ended, the same commit as before");
 });
 
 test("a crash between the harvest's commit and its push: the next harvest pushes the same commit once, read as already, and a fresh clone makes the same commit", async (t) => {
@@ -753,7 +757,7 @@ async function calls(api, agentId, list) {
   return { runId: run.run_id, outcomes: JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer) };
 }
 
-test("learning never widens a revision's tools: a tool learning adds works on the working copy only, and is refused by name anywhere else", async (t) => {
+test("learning never widens a revision's tools: every file tool of a learning run, named or added, works on the working copy only, and is refused by name anywhere else", async (t) => {
   const { api, data } = await serve(t);
   const skill = { "cite/SKILL.md": "Cite the source." };
   assert.equal((await api("POST", "/agents", { ...agent("reader", { tools: ["read"], skills: ["cite"] }), skills: skill })).status, 201);
@@ -766,13 +770,13 @@ test("learning never widens a revision's tools: a tool learning adds works on th
   assert.equal(outcomes[0].isError, false, JSON.stringify(outcomes[0]));
   assert.deepEqual([outcomes[1].isError, outcomes[1].text], [true, "write is the learning copy's only here: input.txt is outside .agent/repo"]);
   assert.equal(existsSync(join(data, "runs", runId, "work", "input.txt")), false, "nothing was written");
-  assert.deepEqual([outcomes[2].isError, outcomes[2].text.includes("Cite the source.")], [false, true], "read was named: it keeps its scope");
+  assert.deepEqual([outcomes[2].isError, outcomes[2].text], [true, "read is the learning copy's only here: .agents/skills/cite/SKILL.md is outside .agent/repo and .agent/learnings"], "read was named: it is the copy's only too");
   await stateOf(data, "reader", runId);
   assert.match(show(bareOf(data, "reader"), `runs/${runId}`, "learnings/L-5ca1ab1e0002.md"), /Cite twice/);
   // A revision that names no tool: even read is the learning copy's only.
   assert.equal((await api("POST", "/agents", { ...agent("plain", { skills: ["cite"] }), skills: skill })).status, 201);
   const plain = await calls(api, "plain", [["read", { path: ".agents/skills/cite/SKILL.md" }], ["read", { path: ".agent/repo/AGENTS.md" }]]);
-  assert.deepEqual([plain.outcomes[0].isError, plain.outcomes[0].text], [true, "read is the learning copy's only here: .agents/skills/cite/SKILL.md is outside .agent/repo"]);
+  assert.deepEqual([plain.outcomes[0].isError, plain.outcomes[0].text], [true, "read is the learning copy's only here: .agents/skills/cite/SKILL.md is outside .agent/repo and .agent/learnings"]);
   assert.deepEqual([plain.outcomes[1].isError, plain.outcomes[1].text.includes("Answer.")], [false, true]);
 });
 
@@ -899,4 +903,115 @@ test("a holder that exited and was never reaped is not live: a zombie never keep
   t.after(() => store.close());
   const again = await harvestFor(data, { store, request: async (act) => act() }, run.run_id);
   assert.equal(again.sha, sha, "harvested, never refused as still live");
+});
+
+test("a learning revision that names a tool that runs a process is refused at save, by name; with learning off it is the plain unbound tool", async (t) => {
+  const { api } = await serve(t);
+  for (const tool of ["bash", "powershell", "code"]) {
+    const refused = await api("POST", "/agents", agent(`shell-${tool}`, { tools: ["read", tool] }));
+    assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason, f.message])], [422, [["definition.tools[1]", "not_an_option", `${tool} runs a process, and a learning revision names no tool that does. Remove ${tool}, or set definition.learning to null.`]]], tool);
+  }
+  const off = await api("POST", "/agents", agent("shell-off", { learning: null, tools: ["read", "bash"] }));
+  assert.equal(off.status, 422);
+  assert.doesNotMatch(off.body.error.fields[0].message, /learning/, "off learning, bash is refused as a tool this host does not bind");
+});
+
+test("a learning run's tools hold none that runs a process: no entry of the table spawns, and the run sees the file tools and what its revision named", async (t) => {
+  const { SPAWNING_TOOLS, TOOLS } = await import("../dist/tools.js");
+  assert.deepEqual(Object.entries(TOOLS).filter(([, entry]) => entry.spawns !== false).map(([name]) => name), [], "every entry says it spawns nothing");
+  assert.deepEqual(SPAWNING_TOOLS, ["bash", "powershell", "code"]);
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("asker", { tools: ["ask_person", "fetch_page"] }))).status, 201);
+  const { body: run } = await api("POST", "/agents/asker/runs", { input: { content: "Which tools do you have?" } });
+  await follow(api, run.run_id, ["completed"]);
+  const seen = (await api("GET", `/runs/${run.run_id}`)).body.result.final_answer;
+  assert.equal(seen, "Tools: ask_person, edit, fetch_page, read, write");
+  assert.ok(!SPAWNING_TOOLS.some((name) => seen.includes(name)));
+  await stateOf(data, "asker", run.run_id);
+});
+
+test("every file tool of a learning run is the working copy's only: a named read of /proc/self/environ, a named write out of the workspace, and a read through a link out of the copy are refused by name", async (t) => {
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("named", { tools: ["read", "write", "edit"] }))).status, 201);
+  const outside = await scratch(t);
+  await writeFile(join(outside, "canary.txt"), "canary-5ca1ab1e-outside\n");
+  const planted = join(outside, "planted");
+  const { runId, outcomes } = await (async () => {
+    const list = [
+      ["read", { path: "/proc/self/environ" }],
+      ["write", { path: "../escape.txt", content: "out" }],
+      ["edit", { path: "input.txt", edits: [{ oldText: "a", newText: "b" }] }],
+      ["write", { path: ".agent/repo/learnings/L-5ca1ab1e0006.md", content: "---\nid: L-5ca1ab1e0006\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nRead twice.\n" }],
+      ["read", { path: ".agent/repo/out/canary.txt" }, planted],
+    ];
+    const { body: run } = await api("POST", "/agents/named/runs", { input: { content: `Make these calls: ${JSON.stringify(list)}` } });
+    // Once the copy is laid out, a link in it to a directory outside the workspace, then the last call.
+    const copy = join(data, "runs", run.run_id, "work", ".agent", "repo");
+    for (let i = 0; !existsSync(join(copy, "learnings", "L-5ca1ab1e0006.md")); i++) {
+      assert.ok(i < 400, "the run wrote its note");
+      await sleep(50);
+    }
+    const { symlink } = await import("node:fs/promises");
+    await symlink(outside, join(copy, "out"));
+    await writeFile(planted, "");
+    await follow(api, run.run_id, ["completed"]);
+    return { runId: run.run_id, outcomes: JSON.parse((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer) };
+  })();
+  assert.deepEqual(outcomes.map((o) => [o.isError, o.text]), [
+    [true, "read is the learning copy's only here: /proc/self/environ is outside .agent/repo and .agent/learnings"],
+    [true, "write is the learning copy's only here: ../escape.txt is outside .agent/repo"],
+    [true, "edit is the learning copy's only here: input.txt is outside .agent/repo"],
+    [false, outcomes[3].text],
+    [true, "read is the learning copy's only here: .agent/repo/out/canary.txt is outside .agent/repo and .agent/learnings"],
+  ]);
+  assert.equal(existsSync(join(data, "runs", runId, "escape.txt")), false, "nothing was written");
+  await stateOf(data, "named", runId);
+});
+
+test("a learning run is told where and how to save what it learned: its working copy, its memo, and the paths a harvest takes", async (t) => {
+  const { learningInstructions } = await learningModule();
+  const text = learningInstructions("run-1");
+  for (const said of [".agent/repo", ".agent/repo/memos/run-1.md", ".agent/repo/learnings/L-<12 lowercase hex digits>.md", ".agent/repo/learnings/INDEX.md", ".agent/repo/.agents/skills/<name>/SKILL.md", ".agent/repo/workflows/<name>/workflow.json", "runs/run-1", "## Proposed changes"]) {
+    assert.ok(text.includes(said), `the instructions name ${said}`);
+  }
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "How do you save what you learn?" } });
+  await follow(api, run.run_id, ["completed"]);
+  assert.equal((await api("GET", `/runs/${run.run_id}`)).body.result.final_answer, learningInstructions(run.run_id), "the run's model sees them");
+  await stateOf(data, "calc", run.run_id);
+  // A run that does not learn is not told.
+  await api("POST", "/agents", agent("quiet", { learning: null }));
+  const { body: quiet } = await api("POST", "/agents/quiet/runs", { input: { content: "How do you save what you learn?" } });
+  await follow(api, quiet.run_id, ["completed"]);
+  assert.equal((await api("GET", `/runs/${quiet.run_id}`)).body.result.final_answer, "nobody said");
+});
+
+test("a run that changed none of its notes proposes nothing: the memo stub it was seeded with is ignored, and no branch is made", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  await follow(api, run.run_id, ["completed"]);
+  assert.deepEqual(await stateOf(data, "calc", run.run_id), { state: "empty" });
+  assert.equal(branches(bareOf(data, "calc")).includes(`runs/${run.run_id}`), false);
+});
+
+test("a base64-wrapped host secret, or an input value only in a path the run wrote, refuses its harvest by name, never quoted", async (t) => {
+  const secret = "ledger-host-value-5ca1ab1e0007";
+  withEnv(t, { LEDGER_TEST_API_KEY: secret });
+  const { api, data } = await serve(t);
+  assert.equal((await api("POST", "/agents", agent("ledger"))).status, 201);
+  const encoded = Buffer.from(`key=${secret};`).toString("base64");
+  const runWith = async (input) => {
+    const { body: run } = await api("POST", "/agents/ledger/runs", { input });
+    await follow(api, run.run_id, ["completed"]);
+    return { runId: run.run_id, state: await stateOf(data, "ledger", run.run_id) };
+  };
+  const id = "L-5ca1ab1e0007";
+  const b64 = await runWith({ content: `Make these calls: ${JSON.stringify([["write", { path: `.agent/repo/learnings/${id}.md`, content: `---\nid: ${id}\ntype: lesson\nstatus: active\nruns: []\nsupersedes: []\n---\nSend ${encoded} first.\n` }]])}` });
+  assert.deepEqual([b64.state.state, b64.state.reasons], ["refused", [`learnings/${id}.md holds a value no learning may keep`]], JSON.stringify(b64.state));
+  const path = await runWith({ content: `Make these calls: ${JSON.stringify([["write", { path: ".agent/repo/workflows/123456789012/README.md", content: "Checks an account.\n" }]])}`, account: "123456789012" });
+  assert.deepEqual([path.state.state, path.state.reasons], ["refused", ["a path the run wrote holds a value no learning may keep"]], JSON.stringify(path.state));
+  assert.ok(![secret, encoded, "123456789012"].some((value) => JSON.stringify([b64.state, path.state]).includes(value)), "no refusal quotes a value");
+  assert.deepEqual(branches(bareOf(data, "ledger")).filter((name) => name.startsWith("runs/")), [], "nothing is committed");
 });

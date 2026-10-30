@@ -34,11 +34,16 @@ export default function reply(context, faux) {
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
     return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
   }
-  // Makes the tool calls its first message lists as JSON, one per turn, then answers with what each returned.
+  // Makes the tool calls its first message lists as JSON, one per turn, then answers with what each returned. A call
+  // with a third item, a file, is made only once that file exists.
   const calls = /^Make these calls: (.*)$/s.exec(first);
   if (calls) {
     const list = JSON.parse(calls[1]);
-    if (results < list.length) return faux.message(faux.toolCall(list[results][0], list[results][1]), { stopReason: "toolUse" });
+    if (results < list.length) {
+      const [name, args, after] = list[results];
+      const call = () => faux.message(faux.toolCall(name, args), { stopReason: "toolUse" });
+      return after ? untilExists(after).then(call) : call();
+    }
     const outcomes = context.messages.filter((m) => m.role === "toolResult").map((m) => ({ isError: m.isError === true, text: textOf(m) }));
     return faux.message(JSON.stringify(outcomes));
   }
@@ -65,6 +70,15 @@ export default function reply(context, faux) {
   const strings = (value) => (typeof value === "string" ? [value] : value && typeof value === "object" ? Object.values(value).flatMap(strings) : []);
   const system = [context.systemPrompt ?? "", ...context.messages.filter((m) => m.role === "system").flatMap(strings)].join("\n");
   if (first.includes("What have you learned?")) return faux.message(`Learned: ${/<learned>([\s\S]*?)<\/learned>/.exec(system)?.[1]?.trim() ?? "nothing"}`);
+  if (first.includes("Which tools do you have?")) {
+    const tools = new Set((context.tools ?? []).map((tool) => tool.name));
+    for (const m of context.messages.filter((m) => m.role === "system")) {
+      for (const tool of m.toolsAdded ?? []) tools.add(tool.name);
+      for (const tool of m.toolsRemoved ?? []) tools.delete(typeof tool === "string" ? tool : tool.name);
+    }
+    return faux.message(`Tools: ${[...tools].sort().join(", ")}`);
+  }
+  if (first.includes("How do you save what you learn?")) return faux.message(/<saving-learning>[\s\S]*?<\/saving-learning>/.exec(system)?.[0] ?? "nobody said");
   if (first.includes("Which skills do you have?")) return faux.message(`Skills: ${[...system.matchAll(/<skill name="([^"]+)">\n([^<]*)/g)].map((m) => `${m[1]}=${m[2].trim()}`).join(", ") || "none"}`);
   // Writes one note into its working copy, then answers; "..., then answer once <file> exists." waits for the file first.
   // Calls fetch_page (any outcome), then writes one note, then answers.

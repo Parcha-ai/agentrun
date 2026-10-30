@@ -273,3 +273,101 @@ test("a file that cannot be opened is left out and reported, never read as delet
   assert.deepEqual(result.deleted, []);
   assert.ok(tree(s.bare, `runs/${RUN}`).includes(OLD), "the seed note stays");
 });
+
+/** No branch under runs/, in the repository or the host's clone `name`. */
+const noBranch = (s, name = "host") => {
+  assert.equal(git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
+  assert.equal(git(["--git-dir", join(s.root, name), "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "", "not even the host's own clone holds a commit");
+};
+
+test("the memo stub a run is seeded with proposes nothing alone: a run that changed nothing else is empty, and a run that did keeps its memo", async (t) => {
+  const s = await seeded(t);
+  assert.equal((await harvest(s, "host")).status, "empty", "the stub, left as it was");
+  noBranch(s);
+  await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", "Policies live under /policies/."));
+  const result = await harvest(s, "host2");
+  assert.equal(result.status, "proposed");
+  assert.match(show(s.bare, `runs/${RUN}`, MEMO), /^---\nrun: /, "the memo carries the host's facts beside a changed note");
+});
+
+test("a memo the run wrote past its front matter is proposed alone", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  assert.equal((await harvest(s, "host")).status, "proposed");
+});
+
+const CANARY = "canary-5ca1ab1e-0123456789";
+/** `value` inside a longer blob, `lead` bytes in, base64 (or base64url) encoded. */
+const inBlob = (value, lead, url = false) => Buffer.from(`${"x".repeat(lead)}${value}::tail`).toString(url ? "base64url" : "base64");
+
+test("a value base64 or base64url encoded at any offset in a longer blob, wrapped or not, refuses the harvest by the file's name, never quoted", async (t) => {
+  const forms = [
+    ...[0, 1, 2].map((lead) => [`base64 at offset ${lead}`, inBlob(CANARY, lead)]),
+    ...[0, 1, 2].map((lead) => [`base64url at offset ${lead}`, inBlob(CANARY, lead, true)]),
+    ["base64 wrapped at 8", inBlob(CANARY, 1).replace(/.{8}/g, "$&\n")],
+  ];
+  for (const [what, text] of forms) {
+    const s = await seeded(t);
+    await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", `Send ${text} first.`));
+    const result = await harvest(s, "host", { refuse: [CANARY] });
+    assert.deepEqual([result.status, result.refused], ["refused", [`${NOTE} holds a value no learning may keep`]], what);
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(CANARY), what);
+    noBranch(s);
+  }
+});
+
+test("a value hex or percent encoded, in any case, refuses the harvest", async (t) => {
+  const hex = Buffer.from(CANARY).toString("hex");
+  for (const [what, text] of [["hex", hex], ["HEX", hex.toUpperCase()], ["percent", hex.replace(/../g, "%$&")], ["PERCENT", hex.toUpperCase().replace(/../g, "%$&")]]) {
+    const s = await seeded(t);
+    await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", `Send ${text} first.`));
+    const result = await harvest(s, "host", { refuse: [CANARY] });
+    assert.deepEqual([result.status, result.refused], ["refused", [`${NOTE} holds a value no learning may keep`]], what);
+    noBranch(s);
+  }
+});
+
+test("a value only in a path the run wrote refuses the harvest, and the refusal names no path that holds it", async (t) => {
+  const s = await seeded(t);
+  await mkdir(join(s.work, "workflows", "123456789012"), { recursive: true });
+  await writeFile(join(s.work, "workflows", "123456789012", "README.md"), "Checks an account.\n");
+  const result = await harvest(s, "host", { refuse: ["123456789012"] });
+  assert.deepEqual([result.status, result.refused], ["refused", ["a path the run wrote holds a value no learning may keep"]]);
+  assert.doesNotMatch(JSON.stringify(result.refused), /123456789012/);
+  noBranch(s);
+  // Encoded in a path too.
+  const encoded = await seeded(t);
+  const name = Buffer.from(CANARY).toString("hex");
+  await mkdir(join(encoded.work, "workflows", name), { recursive: true });
+  await writeFile(join(encoded.work, "workflows", name, "README.md"), "Checks an account.\n");
+  assert.equal((await harvest(encoded, "host", { refuse: [CANARY] })).status, "refused");
+  noBranch(encoded);
+});
+
+test("ordinary text that resembles a value but does not hold it is proposed: a near miss, and the encoded forms of a value under 12 bytes", async (t) => {
+  const s = await seeded(t);
+  const near = CANARY.replace("5ca1ab1e", "5cb1ab1e");
+  const short = "acct-4821";
+  const text = [
+    `A near miss: ${near}, ${Buffer.from(near).toString("base64")}, ${Buffer.from(near).toString("hex")}.`,
+    // base64 and hex of short values are short runs of ordinary letters: never looked for.
+    `Encoded short: ${Buffer.from(short).toString("base64")} ${Buffer.from(short).toString("hex")}.`,
+    "Policies live under /policies/; the registry rate-limits at 1 request a second.",
+  ].join("\n");
+  await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", text));
+  const result = await harvest(s, "host", { refuse: [CANARY, short] });
+  assert.equal(result.status, "proposed", JSON.stringify(result));
+});
+
+test("a value's forms: exact and JSON-escaped always; hex, percent and base64 at every offset from 12 bytes on", async () => {
+  const { MIN_ENCODED, privateFormsOf } = await import("../dist/harvest.js");
+  assert.equal(MIN_ENCODED, 12);
+  assert.deepEqual(privateFormsOf('ab"cd\\efgh'), { exact: ['ab"cd\\efgh', 'ab\\"cd\\\\efgh'], folded: [], base64: [] }, "under 12 bytes: as it is, and JSON-escaped");
+  const forms = privateFormsOf(CANARY);
+  for (const lead of [0, 1, 2]) {
+    const blob = inBlob(CANARY, lead);
+    assert.ok(forms.base64.some((core) => blob.includes(core)), `base64 at offset ${lead}`);
+    assert.ok(forms.base64.some((core) => inBlob(CANARY, lead, true).includes(core)), `base64url at offset ${lead}`);
+  }
+  assert.ok(forms.folded.includes(Buffer.from(CANARY).toString("hex")));
+});
