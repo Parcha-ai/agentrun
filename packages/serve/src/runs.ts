@@ -19,7 +19,7 @@ import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from ".
 import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
-import { DECISION_KEY_FD_ENV, FAUX_JEV_ENV, JEV_KEY_ENV } from "./decisions.js";
+import { DECISION_KEY_FD_ENV, FAUX_JEV_ENV, handedJev, JEV_KEY_ENV, jevKey } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV } from "./model.js";
@@ -659,12 +659,12 @@ export class Runs {
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
-    // The decision key is never in a run's environment, which its tools and its model's provider read: a workflow run's
-    // process gets it once on an inherited pipe, for its judge's runner alone (decisions.ts).
+    // The TypeSafe key is never in a run's environment, which its tools and its model's provider read: a workflow run's
+    // process gets the decision key once on an inherited pipe, for its judge's runner alone (decisions.ts).
     delete env[JEV_KEY_ENV];
     delete env[DECISION_KEY_FD_ENV];
-    const decisionKey = run.kind === "workflow" ? process.env[JEV_KEY_ENV] : undefined;
-    const handsKey = typeof decisionKey === "string" && decisionKey.trim() !== "";
+    const decision = run.kind === "workflow" ? jevKey(process.env) : undefined;
+    const handsKey = decision !== undefined;
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log];
     // The first descriptor after the others: macOS aborts the parent of a spawn with a pipe at 16 or above.
@@ -684,7 +684,7 @@ export class Runs {
       const pipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[keyFd];
       // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
       pipe?.on("error", () => undefined);
-      pipe?.end(decisionKey);
+      pipe?.end(handedJev(decision));
     }
     run.child = child;
     child.once("exit", (code) => {

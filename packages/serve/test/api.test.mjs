@@ -9,7 +9,7 @@ import { EFFORT_ENV, thinkingOf } from "../dist/model.js";
 import { agent, answerFlow, client, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 test("capabilities answer without a credential and say what this server offers: local, no quotes, no home moves, no upload limit", async (t) => {
-  withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY"]);
+  withEnv(t, {}, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
   const { baseUrl } = await serve(t);
   const { status, body } = await client(baseUrl)("GET", "/capabilities");
   assert.equal(status, 200);

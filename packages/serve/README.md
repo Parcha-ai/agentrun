@@ -297,12 +297,14 @@ harness this server does not run yet saves with a warning on `definition.harness
 
 A workflow's typed questions (its `judge`, `pick`, `sift`, `route` and `ask` nodes) run on Jev, TypeSafe's System One,
 through `@parcha/agentrun-jev`, when this server's environment sets Jev's key. Set `TYPESAFE_API_KEY`: it is the route
-whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works, for Jev through OpenRouter. They are fast decisions, not agent turns: one System One request per
+whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works, for Jev through OpenRouter, and so does a
+model gateway on OpenRouter: with `AGENT_MODEL_BASE_URL` on the host `openrouter.ai` and neither key set, Jev runs on
+`AGENT_MODEL_API_KEY`. They are fast decisions, not agent turns: one System One request per
 node, with typed answers and their probabilities.
 
 - `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev", available, reason?, note?}]`),
-  and `runJudge` is among `workflows.adapters` once Jev runs here. On the OpenRouter route, jev's `note` says that its
-  key is the model gateway's.
+  and `runJudge` is among `workflows.adapters` once Jev runs here. On the OpenRouter route, jev's `note` names the
+  variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the model gateway's key.
 - With no key, a workflow with typed questions saves with a `not_set_up_here` warning on `definition.workflow` naming
   the variable, and a run of it is `409 agent_not_runnable`, with `details.adapters: ["runJudge"]` and
   `details.decisions: {jev: {reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"]}}`.
@@ -314,9 +316,10 @@ node, with typed answers and their probabilities.
   `TYPESAFE_API_KEY` from every run's process. It hands the value to a workflow run's process once, on an inherited pipe
   (the first descriptor after its stdio, as macOS refuses a high one), at each launch, a resume after a restart
   included. The process reads it into the judge's runner, closes the descriptor before anything else runs, and keeps
-  the key nowhere else. It is never in an environment, an
-  argument list or a file, and no program the run starts inherits it. With no key, no descriptor is opened. On the OpenRouter route the key is also the model gateway's key, which a run's
-  process already holds in its environment for its model nodes, and it stays there.
+  the key nowhere else. It is never in an environment, an argument list or a file, and no program the run starts
+  inherits it. With no key, no descriptor is opened. On the OpenRouter route the judge's key comes on the same
+  descriptor, never from the run's environment; that key is also the model gateway's key, which a run's process holds
+  for its model nodes.
 
 ## Archiving
 
