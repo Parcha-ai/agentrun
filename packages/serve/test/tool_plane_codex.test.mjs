@@ -42,17 +42,24 @@ test("a codex run's tool call is journaled in its OWN records under the wire nam
   const fetchCalls = callsIn(messages).filter((c) => c.name === wire);
   const fetchResults = resultsIn(messages).filter((r) => r.toolName === wire);
 
-  // (1) The call is journaled in the run's own records: exactly one toolCall and its one toolResult, paired by id.
+  // (1) The call is journaled in the run's own records: exactly one toolCall and its one toolResult, paired by id. The
+  // callId is a nonempty string before the pairing is compared, so a record that dropped both ids does not pass by
+  // undefined === undefined.
   assert.equal(fetchCalls.length, 1, `one fetch_page call under the wire name: ${callsIn(messages).map((c) => c.name).join(", ")}`);
   assert.equal(fetchResults.length, 1, "one fetch_page result under the wire name");
-  assert.equal(fetchResults[0].toolCallId, fetchCalls[0].id, "the result answers the journaled call by id");
+  assert.equal(typeof fetchCalls[0].id, "string", "the callId is a string");
   assert.notEqual(fetchCalls[0].id, "", "the call has a callId");
+  assert.equal(fetchResults[0].toolCallId, fetchCalls[0].id, "the result answers the journaled call by id");
 
-  // (4) The journaled name is the wire name, and the tool actually ran under it (the page, not a "no such tool" error).
+  // (4) The journaled name is the wire name, and the tool actually ran under it: its result is the page the fetch
+  // answered, not a "no such tool" error and not a refusal (ok false).
   assert.equal(fetchCalls[0].name, wire, "the toolCall is journaled under the wire name");
   const text = (fetchResults[0].content ?? []).map((c) => c.text ?? "").join("") || JSON.stringify(fetchResults[0].output ?? "");
   assert.doesNotMatch(text, /no (such )?tool|not a tool|unknown tool|is not bound/i, `the tool did not run under the wire name: ${text.slice(0, 200)}`);
-  assert.match(text, /public\.example|"ok"|"status"|"title"/, `the tool ran and answered the page: ${text.slice(0, 200)}`);
+  const page = JSON.parse(text);
+  assert.equal(page.ok, true, `the fetch succeeded, not refused or errored: ${text.slice(0, 200)}`);
+  assert.equal(page.status, 200, "the page answered 200");
+  assert.equal(page.title, "Public page", "the tool returned the fixture page it fetched");
 });
 
 // Gate (2): the binding. A served codex run's host tools reach the adapter as host tools whose replay class is the
