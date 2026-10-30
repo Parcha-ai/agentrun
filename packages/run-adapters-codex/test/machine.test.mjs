@@ -1,7 +1,7 @@
 // The session's local machine, attacked from the side Codex sits on: the child's environment, and the directories it
 // may write and tail. No network.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -111,6 +111,18 @@ test('under setpriv --no-new-privs, a child of the session runs with NoNewPrivs 
 
 const alive = processAlive;
 const gone = async (pid) => { for (let i = 0; i < 200 && alive(pid); i += 1) await new Promise((resolve) => setTimeout(resolve, 10)); return !alive(pid); };
+/** Whether `pid` outlived the wait: still there once it is over, it is killed here so the test leaves nothing behind. A
+ *  process that ended between the wait's last look and that kill (ESRCH: there is none) did not outlive it. */
+async function outlived(pid, { isGone = gone } = {}) {
+  if (await isGone(pid)) return false;
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    throw error;
+  }
+  return true;
+}
 /** Start a child that forks a grandchild (a sleep in the background) and reports its pid; returns both pids. */
 async function forking(machine, signal) {
   const proc = await machine.spawn({ command: '/bin/sh', args: ['-c', 'sleep 300 & echo $!; wait'], env: {}, ...(signal ? { signal } : {}) });
@@ -125,9 +137,7 @@ test("a child that forks a grandchild leaves none alive after the session's sign
   const stop = new AbortController();
   const { proc, grandchild } = await forking(machine, stop.signal);
   stop.abort(new Error('the process died'));
-  const left = await gone(grandchild);
-  if (!left) process.kill(grandchild, 'SIGKILL');
-  assert.ok(left, 'the grandchild outlived its child');
+  assert.equal(await outlived(grandchild), false, 'the grandchild outlived its child');
   await proc.exited;
 });
 
@@ -135,7 +145,17 @@ test("a child that forks a grandchild leaves none alive after close()", async (t
   const { machine } = await machineAt(t, scratch());
   const { grandchild } = await forking(machine);
   await Promise.race([machine.close(), new Promise((resolve) => setTimeout(resolve, 3_000))]);
-  const left = await gone(grandchild);
-  if (!left) process.kill(grandchild, 'SIGKILL');
-  assert.ok(left, 'the grandchild outlived the machine');
+  assert.equal(await outlived(grandchild), false, 'the grandchild outlived the machine');
+});
+
+test("a grandchild that ends just as the wait for it is over is gone, not an error: the cleanup's kill finding no process is the passing outcome", async () => {
+  // Forced: the wait sees it still there, and it has ended by the time the cleanup's kill reaches it.
+  const late = spawn('/bin/sh', ['-c', 'exit 0'], { stdio: 'ignore' });
+  await new Promise((resolve) => late.once('exit', resolve));
+  assert.equal(await outlived(late.pid, { isGone: async () => false }), false);
+  // One still there did outlive the wait, and is killed.
+  const stays = spawn('/bin/sh', ['-c', 'exec sleep 30'], { stdio: 'ignore' });
+  const ended = new Promise((resolve) => stays.once('exit', (code, signal) => resolve(signal)));
+  assert.equal(await outlived(stays.pid, { isGone: async () => false }), true);
+  assert.equal(await ended, 'SIGKILL');
 });
