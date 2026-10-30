@@ -264,13 +264,16 @@ test("a pause the host starts on a built-in's tool_start waits for that command:
   // The host pauses the moment it hears the command started, as the runner's stop can.
   const onEvent = (e) => { if (e.type === 'tool_start' && e.name === 'Bash' && !pausing) pausing = session.interrupt({ drainMs: 10_000 }); };
   session = await adapter.open(spec, { store, writer: await store.open(spec.key), models, signal: new AbortController().signal, onEvent });
-  t.after(async () => { await session.interrupt().catch(() => {}); await session.close(); });
+  // Bounded: a call the pause does not wait for can leave the turn open, and the teardown must not wait on it for ever.
+  t.after(async () => { await Promise.race([session.interrupt().catch(() => {}).then(() => session.close()), new Promise((resolve) => setTimeout(resolve, 5_000))]); });
   await session.send('go');
   for (let i = 0; !pausing; i++) {
     assert.ok(i < 500, 'the host heard the command start');
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  await pausing;
+  // Bounded, so a pause that never returns fails here, by name, not at the test's timeout.
+  const returned = await Promise.race([pausing.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 20_000))]);
+  assert.ok(returned, 'the pause returned once the command had finished');
   const [dir] = readdirSync(sessionsDir);
   assert.equal(readFileSync(join(sessionsDir, dir, 'work', 'native.txt'), 'utf8'), 'done', 'the pause let the command finish');
   const records = await store.read(spec.key);
