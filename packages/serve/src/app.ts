@@ -17,7 +17,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
-import { decisionJudgeOf } from "./decisions.js";
+import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
@@ -127,14 +127,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
-  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope }, { inspectWorkflow }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, runJudge] = await Promise.all([
+  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope }, { inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
     import("@earendil-works/chord/context"),
     import("@parcha/agentrun-pi/durable"),
     import("@parcha/agentrun-dsl"),
     import("@parcha/agentrun-dsl/recovery"),
     import("@parcha/pi-durable-agent/workflow"),
-    // The judge's providers, holding the decision keys the server handed this process: in no environment a tool reads.
-    decisionJudgeOf(process.env),
+    // The decision providers, holding the decision keys the server handed this process: in no environment a tool reads.
+    decisionProvidersOf(process.env),
   ]);
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
@@ -157,7 +157,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // answered one instead of asking again.
       const decisions = decisionRecovery({ key, runtime, context });
       const deps = withRecovery(driver, {
-        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(runJudge ? { runJudge: runJudge as never } : {}),
+        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(decisionProviders ? { runJudge: judgeFromProviders(decisionProviders) as never, decisionProviders } : {}),
         recordDecision: decisions.recordDecision,
       }, { durableNodes: true });
       const { recovery } = deps;

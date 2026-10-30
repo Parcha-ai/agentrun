@@ -101,11 +101,13 @@ export function handedKeys(env: NodeJS.ProcessEnv): Record<string, string> {
 const fauxFetch = async (env: NodeJS.ProcessEnv, name: string) =>
   env[FAUX_ENV] && env[name] ? ((await import(pathToFileURL(env[name]).href)) as { default: typeof fetch }).default : undefined;
 
-/** In a run's process: the judge its workflow's typed questions run on, over the providers the server gave it a key
- *  for, with each node's provider by name and Jev for a node that names none; undefined when it gave it none. Called once
- *  per process, since the handed keys can be read once. Each provider sends a request once: one that fails after it was
- *  sent may have been answered and billed, so the decision escalates as interrupted instead of being asked again. */
-export async function decisionJudgeOf(env: NodeJS.ProcessEnv) {
+/** In a run's process: the decision providers its workflow's typed questions are answered by, over the keys the server
+ *  handed it, each node's provider by name and Jev for a node that names none; undefined when it handed none. Called
+ *  once per process, since the handed keys can be read once. The run's judge (`judgeFromProviders`) and its checks
+ *  before any node runs take this one registry, so a node asking what its provider cannot give is refused before the
+ *  run. Each provider sends a request once: one that fails after it was sent may have been answered and billed, so the
+ *  decision escalates as interrupted instead of being asked again. */
+export async function decisionProvidersOf(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const handed = handedKeys(env);
   const providers: Record<string, DecisionProvider> = {};
   const route = handed[JEV_KEY_ENV] !== undefined ? "typesafe" : isSet(env[JEV_OPENROUTER_KEY_ENV]) ? "openrouter" : undefined;
@@ -118,6 +120,5 @@ export async function decisionJudgeOf(env: NodeJS.ProcessEnv) {
     providers.parallel = parallelProvider({ apiKey: handed[PARALLEL_KEY_ENV], ...(faux ? { fetch: faux } : {}) });
   }
   if (!Object.keys(providers).length) return undefined;
-  const { judgeFromProviders } = await import("@parcha/agentrun-dsl");
-  return judgeFromProviders({ providers, default: DEFAULT_DECISION_PROVIDER });
+  return { providers, default: DEFAULT_DECISION_PROVIDER };
 }
