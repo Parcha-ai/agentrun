@@ -81,3 +81,19 @@ const found = checkRun({
 ```
 
 Each returns `{ ok, problems }`, and each problem is `{ rule, path?, detail }`. [SPEC.md](SPEC.md#what-the-checker-reports) lists the rules.
+
+## Asking a run to reflect
+
+```js
+import { reflectBudget, reflectPrompt } from "@parcha/agentrun-learn";
+
+const reserveUsd = reflectBudget(run.maxCostUsd); // a tenth of the cap, at most $0.25; $0.05 with no cap
+const prompt = reflectPrompt({ run: run.id, dir: "/work/.agent/repo" });
+```
+
+Once a run has answered, a host sends `prompt` as one more turn in the same session. The repository is checked out in
+`dir` on `runs/<run id>`, and the host has written the memo's front matter to `memos/<run id>.md`. The agent writes the
+four sections under it and its notes with its own tools, as the reflect skill says, and commits them when it can run
+git. The prompt names no harness's tool. `reflectPrompt` refuses a run id the layout would refuse and a `dir` that is
+not an absolute path or holds a space or an unseen character. The turn's paid requests are held to `reserveUsd`, which
+the host keeps back from the run's cap for it.

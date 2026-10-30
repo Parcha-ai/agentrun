@@ -49,7 +49,7 @@ async function proxy(t, extra = {}) {
     log: extra.log ?? ((message, detail) => hooks.logged.push({ message, ...detail })),
     policy: extra.policy ?? policy,
     model: 'session-model',
-    origin: 'https://provider.invalid/ignored/path',
+    origin: 'https://provider.invalid',
     credential: extra.credential ?? (() => 'provider-secret'),
     hooks: { beforeRequest: async (r) => { hooks.before.push(r); if (extra.refuse) throw new Error(extra.refuse); }, afterRequest: async (u) => { hooks.after.push(u); if (extra.afterThrows) throw new Error(extra.afterThrows); } },
     price: extra.price ?? (() => 0.001),
@@ -58,6 +58,31 @@ async function proxy(t, extra = {}) {
   }, KEY);
   t.after(() => p.close());
   return { p, forwarded, hooks };
+}
+
+/** Until `ready()` holds, checked every few milliseconds; past `ms` it fails naming `what`. A wait on what the test
+ *  needs to have happened, never a sleep that guesses how long it takes: a booking lands after its answer. */
+async function until(ready, what, ms = 5_000) {
+  for (const end = Date.now() + ms; !(await ready()); await new Promise((resolve) => setTimeout(resolve, 2))) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+  }
+}
+
+/** For a hook or a stub to say it was reached: `fire()` it, and `wait(what)` for it, which fails naming `what` past `ms`,
+ *  so an event that never comes fails the test instead of hanging it. */
+function signal() {
+  let fire;
+  const reached = new Promise((resolve) => { fire = resolve; });
+  const wait = async (what, ms = 5_000) => {
+    let timer;
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms); });
+    try {
+      await Promise.race([reached, late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  return { fire: () => fire(), wait };
 }
 
 /** A raw request to the proxy: any method, any path text, any key, any headers. */
@@ -103,9 +128,13 @@ test("only the policy's routes, by their exact text: an absolute URL, a foreign 
   const refused = ['http://evil.example/v1/test', '//evil.example/v1/test', '/v1/test/../files', '/v1/%74est', '/v1/test?x=1', '/v1/files', '/v1/test/', '/v1//test', '/V1/test'];
   for (const path of refused) assert.equal((await send(p.url, { path })).status, 403, path);
   for (const method of ['GET', 'PUT']) assert.equal((await send(p.url, { method })).status, 403, method);
+  // The probe a shared machine's service sends each new loopback listener: refused without the key, and not counted.
+  assert.equal((await send(p.url, { method: 'GET', path: '/', key: null })).status, 401);
   assert.equal(forwarded.length, 0, 'nothing refused reached the provider');
   // Every refusal is reported, with what was asked: a client calling a route the table lacks is seen.
-  const refusals = hooks.logged.filter((l) => /refused/.test(l.message));
+  // Each request here carries the session's key, so a keyless refusal is another local client's (a service on a shared
+  // machine probes new loopback listeners with a bare `GET /`), not counted.
+  const refusals = hooks.logged.filter((l) => /refused/.test(l.message) && l.reason !== "this session's key is required");
   assert.equal(refusals.length, refused.length + 2);
   assert.deepEqual(refusals.at(-1), { message: 'model proxy (test): refused', status: 403, method: 'PUT', path: '/v1/test', reason: 'PUT /v1/test is not in the table' });
   assert.ok(refusals.some((l) => l.path === '/v1/files' && l.method === 'POST'));
@@ -255,7 +284,7 @@ test('every paid request forwarded is booked once: its usage when it says it; an
 
   const cut = await proxy(t, { fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); c.error(new Error('cut')); } }), { status: 200 }) });
   await send(cut.p.url).catch(() => {});
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await until(() => cut.hooks.after.length > 0, "the cut stream's booking");
   assert.deepEqual([cut.hooks.before.length, cut.hooks.after], [1, [{ input: 0, output: 0, cacheRead: 0, usd: null, estimated: true }]], 'a stream cut mid-body');
 
   const silent = await proxy(t, { fetch: async () => new Response('data: {"delta":"hi"}\n\n', { status: 200 }) });
@@ -309,16 +338,22 @@ test("a client that hangs up once it has read the usage the provider reported (t
 test('close() while a request waits for the runner: it is not sent, and it is released, booked once at nothing', async (t) => {
   let admit;
   const waiting = new Promise((resolve) => { admit = resolve; });
+  const entered = signal();
   const forwarded = [];
   const after = [];
-  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: { beforeRequest: () => waiting, afterRequest: async (u) => { after.push(u); } }, fetch: async (url, init) => { forwarded.push(url); return new Response(sse()); } }, KEY);
+  // A credential that takes a while to read, as a loaded machine's does: the request reaches the runner only after it,
+  // so the close waits for the hook to be entered, however long that takes.
+  const credential = () => new Promise((resolve) => setTimeout(() => resolve('provider-secret'), 60));
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential, hooks: { beforeRequest: () => { entered.fire(); return waiting; }, afterRequest: async (u) => { after.push(u); } }, fetch: async (url, init) => { forwarded.push(url); return new Response(sse()); } }, KEY);
   const answer = send(p.url, { path: '/v1/test?beta=true' }).catch((error) => ({ error }));
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await entered.wait("the request inside the runner's admission");
   const closing = p.close();
   admit();
   await closing;
   await answer;
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await until(() => after.length > 0, "the admitted request's release");
+  // A window for a second booking, which must not come; it can only miss one, never fail the test by itself.
+  await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(forwarded, [], 'nothing is sent after close()');
   assert.deepEqual(after, [{ input: 0, output: 0, cacheRead: 0, usd: 0 }], 'the admitted request is released once');
 });
@@ -329,13 +364,16 @@ test('nothing is admitted once close() has begun: a request still reading its cr
   const before = [];
   const after = [];
   const forwarded = [];
-  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => reading.then(() => 'provider-secret'), hooks: { beforeRequest: async (r) => { before.push(r); }, afterRequest: async (u) => { after.push(u); } }, fetch: async (url) => { forwarded.push(url); return new Response(sse()); } }, KEY);
+  const reached = signal();
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => { reached.fire(); return reading.then(() => 'provider-secret'); }, hooks: { beforeRequest: async (r) => { before.push(r); }, afterRequest: async (u) => { after.push(u); } }, fetch: async (url) => { forwarded.push(url); return new Response(sse()); } }, KEY);
   const answer = send(p.url, { path: '/v1/test?beta=true' }).catch((error) => ({ error }));
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  // Closed while the request is reading its credential: the credential says it was reached, so this is never a guess.
+  await reached.wait('the request reading its credential');
   const closing = p.close();
   release();
   await closing;
   await answer;
+  // A window for an admission, a booking or a send, none of which may come; it can only miss one, never fail by itself.
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual([before.length, after.length, forwarded.length], [0, 0, 0], 'never admitted, never booked, never sent: no turn spent');
 });
@@ -382,6 +420,8 @@ test("a client that reads slowly holds the provider back: the proxy reads no mor
   assert.equal(received, CHUNK * TOTAL, 'the whole answer reaches the client once it reads');
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(warnings.filter((name) => name === 'MaxListenersExceededWarning'), [], 'no listeners piled up on the response');
+  await until(() => hooks.after.length > 0, 'the booking');
+  // A window for a second booking, which must not come; it can only miss one, never fail the test by itself.
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(hooks.after.length, 1, 'booked once');
 });
@@ -426,14 +466,14 @@ test("a request for the session's smaller model is asked about and priced as tha
   const { p, hooks } = await proxy(t, { policy: small, price: (model, usage) => { priced.push(model); return model === 'small-model' ? 0.0001 : 0.001; } });
   assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'small-model', input: 'title' } })).status, 200);
   assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'big', input: 'work' } })).status, 200);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await until(() => hooks.after.length === 2, 'both bookings');
   assert.deepEqual(hooks.before.map((r) => r.model), ['small-model', 'session-model']);
   assert.deepEqual(priced, ['small-model', 'session-model']);
   assert.deepEqual(hooks.after.map((u) => u.usd), [0.0001, 0.001]);
   // A policy without modelOf, or one that throws, books the session's model, as before.
   const throwing = await proxy(t, { policy: { ...small, modelOf: () => { throw new Error('policy bug'); } } });
   assert.equal((await send(throwing.p.url, { path: '/v1/test?beta=true', body: { model: 'small-model', input: 'title' } })).status, 200);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  // The runner is asked, and the policy's failure logged, before the request is sent: the answer orders both.
   assert.deepEqual(throwing.hooks.before.map((r) => r.model), ['session-model']);
   assert.ok(throwing.hooks.logged.some((l) => /could not name the request's model/.test(l.message)));
 });
@@ -443,24 +483,27 @@ test('two paid requests in flight through the proxy, answered in reverse: each i
   const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
   const store = memorySessionStore();
   const ends = [];
-  const booking = await modelPortFor(await store.open('chat:proxy'), { key: 'chat:proxy', onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.input]); } });
-  // The slow request (admitted first) answers after the fast one: each answer reports its own size as input tokens.
-  const slow = new Promise((resolve) => setTimeout(resolve, 150));
+  // The order is forced, never timed: the slow request is with the provider (admitted, turn 1) before the fast one is
+  // sent, and it answers only once the fast one (turn 2) is booked. Each answer reports its own size as input tokens.
+  const slowSent = signal();
+  const fastBooked = signal();
+  const booking = await modelPortFor(await store.open('chat:proxy'), { key: 'chat:proxy', onEvent: (e) => { if (e.type === 'request_end') { ends.push([e.turn, e.usage.input]); if (e.turn === 2) fastBooked.fire(); } } });
   const fetchStub = async (_url, init) => {
     const body = JSON.parse(init.body);
-    if (body.input === 'slow') await slow;
+    if (body.input === 'slow') { slowSent.fire(); await fastBooked.wait('the fast request booked'); }
     return new Response(sse({ in: body.input === 'slow' ? 100 : 7, out: 1 }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
   t.after(() => p.close());
   const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await slowSent.wait('the slow request with the provider');
   const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
   await Promise.all([first, second]);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await until(() => ends.length === 2, 'both answers booked');
   assert.deepEqual(ends, [[2, 7], [1, 100]], 'the fast (turn 2) answer first, then the slow (turn 1), each under its own turn');
-  const turns = (await store.read('chat:proxy')).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data.turn);
-  assert.deepEqual(turns, [2, 1]);
+  const turnsOf = async () => (await store.read('chat:proxy')).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data.turn);
+  await until(async () => (await turnsOf()).length === 2, 'both turns recorded');
+  assert.deepEqual(await turnsOf(), [2, 1]);
   void createHarnessRunner;
 });
 
@@ -490,6 +533,70 @@ test("close() while one request is in flight and another waits on the runner: ea
   for (const end = Date.now() + 2000; ends.length < 2 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 10));
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(ends.sort((a, b) => a[0] - b[0]), [[1, null], [2, 0]], 'turn 1 cut by the close (unknown), turn 2 released at nothing: each once, under its own turn');
+});
+
+test("a stop that comes while a paid request's record is being written: the request never leaves, and it is booked withdrawn at a known $0, never cut", async (t) => {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const writer = await store.open('chat:stop');
+  // The check before the write has passed; the stop comes while the request's record is held in its write.
+  const writing = signal();
+  const stopping = signal();
+  const append = async (records) => {
+    if (records.some((r) => r.kind === RUNNER_RECORDS.request)) { writing.fire(); await stopping.wait('the stop'); }
+    return writer.append(records);
+  };
+  let stopped;
+  const booking = await modelPortFor(writer, { key: 'chat:stop', append, stopped: () => stopped });
+  let upstream = 0;
+  const fetchStub = async () => { upstream++; return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); };
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+  t.after(() => p.close());
+  const sent = send(p.url, { path: '/v1/test?beta=true' });
+  await writing.wait("the request's record in its write");
+  stopped = new Error('the run was cancelled');
+  stopping.fire();
+  const res = await sent;
+  assert.equal(upstream, 0, 'nothing reached the provider');
+  assert.match(res.text, /the run was cancelled/, 'refused, by the stop');
+  const turns = (await store.read('chat:stop')).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => r.data);
+  assert.deepEqual(turns, [{ turn: 1, usd: 0, unsent: true }], 'withdrawn, at $0');
+  // A later process: nothing to book as cut, and the session's spend is known.
+  const asked = [];
+  const next = await modelPortFor(writer, { key: 'chat:stop', beforeRequest: ({ spentUsd, turn }) => void asked.push({ turn, spentUsd }) });
+  await next.bookCut();
+  assert.equal((await store.read('chat:stop')).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).length, 0, 'never booked as cut');
+  await next.models.beforeRequest({ model: 'session-model' });
+  assert.deepEqual(asked, [{ turn: 2, spentUsd: 0 }], 'the next request is turn 2, at a known $0 spent');
+});
+
+test("a provider base with a path prefix: each request goes to the base's path plus the route's, in one hop, with its key, and nowhere else", async (t) => {
+  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const asked = [];
+  const fetchStub = async (url, init) => {
+    asked.push({ url: String(url), authorization: new Headers(init.headers).get('authorization') });
+    return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  for (const [base, sent] of [['https://provider.invalid', 'https://provider.invalid/v1/test?beta=true'], ['https://provider.invalid/api', 'https://provider.invalid/api/v1/test?beta=true'], ['https://provider.invalid/api/', 'https://provider.invalid/api/v1/test?beta=true']]) {
+    asked.length = 0;
+    const booking = await modelPortFor(await memorySessionStore().open('base:path'), { key: 'base:path' });
+    const p = await startModelProxy({ policy, model: 'session-model', origin: base, credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
+    t.after(() => p.close());
+    assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200, base);
+    assert.deepEqual(asked, [{ url: sent, authorization: 'Bearer provider-secret' }], base);
+  }
+});
+
+test("a provider base with userinfo, a query, a fragment or a backslash is refused when the proxy starts: a key goes only where the base reads", async () => {
+  const { modelPortFor } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  // A base naming a user, built in two parts so the source holds no URL with a credential in it.
+  for (const base of ['https://user' + ':pw@provider.invalid/api', 'https://provider.invalid/api?x=1', 'https://provider.invalid/api#y', 'https://provider.invalid/api\\..\\other']) {
+    const booking = await modelPortFor(await memorySessionStore().open('base:bad'), { key: 'base:bad' });
+    await assert.rejects(startModelProxy({ policy, model: 'session-model', origin: base, credential: () => 'provider-secret', hooks: booking.models, fetch: async () => { throw new Error('never sent'); } }, KEY), /base/, base);
+  }
 });
 
 test("each booked request carries the ids its response headers gave (a gateway's call id, the provider's request id), recorded when the headers arrive: a request a crash cut after them keeps them, one cut before them has none, and nothing else of the response is kept", async (t) => {
@@ -539,21 +646,24 @@ test("two requests in flight, answered in reverse: each is booked with its own r
   const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
   const store = memorySessionStore();
   const key = 'chat:ids-overlap';
-  const booking = await modelPortFor(await store.open(key), { key });
-  // The provider's own id for each request, from its response: the slow (first admitted) request's arrives last.
-  const slow = new Promise((resolve) => setTimeout(resolve, 150));
+  // The provider's own id for each request, from its response. The order is forced, never timed: the slow request is
+  // with the provider (admitted, turn 1) before the fast one is sent, and it answers only once the fast one is booked.
+  const slowSent = signal();
+  const fastBooked = signal();
+  const booking = await modelPortFor(await store.open(key), { key, onEvent: (e) => { if (e.type === 'request_end' && e.turn === 2) fastBooked.fire(); } });
   const fetchStub = async (_url, init) => {
     const { input } = JSON.parse(init.body);
-    if (input === 'slow') await slow;
+    if (input === 'slow') { slowSent.fire(); await fastBooked.wait('the fast request booked'); }
     return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', 'request-id': `req_${input}`, 'x-litellm-call-id': `call-${input}` } });
   };
   const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch: fetchStub }, KEY);
   t.after(() => p.close());
   const first = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'slow' } });
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await slowSent.wait('the slow request with the provider');
   const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'fast' } });
   await Promise.all([first, second]);
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  const count = async (kind) => (await store.read(key)).filter((r) => r.kind === kind).length;
+  await until(async () => (await count(RUNNER_RECORDS.turn)) === 2 && (await count(RUNNER_RECORDS.response)) === 2, "both turns' records");
   const records = await store.read(key);
   const of = (kind) => records.filter((r) => r.kind === kind).map((r) => [r.data.turn, r.data.providerIds?.['request-id'], r.data.providerIds?.['x-litellm-call-id']]);
   assert.deepEqual(of(RUNNER_RECORDS.turn), [[2, 'req_fast', 'call-fast'], [1, 'req_slow', 'call-slow']], 'each turn has the ids its own response gave');
@@ -608,7 +718,7 @@ test("the run's books keep each turn's figure and where it came from: the gatewa
   t.after(() => p.close());
   await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'plain' } });
   await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'streamed' } });
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await until(async () => (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn).length === 2, 'both turns recorded');
   const turns = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn).map(({ data: { turn, usd, estimated, tableUsd } }) => ({ turn, usd, estimated, tableUsd }));
   assert.deepEqual(turns, [
     { turn: 1, usd: 3.6999999999999997e-06, estimated: undefined, tableUsd: 0.00375 },
@@ -667,4 +777,165 @@ test("the credential's header replaces a host's header of the same name in any c
   assert.equal((await send(p.url, { path: '/v1/test?beta=true' })).status, 200);
   const keys = Object.entries(forwarded[0].headers).filter(([k]) => k.toLowerCase() === 'x-gateway-key');
   assert.deepEqual(keys, [['x-gateway-key', 'provider-secret']]);
+});
+
+// A response's ids are booked as its headers arrive (runner.response), before the client gets anything. These pin what
+// a request is booked as when that write is held or refused: the money always once, the ids whenever this process could
+// still write them. The residual is stated in the names: a process that dies inside the held write, or that writes only
+// records other than the booking's own after a refused one, loses the ids, and the request is still booked once, cut,
+// at an unknown cost. The provider is an injectable fetch and the store a memory one, as for the proxy's other tests.
+const carriedIds = (n) => ({ 'x-litellm-call-id': `call-carry-${n}`, 'request-id': `req_carry${n}` });
+/** A booking whose writes of runner.response can be held (`hold`) or refused (`refuse` returns true), the proxy over it
+ *  with its log kept, and `reopen()`: the next process on the same store, which books what a crash cut off. */
+async function carrySetup(t, key, { fetch, hold, refuse, holdRequest, stopped }) {
+  const { modelPortFor, RUNNER_RECORDS } = await import('@parcha/agentrun-adapters');
+  const { memorySessionStore } = await import('@parcha/agentrun-adapters/testing');
+  const store = memorySessionStore();
+  const writer = await store.open(key);
+  const append = async (records) => {
+    if (holdRequest && records.some((r) => r.kind === RUNNER_RECORDS.request)) await holdRequest(records);
+    if (records.some((r) => r.kind === RUNNER_RECORDS.response)) {
+      if (hold) await hold();
+      if (refuse?.(records)) throw new Error('commit timed out');
+    }
+    return writer.append(records);
+  };
+  const booking = await modelPortFor(writer, { key, append, ...(stopped ? { stopped } : {}) });
+  const logged = [];
+  const p = await startModelProxy({ policy, model: 'session-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks: booking.models, price: () => 0.001, fetch, log: (message, detail) => logged.push({ message, ...detail }) }, KEY);
+  const read = () => store.read(key);
+  const of = async (kind) => (await read()).filter((r) => r.kind === kind).map((r) => r.data);
+  const reopen = async () => (await modelPortFor(await store.open(key), { key })).bookCut();
+  return { p, logged, read, of, reopen, RUNNER_RECORDS };
+}
+const answered = (n) => new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream', ...carriedIds(n) } });
+const neverEnds = (n) => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); } }), { status: 200, headers: { 'content-type': 'text/event-stream', ...carriedIds(n) } });
+
+test("residual: a process that dies while its response's ids are being written loses them; the client had nothing yet, and the request is booked once, cut, at an unknown cost", async (t) => {
+  const holding = signal();
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const { p, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-held', { fetch: async () => neverEnds(1), hold: async () => { holding.fire(); await held; }, refuse: () => true });
+  t.after(async () => { release(); await p.close(); });
+  // A raw client, to see whether anything of the response reached it while the write is held.
+  let got = false;
+  const { port } = new URL(p.url);
+  const req = request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/test?beta=true', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => { got = true; res.resume(); });
+  req.on('error', () => {});
+  req.end(JSON.stringify({ model: 'x', input: 'held' }));
+  await holding.wait('the write of the response ids, held');
+  // Nothing is forwarded before that write resolves (the proxy awaits it before writing the head): a client that has the
+  // answer before its ids are booked would hold a response the booking can't name.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(got, false, 'the client has nothing while the ids are being written');
+  // The process dies there: the next one books the request, once, cut, with no ids (they were never written).
+  await reopen();
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ usd: null, cut: true, turn: 1 }], 'booked once, cut, unknown, no ids');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [], 'no response record');
+});
+
+test("a refused write of a response's ids: the stream completes, the proxy says so once, and the request is booked once with its ids in its answer's record, which carries them so they are not written again", async (t) => {
+  let first = true;
+  const { p, logged, of, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-refused', { fetch: async (_url, init) => answered(JSON.parse(init.body).input), refuse: () => { const refused = first; first = false; return refused; } });
+  t.after(() => p.close());
+  const r = await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 1 } });
+  assert.equal(r.status, 200);
+  assert.match(r.text, /"done":true/, 'the whole answer reached the client');
+  assert.deepEqual(logged.filter((l) => /responded threw/.test(l.message)).map((l) => l.message), ["model proxy (test): responded threw; the request's ids are kept with its booking only"]);
+  // A second request: its own records are written, and the first's refused response record is not among them, since
+  // the first's runner.turn already carried its ids.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 2 } })).status, 200);
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 2, 'both answers booked');
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: 0.001, estimated: true, providerIds: carriedIds(1) }, { turn: 2, usd: 0.001, estimated: true, providerIds: carriedIds(2) }], 'each booked once, with its ids');
+  assert.deepEqual((await of(RUNNER_RECORDS.response)).map((d) => d.turn), [2], "turn 1's ids are in its runner.turn only, never written twice");
+});
+
+test("a refused write of a response's ids, then the stream cut with the process alive: booked once at an unknown cost, with its ids", async (t) => {
+  const { p, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-cut', {
+    fetch: async () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"delta":"hi"}\n\n')); c.error(new Error('cut')); } }), { status: 200, headers: { 'content-type': 'text/event-stream', ...carriedIds(1) } }),
+    refuse: () => true,
+  });
+  t.after(() => p.close());
+  await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'cut' } }).catch(() => {});
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'the cut request booked');
+  await reopen();
+  assert.deepEqual(await of(RUNNER_RECORDS.turn), [{ turn: 1, usd: null, estimated: true, providerIds: carriedIds(1) }], 'once, unknown, with its ids; the next process books nothing more');
+});
+
+test("a refused write of a response's ids is carried into the booking's next write: a process that dies before that request ends still leaves its ids for the cut (residual: one that writes nothing more of its own booking first loses them)", async (t) => {
+  let first = true;
+  const { p, logged, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-next', {
+    fetch: async (_url, init) => (JSON.parse(init.body).input === 'hangs' ? neverEnds(1) : answered(2)),
+    refuse: () => { const refused = first; first = false; return refused; },
+  });
+  t.after(() => p.close());
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'hangs' } }).catch(() => {});
+  await until(() => logged.some((l) => /responded threw/.test(l.message)), "the refused write of turn 1's ids");
+  // The booking writes again for a request of its own: the next request's runner.request carries turn 1's ids first.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'answered' } })).status, 200);
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'turn 2 booked');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }, { turn: 2, providerIds: carriedIds(2) }], "turn 1's ids, carried and marked late");
+  // The process dies with turn 1 still open: the next one books it once, cut, unknown, under the ids it carried.
+  await reopen();
+  assert.deepEqual((await of(RUNNER_RECORDS.turn)).filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
+});
+
+test("a carried response record whose own next write is refused stays carried: that request is refused, the next write carries it, and a later crash's cut keeps the ids", async (t) => {
+  // The writes that hold a response record, in order: turn 1's ids (refused), the next request's record carrying them
+  // (refused too), then everything after (written).
+  let writes = 0;
+  const { p, logged, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-restored', {
+    fetch: async (_url, init) => (JSON.parse(init.body).input === 'hangs' ? neverEnds(1) : answered(3)),
+    refuse: () => ++writes <= 2,
+  });
+  t.after(() => p.close());
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'hangs' } }).catch(() => {});
+  await until(() => logged.some((l) => /responded threw/.test(l.message)), "the refused write of turn 1's ids");
+  // The next request's record can't be written: it is refused, never sent, and costs no turn.
+  const refused = await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'refused' } });
+  assert.notEqual(refused.status, 200, 'a request whose record could not be written is refused');
+  assert.equal(writes, 2, 'its write carried turn 1 ids and was refused');
+  // The one after carries them, and is written.
+  assert.equal((await send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'third' } })).status, 200);
+  await until(async () => (await of(RUNNER_RECORDS.turn)).length === 1, 'the third request booked');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }, { turn: 2, providerIds: carriedIds(3) }], "turn 1's ids, carried past the refused write");
+  await reopen();
+  assert.deepEqual((await of(RUNNER_RECORDS.turn)).filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
+});
+
+test("a response's ids refused while the next request's record is written, then a stop: the withdrawal of that request carries them, and a later crash's cut keeps them", async (t) => {
+  // The order is forced: request 2's record is being written (held) when request 1's headers arrive and their write is
+  // refused; the stop comes before request 2's record resolves, so request 2 is withdrawn, never sent.
+  const turn1Headers = signal();
+  let releaseHeaders;
+  const headersHeld = new Promise((resolve) => { releaseHeaders = resolve; });
+  const request2Writing = signal();
+  let releaseRequest2;
+  const request2Held = new Promise((resolve) => { releaseRequest2 = resolve; });
+  let stop;
+  const { p, logged, of, reopen, RUNNER_RECORDS } = await carrySetup(t, 'chat:carry-withdrawn', {
+    fetch: async (_url, init) => { if (JSON.parse(init.body).input === 'first') { turn1Headers.fire(); await headersHeld; return neverEnds(1); } return answered(2); },
+    holdRequest: async (records) => { if (records.some((r) => r.kind === RUNNER_RECORDS.request && r.data.turn === 2)) { request2Writing.fire(); await request2Held; } },
+    // Only turn 1's own write of its ids is refused; the write that carries them is not.
+    refuse: (records) => records.some((r) => r.kind === RUNNER_RECORDS.response && r.data.turn === 1 && !r.data.late),
+    stopped: () => stop,
+  });
+  t.after(async () => { releaseHeaders(); releaseRequest2(); await p.close(); });
+  send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'first' } }).catch(() => {});
+  await turn1Headers.wait('request 1 with the provider');
+  const second = send(p.url, { path: '/v1/test?beta=true', body: { model: 'x', input: 'second' } }).catch((e) => e);
+  await request2Writing.wait("request 2's record being written");
+  releaseHeaders();
+  await until(() => logged.some((l) => /responded threw/.test(l.message)), "turn 1's ids refused");
+  stop = new Error('the session has stopped');
+  releaseRequest2();
+  const refused = await second;
+  assert.ok(refused instanceof Error || refused.status !== 200, 'request 2 is withdrawn, never answered');
+  await until(async () => (await of(RUNNER_RECORDS.turn)).some((d) => d.unsent), 'request 2 withdrawn');
+  assert.deepEqual(await of(RUNNER_RECORDS.response), [{ turn: 1, providerIds: carriedIds(1), late: true }], "turn 1's ids, carried by the withdrawal's write");
+  // The process dies with turn 1 open: the next one books it once, cut, with the ids the withdrawal carried.
+  await reopen();
+  const turns = await of(RUNNER_RECORDS.turn);
+  assert.deepEqual(turns.filter((d) => d.turn === 2), [{ turn: 2, usd: 0, unsent: true }], 'request 2 withdrawn at $0');
+  assert.deepEqual(turns.filter((d) => d.turn === 1), [{ usd: null, cut: true, turn: 1, providerIds: carriedIds(1) }], 'the cut keeps the ids');
 });

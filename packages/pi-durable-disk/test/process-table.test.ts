@@ -9,7 +9,8 @@ import { killQuietly } from "./_run-support.ts";
 
 const linux = process.platform === "linux";
 
-/** A ps and a sysctl that answer from `listing`, `environments` (pid to `ps -E` output) and `boot`, and log each call. */
+/** A ps and a sysctl that answer from `listing`, `environments` (pid to `ps -E` output: arguments, then environment) and
+ *  `boot`, and log each call. Without -E, ps prints a process's arguments alone: the words before its first NAME=value. */
 function scripted(listing: string, environments: Record<number, string> = {}, boot = "8C1F3E0A-0B6D-4C47-9A3E-6F0E2D9B7C11\n") {
   const calls: string[] = [];
   const run: CommandRunner = (file, args) => {
@@ -18,7 +19,10 @@ function scripted(listing: string, environments: Record<number, string> = {}, bo
     if (args.includes("-A")) return listing;
     const pid = Number(args[args.indexOf("-p") + 1]);
     if (environments[pid] === undefined) throw new Error(`no process ${pid}`);
-    return environments[pid]!;
+    if (args.includes("-E")) return environments[pid]!;
+    const words = environments[pid]!.trim().split(/\s+/);
+    const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    return `${(env < 0 ? words : words.slice(0, env)).join(" ")}\n`;
   };
   return { run, calls };
 }

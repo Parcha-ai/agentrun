@@ -346,3 +346,17 @@ test('a port patch is archived and scanned as text; a patch anywhere else still 
   await f.write('packages/run-adapters/vendor/durable-harness/other.patch', 'x\n');
   await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/run-adapters\/vendor\/durable-harness\/other\.patch/);
 });
+
+test('a TSX source file is archived and scanned like any other source', async t => {
+  const f = await fixture(t);
+  // apps/console is React in TSX: a .tsx file is source text, so it is exported and its contents are scanned for secrets.
+  await f.write('apps/console/src/App.tsx', 'export const App = () => <main>AgentRun</main>;\n');
+  await f.run();
+  assert.match(await f.listing(), /agentrun-dsl-source\/apps\/console\/src\/App\.tsx/);
+  const fakeSecret = ['ghp_', 'z'.repeat(36)].join('');
+  await f.write('apps/console/src/Key.tsx', `export const key = "${fakeSecret}";\n`);
+  await assert.rejects(f.run(), error => {
+    assert.match(error.stderr, /Source export blocked/);
+    return true;
+  });
+});

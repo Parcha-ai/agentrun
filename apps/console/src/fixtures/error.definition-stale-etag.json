@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "PUT",
+    "path": "/v2/agents/lead-scorer/definition",
+    "body": {
+      "instructions": "x"
+    }
+  },
+  "status": 412,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "precondition_failed",
+      "message": "If-Match is \"stale-etag\", and the agent's current revision is \"6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf\"",
+      "retryable": false,
+      "request_id": "req_d4e9f8d30cb45308"
+    }
+  }
+}
