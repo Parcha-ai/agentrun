@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { env } from 'node:process';
 import { after, test } from 'node:test';
 import { createHarnessRunner } from '@parcha/agentrun-adapters';
+import { foldSession } from '@parcha/agentrun-adapters/kernel';
+import { journalRecords } from '@parcha/agentrun-adapters/process';
 import { memorySessionStore } from '@parcha/agentrun-adapters/testing';
 import { codexAdapter } from '@parcha/agentrun-codex';
 import { findCodex } from '../dist/binary.js';
@@ -216,7 +218,7 @@ async function crashed(after, { pad = false, script, then, again = false, lookup
   assert.equal((await b.turnEnd()).status, 'completed');
   if (then) await then(b);
   await b.close();
-  return { charged: () => charged, looked: () => looked, seen, before };
+  return { charged: () => charged, looked: () => looked, seen, before, nestedRecords: async () => journalRecords(foldSession(spec.key, await store.read(spec.key)), 'codex.nested').map((r) => r.data) };
 }
 
 test("code mode: a crash after a never call completed, an exec answered as a custom tool output that says it completed, with its result; a model that re-calls whatever is labelled not run still runs it once", { skip, timeout: 240_000 }, async () => {
@@ -263,6 +265,11 @@ test("code mode: an answer the proxy could not read to its end: a call its scrip
   assert.match(text, /\d calls? ran? whose script could not be told/, "the calls are listed apart, under their own heading");
   assert.match(text, /1\. lookup completed: "found"/, 'the safe call made under an unwatched answer is listed');
   assert.ok(!/unwatched/i.test(text), 'the marker is not in what the model is told');
+  // And not in the records: the lookup's tie names no exec, and no record anywhere holds the marker.
+  const records = await r.nestedRecords();
+  assert.ok(records.length >= 1, 'the calls were tied');
+  assert.ok(records.every((t) => t.exec === null), 'a call of an answer that could not be read names no exec');
+  assert.ok(!JSON.stringify(records).includes('unwatched'), 'no record holds the marker');
 });
 
 const NOTE = /The harness, not the user, adds this about the turn before this one/;
