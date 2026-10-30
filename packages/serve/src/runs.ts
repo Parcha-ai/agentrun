@@ -753,7 +753,8 @@ export class Runs {
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
     if (released || gone) await this.storeWhenFree(run);
     // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
-    // relaunch), since nothing else would until the next start or archive.
+    // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
+    // go: a settle with the process not gone means another live holder of the run, whose box is its own.
     if (gone && (await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined))?.archivedAt) await this.teardown(run);
     let ended: { outcome: Status; state?: Ended; summary?: string } | undefined;
     // A workflow run carries back how its workflow ended, through workflowCarry; cancelled before that, it stopped.
@@ -778,8 +779,6 @@ export class Runs {
       ended = { outcome: "failed" };
     }
     await this.carryBack(run, ended.outcome, ended.state, ended.summary);
-    // Ended with its process exited (not found gone): an archived run's box is let go once its end is written.
-    if (!gone && (await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined))?.archivedAt) await this.teardown(run);
   }
 
   /** A workflow run's carry back, `workflowCarry` of @parcha/pi-durable-agent/workflow on its released store, and its
