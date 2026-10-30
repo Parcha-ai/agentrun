@@ -74,6 +74,10 @@ function base64Cores(bytes: Buffer): string[] {
   return [0, 1, 2].map((lead) => Buffer.concat([Buffer.alloc(lead), bytes]).toString("base64").slice(Math.ceil((8 * lead) / 6), Math.floor((8 * (lead + bytes.length)) / 6)));
 }
 
+/** `bytes` percent-encoded as encodeURIComponent writes a string, lowercased: built from the bytes, so a string no URI
+ *  encoder takes (a lone surrogate) never throws. */
+const uriComponent = (bytes: Buffer) => [...bytes].map((byte) => (/[A-Za-z0-9\-_.!~*'()]/.test(String.fromCharCode(byte)) && byte < 0x80 ? String.fromCharCode(byte) : `%${byte.toString(16).padStart(2, "0")}`)).join("").toLowerCase();
+
 /** How `value` may be written down: `exact` as it is or JSON-escaped; from `MIN_ENCODED` bytes on, `folded` (hex and
  *  percent-encoding, matched in any case) and `base64` (base64 and base64url at every offset, matched with whitespace
  *  taken out, so a wrapped blob is read whole). */
@@ -82,7 +86,7 @@ export function privateFormsOf(value: string): { exact: string[]; folded: string
   const bytes = Buffer.from(value, "utf8");
   if (bytes.length < MIN_ENCODED) return { exact, folded: [], base64: [] };
   const hex = bytes.toString("hex");
-  const folded = [...new Set([hex, hex.replace(/../g, "%$&"), encodeURIComponent(value).toLowerCase()])];
+  const folded = [...new Set([hex, hex.replace(/../g, "%$&"), uriComponent(bytes)])];
   const cores = base64Cores(bytes);
   return { exact, folded, base64: [...new Set([...cores, ...cores.map((core) => core.replace(/\+/g, "-").replace(/\//g, "_"))])] };
 }

@@ -83,14 +83,30 @@ export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T
   };
 }
 
-/** What a learning run is told about saving what it learned: where its working copy is, its memo, and the paths a
- *  harvest takes (agentrun-learn's layout). */
-export function learningInstructions(runId: string): string {
+/** What a learning run seeded from `base` is told about saving what it learned: where its working copy is, its memo,
+ *  a note as pi-agent-learn's renderLearning writes one (so parseLearning reads it back), and the paths a harvest takes
+ *  (agentrun-learn's layout). */
+export function learningInstructions(runId: string, base: string): string {
   return [
     "<saving-learning>",
     `Your learning repository is checked out at ${WORKING_COPY}. Save what you learned there with your file tools; a file tool your definition does not name works there only (read reaches ${SEEDED_NOTES} too). Once this run ends, the server commits what you changed there to the branch runs/${runId} for review; nothing else you write is kept.`,
     `- Your memo: ${WORKING_COPY}/memos/${runId}.md. Keep its front matter (the server writes it) and add, in this order, ## What happened, ## What I learned, ## What could be better, and ## Proposed changes, which lists every path you changed. A memo you leave as it is proposes nothing.`,
-    `- A note: ${WORKING_COPY}/learnings/L-<12 lowercase hex digits>.md, one general rule. Its front matter holds id, type (lesson, fact or correction), status (active), runs ([${runId}]) and supersedes ([] or the notes it replaces); the rule follows it. Add one line for it to ${WORKING_COPY}/learnings/INDEX.md: - L-<id>: <the rule>.`,
+    `- A note: ${WORKING_COPY}/learnings/L-<id>.md, one general rule, where <id> is 12 lowercase hex digits of your choosing. Write it exactly in this form: type is lesson, fact or correction; scope is all or a short lowercase name of the inputs it applies to; untrusted is true when what it says came from outside this run (a web page); supersedes lists the notes it replaces, ["L-..."], or []. Then add one line for it to ${WORKING_COPY}/learnings/INDEX.md: - L-<id>: <the rule>.`,
+    "<note>",
+    "---",
+    "id: L-<id>",
+    "type: lesson",
+    "scope: all",
+    "status: active",
+    "provenance:",
+    `  runs: ${JSON.stringify([runId])}`,
+    `  sha: ${base}`,
+    "  untrusted: false",
+    "uses: 0",
+    "supersedes: []",
+    "---",
+    "<the rule, in one or two sentences>",
+    "</note>",
     `- A skill: ${WORKING_COPY}/.agents/skills/<name>/SKILL.md. A workflow draft: ${WORKING_COPY}/workflows/<name>/workflow.json with its README.md.`,
     "- AGENTS.md and agent.json are your rules and definition, never changed here; any other path is left out.",
     "Never put names, ids or data from this case, or any key, token or password, in these files: a change that holds one is refused whole.",
@@ -382,8 +398,9 @@ export async function harvestOnExit(data: string, agents: StoreAccess, runId: st
   while (processLive(dir)) {
     if (signal.aborted) return undefined;
     await new Promise<void>((done) => {
-      const timer = setTimeout(done, everyMs);
-      signal.addEventListener("abort", () => (clearTimeout(timer), done()), { once: true });
+      const stop = () => (clearTimeout(timer), done());
+      const timer = setTimeout(() => (signal.removeEventListener("abort", stop), done()), everyMs);
+      signal.addEventListener("abort", stop, { once: true });
     });
     if (signal.aborted) return undefined;
   }
@@ -425,7 +442,7 @@ export async function catchUp(data: string, agents: StoreAccess, log: (line: str
 
 /** What a learning run's process adds: the `<learned>` section, the skills the agent wrote (their files, under the
  *  run's work), and the hook that journals the seed and lays out the working copy before the run resumes. */
-export type RunLearning = { extension: Extension; skillFiles: string[]; beforeResume(run: BeforeResume): Promise<void> };
+export type RunLearning = { extension: Extension; skillFiles: string[]; base: string; beforeResume(run: BeforeResume): Promise<void> };
 
 /**
  * For the run in `where`, of agent `agentId`: the commit it starts from, which is the one its store journaled when it
@@ -459,6 +476,7 @@ export async function runLearning(where: AppContext, agentId: string, ownSkills:
   return {
     extension,
     skillFiles,
+    base: sha,
     beforeResume: async ({ harness }) => {
       await learn.seedLearning({ repo, ref: sha, target: harness as never, into: where.work });
       if (existsSync(copy)) return;

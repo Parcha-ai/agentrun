@@ -132,7 +132,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       settles.push((harness) => learning.beforeResume({ harness } as BeforeResume));
     }
     const prompt = await promptOf(revision.body.instructions, [...Object.keys(revision.body.skills), ...(learning?.skillFiles ?? [])], where.work);
-    const instructions = learning ? `${prompt}\n\n${learningInstructions(run.id)}` : prompt;
+    const instructions = learning ? `${prompt}\n\n${learningInstructions(run.id, learning.base)}` : prompt;
     return { models, registry, ...hooks, ...(stops.length ? { wake } : {}), root: { agent: { model, thinkingLevel, instructions, tools } }, onOpen: async (durable: DurableRun) => marked.open(durable) } as unknown as AppOptions;
   }
   const meta = await readJson(join(where.root, RUN_META));
