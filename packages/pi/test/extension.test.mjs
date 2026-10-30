@@ -598,6 +598,19 @@ test('a judge naming a provider other than Jev is refused before any node runs, 
   }));
 });
 
+test('a judge\'s pinned model is the model pi sends Jev', async () => {
+  await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, () => withJevFetch(async sent => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      const definition = judgeWorkflow(); definition.root.model = 'jev-1.14.0';
+      await app.tool({ action: 'inspect', workflow: definition, input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      assert.equal(app.messages.at(-1).details.status, 'complete');
+      assert.deepEqual(sent.map(request => request.body.model), ['jev-1.14.0']);
+    } finally { await app.shutdown(); }
+  }));
+});
+
 test('a judge\'s timeoutMs bounds its Jev request: cut after it was sent, it is not asked again and the run goes to review', { timeout: 20_000 }, async () => {
   await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, async () => {
     const sent = [], realFetch = globalThis.fetch;
