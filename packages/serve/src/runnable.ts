@@ -35,7 +35,8 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
-    const learning = revision.learning !== undefined && revision.learning !== "off";
+    // Learning runs on pi only (agents.ts refuses a save that asks for it elsewhere).
+    const learning = revision.learning !== undefined && revision.learning !== "off" && harness === DEFAULT_HARNESS;
     (revision.tools ?? []).forEach((tool, index) => {
       // A name a learning revision could give before learning had file tools: it binds nothing there.
       if (tool === LEARN_NAME && learning) return;

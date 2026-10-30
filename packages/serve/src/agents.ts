@@ -97,6 +97,11 @@ export class Agents {
     const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
     const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
+    // Learning runs on pi only. Only a definition that asks for it here is refused: one that leaves it out keeps what
+    // it would on pi, which reads as off on this harness (learningEffect).
+    if ((definition.learning === "auto" || definition.learning === "approve") && harness.harness) {
+      throw invalid([{ field: "definition.learning", reason: "not_an_option", message: `learning runs on pi; ${harness.harness} runs without it. Set definition.learning to null, or use pi.` }]);
+    }
     return {
       kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}),
       learning: definition.learning === null ? "off" : ((definition.learning as LearningMode | undefined) ?? learning), ...common,
@@ -264,12 +269,29 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
 }
 
+/** What a revision's runs learn with, and why when that is not what it says: learning runs on pi only, so a revision
+ *  on another harness that says auto or approve (one stored before that was refused, or a default it never stated)
+ *  runs without it. */
+export function learningEffect(revision: Revision | null | undefined): { effective: LearningMode; reason: string | null } {
+  if (revision?.kind !== "agentic") return { effective: "off", reason: null };
+  const stated = revision.body.learning ?? "off";
+  const harness = harnessOfBody(revision.body);
+  if (stated === "off" || harness === DEFAULT_HARNESS) return { effective: stated, reason: null };
+  return { effective: "off", reason: `learning runs on pi; this agent runs on ${harness}` };
+}
+
+const learningFields = (revision: Revision | null | undefined) => {
+  const { effective, reason } = learningEffect(revision);
+  return { learning_effective: effective, learning_reason: reason };
+};
+
 /** `Agent` as the contract shows it, with its current revision. */
 export function agentView(entry: AgentEntry) {
   const { agent, revision } = entry;
   return {
     agent_id: agent.id,
     definition: revision ? definitionOf(agent, revision, entry.version) : null,
+    ...learningFields(revision),
     kind: revision?.kind ?? null,
     revision: revision?.id ?? null,
     revisions: entry.revisions,
@@ -287,5 +309,5 @@ export function agentView(entry: AgentEntry) {
 
 /** One revision as `GET .../revisions` lists it. */
 export function revisionView(agent: Agent, row: RevisionRow & { version: number }, revision: Revision) {
-  return { revision: row.id, version: row.version, parent: row.parent, kind: row.kind, current: row.current, note: row.note ?? null, created_at: row.createdAt, definition: definitionOf(agent, revision, row.version) };
+  return { revision: row.id, version: row.version, parent: row.parent, kind: row.kind, current: row.current, note: row.note ?? null, created_at: row.createdAt, definition: definitionOf(agent, revision, row.version), ...learningFields(revision) };
 }

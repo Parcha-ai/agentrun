@@ -19,7 +19,7 @@ import type { AgentStoreReader, LearningMode, Revision, RunRow } from "@parcha/p
 import type { AppContext, BeforeResume } from "@parcha/pi-durable-disk";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import type { GitIdentity, Repo } from "@parcha/pi-git-remote";
-import { type AgentEntry, definitionOf, whenFree } from "./agents.js";
+import { type AgentEntry, definitionOf, learningEffect, whenFree } from "./agents.js";
 import { type HarvestResult, harvestWorktree } from "./harvest.js";
 import { readJson, RUN_META } from "./files.js";
 import { forModel } from "./result.js";
@@ -134,8 +134,8 @@ export function learningBlocker(env: NodeJS.ProcessEnv): Promise<string | undefi
   return check;
 }
 
-/** How a revision's runs learn: only an agentic revision learns, and a revision without the field does not. */
-export const learningOf = (revision: Revision | null | undefined): LearningMode => (revision?.kind === "agentic" ? (revision.body.learning ?? "off") : "off");
+/** How a revision's runs learn: only an agentic revision on pi learns, and a revision without the field does not. */
+export const learningOf = (revision: Revision | null | undefined): LearningMode => learningEffect(revision).effective;
 
 export const repoOf = (data: string, agentId: string): string => join(data, "agents", agentId, REPO);
 const agentDir = (data: string, agentId: string): string => join(data, "agents", agentId);

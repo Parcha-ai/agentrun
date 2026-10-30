@@ -410,6 +410,12 @@ agent does not learn.
   turns it off.
 - A revision saved before the field existed does not learn.
 - A workflow definition does not take it (`422 not_an_option`).
+- Learning runs on pi only. A definition that asks for it on another harness is `422 not_an_option` on
+  `definition.learning` ("learning runs on pi; codex runs without it. Set definition.learning to null, or use pi."). One
+  that leaves it out there saves and keeps the value (the default, or the one an edit keeps), which does not run: the
+  agent and revision views say what applies, read only, in `learning_effective` (`auto`, `approve` or `off`) and
+  `learning_reason` ("learning runs on pi; this agent runs on codex", else null). Moved to pi, the kept value runs. A
+  revision stored with learning on another harness before this rule runs as it did, without learning.
 - Learning adds `read`, `write` and `edit` on the run's working copy of the agent's repository only: a file tool the
   revision did not name works inside `work/.agent/repo` (`read` also in `work/.agent/learnings`, the seeded notes) and
   nowhere else, never through a link, and a call outside it is refused by name ("write is the learning copy's only here:
