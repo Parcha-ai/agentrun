@@ -11,6 +11,8 @@ import { schemaProblems } from "./schema-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
 const BOX_ENV = ["AGENTRUN_BOX", "AGENTRUN_BOX_CGROUP", "AGENTRUN_BOX_EGRESS"];
+/** A private address the probe's own words name, which capabilities must never carry. */
+const PLANTED_ADDRESS = "10.1.2.3"; // key-gate: denylist a planted private address the box detail must never carry
 
 /** A box whose probe proved `isolation` (a scripted factory: in tests only). */
 const factory = (isolation, seen = []) => async (config) => {
@@ -114,7 +116,7 @@ test("the error codes are stable, and every detail is words only: no host path, 
   const user = process.env.USER ?? process.env.LOGNAME ?? "nobody-here";
   for (const error of BOX_UNAVAILABLE) {
     // The probe's own words name a path, a user and an address; none of them may reach capabilities.
-    const { caps, close } = await served(t, { boxFactory: factory({ mode: "unavailable", error, detail: `/usr/bin/bwrap as ${user} at 10.1.2.3: failed` }) });
+    const { caps, close } = await served(t, { boxFactory: factory({ mode: "unavailable", error, detail: `/usr/bin/bwrap as ${user} at ${PLANTED_ADDRESS}: failed` }) });
     assert.equal(caps.box.error, error);
     const { detail } = caps.box;
     assert.doesNotMatch(detail, /\/[A-Za-z0-9._-]+/, `${error}: a path in "${detail}"`);
