@@ -9,7 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
-import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
+import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION } from "./binary.js";
@@ -207,8 +207,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
+            // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.
             outcome = current.signal.aborted
-              ? { status: "interrupted" }
+              ? abortedOutcome(current.signal, io.signal)
               : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
           }
           io.onEvent({ type: "turn_end", status: outcome.status });
@@ -241,13 +242,13 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           return running;
         },
         async interrupt() {
-          drive.halt?.(new Error("interrupted"));
+          drive.halt?.(new SessionHalt("interrupted"));
           await running?.catch(() => {});
         },
         async close() {
           if (closed) return;
           closed = true;
-          drive.halt?.(new Error("closed"));
+          drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
         },
       };

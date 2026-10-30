@@ -346,3 +346,21 @@ test('the catalog reader is test-only: passed outside the stand-in guard, the ad
     if (saved.node === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved.node;
   }
 });
+
+test("a Codex turn the session itself stops, by its interrupt or its close, ends interrupted", async () => {
+  for (const stop of ['interrupt', 'close']) {
+    let inside;
+    const reached = new Promise((resolve) => { inside = resolve; });
+    const wait = { name: 'wait', description: 'Wait.', inputSchema: { type: 'object' }, replay: 'safe', call: (_args, { signal }) => { inside(); return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('cut')), { once: true })); } };
+    const { adapter: codex } = adapter(['call wait {}']);
+    const spec = { key: `step:${stop}`, label: 'w', system: [], tools: [wait], context: 'fresh' };
+    const store = memorySessionStore();
+    const session = await codex.open(spec, { store, writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} });
+    await session.send('go');
+    await reached;
+    const ending = session.turnEnd();
+    if (stop === 'interrupt') await session.interrupt(); else await session.close();
+    assert.equal((await ending).status, 'interrupted', stop);
+    if (stop === 'interrupt') await session.close();
+  }
+});
