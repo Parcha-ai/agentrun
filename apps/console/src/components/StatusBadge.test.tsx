@@ -30,3 +30,15 @@ describe("ReviewNotice", () => {
     expect(html).not.toContain("<textarea");
   });
 });
+
+describe("ReviewNotice, a run escalated before the review named its kind and node", () => {
+  it("says it needs review and why, and never prints null", () => {
+    const html = renderToStaticMarkup(createElement(ReviewNotice, { review: { kind: null, node: null, reason: "document_checks; escalated at document_review", at: "2026-10-29T23:30:00Z" } }));
+    expect(html).toContain("Needs review");
+    expect(html).toContain("document_checks; escalated at document_review");
+    expect(html).not.toContain("null");
+    // No dangling separator or empty place where the kind and node would be.
+    expect(html).not.toMatch(/·\s*</);
+    expect(html).not.toContain("at ,");
+  });
+});
