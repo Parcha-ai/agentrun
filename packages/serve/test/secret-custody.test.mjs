@@ -22,7 +22,7 @@ const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-s
 const CONFINED = existsSync("/usr/bin/setpriv");
 const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
-const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY"];
+const READ = [...SERVER_ONLY, "AGENT_MODEL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BROWSERBASE_API_KEY", "OPENROUTER_API_KEY"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
 const read = (path) => {
