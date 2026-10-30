@@ -45,6 +45,16 @@ process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
     await Promise.race([exited, sleep(10_000).then(() => server.kill("SIGKILL"))]);
   });
   const up = () => assert.ok(server.exitCode === null && server.signalCode === null, `the server exited (${server.exitCode ?? server.signalCode}): ${seen.err}`);
+  /** `step`, and when it fails with the server gone, that the server went. */
+  const whileUp = async (step) => {
+    try {
+      return await step();
+    } catch (error) {
+      await Promise.race([exited, sleep(2_000)]);
+      up();
+      throw error;
+    }
+  };
   for (let i = 0; !seen.out.includes("\n"); i++) {
     up();
     assert.ok(i < 600, `the server did not start: ${seen.err}`);
@@ -53,9 +63,9 @@ process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
   const { base, token } = JSON.parse(seen.out.split("\n")[0]);
   const api = client(base, token);
   assert.equal((await api("POST", "/agents", flowAgent("coi", coi))).status, 201);
-  const started = await api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } });
+  const started = await whileUp(() => api("POST", "/agents/coi/runs", { input: { question: "State of Delaware. Certificate of Incorporation of Example Widgets, Inc." } }));
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  const { last } = await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+  const { last } = await whileUp(() => follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 }));
   const run = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(last.status, "completed", JSON.stringify(run.error));
   assert.deepEqual(run.result.output, { is_coi: true });
