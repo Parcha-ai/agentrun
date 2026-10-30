@@ -233,7 +233,7 @@ describe("openDurableRun", () => {
       const record = runJson(dir.root);
       assert.deepEqual(
         { ...record, holder: null, heartbeatAt: null, updatedAt: "" },
-        { run: "r1", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: null, updatedAt: "", detail: null },
+        { run: "r1", status: "running", generation: 1, sealedSeq: null, wakeAt: null, holder: null, heartbeatAt: null, updatedAt: "", detail: null, workspace: "work" },
       );
       assert.equal(record.holder?.pid, process.pid);
       assert.equal(record.holder?.driver, "local");
