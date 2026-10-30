@@ -165,3 +165,30 @@ test("a harvest that would hold a refused value (a host secret, the run's input)
   const hostRefs = git(["--git-dir", join(s.root, "host"), "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]);
   assert.equal(hostRefs, "", "not even the host's own clone holds a commit");
 });
+
+test("no working copy is no harvest: a missing copy throws, and the repository is untouched, never a deletion of every note", async (t) => {
+  const s = await seeded(t);
+  await rm(s.work, { recursive: true, force: true });
+  await assert.rejects(harvest(s, "host"), /no working copy/);
+  assert.equal(git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
+});
+
+test("a directory the harvest cannot read stops it: nothing is committed, and its seed files are never read as deleted", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  await chmod(join(s.work, "learnings"), 0o000);
+  t.after(() => chmod(join(s.work, "learnings"), 0o755).catch(() => undefined));
+  await assert.rejects(harvest(s, "host"), /learnings/);
+  await chmod(join(s.work, "learnings"), 0o755);
+  assert.equal(git(["--git-dir", s.bare, "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "");
+  assert.equal(git(["--git-dir", join(s.root, "host"), "for-each-ref", "--format=%(refname)", "refs/heads/runs/"]), "", "not even in the host's clone");
+});
+
+test("a deletion is read only in a directory that was read: a note removed from learnings/ is deleted, a learnings/ removed whole deletes nothing", async (t) => {
+  const s = await seeded(t);
+  await writeFile(join(s.work, MEMO), `---\nrun: ${RUN}\nbase: ${s.seed}\n---\n${memoBody}`);
+  await rm(join(s.work, "learnings"), { recursive: true });
+  const whole = await harvest(s, "host");
+  assert.deepEqual(whole.deleted, []);
+  assert.ok(tree(s.bare, `runs/${RUN}`).includes(OLD), "the notes stay when their directory is gone");
+});
