@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+A learning run writes what it learned with its own file tools, and the server harvests it. At its seed the run gets its agent's `main` at that commit as plain files in `work/.agent/repo`, with the memo's front matter waiting for its sections, and the file tools (`read`, `write`, `edit`) whatever its revision names. Once the run's end is carried back and its process has ended, the server harvests that copy into one commit on `runs/<run id>` in the agent's queue: refused while the run's process is still alive, refused whole when it would hold the run's input or a server secret, and dated the run's end, so the start-time catch-up harvesting it again is the same commit. A run that reached its seed with no working copy is an error, never an empty run. The `learn` tool is gone: naming it is `422 not_an_option`.

@@ -684,3 +684,19 @@ test("a crash between the harvest's commit and its push: the next harvest pushes
   const fresh = await harvestFor(data, reader, run.run_id);
   assert.deepEqual([fresh.status, fresh.sha], ["proposed", made]);
 });
+
+test("a run that reached its seed and has no working copy is an error, never an empty run: nothing is recorded, so a later harvest still can", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  await stateOf(data, "calc", run.run_id);
+  const { rm } = await import("node:fs/promises");
+  await rm(join(data, "runs", run.run_id, "work", ".agent", "repo"), { recursive: true, force: true });
+  await rm(join(data, "agents", "calc", "learning", "runs", `${run.run_id}.json`));
+  git(bareOf(data, "calc"), "update-ref", "-d", `refs/heads/runs/${run.run_id}`);
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  await assert.rejects(harvestFor(data, { store, request: async (act) => act() }, run.run_id), /no working copy/);
+  assert.equal(await readRunState(data, "calc", run.run_id), undefined);
+});

@@ -222,7 +222,9 @@ export async function harvestFor(data: string, agents: StoreAccess, runId: strin
   const copy = join(dir, "work", WORKING_COPY);
   const { SeedDoc } = await import("@parcha/pi-agent-learn");
   const seed = existsSync(storeFile) ? ((await releasedStore(storeFile).snapshot(SeedDoc as never)) as { sha?: string } | undefined)?.sha : undefined;
-  if (!seed || !existsSync(copy)) {
+  // A run that never reached its seed has nothing to harvest. One that did has a working copy: its absence is an error,
+  // said by the harvest, never read as an empty run.
+  if (!seed) {
     await writeRunState(data, row.agent, runId, { state: "empty" });
     return { status: "empty", deleted: [], ignored: [] };
   }
