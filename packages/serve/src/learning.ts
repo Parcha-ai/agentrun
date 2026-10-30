@@ -62,6 +62,10 @@ export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T
     ...tool,
     execute: async (args, api, context) => {
       const path = isObject(args) && typeof args.path === "string" ? args.path : "";
+      // The check and the tool's own open are two steps, and pi runs one turn's calls at once (pi-durable's
+      // `toolExecution` is parallel by default), so another call of the round may run between them. No tool this server
+      // binds makes a link or renames, so none can swap a path there today; once pi's tools run in the run's box, the
+      // box's mount allowlist is the boundary.
       const refused = await copyRefusal(work, tool.name, path);
       if (refused) return { content: [{ type: "text", text: refused }], isError: true };
       return tool.execute(args, api, context);
@@ -140,14 +144,27 @@ export function externalUsed(storeFile: string): boolean {
 export const secretsOf = (env: NodeJS.ProcessEnv): string[] =>
   [...new Set(Object.entries(env).filter(([name]) => SECRET_NAME.test(name)).map(([, value]) => value ?? ""))].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
 
-/** The run's input values: a learning states the rule, and never repeats the case. */
 /** Input values too plain to be the case's own: a yes or a no. */
 const PLAIN = /^(?:yes|no|true|false)$/i;
-/** The run's input values: a learning states the rule, and never repeats the case. A value under 4 characters, or a bare
- *  yes, no, true or false in any case, is no refused value: it would refuse every harvest. Every other value is, a number
- *  of 4 or more digits included. */
-export const caseValuesOf = (input: unknown): string[] =>
-  isObject(input) ? Object.values(input).filter((value): value is string => typeof value === "string" && value.length >= 4 && !PLAIN.test(value.trim())) : [];
+/** The run's input values, trimmed: a learning states the rule, and never repeats the case. An agentic run's input keeps
+ *  any field beside `content`, of any shape, so nested objects and lists are walked; a finite number counts as its
+ *  decimal text. A value under 4 characters once trimmed, or a bare yes, no, true or false in any case, is no refused
+ *  value: it would refuse every harvest. Every other value is, a number of 4 or more digits included. */
+export function caseValuesOf(input: unknown): string[] {
+  const values: string[] = [];
+  const left: unknown[] = [input];
+  while (left.length) {
+    const value = left.pop();
+    if (Array.isArray(value) || isObject(value)) {
+      const inner = Object.values(value);
+      for (let at = inner.length - 1; at >= 0; at--) left.push(inner[at]);
+      continue;
+    }
+    const text = typeof value === "string" ? value.trim() : typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+    if (text.length >= 4 && !PLAIN.test(text)) values.push(text);
+  }
+  return values;
+}
 
 const queues = new Map<string, Promise<unknown>>();
 

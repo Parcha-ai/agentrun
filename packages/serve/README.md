@@ -455,8 +455,9 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   copies existed is recorded once as `empty`, with that reason; one that had a working copy and lost it is an error,
   logged, and tried again at the next start.
 - A harvest that would hold the run's input values or a value of one of the server's secrets is refused whole, and
-  nothing is committed. An input value under 4 characters, or a bare `yes`, `no`, `true` or `false`, is not checked:
-  it would refuse every harvest. A number of 4 or more digits is. The secrets are the values of the variables whose names end in `KEY`, `TOKEN`, `SECRET` or
+  nothing is committed. Every input value counts, nested ones included, and a JSON number counts as its digits. An
+  input value under 4 characters once trimmed, or a bare `yes`, `no`, `true` or `false`, is not checked: it would
+  refuse every harvest. A number of 4 or more digits is. The secrets are the values of the variables whose names end in `KEY`, `TOKEN`, `SECRET` or
   `PASSWORD`. A credential inside a variable named otherwise (a `..._URL` such as
   `postgres://user:password@host/db`) is not among them.
 - Nothing merges into `main` yet. A run's branch stays a proposal until review and merge exist, and those wait for an
