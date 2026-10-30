@@ -79,7 +79,7 @@ test("the model id claude-agent sends and prices is Anthropic's own: dots as das
 });
 
 test("claude-agent's model is one provider and the model's own id: the doubled anthropic/anthropic/<model> is refused, naming the form to use", () => {
-  assert.deepEqual(claudeModel({}, "anthropic/claude-sonnet-5.5"), { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } });
+  assert.deepEqual(claudeModel({}, "anthropic/claude-sonnet-5.5"), { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } }, "the run's model is Anthropic's own id, for every lookup of it");
   const doubled = claudeModel({}, "anthropic/anthropic/claude-sonnet-5.5");
   assert.equal(doubled.host, false, "the revision's own model: a refusal at save, which no host setting fixes");
   assert.match(doubled.why, /name it anthropic\/claude-sonnet-5\.5\./);
