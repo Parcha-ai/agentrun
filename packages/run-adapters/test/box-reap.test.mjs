@@ -7,7 +7,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { bwrapBox, countInPidns, pidnsOf, startTimeOf } from '@parcha/agentrun-kernel/host';
+import { bwrapBox, countInPidns, pidnsMembers, pidnsOf, startTimeOf } from '@parcha/agentrun-kernel/host';
 
 const alive = (child) => child.exitCode === null && child.signalCode === null;
 const sleeper = async () => {
@@ -164,6 +164,8 @@ test('an unreadable process of the box (non-dumpable) counts when its parents le
     { pid: 520, parent: 510, start: 1002, pidns: 'x', hidden: true },
   ]);
   assert.equal(countInPidns(BOX, { pid: 500, startTime: '1000' }, proc), 3, 'pid 1, its child, and the hidden grandchild');
+  // Each named, with how it counted: the two readable ones by their namespace, the hidden one by its chain to pid 1.
+  assert.deepEqual(pidnsMembers(BOX, { pid: 500, startTime: '1000' }, proc).map((m) => [m.pid, m.how, m.comm, m.ppid]).sort(), [[500, 'ns', 'proc', 400], [510, 'ns', 'proc', 500], [520, 'chain', 'proc', 510]]);
 });
 
 test('a chain that reaches the recorded pid with another start time (the pid reused) is not the box', () => {
@@ -180,6 +182,7 @@ test('an unreadable process whose parent chain cannot be read to its end counts 
     { pid: 500, parent: 400, start: 2, pidns: 'x', hidden: true, nostat: true },
   ]);
   assert.equal(countInPidns(BOX, { pid: 300, startTime: '1' }, proc), 2);
+  assert.deepEqual(pidnsMembers(BOX, { pid: 300, startTime: '1' }, proc).map((m) => m.how), ['chain-unread', 'chain-unread'], 'each named as a chain that could not be read to its end');
 });
 
 test('another user\'s unreadable process, or one in this process\'s own namespace, is no box\'s', () => {

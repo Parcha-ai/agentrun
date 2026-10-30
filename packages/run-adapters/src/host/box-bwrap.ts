@@ -271,12 +271,43 @@ function statOf(pid: number, proc: string): { parent: number; startTime: string 
  *  gone. A chain that reaches the recorded pid carrying another start time (the pid reused after the box died) is not the
  *  box's. Another user's process, or one of this process's own namespace, is no box of this server's. */
 export function countInPidns(pidns: string, pid1?: { pid: number; startTime?: string }, proc = "/proc"): number {
+  return pidnsMembers(pidns, pid1, proc).length;
+}
+
+/** One process `countInPidns` counts, and how: its namespace link is the box's (`ns`); it is unreadable and its parents
+ *  lead to the recorded pid 1 (`chain`); unreadable with no pid 1 recorded (`no-pid1`); or unreadable with a chain that
+ *  cannot be read to its end (`chain-unread`). With its command, parent and state, for a message that names it. */
+export interface PidnsMember {
+  pid: number;
+  how: "ns" | "chain" | "no-pid1" | "chain-unread";
+  comm: string;
+  ppid: number;
+  state: string;
+}
+
+/** What `countInPidns` counts, process by process (see there). */
+export function pidnsMembers(pidns: string, pid1?: { pid: number; startTime?: string }, proc = "/proc"): PidnsMember[] {
   const uid = process.getuid?.();
-  let n = 0;
+  const members: PidnsMember[] = [];
+  const add = (pid: number, how: PidnsMember["how"]) => {
+    let comm = "?";
+    let ppid = 0;
+    let state = "?";
+    try {
+      const stat = readFileSync(`${proc}/${pid}/stat`, "utf8");
+      comm = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      state = fields[0]!;
+      ppid = Number(fields[1]);
+    } catch {
+      // gone since: counted as read
+    }
+    members.push({ pid, how, comm, ppid, state });
+  };
   for (const entry of readdirSync(proc)) {
     if (!/^\d+$/.test(entry)) continue;
     try {
-      if (readlinkSync(`${proc}/${entry}/ns/pid`) === pidns) n++;
+      if (readlinkSync(`${proc}/${entry}/ns/pid`) === pidns) add(Number(entry), "ns");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EACCES") continue; // gone between the listing and the read
       let status: string;
@@ -289,17 +320,17 @@ export function countInPidns(pidns: string, pid1?: { pid: number; startTime?: st
       const owner = Number(/^Uid:\s*(\d+)/m.exec(status)?.[1]);
       if (nspid.length === 1 || owner !== uid) continue;
       if (pid1 === undefined) {
-        n++;
+        add(Number(entry), "no-pid1");
         continue;
       }
       for (let p = Number(entry), hops = 0; ; hops++) {
         const s = statOf(p, proc);
         if (s === undefined || hops > 4096) {
-          n++; // the chain cannot be read to its end: unknown, so left
+          add(Number(entry), "chain-unread"); // the chain cannot be read to its end: unknown, so left
           break;
         }
         if (p === pid1.pid) {
-          if (s.startTime === pid1.startTime) n++;
+          if (s.startTime === pid1.startTime) add(Number(entry), "chain");
           break;
         }
         if (s.parent <= 1) break;
@@ -307,7 +338,7 @@ export function countInPidns(pidns: string, pid1?: { pid: number; startTime?: st
       }
     }
   }
-  return n;
+  return members;
 }
 
 /** The cgroup's population, from its cgroup.events line `populated 0|1` (its descendants' processes included). "gone"
@@ -682,7 +713,9 @@ s.on("error", (e) => { out.loopback = e.code; console.log(JSON.stringify(out)); 
       seen.pid1 !== "bwrap" ? `pid 1 inside is ${JSON.stringify(seen.pid1)}, not the box's` : "",
       seen.data !== false ? "/data is visible inside" : "",
       seen.loopback === undefined || seen.loopback === "answered" ? `the host's loopback ${seen.loopback === "answered" ? "answered" : "was not tried"}` : "",
-      !reaped.empty ? `the reap left ${reaped.left} process(es)` : "",
+      !reaped.empty
+        ? `the reap left ${reaped.left} process(es) (by ${reaped.by}${reaped.by === "pidns" ? `: ${pidnsMembers(boxed.record.pidns!, { pid: boxed.record.pid!, startTime: boxed.record.startTime }).map((m) => `pid ${m.pid} ${m.comm} ppid ${m.ppid} state ${m.state} via ${m.how}`).join("; ") || "none left by the time they were named"}` : ""})`
+        : "",
     ].filter(Boolean);
     if (wrong.length) return { mode: "unavailable", error: "box_probe_failed", detail: `${wrong.join("; ")}${boxed.stderrTail() ? `; bwrap said: ${boxed.stderrTail().trim().slice(0, 200)}` : ""}` };
     return { mode: "bwrap", cgroup: false };

@@ -55,7 +55,7 @@ test('the probe passes on this host: pid 1 inside is bwrap, /data is absent, the
   assert.equal(probed.mode, 'bwrap', `the probe found ${JSON.stringify(probed)}`);
 });
 
-test("nothing of the host leaks in: an environment variable of the server, a file beside the run, a file in the server user's real home and beside node's install, a host root nothing is bound under", { skip }, async () => {
+test("nothing of the host leaks in: an environment variable of the server, a file beside the run, a file in the server user's real home and beside node's install, a host root nothing is bound under", { skip }, async (t) => {
   const r = run('canary');
   const beside = join(r.root, 'canary.txt'); // in the run's own directory, but not in its workspace
   writeFileSync(beside, 'host secret');
@@ -65,9 +65,17 @@ test("nothing of the host leaks in: an environment variable of the server, a fil
   const inHome = join(home, `.agentrun-box-canary-${process.pid}`);
   writeFileSync(inHome, 'host secret');
   // Beside node's install (bound read-only at its own path): its siblings stay the host's.
+  // A canary there needs a node installed where this user may write (a tool cache); a root-owned prefix (/usr/local)
+  // has none, and that canary is skipped by name: the listings below still hold.
   const nodePrefix = dirname(dirname(process.execPath));
-  const besideNode = join(dirname(nodePrefix), `.agentrun-box-canary-${process.pid}`);
-  writeFileSync(besideNode, 'host secret');
+  let besideNode = join(dirname(nodePrefix), `.agentrun-box-canary-${process.pid}`);
+  try {
+    writeFileSync(besideNode, 'host secret');
+  } catch (error) {
+    if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error;
+    t.diagnostic(`no canary beside node's install: ${dirname(nodePrefix)} is not writable here (${error.code})`);
+    besideNode = undefined;
+  }
   const shown = [home, '/opt'];
   /** A host directory's first segment toward each path the box binds under it: what the box may show of it. */
   const bound = [r.spec.workspace, ...r.spec.readOnly];
@@ -76,7 +84,7 @@ test("nothing of the host leaks in: an environment variable of the server, a fil
   try {
     const { out, said } = await inBox(
       r.spec,
-      `printf 'env=[%s]\\n' "$AGENTRUN_BOX_CANARY"; for f in '${beside}' '${inHome}' '${besideNode}'; do if [ -e "$f" ]; then echo "seen=$f"; fi; done; ${shown.map((d, n) => `echo "ls${n}=[$(ls -A '${d}' 2>/dev/null | tr '\\n' ' ')]";`).join(' ')} echo "root=[$(ls -A / | tr '\\n' ' ')]"`,
+      `printf 'env=[%s]\\n' "$AGENTRUN_BOX_CANARY"; for f in ${[beside, inHome, besideNode].filter(Boolean).map((f) => `'${f}'`).join(' ')}; do if [ -e "$f" ]; then echo "seen=$f"; fi; done; ${shown.map((d, n) => `echo "ls${n}=[$(ls -A '${d}' 2>/dev/null | tr '\\n' ' ')]";`).join(' ')} echo "root=[$(ls -A / | tr '\\n' ' ')]"`,
     );
     assert.match(out(), /^env=\[\]$/m, `the server environment reached the box: ${said()}`);
     assert.doesNotMatch(out(), /^seen=/m, `a host file reached the box: ${said()}`);
@@ -91,7 +99,7 @@ test("nothing of the host leaks in: an environment variable of the server, a fil
   } finally {
     delete process.env.AGENTRUN_BOX_CANARY;
     rmSync(inHome, { force: true });
-    rmSync(besideNode, { force: true });
+    if (besideNode) rmSync(besideNode, { force: true });
     r.remove();
   }
 });
