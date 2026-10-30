@@ -104,6 +104,16 @@ function escalations(storePath) {
   }
 }
 
+/** The failure messages the run's ended tasks hold, from its released store. */
+function failures(storePath) {
+  const db = new DatabaseSync(storePath, { readOnly: true });
+  try {
+    return db.prepare("SELECT record FROM tasks").all().map((row) => JSON.parse(row.record).state?.outcome?.error?.message).filter(Boolean);
+  } finally {
+    db.close();
+  }
+}
+
 /** Every file under `dir` (small ones only) whose bytes hold `needle`. */
 async function filesHolding(dir, needle) {
   const found = [];
@@ -527,4 +537,15 @@ test("the missing-key 409's details, decisions included, meet what the served do
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"].agent_not_runnable;
   assert.deepEqual(schemaProblems(doc, shape, refused.body.error.details), [], JSON.stringify(refused.body.error.details));
+});
+
+test("a node asking what its provider cannot give is refused before the run, by name, and never sent: evidence required of Jev", async (t) => {
+  const seen = await withCanary(t);
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startFlow(api, [{ ...judge, provider: "jev", evidence: "required" }, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "failed", JSON.stringify(run));
+  assert.match(failures(join(data, "runs", runId, "store", "run.sqlite")).join("\n"), /judge node "coi" requires evidence, and the decision provider jev gives none/);
+  assert.deepEqual(await seen(), [], "the request was never sent");
 });
