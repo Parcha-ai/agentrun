@@ -21,6 +21,8 @@ JS
 node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
+Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin `printf` (Linux, macOS; not Windows). It hands the server its keys and token over a pipe, so none is in any process's environment, the run's processes included. Started as `node dist/cli.js`, as above, the server reads them from its own environment. `GET /v2/capabilities`' `secrets` says how they are held, and what that does not cover.
+
 It prints where it listens and, at the start that made it, the token:
 
 ```
