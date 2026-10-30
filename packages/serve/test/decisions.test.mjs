@@ -350,7 +350,9 @@ test("a node naming the provider parallel is answered by Parallel, sent the key 
   assert.equal(rows["coi-parallel"].cost_usd, 0.001, "booked at Parallel's list price");
   assert.equal(rows.coi.answers.is_coi.noul, 0.92, "Jev's answer");
   assert.deepEqual([rows["coi-parallel"].provider, rows.coi.provider], ["parallel", "jev"], "each receipt names the provider that answered: never the default in another's place");
-  assert.equal(run.cost.usd, null, "Jev's unknown cost keeps the run's unknown");
+  const estimate = (120 * 0.042 + 0 * 0) / 1_000_000;
+  assert.equal(rows.coi.cost_usd, estimate, "Jev's booked at TypeSafe's published price");
+  assert.equal(run.cost.usd, 0.001 + estimate, "the run's cost is the two decisions', each counted once");
 });
 
 test("with no Parallel key, a node naming parallel saves with a warning, and its run is 409 not_set_up_here naming PARALLEL_API_KEY", async (t) => {
