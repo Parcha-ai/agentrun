@@ -416,3 +416,14 @@ test("exec is offered after a script that finished and printed the running phras
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(offered(forwarded), ['exec', 'wait']);
 });
+
+test("exec is offered after a script that finished when Codex's header and the printed phrase share one text part: the header is read at the start only", async () => {
+  const { p, forwarded } = await proxy();
+  const input = [...RECORDED_REQUEST.input,
+    { type: 'custom_tool_call', name: 'exec', call_id: 'call_q', input: 'text("Script running with cell ID 1")' },
+    { type: 'custom_tool_call_output', call_id: 'call_q', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\nScript running with cell ID 1' }] },
+    CODE_MODE_CARRIER];
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(offered(forwarded), ['exec', 'wait']);
+});
