@@ -97,15 +97,18 @@ async function withAdapterDiagnostic<T>(stage: string, run: () => Promise<T>, to
         case 'http': diagnostic = { code: 'jev_http', message: 'Jev returned an HTTP failure. No judgment was accepted; provider details are omitted.' }; break;
         case 'connection': diagnostic = { code: 'jev_connection', message: 'Jev transport failed before an accepted judgment. Provider details are omitted.' }; break;
         case 'timeout': diagnostic = { code: 'jev_timeout', message: 'The Jev adapter deadline expired before an accepted judgment. Provider details are omitted.' }; break;
+        case 'outcome_unknown': diagnostic = { code: 'jev_outcome_unknown', message: 'The Jev request was sent and its outcome was lost (a 408, a 5xx or a dropped connection): it may have been billed. It was not sent again, and no judgment was accepted; provider details are omitted.' }; break;
       }
       if (diagnostic) {
         const reason = error.responseDiagnostic?.reason;
         if (error.code === 'invalid_response' && isJevResponseReason(reason) && reason !== 'max_tokens_exceeded') diagnostic.reason = reason;
-        if (error.code === 'http') {
+        if (error.code === 'http' || error.code === 'outcome_unknown') {
           if (Number.isInteger(error.status) && error.status! >= 100 && error.status! <= 599) diagnostic.status = error.status;
           if (reason === 'max_tokens_exceeded') {
             diagnostic.reason = reason;
-            diagnostic.message = 'Jev refused the request: it exceeds the model\'s token budget. Send fewer or shorter items per request. No judgment was accepted; provider details are omitted.';
+            diagnostic.message = error.code === 'http'
+              ? 'Jev refused the request: it exceeds the model\'s token budget. Send fewer or shorter items per request. No judgment was accepted; provider details are omitted.'
+              : 'Jev answered that the request exceeds the model\'s token budget; it may have been billed, and was not sent again. Send fewer or shorter items per request. No judgment was accepted; provider details are omitted.';
           }
         }
       }

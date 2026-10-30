@@ -19,7 +19,7 @@ Each package's README is its API reference. Packages with no dependency on the o
 | Path | What an agent must know |
 | --- | --- |
 | `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
-| `packages/jev`, `packages/pi` | `runJudge` adapter for Jev; the Pi extension (`/agentrun`) and Pi-backed `runNode` |
+| `packages/jev`, `packages/pi` | `runJudge` adapter for Jev, and `jevProvider` (Jev as a `DecisionProvider`); the Pi extension (`/agentrun`) and Pi-backed `runNode` |
 | `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
 | `packages/pi-browser` | Synced snapshot of the agentrun harness's `packages/pi-browser`: never edit it here. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
 | `packages/pi-vision` | ffmpeg/poppler suites run only in the `vision-binaries` CI job; `pi-1-2` and `pi-vision-pi-floor` cover its peer range |
@@ -29,6 +29,7 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `packages/pi-git-remote` | No repository hook, filter or driver ever runs; https credentials reach git only on fd 3. Tests need git 2.40+ and `openssl` |
 | `packages/pi-agent-learn` | Learning agent on `pi-git-remote`; locks `agent.json` and `AGENTS.md`, so `examples/agent-learn/agent/AGENTS.md` is runtime content. Tests need git 2.40+ |
 | `packages/learn` | Held. `SPEC.md` is the learning-repository contract; `agentrun-learn check` reads git with plumbing only. Depends on `dsl` alone |
+| `packages/decisions` | Held. Third-party decision models as `DecisionProvider`s (the seam and its conformance suite, `./testing`, are in `dsl`): `parallelProvider` for Parallel Decisions, key `PARALLEL_API_KEY` by name. A paid request is never re-sent unasked; a failure after sending is `outcome_unknown` and escalates as an interrupted decision. Tests use a fake fetch; `test/parallel.live.test.mjs` runs only with the key. Depends on `dsl` alone |
 | `packages/harness` | Held. The reference host; `pi-transport` is an optional peer. Covered by `examples/reference*.test.mjs` |
 | `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code from vercel-labs/durable-harness is tracked in `vendor/durable-harness/UPSTREAM.json`; never hand-edit `vendor/durable-harness/upstream/`. The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
 | `apps/viewer` | Run viewer; `npm run test:viewer` (in `npm run check`) |
@@ -36,7 +37,7 @@ Each package's README is its API reference. Packages with no dependency on the o
 | `examples/` | Offline (`npm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
 | `changes/`, `docs/`, `scripts/` | Changelog fragments; guides (`guide.md`, `authoring.md`, `host-integration.md`, `releasing.md`); generation and verification scripts |
 
-Sixteen packages share one version. `"private": true` holds `harness`, `serve`, `learn`,
+Seventeen packages share one version. `"private": true` holds `harness`, `serve`, `learn`, `decisions`,
 `run-adapters`, `run-adapters-claude-agent` and `run-adapters-codex`: built, tested, verified and versioned like the
 rest, never published; removing the flag lifts a hold. Release order: `scripts/release-preflight.mjs`.
 

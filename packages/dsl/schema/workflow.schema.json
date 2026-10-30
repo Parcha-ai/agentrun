@@ -873,6 +873,28 @@
               },
               "title": "requires"
             },
+            "provider": {
+              "type": "string",
+              "title": "provider"
+            },
+            "model": {
+              "type": "string",
+              "title": "model"
+            },
+            "evidence": {
+              "description": "What a decision node asks of its provider's evidence: none, whatever it gives, or some (a provider that gives none is refused before the run).",
+              "enum": [
+                "if_supported",
+                "off",
+                "required"
+              ],
+              "type": "string",
+              "title": "evidence"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "title": "timeoutMs"
+            },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
               "type": "object",
@@ -931,6 +953,28 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "provider": {
+              "type": "string",
+              "title": "provider"
+            },
+            "model": {
+              "type": "string",
+              "title": "model"
+            },
+            "evidence": {
+              "description": "What a decision node asks of its provider's evidence: none, whatever it gives, or some (a provider that gives none is refused before the run).",
+              "enum": [
+                "if_supported",
+                "off",
+                "required"
+              ],
+              "type": "string",
+              "title": "evidence"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "title": "timeoutMs"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1004,6 +1048,28 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "provider": {
+              "type": "string",
+              "title": "provider"
+            },
+            "model": {
+              "type": "string",
+              "title": "model"
+            },
+            "evidence": {
+              "description": "What a decision node asks of its provider's evidence: none, whatever it gives, or some (a provider that gives none is refused before the run).",
+              "enum": [
+                "if_supported",
+                "off",
+                "required"
+              ],
+              "type": "string",
+              "title": "evidence"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "title": "timeoutMs"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1089,6 +1155,28 @@
                 "type": "string"
               },
               "title": "requires"
+            },
+            "provider": {
+              "type": "string",
+              "title": "provider"
+            },
+            "model": {
+              "type": "string",
+              "title": "model"
+            },
+            "evidence": {
+              "description": "What a decision node asks of its provider's evidence: none, whatever it gives, or some (a provider that gives none is refused before the run).",
+              "enum": [
+                "if_supported",
+                "off",
+                "required"
+              ],
+              "type": "string",
+              "title": "evidence"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "title": "timeoutMs"
             },
             "metadata": {
               "description": "Host-owned markers on a node: any JSON object. The engine admits, carries and hashes it with the\ndocument and never reads it; it never reaches state, events, prompts or effect identities.",
@@ -1824,6 +1912,28 @@
             "gte": {
               "type": "number",
               "title": "gte"
+            },
+            "provider": {
+              "type": "string",
+              "title": "provider"
+            },
+            "model": {
+              "type": "string",
+              "title": "model"
+            },
+            "evidence": {
+              "description": "What a decision node asks of its provider's evidence: none, whatever it gives, or some (a provider that gives none is refused before the run).",
+              "enum": [
+                "if_supported",
+                "off",
+                "required"
+              ],
+              "type": "string",
+              "title": "evidence"
+            },
+            "timeoutMs": {
+              "type": "number",
+              "title": "timeoutMs"
             }
           },
           "required": [
