@@ -110,6 +110,9 @@ export interface NestedFact {
   tool: string;
   /** The session's own record (the effect of `tool:<id>`): none when the call never started. */
   store?: { status: "completed" | "failed" | "started"; text?: string; interrupted?: boolean };
+  /** What the harness's recovery note of the same turn calls it (the kernel's one rule, process/recovery.ts): `retryable` is a
+   *  safe tool's call that a crash cut off, which the note tells the model is safe to repeat. */
+  told?: "completed" | "failed" | "interrupted" | "retryable" | "running";
   rollout?: RolloutNested;
 }
 
@@ -150,6 +153,8 @@ const describeCall = (fact: NestedFact, label: string): string => {
   const settled = settle(fact);
   if (settled.kind === "completed") return `${label} completed: ${quoted(settled.text)}. Its effect is done; it was not run again.`;
   if (settled.kind === "failed") return `${label} failed: ${quoted(settled.text)}. It was not run again.`;
+  // Told as the recovery note of the same turn tells it, which reaches the model with this output: a safe tool's call a crash cut off.
+  if (fact.told === "retryable") return `${label} was started and did not report a result. It is safe to repeat. It was not run again.`;
   return `${label} was started and did not report a result, so it may have taken effect: check before calling it again. It was not run again.`;
 };
 
