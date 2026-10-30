@@ -47,6 +47,26 @@ test("commitTo starts a new branch at main, writes regular files, deletes with n
   assert.equal(root2.created, true);
 });
 
+test("a commit given a date is the same commit from any host: author and committer dates are that instant, so the same files, parent, message and trailers give the same sha", async () => {
+  const root = await scratch();
+  const { remote, main } = await seededRemote(root, { "README.md": "seed\n", "old.md": "old\n" });
+  const date = new Date("2026-10-29T23:59:30.000Z");
+  const options = { files: { "b.md": "b\n", "a.md": "a\n", "old.md": null }, message: "harvest", trailers: { "Run-Id": "r1" }, parent: main, date };
+  const one = await (await openRepo({ dir: path.join(root, "host-one"), remote })).commitTo("runs/r1", options);
+  // A second host, a moment later, with nothing of the first's: the same commit.
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const twoRepo = await openRepo({ dir: path.join(root, "host-two"), remote });
+  const two = await twoRepo.commitTo("runs/r1", options);
+  assert.equal(two.sha, one.sha);
+  const dates = (await rawGit(["log", "-1", "--format=%aI %cI", two.sha], { gitDir: path.join(root, "host-two") })).toString().trim();
+  assert.equal(dates, "2026-10-29T23:59:30+00:00 2026-10-29T23:59:30+00:00");
+  const loose = await twoRepo.makeCommit({ parent: main, files: { "a.md": "a\n" }, message: "m", date });
+  assert.equal(loose, await (await openRepo({ dir: path.join(root, "host-three"), remote })).makeCommit({ parent: main, files: { "a.md": "a\n" }, message: "m", date }));
+  for (const bad of [new Date(Number.NaN), "2026-10-29", 1_700_000_000_000]) {
+    await assert.rejects(twoRepo.commitTo("runs/r2", { ...options, date: bad }), (error) => error instanceof GitRemoteError && /date/.test(error.message));
+  }
+});
+
 test("allowEmpty makes a commit that changes no file, so its message and trailers are the record", async () => {
   const root = await scratch();
   const { dir, remote, main } = await seededRemote(root);
