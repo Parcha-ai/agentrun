@@ -120,6 +120,27 @@ test('T2c: a judge that asks more questions than one request to its provider may
   assert.deepEqual([ran, parallel.asked.length], [0, 0], 'refused before any node runs, the provider never asked');
 });
 
+test('T2e: a host that names no decision providers refuses, before any node runs, a node that names a provider or sets timeoutMs: its judge could honour neither', async () => {
+  const cases = [
+    ['a node naming a provider', judge({ provider: 'parallel' }), /judge node "check" names the decision provider parallel, and this host names no decision providers/],
+    ['a node setting timeoutMs', judge({ timeoutMs: 200 }), /judge node "check" sets timeoutMs, and this host names no decision providers to bound it with/],
+    ['an ask predicate naming a provider', { node: 'loop', label: 'retry', maxIters: 2, until: { predicate: 'ask', instructions: 'Is it complete?', provider: 'parallel' }, body: { node: 'code', label: 'tick', code: '() => ({})' } }, /loop node "retry" \(ask predicate\) names the decision provider parallel/],
+  ];
+  for (const [what, node, names] of cases) {
+    let ran = 0, asked = 0;
+    const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+    const runJudge = async ({ questions }) => { asked += 1; return { answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])) }; };
+    const outcome = await outcomeOf(runWorkflow(doc([first, node]), INPUT, { runJudge, onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+    assert.equal(outcome.status, 'threw', `${what}: the run is refused`);
+    assert.match(outcome.message, names, `${what}: the refusal names the node and the setting`);
+    assert.deepEqual([ran, asked], [0, 0], `${what}: refused before any node runs, the judge never asked`);
+  }
+  const plain = await outcomeOf(runWorkflow(doc([judge({ model: 'jev-1.14.0', evidence: 'if_supported' })]), INPUT, { runJudge: async () => ({ answers: { legit: { type: 'noul', noul: 0.9 } } }) }));
+  assert.equal(plain.status, 'complete', 'a node that names neither runs as it did');
+  const dry = await dsl.dryRunWorkflow(doc([judge({ provider: 'parallel', timeoutMs: 200 })]), { input: INPUT });
+  assert.deepEqual([dry.ok, dry.status], [true, 'passed'], `a dry run still passes both: ${JSON.stringify(dry)}`);
+});
+
 test('T3: each node is asked through its own provider and model, an unnamed one through the default, within the shorter deadline', async () => {
   const jev = provider('jev'), parallel = provider('parallel');
   const workflow = doc([judge({ provider: 'parallel', model: 'base-1', timeoutMs: 500 }, 'Check', 'pinned'), judge({ timeoutMs: 9000 }, 'Check', 'plain')]);

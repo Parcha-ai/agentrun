@@ -584,6 +584,47 @@ test('with both Jev keys set, /agentrun run asks Jev through TypeSafe with the T
   }));
 });
 
+test('a judge naming a provider other than Jev is refused before the run, by name, and nothing is sent to Jev', async () => {
+  await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, () => withJevFetch(async sent => {
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      const definition = judgeWorkflow(); definition.root.provider = 'parallel';
+      await app.tool({ action: 'inspect', workflow: definition, input: { evidence: 'A source passage.' } });
+      await app.command('run');
+      assert.equal(sent.length, 0, 'no request reached Jev');
+      assert.notEqual(app.messages.at(-1).details?.status, 'complete');
+      assert.match(app.messages.at(-1).content, /judge node "check-evidence" names the decision provider parallel, which this host does not have/);
+    } finally { await app.shutdown(); }
+  }));
+});
+
+test('a judge\'s timeoutMs bounds its Jev request: cut after it was sent, it is not asked again and the run goes to review', { timeout: 20_000 }, async () => {
+  await withEnv({ OPENROUTER_API_KEY: undefined, TYPESAFE_API_KEY: 'fake-test-key', TYPESAFE_BASE_URL: undefined }, async () => {
+    const sent = [], realFetch = globalThis.fetch;
+    // Jev answers after 5 s, unless the request is cut first.
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(init.body);
+      sent.push(body);
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 5000);
+        init.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(init.signal.reason ?? new DOMException('aborted', 'AbortError')); }, { once: true });
+      });
+      const answers = Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 0.9 }]));
+      return new Response(JSON.stringify({ answers, usage: { input_tokens: 10, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const app = await harness({ withModel: false, extensionOptions: { hostTools: () => [] } });
+    try {
+      const definition = judgeWorkflow(); definition.root.timeoutMs = 300;
+      await app.tool({ action: 'inspect', workflow: definition, input: { evidence: 'A source passage.' } });
+      const started = Date.now();
+      await app.command('run');
+      assert.ok(Date.now() - started < 4000, `the node's timeoutMs cut the request (${Date.now() - started} ms)`);
+      assert.equal(sent.length, 1, 'sent once, never asked again');
+      assert.equal(app.messages.at(-1).details?.status, 'escalated', JSON.stringify(app.messages.at(-1).details).slice(0, 400));
+    } finally { await app.shutdown(); globalThis.fetch = realFetch; }
+  });
+});
+
 test('with only OPENROUTER_API_KEY set, /agentrun demo live reaches Jev through OpenRouter instead of refusing', async () => {
   const question = 'Can non-developers edit documentation in the repository?';
   const source = { id: 'editor-trial', text: 'A fictional editor trial.' };
