@@ -341,7 +341,9 @@ stop_end() {
   end_launcher
   # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s). What the
   # stop could not end is named in the log, never passed over.
-  if [ -n "$unended" ]; then printf '[launcher] could not end %s; removed the trim lock anyway\n' "$(echo $unended)" >> "$D/out.log"; fi
+  if [ -n "$unended" ]; then
+    printf '%s\n' "$unended" | while IFS= read -r u; do printf '[launcher] could not end %s; removed the trim lock anyway\n' "$u"; done >> "$D/out.log"
+  fi
   rmdir "$D/trim" 2>/dev/null
   case "$before" in
     exited|gave_up|stopped) ;;
