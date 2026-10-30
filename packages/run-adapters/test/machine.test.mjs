@@ -325,7 +325,7 @@ test('one egress proxy per session: started on the session socket before any box
 
 test('an egress proxy that cannot start fails the open, and leaves no model front behind', async () => {
   const dir = scratch();
-  const egress = { port: 4101, start: async () => { throw new Error('egress: a live listener is there'); } };
+  const egress = { port: 4101, start: async () => { throw Object.assign(new Error('egress: a live listener is there'), { code: 'egress_socket_in_use' }); } };
   await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir, dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: join(dir, 'run') }) }), /a live listener is there/);
   assert.equal(existsSync(join(dir, 'run', 'model.sock')), false);
 });
@@ -380,4 +380,49 @@ test("an abort kills a boxed child: it exits, its box is reaped, and only then d
   assert.deepEqual(box.reaped, ['box-1'], 'its box is reaped');
   await new Promise((resolve) => setImmediate(resolve));
   await machine.start({ command: '/bin/true' }).exited;
+});
+
+test("anything at the front's socket path that is not a socket is refused by name, and left as it was", async () => {
+  const run = join(scratch(), 'run');
+  mkdirSync(run, { recursive: true, mode: 0o700 });
+  writeFileSync(join(run, 'model.sock'), 'not a socket');
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: run }) }), /^Error: agentrun-kernel: the model proxy: .*model\.sock is there and is not a socket: it is not replaced$/);
+  assert.ok(lstatSync(join(run, 'model.sock')).isFile(), 'the file is untouched');
+});
+
+test("a socket directory that is a link, even to a 0700 directory of this user's, is refused before any socket is made", async () => {
+  const real = join(scratch(), 'real');
+  mkdirSync(real, { recursive: true, mode: 0o700 });
+  const parent = scratch();
+  mkdirSync(parent, { recursive: true });
+  const link = join(parent, 'link');
+  symlinkSync(real, link);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: link }) }), /^Error: agentrun-test: the session's socket directory .* must be this user's own, 0700, and not a link$/);
+  assert.equal(existsSync(join(real, 'model.sock')), false, 'nothing was made through the link');
+});
+
+test("a socket directory too long for the egress proxy's socket names is refused by name, before any socket", async () => {
+  // The egress proxy binds a 25-byte temporary name in the directory before it links its socket: a path holds 107 bytes.
+  const long = join(scratch(), 'r'.repeat(90));
+  assert.ok(Buffer.byteLength(long) > 81);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: long }) }), /^Error: agentrun-test: runtime_dir_too_long: the session's socket directory .* is \d+ bytes; a socket path in it must fit 107$/);
+  assert.equal(existsSync(join(long, 'model.sock')), false);
+});
+
+test("a socket directory exactly at the bound (81 bytes) is taken", async (t) => {
+  const base = scratch();
+  const at = join(base, 'r'.repeat(81 - Buffer.byteLength(base) - 1));
+  assert.equal(Buffer.byteLength(at), 81);
+  const machine = await machineAt(t, scratch(), { box: boxOf(fakeBox(), { runtimeDir: at }) });
+  assert.ok(lstatSync(join(at, 'model.sock')).isSocket());
+  await machine.close();
+});
+
+test("an egress proxy whose close throws still lets the model front close, and the error goes up", async (t) => {
+  const run = join(scratch(), 'run');
+  const egress = { port: 4101, start: async () => ({ close: async () => { throw new Error('egress: the socket could not be read'); } }) };
+  const machine = await openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { egress, runtimeDir: run }) });
+  await assert.rejects(machine.close(), /the socket could not be read/);
+  assert.equal(existsSync(join(run, 'model.sock')), false, 'the model front closed anyway');
+  assert.equal(existsSync(run), false, "and the session's socket directory went with it");
 });

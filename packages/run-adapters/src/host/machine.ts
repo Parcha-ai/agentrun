@@ -169,6 +169,10 @@ export function socketDir(dir: string, name: string, statfs: (dir: string) => { 
   if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
     throw new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`);
   }
+  // The egress proxy binds a temporary name (25 bytes) in the directory before it links its socket, and a socket's path
+  // holds 107 bytes: a directory longer than 81 bytes would let the model front start and the egress proxy fail.
+  const bytes = Buffer.byteLength(dir);
+  if (bytes > 81) throw new Error(`${name}: runtime_dir_too_long: the session's socket directory ${dir} is ${bytes} bytes; a socket path in it must fit 107`);
   const kind = process.platform === "linux" ? NOT_LOCAL[statfs(dir).type] : undefined;
   if (kind) throw new Error(`${name}: runtime_dir_not_local: the session's socket directory ${dir} is on ${kind}, not a local filesystem`);
   return dir;
@@ -391,10 +395,13 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
       // Closed means counted empty: every box's reap gave its verdict, and one that found a process left fails the close.
       const verdicts = await Promise.allSettled(reaps);
       lost.abort();
-      await egress?.close();
-      await proxy.close();
-      // The session's socket directory, once its sockets are gone; a directory holding anything else stays.
-      if (boxing) try { rmdirSync(sockets); } catch { /* not empty, or gone */ }
+      try {
+        await egress?.close();
+      } finally {
+        await proxy.close();
+        // The session's socket directory, once its sockets are gone; a directory holding anything else stays.
+        if (boxing) try { rmdirSync(sockets); } catch { /* not empty, or gone */ }
+      }
       const left = verdicts.find((v): v is PromiseRejectedResult => v.status === "rejected");
       if (left) throw left.reason;
     },
