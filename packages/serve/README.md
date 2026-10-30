@@ -444,8 +444,10 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   copy it has.
 - Once the run's end is carried back and its process has ended, the server harvests the working copy into one commit
   on the branch `runs/<run id>` from that commit: the seed's tree with the layout's paths as they are on disk. A run
-  whose process is still alive is not harvested: its record says `waiting`, with the reason, and the next start's
-  catch-up harvests it once the process has ended. Links, paths outside what a run may write, oversized files and any
+  whose process is still alive is not harvested: its record says `waiting`, with the reason, and the server looks at
+  the process every 2 s and harvests the run once it has exited. The process is told by its pid with the boot and start
+  time its holder recorded, so a later process given the same pid is not the run's. A server that closes first stops
+  looking, and the next start's catch-up harvests the run. Links, paths outside what a run may write, oversized files and any
   `.git` the agent made are left out and never run; a directory that cannot be read stops the harvest. The commit is
   dated the run's end, so a harvest again is the same commit. The memo's front matter is the server's: `run`, `base`,
   `harness`, `outcome` (`completed`, `failed`, or `stopped` for a cancelled run), `cost_usd` when it is known, and
@@ -461,7 +463,7 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   copies existed is recorded once as `empty`, with that reason; one that had a working copy and lost it is an error,
   logged, and tried again at the next start.
 - A harvest that would hold the run's input values or a value of one of the server's secrets, in a file or in a path
-  it wrote, is refused whole, and nothing is committed; the refusal names the file, or counts the paths, and never
+  it writes or deletes, is refused whole, and nothing is committed; the refusal names the file, or counts the paths, and never
   quotes the value. A value is found as it is and JSON-escaped, and, from 12 bytes on, hex or percent-encoded in any
   case, and base64 or base64url at any offset in a longer blob, wrapped or not. Every input value counts, nested ones included, and a JSON number counts as its digits. An
   input value under 4 characters once trimmed, or a bare `yes`, `no`, `true` or `false`, is not checked: it would

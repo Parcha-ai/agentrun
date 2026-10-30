@@ -276,8 +276,30 @@ function releasedStore(file: string) {
 /** The agent store and how a read of it waits for another writer: `Agents`, or a caller's own `request`. */
 export type StoreAccess = { readonly store: Pick<AgentStoreReader, "readRun" | "readRevision" | "listRuns">; request<T>(act: () => T | Promise<T>): Promise<T> };
 
+/** A process's start in clock ticks after boot (field 22 of /proc/<pid>/stat), as pi-durable-disk records its own in
+ *  the run's holder (`startTicks`): null when there is no such process, undefined when it cannot be read. */
+function startTicksOf(pid: number): number | null | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const ticks = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+    return Number.isSafeInteger(ticks) ? ticks : undefined;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" && existsSync("/proc/self/stat") ? null : undefined;
+  }
+}
+
+const bootId = (): string | undefined => {
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 /** Whether the process the run's record names (or, later, its box) is still alive: one that is may still write the
  *  working copy, which is then not read. A missing run.json reads not live only because a run writes it before any work.
+ *  The holder's boot and start ticks tell it from a later process given the same pid; a start that cannot be read is
+ *  read live, so an unknown never lets the copy be read under a writer.
  *  TODO: the box record of the run's confinement replaces this pid check once runs have boxes. */
 function processLive(runDir: string): boolean {
   let record: unknown;
@@ -286,9 +308,17 @@ function processLive(runDir: string): boolean {
   } catch {
     return false;
   }
-  const pid = isObject(record) && isObject(record.holder) ? record.holder.pid : undefined;
-  return Number.isSafeInteger(pid) && pid !== process.pid && processAlive(pid as number);
+  const holder = isObject(record) && isObject(record.holder) ? record.holder : undefined;
+  const pid = holder?.pid;
+  if (!(Number.isSafeInteger(pid) && pid !== process.pid && processAlive(pid as number))) return false;
+  if (typeof holder?.bootId === "string" && bootId() !== undefined && holder.bootId !== bootId()) return false;
+  if (typeof holder?.startTicks !== "number") return true;
+  const ticks = startTicksOf(pid as number);
+  return ticks === undefined || ticks === holder.startTicks;
 }
+
+/** A harvest refused because the run's process is still live: its learning state says `waiting`. */
+export class StillLive extends Error {}
 
 /** What the ended run `runId` left in its working copy, harvested into one commit on `runs/<run id>` from the commit it was
  *  seeded from (harvest.ts), with the host's memo: its outcome and cost as the carry back wrote them, and `untrusted` when
@@ -306,7 +336,7 @@ export async function harvestFor(data: string, agents: StoreAccess, runId: strin
   if (processLive(dir)) {
     const reason = `the run ${runId}'s process is still live, so its working copy is not harvested yet`;
     await writeRunState(data, row.agent, runId, { state: "waiting", reason });
-    throw new Error(reason);
+    throw new StillLive(reason);
   }
   const storeFile = join(dir, "store", "run.sqlite");
   const copy = join(dir, "work", WORKING_COPY);
@@ -334,6 +364,30 @@ export async function harvestFor(data: string, agents: StoreAccess, runId: strin
     await writeRunState(data, row.agent, runId, result.status === "empty" ? { state: "empty" } : result.status === "refused" ? { state: "refused", reasons: result.refused ?? [] } : { state: "proposed", branch: `runs/${runId}`, base: seed, sha: result.sha! });
     return result;
   });
+}
+
+/** How often a run whose process outlives its end is looked at again. */
+export const HARVEST_POLL_MS = 2_000;
+
+/** `harvestFor` once the run's process has ended: a run whose process outlives its end is recorded `waiting` and looked
+ *  at every `everyMs` until its process is gone, then harvested once. Undefined when `signal` stops it first: the run
+ *  stays `waiting`, and the next start's catch-up harvests it. */
+export async function harvestOnExit(data: string, agents: StoreAccess, runId: string, signal: AbortSignal, everyMs: number = HARVEST_POLL_MS): Promise<HarvestResult | undefined> {
+  try {
+    return await harvestFor(data, agents, runId);
+  } catch (error) {
+    if (!(error instanceof StillLive)) throw error;
+  }
+  const dir = join(data, "runs", runId);
+  while (processLive(dir)) {
+    if (signal.aborted) return undefined;
+    await new Promise<void>((done) => {
+      const timer = setTimeout(done, everyMs);
+      signal.addEventListener("abort", () => (clearTimeout(timer), done()), { once: true });
+    });
+    if (signal.aborted) return undefined;
+  }
+  return harvestFor(data, agents, runId);
 }
 
 /** How long the start-time catch-up waits for a busy agent store, step by step: it answers no request, so it waits

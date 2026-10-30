@@ -183,14 +183,14 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
   const seedIds = new Map(seedFiles.map((entry) => [entry.path, entry.oid]));
   const changed = deleted.length > 0 || [...found].some(([path, bytes]) => path !== memo && seedIds.get(path) !== blobId(bytes, seedIds.get(path)?.length ?? 40));
   if (!changed && (!found.has(memo) || blankMemo(found.get(memo)!.toString("utf8")))) return { status: "empty", deleted: [], ignored };
-  // A refused value is found in every file and every path, as it is or encoded, and named by the file that holds it, or
-  // by a count for a path, never quoted.
+  // A refused value is found in every file and every path, a deleted one too, as it is or encoded, and named by the file
+  // that holds it, or by a count for a path, never quoted.
   const values = (options.refuse ?? []).filter((value) => typeof value === "string" && value.trim() !== "").map(privateFormsOf);
-  const written = Object.entries(commit).filter((entry): entry is [string, Uint8Array | string] => entry[1] !== null);
-  const named = written.filter(([path]) => !holdsPrivate(Buffer.from(path, "utf8"), values));
-  const holding = named.filter(([, content]) => holdsPrivate(Buffer.from(content), values)).map(([path]) => `${path} holds a value no learning may keep`);
-  const paths = written.length - named.length;
-  if (paths) holding.push(`${paths === 1 ? "a path" : `${paths} paths`} the run wrote ${paths === 1 ? "holds" : "hold"} a value no learning may keep`);
+  const inPaths = Object.keys(commit).filter((path) => holdsPrivate(Buffer.from(path, "utf8"), values));
+  const holding = Object.entries(commit)
+    .filter(([path, content]) => content !== null && !inPaths.includes(path) && holdsPrivate(Buffer.from(content), values))
+    .map(([path]) => `${path} holds a value no learning may keep`);
+  if (inPaths.length) holding.push(`${inPaths.length === 1 ? "a path" : `${inPaths.length} paths`} in the harvest ${inPaths.length === 1 ? "holds" : "hold"} a value no learning may keep`);
   if (holding.length) return { status: "refused", deleted: [], ignored, refused: holding };
   const branch = `runs/${runId}`;
   const sorted = Object.fromEntries(Object.keys(commit).sort().map((path) => [path, commit[path]!]));
