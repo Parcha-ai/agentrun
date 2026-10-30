@@ -335,6 +335,9 @@ typed answers and their probabilities.
   providers, closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an environment, an
   argument list or a file, and no program the run starts inherits it. With no key, no descriptor is opened. On the OpenRouter route the key is also the model gateway's key, which a run's
   process already holds in its environment for its model nodes, and it stays there.
+- `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` are among the secrets the launcher hands the server over its pipe, so the
+  server holds them out of its own environment too. Neither is ever among the secrets a run's process gets over its own
+  pipe, which are its tools' environment: the decision descriptor is their only way into a run.
 
 ## Archiving
 

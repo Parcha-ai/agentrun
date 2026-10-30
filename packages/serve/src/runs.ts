@@ -28,7 +28,7 @@ import { EFFORT_ENV, FAUX_ENV } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
-import { handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -282,8 +282,9 @@ export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
-/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own. */
-export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name));
+/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
+ *  keys, which go on their own descriptor. */
+export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
@@ -748,7 +749,9 @@ export class Runs {
     // process gets them once on an inherited pipe, by name, for its decision providers alone (decisions.ts).
     for (const name of HANDED_KEYS) delete env[name];
     delete env[DECISION_KEY_FD_ENV];
-    const decisionKeys = Object.fromEntries(run.kind === "workflow" ? HANDED_KEYS.flatMap((name) => { const value = process.env[name]; return typeof value === "string" && value.trim() !== "" ? [[name, value]] : []; }) : []);
+    // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
+    const held = withSecrets(process.env);
+    const decisionKeys = Object.fromEntries(run.kind === "workflow" ? HANDED_KEYS.flatMap((name) => { const value = held[name]; return typeof value === "string" && value.trim() !== "" ? [[name, value]] : []; }) : []);
     const handsKey = Object.keys(decisionKeys).length > 0;
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
     const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];
