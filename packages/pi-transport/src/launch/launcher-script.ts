@@ -356,10 +356,15 @@ end_program() {
   killed=
   if [ -n "$SETSID" ]; then
     if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; killed=group; fi
-  elif alive "$pid" "$(rd ticks.$n)"; then
-    kill -s STOP "$pid" 2>/dev/null
-    killed="$pid $(descendants "$pid" STOP)"
-    kill -s KILL $killed 2>/dev/null
+  else
+    # What is killed is written down first, each process with its start: a stop that takes this one over finds it there
+    # once the runner is gone, and a process that has since taken one of the ids has another start and is never touched.
+    if alive "$pid" "$(rd ticks.$n)"; then
+      kill -s STOP "$pid" 2>/dev/null
+      for c in $pid $(descendants "$pid" STOP); do echo "$c $(started "$c")"; done > "$D/stop.killed.$$"
+      mv "$D/stop.killed.$$" "$D/stop.killed"
+    fi
+    for c in $(recorded); do kill -s KILL "$c" 2>/dev/null; done
   fi
   began=$(centis)
   while [ $(( $(centis) - began )) -lt 200 ]; do
@@ -367,12 +372,20 @@ end_program() {
     if [ "$killed" = group ]; then
       group_live "$pid" && left=" its group $pid"
     else
-      for c in $killed; do pid_live "$c" && left="$left $c"; done
+      for c in $(recorded); do left="$left $c"; done
     fi
     [ -n "$left" ] || return 0
     sleep $STEP
   done
   return 1
+}
+
+# The ids in stop.killed that still run with the start written beside them.
+recorded() {
+  [ -r "$D/stop.killed" ] || return 0
+  while read -r c t; do
+    if pid_live "$c" && [ "$(started "$c")" = "$t" ]; then echo "$c"; fi
+  done < "$D/stop.killed"
 }
 
 # The end of a stop: what is left of the program's group killed, the launcher's processes ended, the last state. Then its
@@ -824,6 +837,13 @@ const GROUP_LIVE = [
 	'  read -r line < "$PROC/$1/stat" || return 1',
 	"  nm=\x24{line#*(}",
 	'  echo "$1 (\x24{nm%) *})"',
+	"} 2>/dev/null",
+	"# The start of process $1 (field 22 of its stat), read from $PROC; empty once it is gone.",
+	"started() {",
+	'  read -r line < "$PROC/$1/stat" || return 0',
+	"  r=\x24{line##*) }",
+	"  set -- $r",
+	'  echo "\x24{20}"',
 	"} 2>/dev/null",
 	"# Whether process $1 is left and not a zombie, read from $PROC like group_live.",
 	"pid_live() {",
