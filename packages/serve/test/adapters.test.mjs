@@ -2,7 +2,7 @@
 // other provider, a missing key, or a gateway under a path the proxy cannot reach is a reason capabilities shows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
+import { claudeOf, claudeProvider, codexProvider, HarnessUnavailable, priceOf } from "../dist/adapters.js";
 
 const openai = { provider: "openai", modelId: "gpt-5.4-mini" };
 const refused = (pattern) => (error) => error instanceof HarnessUnavailable && pattern.test(error.message);
@@ -96,4 +96,21 @@ test("a gateway base that could send a key somewhere else than it reads is refus
   // A loopback gateway may be plain http (a local server, or a test's).
   assert.equal(codexProvider({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:4000/api/v1" }, { provider: "agent-model", modelId: "x" }).origin, "http://127.0.0.1:4000/api");
   assert.equal(claudeProvider({ ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "http://localhost:5000" }, anthropic).origin, "http://localhost:5000");
+});
+
+test("claude-agent with no SDK and no key: the reason is the missing SDK, with its install line, never the key a person would set first", async () => {
+  const real = await import("@parcha/agentrun-claude-agent");
+  // The package itself is here (as in serve's image); its SDK is not: the adapter's own check, with nothing installed.
+  const noSdk = async () => ({ ...real, claudeAgentAdapter: () => real.verifyClaudeAgent({}, () => undefined) });
+  const needs = { model: { provider: "anthropic", modelId: "claude-haiku-4-5" }, models: { getModel: () => undefined } };
+  await assert.rejects(claudeOf({}, needs, noSdk), (error) => {
+    assert.ok(error instanceof HarnessUnavailable, String(error));
+    assert.match(error.message, /not installed/);
+    assert.match(error.message, /npm install (?:--?[A-Za-z][A-Za-z-]* )*@/, "with its install line, as the image smoke reads it");
+    assert.doesNotMatch(error.message, /ANTHROPIC_API_KEY/);
+    return true;
+  });
+  // With the SDK in place, a missing key is still said.
+  const sdk = async () => ({ ...real, claudeAgentAdapter: () => ({ id: "claude-agent" }) });
+  await assert.rejects(claudeOf({}, needs, sdk), refused(/claude-agent needs ANTHROPIC_API_KEY/));
 });
