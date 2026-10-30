@@ -4,8 +4,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CallsInFlight, openAdapterSession } from '@parcha/agentrun-kernel';
-import { Restart } from '@parcha/agentrun-kernel/kernel';
-import { NativeJournal, placeSubmissions } from '@parcha/agentrun-kernel/process';
+import { foldSession, openDrive, Restart } from '@parcha/agentrun-kernel/kernel';
+import { NativeJournal, placeSubmissions, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 /** A harness whose drive throws `Restart` for its first `restarts` drives, then records the turn as completed. */
@@ -218,4 +218,79 @@ test('the faux harness settles a turn a crash cut off: its end is recorded, and 
   const third = await adapter.open(spec, { writer: await store.open('step:f'), models, signal: new AbortController().signal, onEvent: () => {} });
   assert.equal(third.state, 'idle');
   assert.equal(adapter.requests, 1);
+});
+
+/** A submission that reached the session while no process ran it (a test seam: today's send cannot leave a second one
+ *  pending): written through a drive of its own, as the next process to open the session would find it. */
+async function submittedMeanwhile(store, text) {
+  const drive = await openDrive({ writer: await store.open('step:s'), signal: new AbortController().signal });
+  await drive.submit({ id: `meanwhile-${text}`, kind: 'prompt', text });
+}
+/** The session's last turn entry, as its records hold it. */
+const lastTurn = async (store) => transcriptOf(foldSession('step:s', await store.read('step:s'))).filter((r) => r.data?.type === 'turn').at(-1)?.data;
+const SETTLED = 'settled: the turn a crash cut off was ended, not resumed';
+
+test('a settle withdraws only what opened the cut turn: a second message pending at the crash stays, and is the next turn\'s input', async () => {
+  const store = memorySessionStore();
+  // The cut turn's prompt never reached the transcript: it is the oldest pending submission.
+  const first = await openOn(store, () => new Promise(() => {}));
+  await first.session.send('the cut turn\'s prompt');
+  await turnSoon();
+  first.kill();
+  await submittedMeanwhile(store, 'a person\'s message');
+  const harness = counting();
+  const second = await openOn(store, harness.drive);
+  assert.equal(second.session.state, 'open_turn');
+  await second.session.settleOpenTurn();
+  await second.session.send('next');
+  await second.session.turnEnd();
+  assert.deepEqual(harness.given, ['a person\'s message', 'next']);
+});
+
+test('a cut turn that placed its prompt withdraws nothing at its settle: a message pending beside it is the next turn\'s input', async () => {
+  const store = memorySessionStore();
+  const first = await openOn(store, async (drive) => {
+    await placeSubmissions(drive, drive.pending());
+    await drive.effect('tool:c1', { name: 'tool.commit', replay: 'never', input: {} }, () => new Promise(() => {}));
+  });
+  await first.session.send('go');
+  await turnSoon();
+  first.kill();
+  await submittedMeanwhile(store, 'a person\'s message');
+  const harness = counting();
+  const second = await openOn(store, harness.drive);
+  await second.session.settleOpenTurn();
+  await second.session.send('next');
+  await second.session.turnEnd();
+  assert.deepEqual(harness.given, ['a person\'s message', 'next']);
+});
+
+test('the settled turn is recorded interrupted, with the settle named, and its turn_end says so', async () => {
+  const store = memorySessionStore();
+  const first = await openOn(store, () => new Promise(() => {}));
+  await first.session.send('go');
+  await turnSoon();
+  first.kill();
+  const second = await openOn(store, counting().drive);
+  await second.session.settleOpenTurn();
+  assert.deepEqual(await lastTurn(store), { type: 'turn', status: 'interrupted', error: SETTLED });
+  assert.deepEqual(second.events, [{ type: 'turn_end', status: 'interrupted' }]);
+});
+
+test('a settle again, with no turn cut since the last one, withdraws nothing: a message left pending by then is never dropped', async () => {
+  const store = memorySessionStore();
+  const first = await openOn(store, () => new Promise(() => {}));
+  await first.session.send('the cut turn\'s prompt');
+  await turnSoon();
+  first.kill();
+  await submittedMeanwhile(store, 'a person\'s message');
+  await (await openOn(store, counting().drive)).session.settleOpenTurn();
+  // A later process finds the person's message pending, so the session open, and is asked to settle again.
+  const harness = counting();
+  const third = await openOn(store, harness.drive);
+  assert.equal(third.session.state, 'open_turn');
+  await third.session.settleOpenTurn();
+  await third.session.recover();
+  await third.session.turnEnd();
+  assert.deepEqual(harness.given, ['a person\'s message']);
 });
