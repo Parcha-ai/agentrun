@@ -326,12 +326,15 @@ test("on the four gateway variables alone, the run's process is handed AGENT_MOD
   assert.deepEqual(sent.map((c) => [c.pid, c.path, c.authorized]), [[pid, "/api/v1/systemone", true]], "the run's judge sent the gateway's key to OpenRouter");
 });
 
-/** jevJudgeOf in a process of its own, as a run's process calls it: its environment is `env` alone, and `handed` (a
- *  route and key) comes on the decision descriptor when given. Whether it made a judge, and what the fake Jev took. */
+/** decisionProvidersOf in a process of its own, as a run's process calls it: its environment is `env` alone, and
+ *  `handed` (a route and key) comes on the decision descriptor when given. Whether it made a judge, and what the fake
+ *  Jev took. */
 async function judgeIn(t, env, handed) {
   const calls = join(await scratch(t), "jev-calls.jsonl");
-  const script = `const { jevJudgeOf } = await import(${JSON.stringify(new URL("../dist/decisions.js", import.meta.url).href)});
-const judge = await jevJudgeOf(process.env);
+  const script = `const { decisionProvidersOf } = await import(${JSON.stringify(new URL("../dist/decisions.js", import.meta.url).href)});
+const { judgeFromProviders } = await import("@parcha/agentrun-dsl");
+const providers = await decisionProvidersOf(process.env);
+const judge = providers && judgeFromProviders(providers);
 const answer = judge && await judge({ label: "coi", kind: "judge", state: { doc: "x" }, questions: { is_coi: { type: "noul", instructions: "Is doc a certificate of incorporation?" } } });
 process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answers?.is_coi?.noul ?? null }));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {

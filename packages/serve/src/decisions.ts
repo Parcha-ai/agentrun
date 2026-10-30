@@ -10,10 +10,13 @@
 // its model nodes.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import { FAUX_ENV } from "./model.js";
 
 export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
+/** The provider a decision node that names none is answered by. */
+export const DEFAULT_DECISION_PROVIDER = "jev";
 /** The adapter a workflow's typed questions run through. */
 export const DECISION_ADAPTER = "runJudge";
 /** Set on a run's process the server hands the TypeSafe key: the descriptor's number, never the key. The server puts
@@ -86,14 +89,17 @@ function handedRoute(handed: string | undefined): { route: string; key: string }
   return at > 0 ? { route: handed!.slice(0, at), key: handed!.slice(at + 1) } : undefined;
 }
 
-/** In a run's process: the judge its workflow's typed questions run on, or undefined when the server gave it no route
- *  to Jev. Called once per process, since the handed key can be read once. Jev is a decision provider, which sends a
- *  request once: one that fails after it was sent may have been answered and billed, so the decision escalates as
- *  interrupted instead of being asked again. */
-export async function jevJudgeOf(env: NodeJS.ProcessEnv) {
+/** In a run's process: the decision providers its workflow's typed questions are answered by, on the key the server
+ *  handed it, and the one a node that names none gets; undefined when it handed none. Called once per process, since
+ *  the handed key can be read once. The run's judge (`judgeFromProviders`) and its checks before any node runs take
+ *  this one registry, so a node's provider and timeoutMs hold, and a node naming a provider it lacks is refused before
+ *  the run instead of being asked of Jev. Jev sends a request once: one that fails after it was sent may have been
+ *  answered and billed, so the decision escalates as interrupted instead of being asked again. */
+export async function decisionProvidersOf(env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const handed = handedRoute(handedKey(env));
   if (!handed) return undefined;
   const faux = env[FAUX_ENV] && env[FAUX_JEV_ENV] ? ((await import(pathToFileURL(env[FAUX_JEV_ENV]).href)) as { default: typeof fetch }).default : undefined;
-  const [{ jevProvider }, { judgeFromProvider }] = await Promise.all([import("@parcha/agentrun-jev"), import("@parcha/agentrun-dsl")]);
-  return judgeFromProvider(jevProvider({ ...(handed.route === "openrouter" ? { provider: "openrouter" as const } : {}), apiKey: handed.key, ...(faux ? { fetch: faux } : {}) }));
+  const { jevProvider } = await import("@parcha/agentrun-jev");
+  const jev = jevProvider({ ...(handed.route === "openrouter" ? { provider: "openrouter" as const } : {}), apiKey: handed.key, ...(faux ? { fetch: faux } : {}) });
+  return { providers: { jev }, default: DEFAULT_DECISION_PROVIDER };
 }
