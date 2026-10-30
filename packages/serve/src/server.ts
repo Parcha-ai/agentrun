@@ -1,13 +1,14 @@
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, lstat, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { type NewRevision, openStore, type Revision } from "@parcha/pi-durable-agent";
+import { type AgentStore, type NewRevision, openStore, type Revision } from "@parcha/pi-durable-agent";
 import { agentView, Agents, etagOf, homeBusy, revisionView, storeBusy, type AgentEntry } from "./agents.js";
 import { WORKFLOW_ADAPTERS } from "./app.js";
 import { NODE_TOOLS, toolsView } from "./tools.js";
@@ -17,7 +18,7 @@ import { FAUX_HARNESS_ENV, harnessesOf, type HarnessOffer, harnessOffers } from 
 import { healthOf, maxRunsOf, MIN_FREE_MIB } from "./host.js";
 import { openapiDocument, UNSUPPORTED } from "./openapi.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
-import { planImport, runImport } from "./import.js";
+import { IMPORT_ASKED, planImport, runImport } from "./import.js";
 import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js";
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
@@ -288,24 +289,32 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
 
   // The setup page's import of this machine's sessions: offered by a server on this machine only (no public address,
   // listening on loopback), planned once (a listing, no transcript read), run once.
-  const offersImport = options.openSetup === true && isLoopback(host);
+  const offersImport = options.openSetup === true && options.publicUrl === undefined && isLoopback(host);
   const sessionsOptions = () => ({ home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), env: process.env });
   let planned: ReturnType<typeof planImport> | undefined;
   const sessionsPlan = () => (planned ??= planImport(sessionsOptions()));
+  // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
+  const importAsked = join(data, IMPORT_ASKED);
+  const stopping = new AbortController();
   let importing: Promise<void> | undefined;
+  /** Never rejects: whatever stops it (the store held past its wait, a file) is said on stderr, and the server goes on. */
   const importAtSetup = () =>
     (importing ??= (async () => {
-      // A connection of its own, which waits for the store: the server's own never waits on a request's path.
-      const store = openStore(data);
+      let store: AgentStore | undefined;
       try {
-        const report = await runImport(store, await sessionsPlan(), sessionsOptions());
-        process.stdout.write(`${logLine("import", { agents: report.agents.length, runs: report.agents.reduce((n, a) => n + a.runs, 0), skipped: report.skipped.length })}\n`);
+        // A connection of its own, which waits for the store: the server's own never waits on a request's path.
+        store = openStore(data);
+        const report = await runImport(store, await planImport(sessionsOptions(), store), { ...sessionsOptions(), signal: stopping.signal });
+        if (stopping.signal.aborted) return;
+        await rm(importAsked, { force: true });
+        process.stdout.write(`${logLine("import", { agents: report.agents.length, runs: report.agents.reduce((n, a) => n + a.runs + a.finished, 0), skipped: report.skipped.length })}\n`);
       } catch (error) {
-        process.stderr.write(`agentrun-serve: the import at setup stopped: ${(error as Error).message}\n`);
+        process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
       } finally {
-        store.close();
+        store?.close();
       }
     })());
+  if (offersImport && existsSync(importAsked)) void importAtSetup();
 
   // ---- helpers --------------------------------------------------------------------------------------------------------
 
@@ -626,7 +635,10 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "code") throw new ApiError("forbidden", "that is not the setup code in the server's log, or it has expired");
         // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
-        if (body.import === true) void importAtSetup();
+        if (body.import === true) {
+          await writeFile(importAsked, "", { mode: 0o600 });
+          void importAtSetup();
+        }
         return send(res, 201, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       case "/setup/import": {
@@ -860,6 +872,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl } : {}),
     async close() {
+      // An import under way stops between two sessions and is waited for: nothing writes the store after close.
+      stopping.abort();
+      await importing;
       await runs.close();
       await new Promise((done) => (server.close(done), server.closeAllConnections()));
       agents.close();

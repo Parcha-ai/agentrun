@@ -1,15 +1,17 @@
 // The setup page's offer to import this machine's sessions: a box, never ticked for the owner, on a server on this
 // machine only. Nothing is imported unless the owner ticks it as they set the password; ticked, the sessions arrive.
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { openStoreReader } from "@parcha/pi-durable-agent";
+import { startServe } from "../dist/index.js";
 import { claudeSession, codexSession } from "./fixtures/import-sessions.mjs";
-import { call, scratch, serve } from "./support.mjs";
+import { call, FAUX, scratch, serve } from "./support.mjs";
 
 const json = { "content-type": "application/json" };
 const page = (server) => ({ ...json, origin: `http://127.0.0.1:${server.port}` });
@@ -122,4 +124,80 @@ test("open setup on an address other than loopback offers no import and refuses 
   const session = await at(host, server.port, { path: "/v2/auth/session" });
   assert.equal(session.json.password_set, false, "the refusal set no owner");
   assert.equal(agentsIn(server.data), 0);
+});
+
+test("open setup with a public address, though it listens on loopback (behind a proxy), offers no import and refuses one asked for", async (t) => {
+  const server = await serve(t, { accounts: true, openSetup: true, publicUrl: "https://agents.example.test", ...(await machine(t)) });
+  assert.equal((await call(server.port, { path: "/v2/setup/import", headers: { "sec-fetch-site": "same-origin" } })).status, 404);
+  const asked = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+  assert.equal(asked.status, 422, asked.text);
+  assert.equal(asked.json.error.fields[0].field, "import");
+  assert.equal(agentsIn(server.data), 0);
+});
+
+test("an import at setup that cannot open the store (held past its wait) is said, and the server goes on serving", { timeout: 60_000 }, async (t) => {
+  // A rejection nothing handles would end a server: the import's own failure must be handled where it happens.
+  const unhandled = [];
+  const listen = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", listen);
+  t.after(() => process.off("unhandledRejection", listen));
+  const server = await serve(t, { accounts: true, openSetup: true, ...(await machine(t)) });
+  // Another writer holds the store past the import's five-second wait.
+  const holder = new DatabaseSync(join(server.data, "store.sqlite"));
+  holder.exec("BEGIN EXCLUSIVE");
+  try {
+    const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+    assert.equal(made.status, 201, made.text);
+    await sleep(6_500);
+    assert.equal((await call(server.port, { path: "/v2/auth/session" })).status, 200, "the server is still up");
+  } finally {
+    holder.exec("ROLLBACK");
+    holder.close();
+  }
+  assert.deepEqual(unhandled.map(String), [], "no rejection left unhandled");
+  assert.equal(agentsIn(server.data), 0);
+  assert.ok(existsSync(join(server.data, ".import-at-setup")), "the owner's yes is kept for the next start");
+});
+
+test("the owner's yes outlives a stop: the next start goes on with the import, and clears it once done", { timeout: 60_000 }, async (t) => {
+  const { sessionsHome } = await machine(t);
+  const data = join(await scratch(t), "agents");
+  mkdirSync(data, { recursive: true });
+  // As a server stopped mid-import leaves it.
+  writeFileSync(join(data, ".import-at-setup"), "", { mode: 0o600 });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome });
+  t.after(() => server.close());
+  for (const deadline = Date.now() + 30_000; existsSync(join(data, ".import-at-setup")) && Date.now() < deadline; ) await sleep(100);
+  assert.equal(existsSync(join(data, ".import-at-setup")), false, "cleared once the import ended");
+  const reader = openStoreReader(data);
+  t.after(() => reader.close());
+  assert.deepEqual(reader.listRuns().map((r) => r.importedFrom.source).sort(), ["claude-code", "codex"]);
+});
+
+test("a server closed during the import at setup stops it between sessions and waits for it: nothing writes the store after close", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const site = join(home, "code", "acme-site");
+  mkdirSync(site, { recursive: true });
+  for (let n = 1; n <= 40; n++) claudeSession(home, site, n, { prompt: `Task ${n}.` });
+  const data = join(root, "agents");
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", accounts: true, openSetup: true, sessionsHome: { home, temp: join(root, "tmp") } });
+  let closed = false;
+  t.after(() => (closed ? undefined : server.close()));
+  const made = await call(server.port, { method: "POST", path: "/v2/setup", headers: page(server), body: { password: PASSWORD, import: true } });
+  assert.equal(made.status, 201, made.text);
+  await server.close();
+  closed = true;
+  const count = () => {
+    const reader = openStoreReader(data);
+    try {
+      return reader.listRuns().length;
+    } finally {
+      reader.close();
+    }
+  };
+  const atClose = count();
+  await sleep(1_500);
+  assert.equal(count(), atClose, "no run written after close");
+  assert.equal(existsSync(join(data, ".import-at-setup")), atClose < 40, "the yes is kept while the import is unfinished");
 });
