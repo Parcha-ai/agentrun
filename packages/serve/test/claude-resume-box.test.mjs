@@ -129,6 +129,18 @@ test("one boxed Claude session per run process: a second at once, through the sa
   await session.close();
   const again = await oneBoxedClaude(adapter()).open({ key: "run:c" }, {});
   await again.close();
+  // An open that throws after its claim lets it go: the next open is not refused.
+  const failing = oneBoxedClaude({ check: () => [], open: async () => { throw new Error("the CLI did not start"); } });
+  await assert.rejects(failing.open({ key: "run:d" }, {}), /the CLI did not start/);
+  const after = await oneBoxedClaude(adapter()).open({ key: "run:e" }, {});
+  await after.close();
+  // A session that ends without its close (its signal aborted, as when the run's process stops) lets the claim go too.
+  const stop = new AbortController();
+  await oneBoxedClaude(adapter()).open({ key: "run:f" }, { signal: stop.signal });
+  await assert.rejects(oneBoxedClaude(adapter()).open({ key: "run:g" }, {}), /while run:f is live/);
+  stop.abort();
+  const last = await oneBoxedClaude(adapter()).open({ key: "run:h" }, {});
+  await last.close();
 });
 
 test("the session's sockets are short and outside the launch's directory, under the default data root in a home: the machine opens; its own default there is runtime_dir_too_long", linux, async (t) => {
@@ -150,4 +162,10 @@ test("the session's sockets are short and outside the launch's directory, under 
   assert.ok(made.runtimeDir.startsWith(serveTmp) && Buffer.byteLength(made.runtimeDir) <= 81, `${made.runtimeDir}: under serve's own temporary directory, and short`);
   await assert.rejects(openLocalMachine({ name: "agentrun-test", dir: join(run, "harness"), dirs: ["home", "tmp"], sessionId: "s", from: {}, proxy: { policy, hooks: {}, model: "m", origin: "https://provider.invalid", credential: () => "c" }, box: { ...made, runtimeDir: undefined } }), /runtime_dir_too_long/, "the machine's default, in the launch's directory, is too long for a socket");
   assert.deepEqual(readdirSync(launch), [], "nothing of the machine's in the launch's directory");
+  // A second launch of the same run, its process beside a hung first one: a socket directory of its own.
+  const next = newLaunchDir(run);
+  process.env.TMPDIR = next;
+  const madeNext = await runBox({ data, isolation: { mode: "bwrap", cgroup: false }, runtimeDir: serveTmp }, { id: "r", dir: run }, {});
+  assert.notEqual(madeNext.runtimeDir, made.runtimeDir, "two launches of one run never share a socket directory");
+  assert.ok(Buffer.byteLength(madeNext.runtimeDir) <= 81);
 });

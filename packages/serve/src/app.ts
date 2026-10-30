@@ -172,13 +172,16 @@ export default async function app(where: AppContext): Promise<AppOptions> {
 }
 
 /** A boxed Claude adapter whose sessions claim this process's one boxed Claude session (box/run-box.ts): each open
- *  claims it and its close lets it go, so a second open at once, from this adapter or another, is refused by name. */
+ *  claims it, and its close, a failed open or the session's signal aborting lets it go, so a second open at once, from
+ *  this adapter or another, is refused by name. */
 export function oneBoxedClaude(adapter: AgentAdapter): AgentAdapter {
   return {
     ...adapter,
     check: (spec) => adapter.check(spec),
     async open(spec, io) {
       const release = claimBoxedClaude(spec.key);
+      // A session that ends without its close (the run's process stopping aborts its signal) lets the claim go too.
+      io?.signal?.addEventListener("abort", release, { once: true });
       let session: Awaited<ReturnType<AgentAdapter["open"]>>;
       try {
         session = await adapter.open(spec, io);

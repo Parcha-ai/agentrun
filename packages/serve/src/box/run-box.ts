@@ -4,7 +4,7 @@
 // directory is not under it, would leave the box's hidden list short of the run's own tree.
 import { lstatSync, realpathSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { type Box, BoxError, bwrapBox, type Isolation, type MachineBox } from "@parcha/agentrun-kernel/host";
@@ -94,8 +94,10 @@ export async function runBox(settings: RunBoxSettings, run: { id: string; dir: s
     readOnly: [],
     modelPort: await freePort(),
     // The session's sockets in serve's own temporary directory, short: the machine's default is in this process's TMPDIR,
-    // the launch's own under the data root, where a socket's path would run past the 107 bytes a socket may have.
-    ...(settings.runtimeDir !== undefined ? { runtimeDir: join(settings.runtimeDir, `arb-${createHash("sha256").update(join(run.dir, "harness")).digest("hex").slice(0, 12)}`) } : {}),
+    // the launch's own under the data root, where a socket's path would run past the 107 bytes a socket may have. Keyed by
+    // this launch (its own temporary directory), never the run alone: a hung earlier launch of the run may still be
+    // running beside this one, and two launches never share a socket directory.
+    ...(settings.runtimeDir !== undefined ? { runtimeDir: join(settings.runtimeDir, `arb-${createHash("sha256").update(`${join(run.dir, "harness")}\0${resolve(tmpdir())}`).digest("hex").slice(0, 12)}`) } : {}),
     ...(settings.cgroupRoot !== undefined && (settings.isolation as { cgroup?: boolean }).cgroup ? { cgroup: join(settings.cgroupRoot, run.id) } : {}),
   };
 }
