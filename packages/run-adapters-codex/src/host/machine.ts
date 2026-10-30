@@ -7,13 +7,13 @@
 //  - its children speak app-server's line protocol, one JSON value per line;
 //  - the proxy serves the Codex policy.
 import { createInterface } from "node:readline";
-import { confined as kernelConfined, openLocalMachine, type ChildCommand, type ConfineChild, type MachineChild, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { confined as kernelConfined, openLocalMachine, type ChildCommand, type ConfineChild, type MachineBox, type MachineChild, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import type { AcquireMachine, CacheDir, SessionMachine, SessionProcess } from "./process.js";
 import { brandMachine } from "./process.js";
 import { codexPolicy } from "./policy.js";
 
 export { childEnv, INHERITED_ENV } from "@parcha/agentrun-kernel/host";
-export type { ChildCommand, ConfineChild } from "@parcha/agentrun-kernel/host";
+export type { ChildCommand, ConfineChild, MachineBox } from "@parcha/agentrun-kernel/host";
 
 const NAME = "agentrun-harness-codex";
 const DIRS: readonly CacheDir[] = ["home", "config", "codex-home", "tmp", "cache"];
@@ -23,6 +23,9 @@ export interface LocalMachineOptions {
   dir: string;
   /** Start every child of the session (Codex) under the host's confinement. */
   confine?: ConfineChild;
+  /** The host's box for Codex, or `unsandboxed` where the operator said there is none. Absent: none, and Codex's own
+   *  tools stay off. */
+  box?: MachineBox | "unsandboxed";
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits; its route comes
    *  from the harness. */
   proxy: {
@@ -71,6 +74,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       sessionId: ctx.runId,
       from,
       ...(options.confine ? { confine: options.confine } : {}),
+      ...(options.box ? { box: options.box } : {}),
       proxy: {
         policy: codexPolicy({ model: route.models.model, tools: options.proxy.tools, ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}) }),
         hooks: options.proxy.hooks,
@@ -90,6 +94,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelUrl: local.modelUrl,
       modelKey: local.modelKey,
       notes: local.notes,
+      ...(local.isolation ? { isolation: local.isolation } : {}),
       spawn: async (spawnOptions) => lineChannel(local.start(spawnOptions)),
       files: local.files,
       tail: local.tail,

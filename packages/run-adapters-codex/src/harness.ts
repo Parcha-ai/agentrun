@@ -4,6 +4,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
+import type { Isolation } from '@parcha/agentrun-kernel/host';
 import {
   type AcquireMachine,
   BuiltinCalls,
@@ -69,10 +70,9 @@ import {
  *   they are its only tools (shell, `apply_patch` and images off, a
  *   `read-only` sandbox). With `builtins: true`, Codex's own shell and
  *   `apply_patch` are on, on `/workspace`, under Codex's own sandbox
- *   (`sandboxMode`: by default `workspace-write` when bubblewrap's self-test
- *   passes in the VM, else `danger-full-access`, the VM being the boundary;
- *   the first verdict is recorded in the log, `codex.sandbox`, and every
- *   later drive keeps it).
+ *   (`sandboxMode`: off, `danger-full-access`, in the host's box, which is the
+ *   boundary; with no box only where the operator said `unsandboxed`, else
+ *   the turn fails by name).
  *   Every command and patch asks the drive first (`approvalPolicy:
  *   'untrusted'`): its intent is committed once the rollout line that made
  *   the call is in the log, and only then approved, once. Anything else is
@@ -133,12 +133,11 @@ export interface CodexHarnessOptions {
   builtins?: boolean;
   /**
    * Codex's sandbox for its commands, in the VM (the Codex SDK's word; this
-   * option was `sandbox`). Needs `builtins: true`. Default: `workspace-write`
-   * (writes to `/workspace` and its home, network on) when bubblewrap's
-   * self-test passes in the VM at attach, else `danger-full-access` (the VM
-   * is the boundary, and holds no credential; the provider key's
-   * placeholder is then readable by the model's commands, docs/workspaces.md
-   * §5.5).
+   * option was `sandbox`). Needs `builtins: true`. In the host's box it is
+   * `danger-full-access`, since the box is the boundary and Codex's own
+   * sandbox cannot nest in it (another mode is refused there). On a machine
+   * the operator runs `unsandboxed` it is this option, default
+   * `danger-full-access`.
    */
   sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
   /** The provider's model id. Default `openai/gpt-5.4-mini`. */
@@ -248,8 +247,6 @@ export const NO_TIME_TEXT = 'Not run: too little time was left in this invocatio
 const MAX_TAIL_FAILURES = 3;
 /** The journal stream of response costs: `{ usd, turn, estimated? }` (`turn`: the session turn it was spent in). */
 export const SPEND_STREAM = 'codex.spend';
-/** The journal stream of the bubblewrap self-test's verdict: `{ sandboxMode, reason? }`, the first one kept. */
-export const SANDBOX_STREAM = 'codex.sandbox';
 /** The journal stream of rollout tail failures: `{ turn, error }`. */
 export const TAIL_STREAM = 'codex.tail';
 /** Where app-server's git looks for a repository: nowhere (it would otherwise read `/workspace/.git`'s config, which the model writes, outside bwrap). */
@@ -504,7 +501,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       // The log wins: the VM's cache dirs are wiped, and CODEX_HOME rebuilt from the log.
       await machine.files.wipe();
       let sandboxMode: NonNullable<CodexHarnessOptions['sandboxMode']> = 'read-only';
-      if (builtinsOn) sandboxMode = options.sandboxMode ?? (await sandboxVerdict(ctx, spec, machine, journal));
+      if (builtinsOn) sandboxMode = codexSandboxMode(machine.isolation, options.sandboxMode, log);
       const config = codexConfig({
         model,
         baseUrl: `${machine.modelUrl}/v1`,
@@ -1143,81 +1140,33 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     }
   }
 
-  /**
-   * Codex's sandbox for its commands, decided once per session: the first
-   * drive with the built-ins runs bubblewrap's self-test in the VM and
-   * records its verdict in the log (`codex.sandbox`); every later drive keeps
-   * it, so nothing the model leaves on the Drive (or a slow VM) can move the
-   * session to `danger-full-access`. On a later VM where bwrap fails, Codex's
-   * commands fail closed: its offer to rerun one without the sandbox is
-   * declined.
-   */
-  async function sandboxVerdict(ctx: DriveContext, spec: CodexMachine, machine: SessionMachine, journal: NativeJournal): Promise<'workspace-write' | 'danger-full-access'> {
-    const recorded = journal.records<{ sandboxMode?: string }>(SANDBOX_STREAM).find((r) => r.data?.sandboxMode === 'workspace-write' || r.data?.sandboxMode === 'danger-full-access')?.data?.sandboxMode;
-    if (recorded === 'workspace-write' || recorded === 'danger-full-access') return recorded;
-    const verdict = await selfTest(ctx, spec, machine);
-    journal.append(SANDBOX_STREAM, verdict);
-    return verdict.sandboxMode;
-  }
+}
 
-  /**
-   * Codex's bubblewrap self-test in the VM (P0.10, §12 question 6): `codex
-   * sandbox` with the workspace-write profile, as the session's user, in an
-   * empty directory of its own (the Drive has no say in it). Exit 0:
-   * `workspace-write`. A definite failure (a non-zero exit): `danger-full-
-   * access` (the VM is the boundary, and holds no credential). One that
-   * didn't finish or couldn't start is tried once more, then fails the turn:
-   * it is no verdict.
-   */
-  async function selfTest(ctx: DriveContext, spec: CodexMachine, machine: SessionMachine): Promise<{ sandboxMode: 'workspace-write' | 'danger-full-access'; reason?: string }> {
-    // A CODEX_HOME and a working directory of its own, under the cache dir: nothing it writes is near the session's.
-    const selfHome = 'codex-selftest';
-    await machine.files.upload('cache', [
-      { path: `${selfHome}/home/.keep`, bytes: new Uint8Array() },
-      { path: `${selfHome}/cwd/.keep`, bytes: new Uint8Array() },
-    ]);
-    const dir = `${machine.dirs.cache}/${selfHome}`;
-    let why = '';
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      let test: SessionProcess;
-      try {
-        test = await machine.spawn({
-          command: codex.command,
-          args: [...codex.args, 'sandbox', '-P', ':workspace', '-C', `${dir}/cwd`, '--', 'true'],
-          cwd: `${dir}/cwd`,
-          signal: ctx.signal,
-          env: { ...(spec.env ?? {}), HOME: machine.dirs.home, CODEX_HOME: `${dir}/home`, TMPDIR: machine.dirs.tmp, NO_COLOR: '1' },
-        });
-      } catch (err) {
-        if (ctx.signal.aborted || machine.signal.aborted) throw err;
-        why = `it did not start (${String((err as Error)?.message ?? err).slice(0, 120)})`;
-        continue;
-      }
-      test.end();
-      void (async () => {
-        for await (const _ of test.lines());
-      })().catch(() => {});
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const exit = await Promise.race([test.exited, new Promise<undefined>((r) => (timer = setTimeout(r, 20_000, undefined)))]);
-      clearTimeout(timer);
-      if (!exit) {
-        test.kill('SIGKILL');
-        await test.exited;
-      }
-      if (exit?.code === 0) return { sandboxMode: 'workspace-write' };
-      if (typeof exit?.code === 'number') {
-        const reason = `bubblewrap's self-test failed (exit code ${exit.code})`;
-        log("codex: bubblewrap's self-test failed in the VM: commands run with danger-full-access (the VM is the boundary)", { reason, stderr: test.stderrTail().slice(-500) });
-        return { sandboxMode: 'danger-full-access', reason };
-      }
-      why = exit ? `it was killed (${exit.signal})` : 'it did not finish in 20 s';
-      log("codex: bubblewrap's self-test gave no verdict", { attempt, why });
+/**
+ * Codex's sandbox for its commands, from what the host's box proved, never
+ * from a probe. In the host's box (the kernel's: its own pid, mount and
+ * network namespaces) Codex's own sandbox is off, since the box is the
+ * boundary and nothing in it may make another namespace; another mode is
+ * refused there. Where the operator said `unsandboxed`, it is the session's
+ * `sandboxMode` (default `danger-full-access`), said in the log. Anywhere
+ * else the turn fails with an `Unavailable` that names why.
+ */
+export function codexSandboxMode(isolation: Isolation | undefined, asked: CodexHarnessOptions['sandboxMode'], log: (message: string, fields?: Record<string, unknown>) => void): NonNullable<CodexHarnessOptions['sandboxMode']> {
+  if (isolation?.mode === 'bwrap' || isolation?.mode === 'seatbelt' || isolation?.mode === 'provider') {
+    if (asked !== undefined && asked !== 'danger-full-access') {
+      throw new Unavailable(`agentrun-harness-codex: Codex's own sandbox (${asked}) cannot start inside the host's box, which is the boundary: leave sandboxMode unset`, { code: 'box_nested' });
     }
-    throw new Unavailable(`Codex's sandbox self-test gave no verdict in the session's sandbox: ${why}.`, {
-      code: 'unavailable',
-      hint: 'The VM may be slow to start: the next message retries it.',
-    });
+    return 'danger-full-access';
   }
+  if (isolation?.mode === 'unsandboxed') {
+    log("codex: unsandboxed: Codex's own tools run with no box, on the operator's setting", { sandboxMode: asked ?? 'danger-full-access' });
+    return asked ?? 'danger-full-access';
+  }
+  const why = isolation?.mode === 'unavailable' ? `its box is unavailable (${isolation.error}: ${isolation.detail})` : 'the host gave this machine no box';
+  throw new Unavailable(`agentrun-harness-codex: Codex's own tools run only in the host's box, and ${why}: this turn ends`, {
+    code: 'box_unavailable',
+    hint: "Install the host's box once (agentrun-box install, as root), give the machine a box, or turn Codex's own tools off (builtins: false).",
+  });
 }
 
 /** The client id prefix of a recovery note's turn: `recover:<n>`, then `:<id>,<id>` for the submissions it carries. */

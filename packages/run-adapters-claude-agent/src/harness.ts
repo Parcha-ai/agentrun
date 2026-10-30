@@ -5,8 +5,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, posix } from 'node:path';
+import { join, posix } from 'node:path';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
+import type { Isolation } from '@parcha/agentrun-kernel/host';
 import {
   BuiltinCalls,
   CLAUDE_ROUTES,
@@ -93,14 +94,12 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.js';
  * recovery note says which calls completed and which were interrupted ("may
  * have half-run"); nothing reruns one. Bash's timeout is clamped to what is
  * left of the invocation, so a command never outlives it: one the clamp ends
- * is recorded as out of time, never left open. Claude Code runs its commands
- * under its own sandbox (bubblewrap, checked by a self-test in the VM before
- * the spawn): writes only to `/workspace` and the temp and home dirs, no read
- * of the CLI's state (`/var/lib/dh/s`), the model key unset in their
- * environment, a pid namespace that hides the CLI's own environ and keeps
- * them from tracing it, and no way to the model port. Where it can't start,
- * the drive fails the turn with an `Unavailable` (`unsandboxedCommands`
- * opts out).
+ * is recorded as out of time, never left open. The CLI's own tools run only
+ * in the host's box (the machine's `isolation`: its own pid, mount and network
+ * namespaces, the kernel's), where Claude Code's own sandbox is off, since the
+ * box is the boundary. On a machine the host gave no box, or one it found
+ * unavailable, the drive fails the turn with an `Unavailable` that names why,
+ * unless the operator said `unsandboxed`.
  *
  * **A lost CLI.** When the CLI exits mid-turn (the link to the VM dropped, so
  * the relay killed it, or the VM killed it), the drive is rebuilt from the
@@ -239,18 +238,6 @@ export interface ClaudeCodeHarnessOptions {
   idleMs?: number;
   /** `query()`'s `maxTurns` (model round trips per turn). */
   maxTurns?: number;
-  /**
-   * Run the CLI's commands without Claude Code's own sandbox where bubblewrap
-   * doesn't work in the VM (with `builtins` on). Default false: such a drive
-   * fails the turn with an `Unavailable`. Without that sandbox a command runs
-   * beside the CLI as the same user: it can read the CLI's environment (the
-   * model key) and trace the CLI or take its socket (the VM's kernel has no
-   * Yama ptrace restriction, P0.16), so the model port's key and peer check no
-   * longer tell the CLI's calls from the model's (the key is then only a
-   * correlation id), and nothing hides the CLI's config dir. The VM stays the
-   * boundary. For the stand-in VM's tests, and images without user namespaces.
-   */
-  unsandboxedCommands?: boolean;
   /** Called with the child's stderr tail when it exits mid-turn, the gateway's refusals, and SDK diagnostics. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
@@ -349,43 +336,9 @@ export function builtinTools(builtins: ClaudeBuiltins | undefined): string[] | u
   throw new TypeError("agentrun-harness-claude: builtins takes true, a list of tool names, or { type: 'preset', preset: 'claude_code' }");
 }
 
-/** The Claude Code sandbox settings for the VM (§5.5 "Claude Code runs under its own sandbox"; P0.10, P0.16). */
-export function claudeSandboxSettings(machine: Pick<SessionMachine, 'root' | 'dirs'>, network: ClaudeSandboxNetwork): NonNullable<QueryOptions['sandbox']> {
-  const { dirs } = machine;
-  const open = [dirs.tmp, dirs.home, dirs.cache];
-  return {
-    enabled: true,
-    failIfUnavailable: true,
-    allowUnsandboxedCommands: false,
-    filesystem: { allowWrite: [machine.root, ...open], denyRead: [dirname(dirs.config)], allowRead: open },
-    credentials: { envVars: [{ name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' }] },
-    network: {
-      ...(network === 'allow-all' ? { allowedDomains: ['*'] } : network === 'deny-all' ? { allowedDomains: [], strictAllowlist: true } : { allowedDomains: [...network.allow], strictAllowlist: true }),
-      // The model port is the CLI's alone: never through the sandbox's proxy (the loopback names and literals it takes;
-      // a public name that resolves to loopback still gets past, and then meets the port's key).
-      deniedDomains: [...LOOPBACK_NAMES],
-    },
-  } as NonNullable<QueryOptions['sandbox']>;
-}
 
-/** Loopback, as names and literals a command could hand the sandbox's proxy for the model port. */
-export const LOOPBACK_NAMES = ['localhost', 'localhost.', '127.0.0.1', '127.1', '0.0.0.0', '0', '2130706433', '::1', '[::1]', '::ffff:127.0.0.1', '[::ffff:127.0.0.1]', '::', '[::]'];
 
-/** The bwrap self-test (P0.10): what Claude Code's sandbox needs of the VM, as the unprivileged user. */
-const BWRAP_SELF_TEST = ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--unshare-pid', '--unshare-net', '--die-with-parent', 'true'];
 
-/** Whether bubblewrap works in the VM as the agent (a fresh `/proc` in a pid namespace, no network): Claude Code's sandbox can start. */
-async function bwrapWorks(machine: SessionMachine, signal: AbortSignal): Promise<boolean> {
-  try {
-    const proc = await machine.spawn({ command: 'bwrap', args: BWRAP_SELF_TEST, signal });
-    const timer = setTimeout(() => proc.kill('SIGKILL'), 10_000);
-    const exit = await proc.exited;
-    clearTimeout(timer);
-    return exit.code === 0;
-  } catch {
-    return false;
-  }
-}
 
 export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harness {
   const tools = options.tools ?? [];
@@ -481,12 +434,11 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // The Drive's manifest: what the Files panel shows, kept in the log so it reads with no VM.
         const driveFiles = sandbox.files?.(ctx, machine);
 
-        // Claude Code's own sandbox (P0.10): bubblewrap must work in the VM. A failed self-test is tried once more (a slow relay, a timeout).
-        const ownSandbox = builtinsOn && ((await bwrapWorks(machine, ctx.signal)) || (await bwrapWorks(machine, ctx.signal)));
-        if (builtinsOn && !ownSandbox) {
-          if (ctx.signal.aborted) throw ctx.signal.reason;
-          if (!options.unsandboxedCommands) throw noCommandSandbox();
-          log("claude-agent: bubblewrap doesn't work in this VM: the CLI's commands run without its sandbox (unsandboxedCommands; the VM is the boundary, the model key only a correlation id)");
+        // The CLI's own tools run only in the host's box, or where the operator said there is none: never by a probe here.
+        const isolation = machine.isolation;
+        if (builtinsOn && !boxedBy(isolation)) {
+          if (isolation?.mode !== 'unsandboxed') throw noBox(isolation);
+          log("claude-agent: unsandboxed: the CLI's own tools run with no box, on the operator's setting");
         }
 
         /**
@@ -688,7 +640,6 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ...(skills ? { plugins: [{ type: 'local' as const, path: skills.plugin }], skills: [...skills.names] } : {}),
           disallowedTools: disallowed,
           hooks,
-          ...(ownSandbox ? { sandbox: claudeSandboxSettings(machine, sandbox.network) } : {}),
           ...(bridge.tools.length ? { mcpServers: { [MCP_SERVER]: server } } : {}),
           allowedTools: bridge.tools.map((t) => `mcp__${MCP_SERVER}__${t.name}`),
           permissionMode: 'dontAsk',
@@ -716,9 +667,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
             onError: (err) => ctx.halt?.(err),
             onSpawn: (p) => (proc = p),
             onUnmapped: (why) => ctx.halt?.(mirrorUnmapped(why)),
-            // Its commands in their own pid namespace (its sandbox), or none at all: the model port then admits the CLI. Without its
-            // sandbox (`unsandboxedCommands`) it doesn't, on a real VM: a command could read the key from its environ.
-            isolatedCommands: ownSandbox || !builtinsOn,
+            // None of its own commands, or they share the box's pid namespace with the CLI, where they can read its environ.
+            isolatedCommands: !builtinsOn,
           }),
           abortController: abort,
         };
@@ -922,10 +872,17 @@ function sandboxRequired(): Unavailable {
   });
 }
 
-/** Claude Code's sandbox can't start in the VM (with the built-ins on, and no `unsandboxedCommands`). */
-function noCommandSandbox(): Unavailable {
-  return new Unavailable("agentrun-harness-claude: the CLI's own command sandbox (bubblewrap) doesn't start on this machine, so its commands would run beside the CLI, where they can read its model key: this turn ends", {
-    hint: 'Boot from the base (prepareSandboxBase) or an image built by the same recipe (bubblewrap, socat, a mountable /proc); the next turn tries again.',
+/** Whether the host's box holds the CLI: its own, a provider's sandbox, or Seatbelt. */
+function boxedBy(isolation: Isolation | undefined): boolean {
+  return isolation?.mode === 'bwrap' || isolation?.mode === 'seatbelt' || isolation?.mode === 'provider';
+}
+
+/** The CLI's own tools are on, and the host gave the machine no box to run them in. */
+function noBox(isolation: Isolation | undefined): Unavailable {
+  const why = isolation?.mode === 'unavailable' ? `its box is unavailable (${isolation.error}: ${isolation.detail})` : 'the host gave this machine no box';
+  return new Unavailable(`agentrun-harness-claude: the CLI's own tools run only in the host's box, and ${why}: this turn ends`, {
+    code: 'box_unavailable',
+    hint: "Install the host's box once (agentrun-box install, as root), give the machine a box, or turn the CLI's own tools off (builtins: false).",
   });
 }
 

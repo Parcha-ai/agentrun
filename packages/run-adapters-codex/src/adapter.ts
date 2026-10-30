@@ -16,7 +16,7 @@ import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
 import { codexHarness, type CodexHarnessOptions } from "./harness.js";
-import { type ConfineChild, localMachine } from "./host/machine.js";
+import { type ConfineChild, localMachine, type MachineBox } from "./host/machine.js";
 import type { ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 
 /** A name app-server accepts for a dynamic tool. */
@@ -36,6 +36,9 @@ export interface CodexAdapterOptions {
   /** Start Codex under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may only
    *  add in front of the pinned binary and its arguments, and never touches its environment. */
   confine?: ConfineChild;
+  /** The host's box for Codex (@parcha/agentrun-kernel/host's MachineBox), or `unsandboxed`, the operator's word that
+   *  there is none. Absent: the host gives none, and a session with Codex's own tools on fails with a named error. */
+  box?: MachineBox | "unsandboxed";
   /** The price of a response; null (or no function) records its cost as unknown. */
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 32 000. */
@@ -171,6 +174,7 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           acquire: localMachine({
             dir,
             ...(options.confine ? { confine: options.confine } : {}),
+            ...(options.box ? { box: options.box } : {}),
             proxy: {
               hooks: io.models,
               tools: spec.tools.map((t) => t.name),

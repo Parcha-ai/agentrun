@@ -42,8 +42,8 @@ test("with the CLI's own tools on, the model sees the allowlist and nothing that
     smallModel: SMALL,
     provider: { origin: provider.url, credential: () => 'provider-secret' },
     sessionsDir: join(dir, 'sessions'),
-    // Stated, never a default: where bubblewrap cannot start (stock Ubuntu 24.04), the test machine is the boundary.
-    unsandboxedCommands: true,
+    // Stated, never a default: the test runs with no box, the operator's word for a machine whose boundary is elsewhere.
+    box: 'unsandboxed',
   });
   const store = memorySessionStore();
   const events = [];
