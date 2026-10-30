@@ -6,7 +6,7 @@ export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
 export { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, openLocalMachine, startChild } from "./machine.js";
 export { listenSocket } from "./socket.js";
-export { forward, parseForward } from "./box-forward.js";
+export { BOX_FORWARD, forward, forwardChild, parseForward } from "./box-forward.js";
 export type { ForwardListen } from "./box-forward.js";
 export type { CacheFile, ChildCommand, ConfineChild, KillSignal, LocalMachine, LocalMachineSpec, MachineBox, MachineChild, MachineSpawn, MachineTail } from "./machine.js";
 export { BoxError } from "./box.js";

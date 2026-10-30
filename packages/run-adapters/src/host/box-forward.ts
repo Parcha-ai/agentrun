@@ -10,12 +10,20 @@
 //   node box-forward.js --listen <port>=<socket> [--listen <port>=<socket> ...] -- <command> [args...]
 import { spawn } from "node:child_process";
 import { connect, createServer, type Server } from "node:net";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** A port inside the box, and the socket it serves. */
 export interface ForwardListen {
   port: number;
   socket: string;
+}
+
+/** This script, as the host binds it into a box (read-only, with node). */
+export const BOX_FORWARD = fileURLToPath(import.meta.url);
+
+/** The box's first command: this forwarder serving `listen`, then `harness`. `parseForward` reads back exactly these. */
+export function forwardChild(harness: { command: string; args: readonly string[] }, listen: readonly ForwardListen[]): { command: string; args: string[] } {
+  return { command: process.execPath, args: [BOX_FORWARD, ...listen.flatMap((l) => ["--listen", `${l.port}=${l.socket}`]), "--", harness.command, ...harness.args] };
 }
 
 /** The forwarder's arguments, or the named reason they are refused. */

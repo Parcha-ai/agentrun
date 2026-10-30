@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
-import { parseForward } from '@parcha/agentrun-kernel/host';
+import { BOX_FORWARD, forwardChild, parseForward } from '@parcha/agentrun-kernel/host';
 
 const FORWARD = fileURLToPath(new URL('../dist/host/box-forward.js', import.meta.url));
 const ROOT = mkdtempSync(join(tmpdir(), 'kernel-forward-'));
@@ -69,6 +69,16 @@ test('its arguments: each --listen a port and an absolute socket path, then the 
   for (const bad of [['--listen', '0=/s', '--', 'x'], ['--listen', '4100=rel.sock', '--', 'x'], ['--listen', '70000=/s', '--', 'x'], ['--port', '1=/s', '--', 'x'], ['--listen', '1=/s'], ['--listen', '1=/a', '--listen', '1=/b', '--', 'x']]) {
     assert.throws(() => parseForward(bad), /^Error: box-forward: /, JSON.stringify(bad));
   }
+});
+
+test("the box's first command is built by one builder, and the forwarder reads back exactly what it was given", () => {
+  const harness = { command: '/opt/cli', args: ['--x', 'a b', '--', '--listen'] };
+  const listen = [{ port: 4100, socket: '/run/agentrun/model.sock' }, { port: 4101, socket: '/run/agentrun/egress.sock' }];
+  const child = forwardChild(harness, listen);
+  assert.equal(child.command, process.execPath);
+  assert.equal(child.args[0], BOX_FORWARD);
+  assert.equal(BOX_FORWARD, FORWARD, "the builder names this very script");
+  assert.deepEqual(parseForward(child.args.slice(1)), { listen, command: harness.command, args: harness.args }, "the harness's own -- and --listen are its arguments, untouched");
 });
 
 test("the harness's stdin and stdout pass through it unchanged, and it exits with the harness's code", async (t) => {

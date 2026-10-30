@@ -15,9 +15,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { FileTail } from "../process/tail.js";
 import type { Box, BoxedChild, BoxRecord, BoxRecorder, BoxSpec, Isolation } from "./box.js";
+import { BOX_FORWARD, forwardChild } from "./box-forward.js";
 import { boxSlot } from "./box-slot.js";
 import { startModelProxy, type ModelProxyOptions } from "./proxy.js";
 
@@ -150,8 +150,6 @@ function inside(base: string, rel: string, name: string): string {
 /** Where the box finds the host's sockets: the paths the host's box binds them at. */
 export const BOX_MODEL_SOCKET = "/run/agentrun/model.sock";
 export const BOX_EGRESS_SOCKET = "/run/agentrun/egress.sock";
-/** The box's first command (./box-forward.ts), bound into the box read-only with node. */
-const BOX_FORWARD = fileURLToPath(new URL("./box-forward.js", import.meta.url));
 
 /** Filesystems the socket directory may not be on (statfs's f_type, Linux's magic.h): FUSE, and those shared between
  *  hosts. On them a socket cannot be made, or another host's live one reads as dead here and is taken over. A backstop
@@ -303,8 +301,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
     if (options.cwd !== undefined && normalize(options.cwd) !== root) throw new Error(`${name}: a child in a box runs in the session's working directory, not ${options.cwd}`);
     const harness = confined({ command: options.command, args: options.args ?? [] }, spec.confine, name);
     // The box's first command serves its sockets on its own loopback, then runs the harness (./box-forward.ts).
-    const listen = [`${box.modelPort}=${BOX_MODEL_SOCKET}`, ...(box.egress ? [`${box.egress.port}=${BOX_EGRESS_SOCKET}`] : [])];
-    const child: ChildCommand = { command: process.execPath, args: [BOX_FORWARD, ...listen.flatMap((l) => ["--listen", l]), "--", harness.command, ...harness.args] };
+    const child: ChildCommand = forwardChild(harness, [{ port: box.modelPort, socket: BOX_MODEL_SOCKET }, ...(box.egress ? [{ port: box.egress.port, socket: BOX_EGRESS_SOCKET }] : [])]);
     const boxSpec: BoxSpec = {
       workspace: root,
       homes: { ...dirs },
