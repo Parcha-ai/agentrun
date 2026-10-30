@@ -454,3 +454,32 @@ test("a workflow whose decision cost is unknown and whose model request is price
   assert.equal(after.status, "completed");
   assert.equal(after.cost.usd, null, "and still after a restart: never the model's cost alone");
 });
+
+test("an ended workflow run whose decisions cannot be read after the server restarts reads its cost unknown, never its model's cost alone", async (t) => {
+  await withCanary(t);
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  assert.equal(last.status, "completed", JSON.stringify((await api("GET", `/runs/${runId}`)).body.error));
+  await closeFirst();
+  // Its decisions unreadable and the rest of its store as it was: each decision document's newest revision is a delta no
+  // reader can apply.
+  const db = new DatabaseSync(join(data, "runs", runId, "store", "run.sqlite"));
+  try {
+    const { changes } = db.prepare(`INSERT INTO document_revisions (document_id, seq, kind, version, content) SELECT document_id, MAX(seq) + 1, 'delta', MAX(version), '[["unknown"]]' FROM document_revisions WHERE document_id IN (SELECT id FROM documents WHERE kind LIKE '"agentrun.decisions%') GROUP BY document_id`).run();
+    assert.ok(changes > 0, "the run's store holds its decisions");
+  } finally {
+    db.close();
+  }
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const after = (await client(next.baseUrl, next.token)("GET", `/runs/${runId}`)).body;
+  assert.equal(after.status, "completed", JSON.stringify(after));
+  assert.equal(after.cost.usd, null, "decisions it cannot read leave the run's cost unknown");
+});
