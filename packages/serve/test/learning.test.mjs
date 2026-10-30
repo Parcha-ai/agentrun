@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { renderLearning } from "@parcha/pi-agent-learn";
 import { local, openRepo } from "@parcha/pi-git-remote";
 import { startServe } from "../dist/index.js";
+import { processAlive } from "@parcha/agentrun-adapters/host";
 import { openStoreReader } from "@parcha/pi-durable-agent";
 import { catchUp, externalUsed, isExternal, openAgentRepo, outcomeOf, readRunState, withAgentRepo } from "../dist/learning.js";
 // Imported per call, so a module without them fails each test that uses them by name.
@@ -203,13 +204,8 @@ async function serverProcess(data) {
   const value = (name) => new RegExp(`${name}=(\\S+)`).exec(out)[1];
   return { child, api: client(value("AGENTRUN_BASE_URL"), value("AGENTRUN_API_KEY")), stderr: () => err };
 }
-const alive = (pid) => {
-  try {
-    return process.kill(pid, 0), true;
-  } catch {
-    return false;
-  }
-};
+// A process that has exited is not alive though it is a zombie, as one stays under a PID 1 that does not reap.
+const alive = (pid) => processAlive(pid);
 
 test("a run's base stays where it was seeded when its process dies, main moves, and the next server resumes it", async (t) => {
   const dir = await scratch(t);
@@ -795,4 +791,31 @@ test("a tool learning adds never follows a link out of the working copy", async 
 test("a case value too short or too plain to be the case's own is not a refused value; a longer one, a number included, is", async () => {
   const { caseValuesOf } = await learningModule();
   assert.deepEqual(caseValuesOf({ a: "yes", b: "12", c: "123456789012", d: "True", e: "NO", f: "abcd", g: "false", h: "1234" }), ["123456789012", "abcd", "1234"]);
+});
+
+test("a holder that exited and was never reaped is not live: a zombie never keeps a run from its harvest", async (t) => {
+  const { api, data } = await serve(t);
+  await api("POST", "/agents", agent("calc"));
+  const { body: run } = await api("POST", "/agents/calc/runs", { input: { content: "Learn the rate limit." } });
+  await follow(api, run.run_id, ["completed"]);
+  const { sha } = await stateOf(data, "calc", run.run_id);
+  // A real zombie under any PID 1: the exec'd sleep never reaps the child that finished before it.
+  const { spawn } = await import("node:child_process");
+  const parent = spawn("sh", ["-c", "sleep 0 & echo $!; exec sleep 300"], { stdio: ["ignore", "pipe", "ignore"] });
+  t.after(() => parent.kill("SIGKILL"));
+  const zombie = Number(await new Promise((resolve) => parent.stdout.once("data", (chunk) => resolve(String(chunk).trim()))));
+  for (let i = 0; alive(zombie); i++) {
+    assert.ok(i < 200, "the child exits");
+    await sleep(25);
+  }
+  const { readFileSync: read } = await import("node:fs");
+  assert.match(read(`/proc/${zombie}/stat`, "utf8"), /\) Z /, "it is a zombie, still in the process table");
+  const recordFile = join(data, "runs", run.run_id, "run.json");
+  const record = JSON.parse(await readFile(recordFile, "utf8"));
+  await writeFile(recordFile, JSON.stringify({ ...record, holder: { ...(record.holder ?? {}), pid: zombie } }));
+  git(bareOf(data, "calc"), "update-ref", "-d", `refs/heads/runs/${run.run_id}`);
+  const store = openStoreReader(data);
+  t.after(() => store.close());
+  const again = await harvestFor(data, { store, request: async (act) => act() }, run.run_id);
+  assert.equal(again.sha, sha, "harvested, never refused as still live");
 });
