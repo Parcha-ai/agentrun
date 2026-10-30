@@ -95,7 +95,8 @@ test('populated is read from its own line of cgroup.events: "populated 0" is emp
   writeFileSync(join(cg, 'cgroup.kill'), '');
   writeFileSync(join(cg, 'cgroup.procs'), '');
   const reap = () => bwrapBox({ cgroupRoot: root, reapMs: 50 }).reap({ id: 'x', cgroup: cg, writer: { pid: process.pid, startTime: '1' } });
-  for (const [events, empty] of [['frozen 0\npopulated 1\n', false], ['xpopulated 0\npopulated 1\n', false], ['frozen 0\n', false], ['populated 0\nfrozen 0\n', true]]) {
+  // A phrase inside another line, either way round, never decides: only the line that is `populated 0|1` itself does.
+  for (const [events, empty] of [['frozen 0\npopulated 1\n', false], ['xpopulated 0\npopulated 1\n', false], ['xpopulated 1\npopulated 0\n', true], ['frozen 0\n', false], ['populated 0\nfrozen 0\n', true]]) {
     writeFileSync(join(cg, 'cgroup.events'), events);
     assert.equal((await reap()).empty, empty, JSON.stringify(events));
   }

@@ -394,12 +394,19 @@ function readInfo(stream: Readable, exited: Promise<unknown>, stderr: () => stri
       }
     };
     stream.on("data", onData);
-    void exited.then(() => {
-      const err = stderr();
-      const code = /setting up uid map: Permission denied|No permissions to creat(e|ing) new namespace|unprivileged user namespaces/i.test(err) ? "bwrap_userns_denied" : "box_start_failed";
-      reject(new BoxError(code, `bwrap ended before the box started: ${err.trim().slice(0, 300) || "(no output)"}`));
-    });
+    void exited.then(() => reject(startFailed(stderr())));
   });
+}
+
+/** Why a box never started, from what bwrap said: a host that denies it a user namespace with its powers (no namespace
+ *  at all, or one without the capabilities to set up its loopback: AppArmor's restriction of unprivileged user
+ *  namespaces, which `agentrun-box install` lifts for bwrap) is `bwrap_userns_denied`; anything else, `box_start_failed`. */
+function startFailed(said: string): BoxError {
+  const denied = /setting up uid map: Permission denied|No permissions to creat(e|ing) new namespace|unprivileged user namespaces|loopback: Failed RTM_NEWADDR: Operation not permitted/i.test(said);
+  return new BoxError(
+    denied ? "bwrap_userns_denied" : "box_start_failed",
+    `bwrap ended before the box started: ${said.trim().slice(0, 300) || "(no output)"}${denied ? " (this host restricts user namespaces: run `agentrun-box install` as root, once)" : ""}`,
+  );
 }
 
 export function bwrapBox(options: BwrapBoxOptions = {}): Box {
@@ -508,6 +515,9 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
       proc.once("error", () => resolveExit({ code: null, signal: null }));
     });
     const fds = proc.stdio as unknown as (Readable & Writable)[];
+    // The box's own pipes (info, block, passwd, group): bwrap ending early resets them (EPIPE, ECONNRESET). What that means
+    // is said by `ready` and `exited`; an error event there must never end this process.
+    for (const fd of [INFO_FD, BLOCK_FD, PASSWD_FD, GROUP_FD]) fds[fd]?.on("error", () => {});
     const { passwd, group } = identity();
     fds[PASSWD_FD]?.end(passwd);
     fds[GROUP_FD]?.end(group);
@@ -533,7 +543,10 @@ export function bwrapBox(options: BwrapBoxOptions = {}): Box {
       const pidns = pidnsOf(pid);
       if (startTime === undefined || pidns === undefined) {
         killBox();
-        throw new BoxError("box_start_failed", `the box's pid 1 (${pid}) was gone before it could be recorded`);
+        // bwrap is ending: what it said names why (a denied namespace, a mount it could not make).
+        await Promise.race([exited, sleep(2000)]);
+        const why = startFailed(tail);
+        throw new BoxError(why.code, `the box's pid 1 (${pid}) was gone before it could be recorded; ${why.message}`);
       }
       Object.assign(record, { pid, startTime, pidns });
       try {

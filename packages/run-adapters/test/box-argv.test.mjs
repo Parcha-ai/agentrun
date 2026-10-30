@@ -144,3 +144,11 @@ test('serve\'s data root is never shown to a box: a bind of it, or of any parent
   const s = spec({ workspace: join(dataRoot, 'runs', 'r1', 'work') });
   checkBoxArgv(buildBoxArgv(s, forwardChild(harness, boxListens(s))), s, { hidden });
 });
+
+test('the box works in its workspace: an argv whose --chdir names another directory is refused by name', () => {
+  const s = spec();
+  const argv = buildBoxArgv(s, forwardChild(harness, boxListens(s)));
+  const at = argv.indexOf('--chdir');
+  assert.equal(argv[at + 1], s.workspace);
+  for (const elsewhere of ['/tmp', '/workspace', join(s.workspace, '..')]) refused([...argv.slice(0, at + 1), elsewhere, ...argv.slice(at + 2)], s, /--chdir is not the workspace/);
+});

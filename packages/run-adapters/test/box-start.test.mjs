@@ -234,3 +234,29 @@ test('an ahead that throws removes the box cgroup it made, and nothing is spawne
   assert.equal(existsSync(mine), false, 'the unrecorded cgroup was left behind');
   assert.ok(existsSync(join(root, 'runs')), 'its parent, made recursively, stays');
 });
+
+test("bwrap that dies after it reported a pid 1 (a host that restricts user namespaces) rejects ready by name with bwrap's words, and its reset pipes never end this process", async () => {
+  const { spec, durable } = setup();
+  // A pid 1 that is already gone: a short-lived process, waited for.
+  const gone = spawn('true', [], { stdio: 'ignore' });
+  await new Promise((resolve) => gone.once('exit', resolve));
+  const spawnFake = () => {
+    const proc = new EventEmitter();
+    const stdio = Array.from({ length: 7 }, () => new PassThrough());
+    proc.stdio = stdio;
+    [proc.stdin, proc.stdout, proc.stderr] = stdio;
+    proc.pid = gone.pid;
+    proc.kill = () => {};
+    setImmediate(() => {
+      stdio[3].write(`{\n    "child-pid": ${gone.pid}\n}\n`);
+      stdio[2].write('bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n');
+      // bwrap's end resets the box's own pipes, as a real one does.
+      for (const fd of [3, 4, 5, 6]) stdio[fd].destroy(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }));
+      setImmediate(() => proc.emit('close', 1, null));
+    });
+    return proc;
+  };
+  const boxed = bwrapBox({ spawn: spawnFake }).start(spec, forwardChild(harness, boxListens(spec)), { ahead: durable, started: async () => assert.fail('started for a pid 1 that was gone') });
+  await assert.rejects(boxed.ready, (e) => e instanceof BoxError && e.code === 'bwrap_userns_denied' && /Failed RTM_NEWADDR/.test(e.message) && /agentrun-box install/.test(e.message));
+  await boxed.exited;
+});
