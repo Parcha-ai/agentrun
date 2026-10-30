@@ -14,7 +14,8 @@
 // It holds no key. `close()` ends every connection and removes the socket.
 import { randomBytes } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns";
-import { chmod, lstat, rename, unlink } from "node:fs/promises";
+import { chmod, link, lstat, unlink } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { createServer as createHttpServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer, type Server, type Socket } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -30,7 +31,9 @@ export type EgressLookup = (
 ) => void;
 
 export interface EgressProxyOptions {
-  /** Where the socket is made: a path in the run's directory. A stale socket there is replaced; anything else is refused. */
+  /** Where the socket is made: a path in the run's directory. A socket there that refuses a connection (its proxy died
+   *  without removing it) is replaced; one that answers is a live proxy's, and the start is refused
+   *  (`egress_socket_in_use`); anything else there is refused and left as it is (`egress_socket_path_taken`). */
   socketPath: string;
   /** Connections open at once (tunnels and forwarded requests), past which a new one is refused. */
   maxTunnels: number;
@@ -284,15 +287,32 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
     });
   });
 
-  // Made under a name of its own, made 0600, then moved into place: the socket is never reachable at its path with a
-  // wider mode.
+  // A socket already at the path belongs to another proxy while it answers, and is never taken from it. Only one that
+  // refuses a connection is removed; anything that is not a socket is left where it is.
+  const taken = (code: string, what: string) => Object.assign(new Error(`egress proxy: ${socketPath} ${what}`), { code });
+  let found: Stats | undefined;
   try {
-    const stale = await lstat(socketPath);
-    if (!stale.isSocket()) throw new Error(`egress proxy: ${socketPath} exists and is not a socket`);
-    await unlink(socketPath);
+    found = await lstat(socketPath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  if (found) {
+    if (!found.isSocket()) throw taken("egress_socket_path_taken", "exists and is not a socket");
+    const answer = await new Promise<true | NodeJS.ErrnoException>((ok) => {
+      const probe = netConnect(socketPath);
+      probe.once("connect", () => {
+        probe.destroy();
+        ok(true);
+      });
+      probe.once("error", (error: NodeJS.ErrnoException) => ok(error));
+    });
+    if (answer === true) throw taken("egress_socket_in_use", "is a live egress proxy's socket");
+    if (answer.code !== "ECONNREFUSED") throw answer;
+    await unlink(socketPath);
+  }
+  // Made under a name of its own and made 0600 before it gets its path, so it is never reachable there with a wider
+  // mode. The path is a hard link, never a rename: a link fails if anything reached the path since the check above,
+  // where a rename would replace it.
   const making = join(dirname(socketPath), `.egress-${randomBytes(6).toString("hex")}.sock`);
   await new Promise<void>((ok, fail) => {
     server.once("error", fail);
@@ -303,12 +323,14 @@ export async function startEgressProxy(options: EgressProxyOptions): Promise<Egr
   });
   try {
     await chmod(making, 0o600);
-    await rename(making, socketPath);
+    await link(making, socketPath);
   } catch (error) {
     server.close();
     await unlink(making).catch(() => {});
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw taken("egress_socket_in_use", "was taken while this proxy started");
     throw error;
   }
+  await unlink(making).catch(() => {});
 
   return {
     socketPath,

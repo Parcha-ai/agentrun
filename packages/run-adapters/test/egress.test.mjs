@@ -2,7 +2,8 @@
 // network: names resolve through an injected lookup, and the proxy's dials go through an injected dialer to a local fake
 // origin. The dialer only ever gets an address the table passed, so it never widens what the proxy reaches.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, statSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
@@ -44,7 +45,6 @@ async function proxy(extra = {}) {
   const dials = [];
   const lines = [];
   const path = socketPath();
-  const { mkdirSync } = await import('node:fs');
   mkdirSync(join(path, '..'), { recursive: true });
   const p = await startEgressProxy({
     socketPath: path,
@@ -427,4 +427,51 @@ test("plain HTTP is sent only to the checked address: a name the check passes is
     trap.closeAllConnections();
     await new Promise((ok) => trap.close(ok));
   }
+});
+
+test("a live proxy's socket is never taken: a second start at its path is refused by name, and the first still serves", async () => {
+  const first = await proxy();
+  try {
+    await assert.rejects(startEgressProxy({ socketPath: first.path, maxTunnels: 1, maxConnections: 1, log: () => {} }), { code: 'egress_socket_in_use' });
+    const { got, socket } = await talk(first.path, CONNECT('origin.test:443'), ended);
+    assert.equal(head(got).status, 200, 'the first proxy still answers at its path');
+    socket.destroy();
+  } finally {
+    await first.close();
+  }
+});
+
+test('a socket its proxy left behind when it died (a connect is refused) is replaced, and the new proxy serves', async () => {
+  // A listener killed with SIGKILL leaves its socket file, and a connect to it is refused: a session machine that crashed.
+  const path = socketPath();
+  mkdirSync(join(path, '..'), { recursive: true });
+  const child = spawn(process.execPath, ['-e', 'require("node:net").createServer().listen(process.argv[1], () => console.log("up"))', path], { stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((ok, fail) => {
+      const timer = setTimeout(() => fail(new Error('the listener did not start')), 10_000);
+      child.stdout.once('data', () => { clearTimeout(timer); ok(); });
+    });
+    const gone = new Promise((ok) => child.once('exit', ok));
+    child.kill('SIGKILL');
+    await gone;
+    assert.ok(statSync(path).isSocket(), 'the dead listener left its socket');
+    const t = await proxy({ options: { socketPath: path } });
+    try {
+      const { got, socket } = await talk(path, CONNECT('origin.test:443'), ended);
+      assert.equal(head(got).status, 200);
+      socket.destroy();
+    } finally {
+      await t.close();
+    }
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
+});
+
+test('anything at the path that is not a socket is refused by name and left as it is', async () => {
+  const path = socketPath();
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, 'not a socket');
+  await assert.rejects(startEgressProxy({ socketPath: path, maxTunnels: 1, maxConnections: 1, log: () => {} }), { code: 'egress_socket_path_taken' });
+  assert.equal(readFileSync(path, 'utf8'), 'not a socket');
 });
