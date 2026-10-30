@@ -12,7 +12,7 @@
 //    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, rmdirSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
@@ -36,6 +36,11 @@ export interface MachineSpawn {
   cwd?: string;
   signal?: AbortSignal;
   isolatedCommands?: boolean;
+  /** Directories of the session's own this child reads and writes beyond the machine's: in a box, bound read-write at
+   *  their own paths into this child's box alone (homes `bind:0`, `bind:1`, ...), so the next child's box holds none of
+   *  them. Each is checked before anything starts, in every mode, by its real path: absolute and normalized, a directory
+   *  of this user's own (never a link), under the session, and never the session or one holding its directories. */
+  binds?: readonly string[];
 }
 
 /** A file a harness writes into one of the machine's private directories. */
@@ -277,6 +282,9 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   const base = normalize(spec.dir);
   if (!isAbsolute(base)) throw new Error(`${name}: the session directory must be an absolute path`);
   mkdirSync(base, { recursive: true, mode: 0o700 });
+  // A child's binds are its box's homes bind:0, bind:1, ...: no directory of the machine's may take such a name.
+  const named = spec.dirs.find((d) => d.startsWith("bind:"));
+  if (named !== undefined) throw new Error(`${name}: the machine's directory ${named} takes the name a child's bind is bound under (bind:N)`);
   const dirs = Object.fromEntries(spec.dirs.map((d) => [d, join(base, d)])) as Record<D, string>;
   const root = join(base, "work");
   for (const dir of [...Object.values<string>(dirs), root]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -328,6 +336,31 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   const children = new Set<MachineChild>();
   const reaps = new Set<Promise<void>>();
   let closed = false;
+  // A child's binds, checked before anything starts, in every mode: the paths it may bind, as given.
+  const ownDirs = [root, ...Object.values(dirs) as string[]].map((path) => realpathSync(path));
+  const session = realpathSync(base);
+  const holds = (outer: string, inner: string) => inner === outer || inner.startsWith(outer.endsWith(sep) ? outer : `${outer}${sep}`);
+  const bindsOf = (options: MachineSpawn): readonly string[] => {
+    const refuse = (path: string, why: string): never => {
+      throw new BoxError("box_refused", `${name}: a child's bind ${path} ${why}`);
+    };
+    for (const path of options.binds ?? []) {
+      // A trailing separator is refused here too: lstat of "<link>/" follows the link, so the link check below would pass it.
+      if (typeof path !== "string" || !isAbsolute(path) || normalize(path) !== path || (path.length > 1 && path.endsWith(sep))) refuse(String(path), "is not an absolute, normalized path");
+      let real: string;
+      try {
+        const stat = lstatSync(path);
+        if (!stat.isDirectory() || (typeof process.getuid === "function" && stat.uid !== process.getuid())) throw new Error("not this user's own directory");
+        real = realpathSync(path);
+      } catch {
+        refuse(path, "is not a directory of this user's own (a link, or not there)");
+      }
+      if (!holds(session, real!)) refuse(path, `is not under the session ${base}`);
+      if (real! === session || ownDirs.some((own) => holds(real!, own))) refuse(path, "is the session or holds one of its directories");
+    }
+    return options.binds ?? [];
+  };
+
   const inBox = (options: MachineSpawn, box: MachineBox): MachineChild => {
     // The box's working directory is the session's: a child that asks for another is refused, not moved.
     if (options.cwd !== undefined && normalize(options.cwd) !== root) throw new Error(`${name}: a child in a box runs in the session's working directory, not ${options.cwd}`);
@@ -337,7 +370,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
     const boxSpec: BoxSpec = {
       session: base,
       workspace: root,
-      homes: { ...dirs },
+      homes: { ...dirs, ...Object.fromEntries(bindsOf(options).map((path, i) => [`bind:${i}`, path])) },
       readOnly: [...box.readOnly, process.execPath, BOX_FORWARD],
       modelSocket,
       modelPort: box.modelPort,
@@ -355,7 +388,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
   };
   const start = (options: MachineSpawn): MachineChild => {
     if (closed) throw new Error(`${name}: the session machine is closed`);
-    const proc = boxing ? inBox(options, boxing) : startChild(options, from, root, base, spec.confine, name);
+    const proc = boxing ? inBox(options, boxing) : (bindsOf(options), startChild(options, from, root, base, spec.confine, name));
     children.add(proc);
     void proc.exited.then(() => children.delete(proc));
     return proc;
