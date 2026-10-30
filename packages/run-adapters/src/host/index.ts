@@ -4,6 +4,10 @@ export { hostHeaderProblems, matchRoute, parseStrict, providerIdsOf, ProxyRefusa
 export type { ModelProxy, ModelProxyHooks, ModelProxyOptions, ModelUsageReport, ProviderPolicy, ProxyRoute, ProxyUsage } from "./proxy.js";
 export { processAlive } from "./alive.js";
 export { serialWriter } from "./serial.js";
+export { addressBytes, checkAddress, EGRESS_RANGES } from "./egress-table.js";
+export type { EgressClass, EgressVerdict } from "./egress-table.js";
+export { startEgressProxy } from "./egress-proxy.js";
+export type { EgressLookup, EgressProxy, EgressProxyOptions } from "./egress-proxy.js";
 export { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from "./parent-death.js";
 export type { LaunchCommand, ParentWatch } from "./parent-death.js";
 export { BoxError } from "./box.js";
