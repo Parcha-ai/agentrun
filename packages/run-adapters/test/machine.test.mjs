@@ -499,6 +499,9 @@ test("a child's binds are refused by name before anything starts: not absolute, 
   const box = fakeBox();
   const machine = await machineAt(t, dir, { box: boxOf(box) });
   const outside = mkdtempSync(join(ROOT, 'outside-'));
+  const sibling = `${dir}-x`;
+  mkdirSync(sibling, { mode: 0o700 });
+  t.after(() => rmSync(sibling, { recursive: true, force: true }));
   mkdirSync(join(dir, 'proc-tmp'), { mode: 0o700 });
   symlinkSync(outside, join(dir, 'proc-tmp', 'linked'));
   const refused = [
@@ -507,6 +510,8 @@ test("a child's binds are refused by name before anything starts: not absolute, 
     [join(dir, 'proc-tmp', 'not-there'), 2, /is not a directory of this user's own \(a link, or not there\)/],
     [join(dir, 'proc-tmp', 'linked'), 2, /is not a directory of this user's own \(a link, or not there\)/],
     [outside, 3, new RegExp(`is not under the session ${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)],
+    // A sibling whose name only begins with the session's: outside it, though the string shares its prefix.
+    [sibling, 3, /is not under the session/],
     [dir, 4, /is the session or holds one of its directories/],
     [machine.root, 4, /is the session or holds one of its directories/],
     [machine.dirs.home, 4, /is the session or holds one of its directories/],
