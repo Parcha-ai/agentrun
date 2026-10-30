@@ -1,0 +1,85 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-89d9-76d5-9e3d-4213ee493a7d/timeline"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-89d9-76d5-9e3d-4213ee493a7d",
+    "status": "failed",
+    "state": "idle",
+    "reset": true,
+    "rows": [
+      {
+        "id": "1:7",
+        "timestamp": "2026-10-28T19:33:25.121Z",
+        "created_at": "2026-10-28T19:33:25.121Z",
+        "kind": "user_message",
+        "summary": "You: Check invoice INV-1049 from the hosting vendor: hosting 440.00, 6 support hours at 85.00, total 950.00.",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "Check invoice INV-1049 from the hosting vendor: hosting 440.00, 6 support hours at 85.00, total 950.00.",
+        "conversation_id": 1,
+        "seq": 0
+      },
+      {
+        "id": "1:11",
+        "timestamp": "2026-10-28T19:33:25.526Z",
+        "created_at": "2026-10-28T19:33:25.526Z",
+        "kind": "error",
+        "summary": "Model request failed: spend_cap_reached: the next model request was not sent. It could cost up to $0.247957, and with $0.000000 spent the run would pass its cap of $0.000001: the run is out of budget.",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "spend_cap_reached: the next model request was not sent. It could cost up to $0.247957, and with $0.000000 spent the run would pass its cap of $0.000001: the run is out of budget.",
+        "conversation_id": 1,
+        "seq": 1
+      },
+      {
+        "id": "1:usage",
+        "timestamp": "2026-10-28T19:33:25.526Z",
+        "created_at": "2026-10-28T19:33:25.526Z",
+        "kind": "usage",
+        "summary": "Cost so far: $0 over 1 model request",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 1,
+        "usage": {
+          "usd": 0,
+          "requests": 1
+        },
+        "seq": 2
+      }
+    ],
+    "drop": [],
+    "next_after": 1793222378904093,
+    "unchanged": false,
+    "has_more": false,
+    "final": true,
+    "cost": {
+      "usd": 0,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": 0.000001
+    },
+    "poll_after_ms": 0
+  }
+}
