@@ -148,6 +148,21 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   }
   // This process's requests in flight, oldest first: the turn each was admitted as, and its model.
   const open: { turn: number; model: string }[] = [];
+  // Response ids whose own write was refused, marked `late`: the booking's next write of its own (the next runner.request,
+  // or a runner.turn) carries them first, so a request this process cuts by dying after that still keeps its ids. One a
+  // runner.turn writes with the ids is dropped, never written twice. A process that dies before writing for its booking
+  // again loses them: the request is then booked once, cut, at an unknown cost, with no ids.
+  let carry: SessionRecord[] = [];
+  const write = async (records: SessionRecord[], covers: (record: SessionRecord) => boolean = () => false) => {
+    const taken = carry;
+    carry = [];
+    try {
+      await append([...taken.filter((r) => !covers(r)), ...records]);
+    } catch (error) {
+      carry = [...taken, ...carry];
+      throw error;
+    }
+  };
   // Admissions run one at a time (the turn limit, the host's check and the durable write), so two requests asked for at
   // once can't both pass a limit only one fits; the requests themselves still run side by side once admitted.
   let admitting: Promise<unknown> = Promise.resolve();
@@ -170,8 +185,18 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // Durable before the request leaves: admitted, then sent. It counts as a turn once its record is written (admissions
     // run one at a time), so a write that fails refuses the request and costs no turn.
     const turn = turns + 1;
-    await append([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
+    await write([{ kind: RUNNER_RECORDS.request, data: { turn, model } }]);
     turns = turn;
+    // A stop that came while the record was written: the request has not left. It is booked withdrawn, at $0, so no
+    // later process books it as cut at an unknown price; if that write fails, it is booked cut, which is never less.
+    // Its record is written, so it costs a turn of the cap, never money.
+    const stoppedNow = options.stopped?.();
+    if (stoppedNow) {
+      answered.add(turn);
+      // Through the booking's own write: a response's ids still waiting to be carried go with the withdrawal.
+      await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
+      throw stoppedNow;
+    }
     open.push({ turn, model });
     emit({ type: "request_start", turn, model });
     return { turn };
@@ -184,7 +209,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     },
     responded: async (ids: Record<string, string>, ticket?: ModelTicket) => {
       const turn = ticket?.turn ?? open[0]?.turn ?? turns;
-      await append([{ kind: RUNNER_RECORDS.response, data: { turn, providerIds: ids } }]);
+      try {
+        await append([{ kind: RUNNER_RECORDS.response, data: { turn, providerIds: ids } }]);
+      } catch (error) {
+        // Refused (a commit that timed out, say): the proxy goes on with the answer, and the ids wait for the next write.
+        carry.push({ kind: RUNNER_RECORDS.response, data: { turn, providerIds: ids, late: true } });
+        throw error;
+      }
     },
     afterRequest: async (usage: ModelUsage, ticket?: ModelTicket) => {
       // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
@@ -193,7 +224,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       if (at >= 0) open.splice(at, 1);
       spentUsd = spentUsd === null || usage.usd === null ? null : spentUsd + usage.usd;
       try {
-        await append([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }]);
+        // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped.
+        const covers = (r: SessionRecord) => usage.providerIds !== undefined && (r.data as { turn?: number }).turn === turn;
+        await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: usage.usd, ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}) } }], covers);
       } catch (error) {
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted.
         if (!options.stopped?.()) failed ??= end("model_error", `harness node stopped: the cost of a paid request could not be recorded: ${String((error as Error)?.message ?? error).slice(0, 200)}`);

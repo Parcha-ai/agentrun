@@ -1,0 +1,25 @@
+Patch: 005-comments-name-the-agent-sdk
+Reason: the doc comment named a coding-agent product by its other name and described a bridge this package does not carry; it names the SDK this package's adapters use
+Upstream: ours
+Pins: comments only
+---
+diff --git a/packages/harness-process/src/zod.ts b/packages/harness-process/src/zod.ts
+index 67c50b6..4382537 100644
+--- a/packages/harness-process/src/zod.ts
++++ b/packages/harness-process/src/zod.ts
+@@ -1,12 +1,12 @@
+ /**
+- * JSON Schema to zod, for harness SDKs whose tool APIs take zod (Claude
+- * Code's in-process MCP tools, OpenCode's plugin tools). `HostTool`s carry
++ * JSON Schema to zod, for harness SDKs whose tool APIs take zod (the Claude
++ * Agent SDK's in-process MCP tools, OpenCode's plugin tools). `HostTool`s carry
+  * JSON Schema; this converts the subset tool schemas use.
+  *
+  * zod is passed in (`import { z } from 'zod'`, v3 or v4) so this package
+  * does not pin one: use the one the harness SDK was built against.
+  *
+- * Adapted from the AI SDK's Claude Code bridge (vercel/ai cbb6b49,
++ * Adapted from the AI SDK's bridge (vercel/ai cbb6b49,
+  * `packages/harness-claude-code/src/bridge/json-schema-to-zod.ts`,
+  * Apache-2.0); changed to take `z` as a parameter and to export the shape.
+  */

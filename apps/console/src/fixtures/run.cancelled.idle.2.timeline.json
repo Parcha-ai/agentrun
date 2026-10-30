@@ -1,0 +1,68 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-d741-7860-b234-1b65692d0f7b/timeline"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-d741-7860-b234-1b65692d0f7b",
+    "status": "cancelled",
+    "state": "idle",
+    "reset": true,
+    "rows": [
+      {
+        "id": "1:7",
+        "timestamp": "2026-10-28T19:33:34.034Z",
+        "created_at": "2026-10-28T19:33:34.034Z",
+        "kind": "user_message",
+        "summary": "You: Summarize the design workshop recording from Tuesday.",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": "Summarize the design workshop recording from Tuesday.",
+        "conversation_id": 1,
+        "seq": 0
+      },
+      {
+        "id": "1:usage",
+        "timestamp": "2026-10-28T19:33:34.151Z",
+        "created_at": "2026-10-28T19:33:34.151Z",
+        "kind": "usage",
+        "summary": "Cost so far: unknown over 1 model request",
+        "agent_label": null,
+        "tool_name": null,
+        "tool_use_id": null,
+        "tool_status": null,
+        "tool_input_preview": null,
+        "tool_result_preview": null,
+        "tool_result_size_bytes": null,
+        "text": null,
+        "conversation_id": 1,
+        "usage": {
+          "usd": null,
+          "requests": 1
+        },
+        "seq": 1
+      }
+    ],
+    "drop": [],
+    "next_after": 1793222378904080,
+    "unchanged": false,
+    "has_more": false,
+    "final": true,
+    "cost": {
+      "usd": null,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "poll_after_ms": 0
+  }
+}

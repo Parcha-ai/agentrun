@@ -90,7 +90,9 @@ export interface ModelProxyOptions {
   hooks: ModelProxyHooks;
   /** The session's model, as the runner names it to `beforeRequest`. The policy fixes the body's model. */
   model: string;
-  /** The provider's origin (`https://api.example.com`); a route's path is appended to it. */
+  /** The provider's base: its origin and, for a gateway that serves the API under a path, that path
+   *  (`https://api.example.com`, `https://gateway.example/api`). A route's path is appended to it. A base with userinfo, a
+   *  query or a fragment is refused, so the key goes only where the base reads. */
   origin: string;
   /** The provider's credential, read for each request. */
   credential: () => string | Promise<string>;
@@ -268,6 +270,14 @@ export const sameKey = (given: string, key: string): boolean => {
   return timingSafeEqual(a, b);
 };
 
+/** `base` as the proxy joins a route's path to it: its origin and its path, without a trailing slash. */
+function baseOf(base: string): string {
+  const url = new URL(base);
+  // A backslash is a path separator to the URL parser, so it could move the base to a path the text does not read as.
+  if (url.username || url.password || url.search || url.hash || base.includes("\\")) throw new Error("agentrun-adapters: a model proxy's base is an origin and a path, with no userinfo, query, fragment or backslash");
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
 /** Start a session's model proxy on the loopback interface, admitting `key`. */
 export async function startModelProxy(options: ModelProxyOptions, key: string): Promise<ModelProxy> {
   const { policy, hooks, model } = options;
@@ -276,7 +286,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
   if (wrongHeaders.length) throw new Error(`agentrun-adapters: ${wrongHeaders.join("; ")}`);
   const hostHeaders = { ...options.headers };
   const forward = options.fetch ?? fetch;
-  const origin = new URL(options.origin).origin;
+  const origin = baseOf(options.origin);
   const refusedStatus = policy.refusedStatus ?? 400;
   const inflight = new Set<AbortController>();
   /** Set by close(): nothing is admitted or sent after it. */
