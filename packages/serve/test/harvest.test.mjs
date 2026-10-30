@@ -391,14 +391,20 @@ test("a value in a path the run deleted refuses the harvest too", async (t) => {
 test("a value no URI encoder takes (a lone surrogate) never stops the harvest, and its percent form, as its UTF-8 bytes read, is refused by name", async (t) => {
   const { privateFormsOf } = await import("../dist/harvest.js");
   const lone = "abcdefghijkl\ud800";
+  // Every form of the whole scan is built without throwing: as it is, JSON-escaped, hex, percent, base64 and base64url.
   const forms = privateFormsOf(lone);
-  assert.ok(forms.folded.length > 0 && forms.base64.length > 0, "hex, percent and base64 forms, none throwing");
+  assert.deepEqual(forms.exact, [lone, "abcdefghijkl\\ud800"]);
+  assert.ok(forms.folded.includes(Buffer.from(lone).toString("hex")) && forms.folded.includes("abcdefghijkl%ef%bf%bd"), JSON.stringify(forms.folded));
+  assert.ok(forms.base64.length >= 3, "base64 and base64url at three offsets (equal ones kept once)");
   const s = await seeded(t);
   await writeFile(join(s.work, NOTE), note("L-0a93ff12c4e7", "Policies live under /policies/."));
   assert.equal((await harvest(s, "host", { refuse: [lone] })).status, "proposed");
-  const planted = await seeded(t);
-  await writeFile(join(planted.work, NOTE), note("L-0a93ff12c4e7", "Send abcdefghijkl%EF%BF%BD first."));
-  assert.deepEqual((await harvest(planted, "host", { refuse: [lone] })).refused, [`${NOTE} holds a value no learning may keep`]);
+  // Each form, planted, is found by the scan that runs over every file and path.
+  for (const [what, text] of [["percent", "abcdefghijkl%EF%BF%BD"], ["JSON-escaped", "abcdefghijkl\\ud800"], ["hex", Buffer.from(lone).toString("hex")], ["base64", Buffer.from(`xx${lone}::`).toString("base64")]]) {
+    const planted = await seeded(t);
+    await writeFile(join(planted.work, NOTE), note("L-0a93ff12c4e7", `Send ${text} first.`));
+    assert.deepEqual((await harvest(planted, "host", { refuse: [lone] })).refused, [`${NOTE} holds a value no learning may keep`], what);
+  }
 });
 
 test("a value with one reserved character, percent-encoded as a URI component, is refused: the unreserved characters stay as they are", async (t) => {
