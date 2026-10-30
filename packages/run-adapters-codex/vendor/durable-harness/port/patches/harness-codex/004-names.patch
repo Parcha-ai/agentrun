@@ -12,7 +12,7 @@ index df53e6b..c6a1faf 100644
  
    /** `initialize` with the experimental API (dynamic tools, `thread/inject_items`), then `initialized`. */
 -  async initialize(clientName = 'harness-world-codex', version = '0'): Promise<{ userAgent?: string; codexHome?: string }> {
-+  async initialize(clientName = 'agentrun-harness-codex', version = '0'): Promise<{ userAgent?: string; codexHome?: string }> {
++  async initialize(clientName = 'agentrun-codex', version = '0'): Promise<{ userAgent?: string; codexHome?: string }> {
      const result = await this.request('initialize', {
        clientInfo: { name: clientName, version, title: null },
        capabilities: { experimentalApi: true },
