@@ -90,11 +90,11 @@ test("a box a reap cannot empty is quarantined, its record kept; a later reap th
   assert.equal(await settleBox(h, quarantine, "run-1", run), "quarantined");
   assert.equal((await stored(run)).reaped, undefined, "the record is kept");
   const kept = await Quarantine.open(join(dir, BOX_QUARANTINE));
-  assert.ok(kept.has("run-1"), "and the quarantine is on disk");
+  assert.ok(kept.has("run-1/box-1"), "and the quarantine is on disk, by the run and its box");
   assert.match(kept.list()[0].why, /left 2 processes/);
   left = 0;
   assert.equal(await settleBox(h, kept, "run-1", run), "reaped");
-  assert.equal((await Quarantine.open(join(dir, BOX_QUARANTINE))).has("run-1"), false, "and leaves the quarantine");
+  assert.equal((await Quarantine.open(join(dir, BOX_QUARANTINE))).has("run-1/box-1"), false, "and leaves the quarantine");
 });
 
 test("a reap that throws (it could not count) quarantines the box: it is never let go", linux, async (t) => {
@@ -222,7 +222,7 @@ test("a quarantined run's cgroup is that run's: the sweep quarantines it once, b
   const h = host({ cgroups, verdict: () => ({ empty: false, left: 2, by: "cgroup" }) });
   const quarantine = await Quarantine.open(join(dir, BOX_QUARANTINE));
   await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
-  assert.deepEqual(quarantine.list().map((e) => e.key), ["run-1"], "one entry, the run's");
+  assert.deepEqual(quarantine.list().map((e) => e.key), ["run-1/box-1"], "one entry, the run's box");
   assert.deepEqual(h.calls, ["reap box-1"], "reaped once, by its record");
   assert.ok(cgroups.has("/cg/run-1"), "and its cgroup kept");
 });
@@ -348,4 +348,75 @@ test("an archived run that is still live has its box let go when its process exi
   for (const deadline = Date.now() + 10_000; !(await mark()); await new Promise((resolve) => setTimeout(resolve, 50))) assert.ok(Date.now() < deadline, `let go when its process exited: ${reaped}`);
   assert.deepEqual(reaped, ["box-live"]);
   assert.equal((await mark()).by, "pidns");
+});
+
+
+// ---- Greptile's three (2026-10-30) ----------------------------------------------------------------------------------
+
+test("a run's quarantined box stays held when the run opens a new one: the sweep tries it again by its own record, and the new box's reap never clears it", linux, async (t) => {
+  const dir = await scratch(t);
+  const run = join(dir, "run-1");
+  await mkdir(run);
+  await writeFile(join(run, "box.json"), JSON.stringify({ id: "box-a", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  let aLeft = 2;
+  const h = host({ verdict: (r) => (r.id === "box-a" ? { empty: aLeft === 0, left: aLeft, by: "pidns" } : { empty: true, left: 0, by: "pidns" }) });
+  const quarantine = await Quarantine.open(join(dir, BOX_QUARANTINE));
+  await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.deepEqual(quarantine.list().map((e) => e.key), ["run-1/box-a"]);
+  // The run opens again: its box start replaces box.json with the new box's record.
+  await writeFile(join(run, "box.json"), JSON.stringify({ id: "box-b", pid: 5151, startTime: "9", writer: await goneWriter() }));
+  h.calls.length = 0;
+  await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.ok(h.calls.includes("reap box-b") && h.calls.includes("reap box-a"), `both boxes reaped, each by its record: ${h.calls}`);
+  assert.deepEqual(quarantine.list().map((e) => e.key), ["run-1/box-a"], "the old box still held; the new one's empty reap cleared nothing of it");
+  aLeft = 0;
+  await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.deepEqual(quarantine.list(), [], "let go once its own reap counts it empty");
+});
+
+test("a run's boxes share its cgroup: an old box's empty reap leaves the cgroup in place while the run's current box names it", linux, async (t) => {
+  const dir = await scratch(t);
+  const run = join(dir, "run-1");
+  await mkdir(run);
+  const cgroups = new Set(["/cg/run-1"]);
+  await writeFile(join(run, "box.json"), JSON.stringify({ id: "box-a", cgroup: "/cg/run-1", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  let aLeft = 1;
+  const h = host({ cgroups, verdict: (r) => (r.id === "box-a" ? { empty: aLeft === 0, left: aLeft, by: "pidns" } : { empty: true, left: 0, by: "pidns" }) });
+  const quarantine = await Quarantine.open(join(dir, BOX_QUARANTINE));
+  await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.ok(quarantine.has("run-1/box-a"));
+  // The run's next box, live (its writer is this process), in the same cgroup.
+  await writeFile(join(run, "box.json"), JSON.stringify({ id: "box-b", cgroup: "/cg/run-1", pid: 5151, startTime: "9", writer: ALIVE }));
+  aLeft = 0;
+  await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.equal(quarantine.has("run-1/box-a"), false, "the old box let go");
+  assert.ok(cgroups.has("/cg/run-1"), `and the cgroup the live box names left in place: ${h.calls}`);
+  assert.ok(!h.calls.includes("remove /cg/run-1"));
+});
+
+test("quarantine saves made at once all land: every entry is on disk, none lost and none refused", async (t) => {
+  const dir = await scratch(t);
+  const file = join(dir, BOX_QUARANTINE);
+  const quarantine = await Quarantine.open(file);
+  await Promise.all(Array.from({ length: 25 }, (_, i) => quarantine.add(`run-${i}/box-${i}`, { id: `box-${i}`, writer: { pid: 1, startTime: "1" } }, "held")));
+  const reread = await Quarantine.open(file);
+  assert.equal(reread.list().length, 25);
+  for (let i = 0; i < 25; i++) assert.ok(reread.has(`run-${i}/box-${i}`), `run-${i}`);
+});
+
+test("an archived run whose process dies while it waits for the person has its box let go then, not at the next start", linux, async (t) => {
+  const reaped = [];
+  const box = { reap: async (r) => (reaped.push(r.id), { empty: true, left: 0, by: "pidns" }) };
+  const { api, data } = await serve(t, { box });
+  assert.equal((await api("POST", "/agents", agent("asks", { tools: ["ask_person"] }))).status, 201);
+  const id = (await api("POST", "/agents/asks/runs", { input: { content: "Pick a region." } })).body.run_id;
+  await follow(api, id, ["input_required"]);
+  const pid = JSON.parse(await readFile(join(data, "runs", id, "run.json"), "utf8")).holder.pid;
+  await writeFile(join(data, "runs", id, "box.json"), JSON.stringify({ id: "box-waiting", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  assert.equal((await api("POST", `/runs/${id}/archive`)).status, 200);
+  assert.deepEqual(reaped, [], "its process lives, so its box is its own");
+  process.kill(pid, "SIGKILL");
+  const mark = async () => JSON.parse(await readFile(join(data, "runs", id, "box.json"), "utf8")).reaped;
+  for (const deadline = Date.now() + 15_000; !(await mark()); await new Promise((resolve) => setTimeout(resolve, 100))) assert.ok(Date.now() < deadline, `let go once its process died: ${reaped}`);
+  assert.deepEqual(reaped, ["box-waiting"]);
 });

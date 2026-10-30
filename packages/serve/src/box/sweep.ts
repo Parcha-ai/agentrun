@@ -74,8 +74,13 @@ export class Quarantine {
     if (this.entries.delete(key)) await this.save();
   }
 
+  // One save at a time, each writing the whole set as it is then: concurrent writes of the same file would share its
+  // temporary file, and one could lose another's entries or fail its rename.
+  private saving: Promise<void> = Promise.resolve();
   private save(): Promise<void> {
-    return writeDurable(this.file, `${JSON.stringify(this.list())}\n`);
+    const next = this.saving.catch(() => {}).then(() => writeDurable(this.file, `${JSON.stringify(this.list())}\n`));
+    this.saving = next;
+    return next;
   }
 }
 
@@ -83,6 +88,16 @@ export type Settled = "none" | "owned" | "reaped" | "cleared" | "quarantined";
 
 /** The quarantine key of a cgroup no record named. */
 const leftoverKey = (path: string) => `cgroup:${path}`;
+/** The quarantine key of a run's box: by the box, so a run whose box is quarantined and that opens a new one keeps the
+ *  old one held, and the new one's reap never clears it. */
+export const boxKey = (runId: string, record: Pick<BoxRecord, "id">) => `${runId}/${record.id}`;
+/** Whether a cgroup is still named by a box other than `key`'s that is not yet let go: a quarantined one, or (`current`)
+ *  the run's current box. A run's boxes share its cgroup, so one box's empty count never removes another's. */
+function namedElsewhere(quarantine: Quarantine, cgroup: string, key: string, current?: Stored | null): boolean {
+  if (current && !current.reaped && current.cgroup === cgroup && current.id !== key.slice(key.lastIndexOf("/") + 1)) return true;
+  return quarantine.list().some((entry) => entry.key !== key && entry.record.cgroup === cgroup);
+}
+const left = (verdict: Reaped) => `its reap left ${verdict.left} process${verdict.left === 1 ? "" : "es"} (counted by ${verdict.by})`;
 
 /**
  * The box the run in `runDir` recorded, let go if nothing owns it: none recorded, or already let go (`none`); its writer,
@@ -99,27 +114,28 @@ export async function settleBox(host: BoxHost, quarantine: Quarantine, runId: st
   try {
     verdict = await host.reap(record);
   } catch (error) {
-    await quarantine.add(runId, record, `its reap failed: ${(error as Error).message}`);
+    await quarantine.add(boxKey(runId, record), record, `its reap failed: ${(error as Error).message}`);
     return "quarantined";
   }
   if (verdict.by === "none") {
     // Nothing named the box to count, and its writer is gone: --die-with-parent ended whatever had started.
     await writeDurable(path, `${JSON.stringify({ ...record, reaped: { at: new Date().toISOString(), by: "none" } })}\n`);
-    await quarantine.clear(runId);
+    await quarantine.clear(boxKey(runId, record));
     return "cleared";
   }
   if (!verdict.empty) {
-    await quarantine.add(runId, record, `its reap left ${verdict.left} process${verdict.left === 1 ? "" : "es"} (counted by ${verdict.by})`);
+    await quarantine.add(boxKey(runId, record), record, left(verdict));
     return "quarantined";
   }
-  if (record.cgroup && host.cgroups) await host.cgroups.remove(record.cgroup);
+  if (record.cgroup && host.cgroups && !namedElsewhere(quarantine, record.cgroup, boxKey(runId, record))) await host.cgroups.remove(record.cgroup);
   await writeDurable(path, `${JSON.stringify({ ...record, reaped: { at: new Date().toISOString(), by: verdict.by } })}\n`);
-  await quarantine.clear(runId);
+  await quarantine.clear(boxKey(runId, record));
   return "reaped";
 }
 
-/** At start, before any run opens a box: every run's box let go that nothing owns, then every run cgroup no record
- *  names, reaped by the cgroup and removed when empty. */
+/** At start, before any run opens a box: every run's box let go that nothing owns; then every box the quarantine still
+ *  holds that is no longer its run's current one (the run opened another since), tried again by its own record; then
+ *  every run cgroup no record names, reaped by the cgroup and removed when empty. */
 export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: ReadonlyArray<{ id: string; dir: string }>, startOf?: (pid: number) => string | undefined): Promise<Record<string, Settled>> {
   const settled: Record<string, Settled> = {};
   const named = new Set<string>();
@@ -129,6 +145,25 @@ export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: Re
       const cgroup = ((await readJson(join(run.dir, BOX_RECORD))) as Stored | null)?.cgroup;
       if (cgroup) named.add(cgroup);
     }
+  }
+  // A run's earlier box, still held: only its own reap's count lets it go. Its cgroup stays named while it is held.
+  const current = new Set(runs.map((run) => run.id));
+  for (const entry of quarantine.list()) {
+    if (entry.key.startsWith("cgroup:")) continue;
+    const runId = entry.key.slice(0, entry.key.lastIndexOf("/"));
+    const now = current.has(runId) ? ((await readJson(join(runs.find((r) => r.id === runId)!.dir, BOX_RECORD))) as Stored | null) : null;
+    if (now?.id === entry.record.id) {
+      if (entry.record.cgroup && quarantine.has(entry.key)) named.add(entry.record.cgroup);
+      continue;
+    }
+    let verdict: Reaped | undefined;
+    if (!writerGone(entry.record.writer, startOf)) verdict = undefined;
+    else verdict = await host.reap(entry.record).catch(() => undefined);
+    if (verdict && (verdict.empty || verdict.by === "none")) {
+      const cgroup = entry.record.cgroup;
+      if (verdict.empty && cgroup && host.cgroups && !namedElsewhere(quarantine, cgroup, entry.key, now)) await host.cgroups.remove(cgroup);
+      await quarantine.clear(entry.key);
+    } else if (entry.record.cgroup) named.add(entry.record.cgroup);
   }
   if (!host.cgroups) return settled;
   for (const cgroup of await host.cgroups.list()) {
@@ -144,7 +179,7 @@ export async function sweepBoxes(host: BoxHost, quarantine: Quarantine, runs: Re
     if (verdict.empty) {
       await host.cgroups.remove(cgroup);
       await quarantine.clear(leftoverKey(cgroup));
-    } else await quarantine.add(leftoverKey(cgroup), record, `its reap left ${verdict.left} process${verdict.left === 1 ? "" : "es"} (counted by ${verdict.by})`);
+    } else await quarantine.add(leftoverKey(cgroup), record, left(verdict));
   }
   return settled;
 }
