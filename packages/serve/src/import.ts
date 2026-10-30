@@ -194,19 +194,26 @@ export async function projectFiles(
     }
     if (!reachable) continue;
     const files = new Map<string, string[]>();
-    await walkWork(
-      join(cwd, dir),
-      (path, stats) => {
-        if (stats.isFile()) {
-          const name = path.split("/")[0]!;
-          if (path.includes("/")) files.set(name, [...(files.get(name) ?? []), path]);
-        }
-      },
-      {
-        depth: 8,
-        refused: (path, reason) => skipped.push({ what: join(cwd, dir, path), why: why(reason) }),
-      },
-    );
+    try {
+      await walkWork(
+        join(cwd, dir),
+        (path, stats) => {
+          if (stats.isFile()) {
+            const name = path.split("/")[0]!;
+            if (path.includes("/")) files.set(name, [...(files.get(name) ?? []), path]);
+          }
+        },
+        {
+          depth: 8,
+          refused: (path, reason) => skipped.push({ what: join(cwd, dir, path), why: why(reason) }),
+        },
+      );
+    } catch (error) {
+      // The folder itself is not read (unreadable to this user): named, and the project's other folders still are.
+      if (!(error instanceof WorkRefused)) throw error;
+      skipped.push({ what: join(cwd, dir), why: why(error.reason) });
+      continue;
+    }
     for (const [name, paths] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
       if (!paths.includes(`${name}/SKILL.md`)) {
         skipped.push({
