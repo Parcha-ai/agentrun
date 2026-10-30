@@ -263,3 +263,28 @@ test("one kind of box may follow another: a run opened again in a provider's box
   await follow(second.api, id, ["completed"]);
   assert.equal((await record()).mode, "provider");
 });
+
+test("a follow-up to a completed run that ran in a box is refused unsandboxed, by name, and the run stays completed", async (t) => {
+  withEnv(t, {}, BOX_ENV);
+  const first = await serve(t, { boxFactory: factory({ mode: "bwrap", cgroup: false }) });
+  assert.equal((await first.api("POST", "/agents", agent("plain"))).status, 201);
+  const id = (await first.api("POST", "/agents/plain/runs", { input: { content: "What is 2 + 2?" } })).body.run_id;
+  await follow(first.api, id, ["completed"]);
+  await first.close();
+  withEnv(t, { AGENTRUN_BOX: "unsandboxed" }, BOX_ENV);
+  const second = await serve(t, { data: first.data });
+  const answer = await second.api("POST", `/runs/${id}/messages`, { content: "And 3 + 3?" });
+  assert.deepEqual([answer.status, answer.body.error.message], [409, "box_downgrade: this run started in a box; start a new run to run it unsandboxed"], JSON.stringify(answer.body));
+  assert.equal((await second.api("GET", `/runs/${id}`)).body.status, "completed", "never opened again");
+});
+
+test("a provider's box is a box: a run that ran in one is refused unsandboxed, by name", async (t) => {
+  const { data, id, record } = await leftWaiting(t, {}, { boxFactory: factory({ mode: "provider", cgroup: false }) });
+  assert.equal((await record()).mode, "provider");
+  withEnv(t, { AGENTRUN_BOX: "unsandboxed" }, BOX_ENV);
+  const second = await serve(t, { data });
+  const answer = await second.api("POST", `/runs/${id}/messages`, { content: "eu" });
+  assert.equal(answer.status, 409);
+  assert.match(answer.body.error.message, /^box_downgrade: /);
+  assert.equal((await record()).mode, "provider");
+});
