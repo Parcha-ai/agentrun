@@ -131,7 +131,8 @@ The checker refuses a memo whose `run` is not the branch's, or whose `base` is n
 full id or a prefix of it): the commit the host names (`--run-base`), or else the branch's fork point from `main`.
 
 Then the four sections, each once, in this order and no other: `## What happened` (not empty), `## What I learned`,
-`## What could be better`, `## Proposed changes`. Under `## Proposed changes`, each line `- <path>` names one changed
+`## What could be better`, `## Proposed changes`. The review may add one more, `## Review`, last: its verdict, and the
+reason for each item it refused. Under `## Proposed changes`, each line `- <path>` names one changed
 file, or a folder ending in `/` that holds changed files; text after the path is free.
 
 ## A note
