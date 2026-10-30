@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -243,4 +244,16 @@ test("a workflow whose decision cost is unknown and whose model request is price
   const after = (await client(next.baseUrl, next.token)("GET", `/runs/${runId}`)).body;
   assert.equal(after.status, "completed");
   assert.equal(after.cost.usd, null, "and still after a restart: never the model's cost alone");
+});
+
+test("the missing-key 409's details, decisions included, meet what the served document gives agent_not_runnable", async (t) => {
+  withEnv(t, {}, KEYS);
+  const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
+  assert.equal((await api("POST", "/agents", flowAgent("coi", flow([judge, probe()])))).status, 201);
+  const refused = await api("POST", "/agents/coi/runs", { input: { question: "x" } });
+  assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
+  assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"].agent_not_runnable;
+  assert.deepEqual(schemaProblems(doc, shape, refused.body.error.details), [], JSON.stringify(refused.body.error.details));
 });
