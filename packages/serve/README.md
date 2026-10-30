@@ -21,6 +21,8 @@ JS
 node packages/serve/dist/cli.js --faux faux.mjs
 ```
 
+Installed, `agentrun-serve` is a launcher that needs a POSIX `sh` with a builtin `printf` (Linux, macOS; not Windows). It hands the server its keys and token over a pipe, so none is in any process's environment, the run's processes included. Started as `node dist/cli.js`, as above, the server reads them from its own environment. `GET /v2/capabilities`' `secrets` says how they are held, and what that does not cover.
+
 It prints where it listens and, at the start that made it, the token:
 
 ```
@@ -314,8 +316,8 @@ node, with typed answers and their probabilities.
   `null`, never `0`, while any of its decisions' costs is unknown.
 - The TypeSafe key never enters a run's environment, which its tools and its model's provider read. The server drops
   `TYPESAFE_API_KEY` from every run's process. It hands the value to a workflow run's process once, on an inherited pipe
-  (the first descriptor after its stdio, as macOS refuses a high one), at each launch, a resume after a restart
-  included. The process reads it into the judge's runner, closes the descriptor before anything else runs, and keeps
+  (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each launch, a resume
+  after a restart included. The process reads it into the judge's runner, closes the descriptor before anything else runs, and keeps
   the key nowhere else. It is never in an environment, an argument list or a file, and no program the run starts
   inherits it. With no key, no descriptor is opened. On the OpenRouter route the judge's key comes on the same
   descriptor, never from the run's environment; that key is also the model gateway's key, which a run's process holds

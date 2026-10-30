@@ -17,7 +17,8 @@ export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
 /** The adapter a workflow's typed questions run through. */
 export const DECISION_ADAPTER = "runJudge";
 /** Set on a run's process the server hands the TypeSafe key: the descriptor's number, never the key. The server puts
- *  it on the first descriptor after the process's stdio: macOS aborts the parent of a spawn with a pipe at 16 or above. */
+ *  it on the first descriptor after the process's stdio and its secrets pipe: macOS aborts the parent of a spawn with a
+ *  pipe at 16 or above. */
 export const DECISION_KEY_FD_ENV = "AGENTRUN_SERVE_DECISION_KEY_FD";
 /** Under --faux only: a module whose default export is the fetch Jev's runner sends through, in place of TypeSafe's
  *  API (the tests' fake). */

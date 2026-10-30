@@ -1,5 +1,6 @@
 // The descriptor a workflow run's process is handed the decision key on. macOS aborts the parent of a spawn that puts a
-// pipe at descriptor 16 or above, so the key goes on the first one after the child's stdio. CI's macOS job runs this file.
+// pipe at descriptor 16 or above, so the key goes on the first one after the child's stdio and its secrets pipe. CI's
+// macOS job runs this file.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -78,8 +79,8 @@ process.once("SIGTERM", () => server.close().then(() => process.exit(0)));`;
 });
 
 test("the run's process reads the key once and closes its descriptor: the number no longer names the pipe", { skip: !existsSync("/proc/self/fdinfo") && "no /proc here" }, async () => {
-  // As the server launches it: the key on the first descriptor after stdio. Read, then a file opened takes the lowest
-  // free number, which is the key's if it was closed.
+  // As the server launches it: the key on the first descriptor after stdio and the secrets pipe. Read, then a file
+  // opened takes the lowest free number, which is the key's if it was closed.
   const script = `const { readlinkSync, openSync } = await import("node:fs");
 const { handedKey } = await import(${JSON.stringify(DECISIONS)});
 const fd = Number(process.env.AGENTRUN_SERVE_DECISION_KEY_FD);
@@ -89,8 +90,8 @@ openSync(process.execPath, "r");
 let after = null;
 try { after = readlinkSync("/proc/self/fd/" + fd); } catch {}
 process.stdout.write(JSON.stringify({ fd, before, key, after }));`;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe", "pipe"], env: { ...process.env, AGENTRUN_SERVE_DECISION_KEY_FD: "3" } });
-  child.stdio[3].end(CANARY);
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe", "ignore", "pipe"], env: { ...process.env, AGENTRUN_SERVE_DECISION_KEY_FD: "4" } });
+  child.stdio[4].end(CANARY);
   let out = "";
   let err = "";
   child.stdout.on("data", (chunk) => (out += chunk));

@@ -21,8 +21,8 @@ const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 const OTHER_ROUTER_KEY = "openrouter-key-not-jevs";
 const OTHER_GATEWAY_KEY = "gateway-key-not-jevs";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-/** The descriptor a run's process is handed the key on: the first one after its stdio. */
-const KEY_FD = "3";
+/** The descriptor a run's process is handed the key on: the first one after its stdio and its secrets pipe. */
+const KEY_FD = "4";
 /** The descriptor `environ` names for the key, without printing the rest of it. */
 const keyFdIn = (environ) => /(?:^|\0)AGENTRUN_SERVE_DECISION_KEY_FD=([^\0]*)/.exec(environ)?.[1];
 /** Whether `pid`'s descriptor `fd` is a Unix socket, as the handed one is (one end of a socket pair). A run's process
@@ -103,7 +103,7 @@ test("the decision key never reaches a run's tools, model or programs: not in it
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
   assert.equal(environ.includes(CANARY), false, "the run's process environment holds no copy of the key");
-  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio");
+  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio and secrets");
   assert.equal(await handedSocket(pid, KEY_FD), false, "and closed it once read");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
@@ -302,7 +302,8 @@ const answer = judge && await judge({ label: "coi", kind: "judge", state: { doc:
 process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answers?.is_coi?.noul ?? null }));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     env: { HOME: process.env.HOME, [FAUX_ENV]: FAUX, [FAUX_JEV_ENV]: FAUX_JEV, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, ...env, ...(handed ? { [DECISION_KEY_FD_ENV]: KEY_FD } : {}) },
-    stdio: ["ignore", "pipe", "pipe", ...(handed ? ["pipe"] : [])],
+    // As a run's process has them: the secrets pipe on 3 (none here), the key on the next.
+    stdio: ["ignore", "pipe", "pipe", "ignore", ...(handed ? ["pipe"] : [])],
   });
   // What the server writes there: the route, a newline, the key.
   if (handed) child.stdio[Number(KEY_FD)].end(`${handed.route}\n${handed.key}`);

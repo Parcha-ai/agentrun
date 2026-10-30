@@ -429,21 +429,132 @@ describe("command records, from a scripted /proc", () => {
 describe("command records, from a scripted ps (macOS)", () => {
   /** A ps and sysctl that answer from `rows()` (`pid ppid pgid second`: the second it started at) and `environments`; a
    *  row's state is `S` unless `options.states` names another (`Z`: a zombie). */
-  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string> } = {}): CommandRunner {
+  /** `environments`: a process's `ps -E -o command=` line (arguments, then environment). Its arguments alone (`ps -o
+   *  command=`) are `argv[pid]` when given, else the words before the first NAME=value word. */
+  function scriptedPs(rows: () => number[][], environments: Record<number, string> = {}, options: { failListing?: boolean; failMarks?: boolean; states?: Record<number, string>; argv?: Record<number, string | string[]> } = {}): CommandRunner {
     const lstart = (second: number) => `Thu Oct 15 06:00:${String(second).padStart(2, "0")} 2026`;
+    // A list of arguments answers the process's reads without -E in turn, its last answer from then on: a process that
+    // exec'd between two reads.
+    const reads = new Map<number, number>();
+    const argvOf = (pid: number, text: string) => {
+      const given = options.argv?.[pid];
+      if (Array.isArray(given)) {
+        const n = reads.get(pid) ?? 0;
+        reads.set(pid, n + 1);
+        return given[Math.min(n, given.length - 1)]!;
+      }
+      if (given !== undefined) return given;
+      const words = text.trim().split(/\s+/);
+      const env = words.findIndex((w) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+      return (env < 0 ? words : words.slice(0, env)).join(" ");
+    };
     return (file, args) => {
       if (file === "/usr/sbin/sysctl") return "boot-1\n";
       if (args.includes("-E") && args.includes("-A") && options.failMarks) throw new Error("ps: cannot list environments");
+      if (args.includes("-A") && args.includes("pid=,command=")) {
+        return rows().flatMap(([pid]) => {
+          const text = environments[pid!];
+          if (text === undefined) return [];
+          return [`${pid} ${args.includes("-E") ? text.trim() : argvOf(pid!, text)}`];
+        }).join("\n");
+      }
       if (args.includes("-A")) {
         if (options.failListing) throw new Error("ps: cannot list processes");
         return rows().map(([pid, ppid, pgrp, second]) => `${pid} ${ppid} ${pgrp} ${options.states?.[pid!] ?? "S"} ${lstart(second!)}`).join("\n");
       }
-      const text = environments[Number(args[args.indexOf("-p") + 1])];
+      const pid = Number(args[args.indexOf("-p") + 1]);
+      const text = environments[pid];
       if (text === undefined) throw new Error("no such process");
-      return text;
+      return args.includes("-E") ? text : `${argvOf(pid, text)}\n`;
     };
   }
   const startAt = (second: number) => Date.UTC(2026, 9, 15, 6, 0, second) / 1000;
+
+  it("a mark is read from a process's environment only: a token in its arguments is none, and a process that exec'd between the two reads proves nothing, so a listing of marks will not pass it as unmarked", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    const rows = [[4400, 1, 4400, 5], [4401, 1, 4401, 6], [4402, 1, 4402, 7]];
+    const environments: Record<number, string> = {
+      // Its arguments name the token; its environment does not.
+      4400: `/bin/echo ${word} LANG=C\n`,
+      // It exec'd between the two reads: its arguments were `sh -c held`, the -E line is the new program's.
+      4401: `sleep 600 ${word} LANG=C\n`,
+      // Its environment holds the mark.
+      4402: `sleep 600 LANG=C ${word}\n`,
+    };
+    const table = psTable(scriptedPs(() => rows, environments, { argv: { 4400: `/bin/echo ${word}`, 4401: "sh -c held" } }));
+    const look = table.snapshot();
+    assert.deepEqual([4400, 4401, 4402].map((pid) => look.marked(pid, COMMANDS_MARK, token)), [false, false, true]);
+    // 4401's arguments never open its -E line, which holds the mark's word: whether it carries the mark is unknown, and
+    // unknown is never unmarked.
+    assert.throws(() => look.withMark(COMMANDS_MARK, token), /cannot tell whether pid 4401 carries the mark/);
+    const settled = psTable(scriptedPs(() => rows.filter(([pid]) => pid !== 4401), environments, { argv: { 4400: `/bin/echo ${word}` } }));
+    assert.deepEqual(settled.snapshot().withMark(COMMANDS_MARK, token), [4402]);
+  });
+
+  it("a process that exec'd between the reads into arguments that extend its old ones is not marked by the words it added", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    const rows = [[4500, 1, 4500, 5]];
+    // Its arguments were `sh -c held`; it exec'd into `sh -c held <mark>`, which the old arguments open, and the -E line is
+    // the new program's. Only the arguments read after the -E line show the exec.
+    const environments: Record<number, string> = { 4500: `sh -c held ${word} LANG=C\n` };
+    const argv = { 4500: ["sh -c held", `sh -c held ${word}`] };
+    assert.equal(psTable(scriptedPs(() => rows, environments, { argv })).snapshot().marked(4500, COMMANDS_MARK, token), false);
+    assert.deepEqual(psTable(scriptedPs(() => rows, environments, { argv })).snapshot().withMark(COMMANDS_MARK, token), []);
+  });
+
+  /** `run`, counting its listings of every process's environment. */
+  const countingEnvironments = (run: CommandRunner) => {
+    const counted = { reads: 0 };
+    const counting: CommandRunner = (file, args) => {
+      if (args.includes("-E") && args.includes("-A")) counted.reads++;
+      return run(file, args);
+    };
+    return { run: counting, counted };
+  };
+
+  it("a marked process whose arguments change in every read keeps the mark and the records, signals nothing, and the open is refused", async () => {
+    const dir = scratchRoot("commands-ps-mark-unread");
+    const records = join(dir.root, "commands");
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // 4600 carries the mark in its environment, but exec's between every two reads of its arguments: the -E line
+    // cannot be split into its arguments and its environment. 4700 is a record whose process is gone.
+    const argv = { 4600: Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "sh -c a" : "sh -c b")) };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[4600, 1, 4600, 5]], { 4600: `sh -c a LANG=C ${word}\n` }, { argv }));
+    try {
+      mkdirSync(records);
+      writeFileSync(join(records, `mark-${token}.json`), JSON.stringify({ boot: "boot-1", token }));
+      writeFileSync(join(records, "4700-9.json"), JSON.stringify({ boot: "boot-1", leader: { pid: 4700, start: startAt(9) }, members: [] }));
+      let signals = 0;
+      await assert.rejects(reapOrRefuse(records, { table: psTable(run), kill: () => void signals++ }), /cannot tell whether pid 4600 carries the mark: its arguments changed in each of 3 reads/);
+      assert.equal(signals, 0, "nothing signalled: a process that cannot be read is never taken for one of ours");
+      assert.equal(counted.reads, 3, "read three times, then given up");
+      assert.ok(existsSync(join(records, `mark-${token}.json`)), "the mark stays for the next open");
+      assert.ok(existsSync(join(records, "4700-9.json")), "and so do the records");
+    } finally {
+      dir.remove();
+    }
+  });
+
+  it("a marked process whose arguments changed once is read again, and its mark counts", () => {
+    const token = randomUUID();
+    const word = `${COMMANDS_MARK}=${token}`;
+    // Its first two reads straddle an exec; from then on it reads the same.
+    const argv = { 4610: ["sh -c a", "sleep 600"] };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[4610, 1, 4610, 5]], { 4610: `sleep 600 LANG=C ${word}\n` }, { argv }));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), [4610]);
+    assert.equal(counted.reads, 2);
+  });
+
+  it("a process that keeps changing its arguments but whose environment listing holds no mark holds nothing up", () => {
+    const token = randomUUID();
+    const argv = { 4620: Array.from({ length: 30 }, (_, i) => (i % 2 === 0 ? "worker: idle" : "worker: busy")) };
+    const { run, counted } = countingEnvironments(scriptedPs(() => [[4620, 1, 4620, 5]], { 4620: "worker: idle LANG=C\n" }, { argv }));
+    assert.deepEqual(psTable(run).snapshot().withMark(COMMANDS_MARK, token), []);
+    assert.equal(counted.reads, 1);
+  });
 
   it("a listing of marks that fails stops the reap and keeps the mark: no command is taken for gone on a failed read", async () => {
     const dir = scratchRoot("commands-ps-mark-fails");
@@ -692,17 +803,56 @@ describe("a recorder's mark", () => {
     }
   });
 
+  it("a process both a record and a mark name is signalled once: the reap sends the group's SIGKILL and the member's, never either twice", { skip: process.platform !== "linux" && "reads /proc" }, async () => {
+    const dir = scratchRoot("commands-mark-once");
+    const records = join(dir.root, "commands");
+    const token = randomUUID();
+    const child = command(token);
+    const pid = child.pid ?? 0;
+    try {
+      // The leader carries the mark (it has exec'd) and its member is in its group.
+      await until(() => processTable().snapshot().marked(pid, COMMANDS_MARK, token) && processTable().snapshot().group(pid).length >= 2);
+      const look = processTable().snapshot();
+      const member = look.group(pid).find((p) => p !== pid)!;
+      const boot = processTable().bootId();
+      mkdirSync(records);
+      writeFileSync(join(records, `${pid}-${look.info(pid)!.start}.json`), JSON.stringify({ boot, leader: { pid, start: look.info(pid)!.start }, members: [{ pid: member, start: look.info(member)!.start }] }));
+      writeFileSync(join(records, `mark-${token}.json`), JSON.stringify({ boot, token }));
+      // A kill that records its target and sends nothing: every process is still there for the whole reap, record and mark alike.
+      const targets: number[] = [];
+      const reaped = await reapCommands(records, { kill: (target) => void targets.push(target), timeoutMs: 100 });
+      assert.deepEqual(targets, [-pid, member], "one SIGKILL to the group and one to its member, whatever names them");
+      assert.equal(reaped.signalled, 2);
+    } finally {
+      killGroup(pid);
+      dir.remove();
+    }
+  });
+
   it("that still names a live process after the reap's deadline is kept as it was, so the next open looks for its token again and ends it", async () => {
     const dir = scratchRoot("commands-mark-kept");
     const records = join(dir.root, "commands");
     const token = randomUUID();
     const mark = join(records, `mark-${token}.json`);
-    const child = command(token);
+    // The command carries its mark only once it has exec'd: before, a spawned child still has this process's environment.
+    // It starts unmarked, held on a fifo in front of the exec that gives it the mark, so the test sees that window. The
+    // token comes under another name and is exported only after the hold, so neither the held process's environment nor
+    // its arguments hold `PI_DURABLE_DISK_COMMANDS=<token>` (macOS reads a mark from ps -E, arguments and environment).
+    const fifo = join(dir.root, "go");
+    spawnSync("mkfifo", [fifo]);
+    const held = `read _ < '${fifo}'; export ${COMMANDS_MARK}="$HELD_TOKEN"; unset HELD_TOKEN; exec /bin/sh -c 'sleep 600 & exec sleep 600'`;
+    const child = spawn("/bin/sh", ["-c", held], { detached: true, stdio: "ignore", env: { ...process.env, HELD_TOKEN: token } });
     const pid = child.pid ?? 0;
+    const marked = () => processTable().snapshot().marked(pid, COMMANDS_MARK, token);
     try {
       mkdirSync(records);
       writeFileSync(mark, JSON.stringify({ boot: processTable().bootId(), token }));
       await until(() => alive(pid));
+      assert.equal(marked(), false, "held before its exec, the command does not carry the mark yet");
+      writeFileSync(fifo, "go\n");
+      // The reap looks for the mark, so it runs only once the command carries it.
+      await until(marked);
+      assert.ok(marked(), "the command carries the mark");
       // A kill that does nothing: the marked command outlives the first reap's deadline.
       await assert.rejects(reapOrRefuse(records, { kill: () => {}, timeoutMs: 100 }), (error: unknown) => error instanceof HeldError && error.holder === "commands");
       assert.ok(alive(pid), "the command survived the first reap");
