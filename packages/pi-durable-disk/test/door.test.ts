@@ -518,6 +518,34 @@ describe("the door hook: abort, status, events", () => {
 describe("the door hook: turns, children and stops", () => {
   const types = (stream: ReturnType<typeof openEvents>) => stream.events().filter((e) => e.type === "run_start" || e.type === "run_end").map((e) => e.type);
 
+  it("a turn the hook starts itself (no submit: a recovery after a restart) reports its start and end through the emit attach gave it", async () => {
+    const disk = new LocalDisk("door-attach");
+    try {
+      const { hook, state } = scripted();
+      let emit: ((event: { type: "run_start" } | { type: "run_end" }) => void) | undefined;
+      (hook as DoorHook).attach = (given) => {
+        emit = given;
+      };
+      const s = await served(disk, hook);
+      assert.ok(emit, "the door gave the hook its emit when it opened");
+      const stream = openEvents(s.server);
+      await stream.ready;
+      await until("the snapshot", () => stream.frames().length >= 1);
+      state.busy = true;
+      emit!({ type: "run_start" });
+      await until("the hook's own run_start", () => types(stream).length === 1);
+      state.busy = false;
+      emit!({ type: "run_end" });
+      await until("its run_end", () => types(stream).length === 2);
+      assert.deepEqual(types(stream), ["run_start", "run_end"]);
+      stream.close();
+      await s.run.release();
+      await s.server.close();
+    } finally {
+      disk.remove();
+    }
+  });
+
   it("a submit that fails ends only a turn it started: another call's open turn stays open until its own end", async () => {
     const disk = new LocalDisk("door-own-turn");
     try {

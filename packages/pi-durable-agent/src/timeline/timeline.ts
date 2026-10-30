@@ -1,4 +1,4 @@
-import { BROWSER_OPENERS, inputPreview, labelOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
+import { BROWSER_OPENERS, endsTurn, inputPreview, labelOf, savedPaths, type LabelFn, type ToolResultView } from "./labels.js";
 import { cut, firstLine, firstSentence, json, obj, scrubUrls, str, utf8Bytes, type Obj } from "./util.js";
 
 export type TimelineKind =
@@ -43,6 +43,29 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 /** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
 
+/** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
+ *  that answered or failed has a `pi.assistant` entry; one aborted before its first content has none; a start with no
+ *  end and no entry is in flight when it is the latest, unless the run is settled, and was cut by a crash when a later
+ *  one followed it or the run settled without it. A cut request's cost is unknown. */
+export const REQUEST_STARTED = "agentrun.request_started";
+/** An end with `unsent: true` withdraws its start: the request was refused after its mark, and never left. */
+export const REQUEST_ENDED = "agentrun.request_ended";
+/** What a request with no `pi.assistant` entry of its own cost (pi's compaction summary, marked with `request:
+ *  "compaction"`): `usd`, or null when unknown. It closes that request, as an entry closes a generation's. */
+export const REQUEST_COST = "agentrun.request_cost";
+/** A request the host refused before it left (the run was cancelled): pi answers it with an error entry, which is not a
+ *  request and not a failure to show, so the timeline skips the error entry that answers each refusal. */
+export const REQUEST_REFUSED = "agentrun.request_refused";
+/** Written right after an answer whose cost was not in when it was written (a harness's proxy books a response after
+ *  answering it): that answer's cost is still to come, as a REQUEST_COST_LATE. Until it comes the cost is unknown. */
+export const REQUEST_COST_PENDING = "agentrun.request_cost_pending";
+/** The cost (`usd`, or null when unknown) of an answer written earlier with its cost pending: it closes one pending cost
+ *  and adds to the run's cost. It is not a request of its own: the answer already counted that. */
+export const REQUEST_COST_LATE = "agentrun.request_cost_late";
+const COMPACTION = "compaction";
+const isCompaction = (entry: EntryLike) => obj(entry.data)?.request === COMPACTION;
+const unsent = (entry: EntryLike) => obj(entry.data)?.unsent === true;
+
 export type TimelineOptions = {
   /** For entries and events that carry no conversation id. */
   conversationId?: number;
@@ -76,6 +99,9 @@ function createProjector(options: TimelineOptions) {
   const seen = new Set<string>();
   const calls = new Map<string, OpenCall>();
   const previous = new Map<number, string>();
+  // Whether every tool of the conversation's latest round ends the turn: then the turn is over, and what comes next is
+  // the person's next message, not a steer.
+  const ended = new Map<number, boolean>();
   const systems = new Set<number>();
   const browsers = new Set<number>();
   const children = new Map<number, string>();
@@ -85,7 +111,21 @@ function createProjector(options: TimelineOptions) {
   let root: number | undefined;
   let current = options.conversationId ?? 0;
   let requests = 0;
-  let usd: number | null = 0;
+  // The run's cost: the known sum, the costs no one knows, and the costs written as pending, still to come.
+  let known = 0;
+  let unknown = 0;
+  let pending = 0;
+  const addCost = (cost: unknown) => (typeof cost === "number" && Number.isFinite(cost) ? (known += cost) : (unknown += 1));
+  let marked = 0;
+  let inFlight = false;
+  let refused = 0;
+  // Answers to marked requests: those after the first mark (a request is marked before it leaves, so before its
+  // answer). Earlier answers are a run's from before requests were marked.
+  let answered = 0;
+  // Compactions, apart: one may run beside a generation. Each closes with its cost, or with an end when aborted.
+  let compactions = 0;
+  let compacting = 0;
+  let compactionOpen = false;
 
   function make(kind: TimelineKind, conv: number, id: string, fields: Partial<TimelineEvent> = {}): TimelineEvent {
     const timestamp = new Date(stamp).toISOString();
@@ -147,10 +187,39 @@ function createProjector(options: TimelineOptions) {
     const add = (row: TimelineEvent) => { rows.push(row); out.push(row); };
     const touch = (row: TimelineEvent) => { if (!out.includes(row)) out.push(row); };
 
-    if (entry.kind === "pi.assistant" && message) {
+    if (entry.kind === REQUEST_REFUSED) {
+      refused += 1;
+    } else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") {
+      // pi's answer to a request that never left: nothing to count or show.
+      refused -= 1;
+    } else if (entry.kind === REQUEST_STARTED && isCompaction(entry)) {
+      compacting += 1;
+      compactionOpen = true;
+    } else if (entry.kind === REQUEST_ENDED && isCompaction(entry)) {
+      if (unsent(entry)) compacting -= 1;
+      compactionOpen = false;
+    } else if (entry.kind === REQUEST_COST) {
+      compactions += 1;
+      compactionOpen = false;
+      addCost(obj(entry.data)?.usd);
+    } else if (entry.kind === REQUEST_COST_PENDING) {
+      // The answer just before it was counted as a cost unknown: it is one still to come.
+      if (unknown > 0) (unknown -= 1), (pending += 1);
+    } else if (entry.kind === REQUEST_COST_LATE) {
+      if (pending > 0) pending -= 1;
+      addCost(obj(entry.data)?.usd);
+    } else if (entry.kind === REQUEST_STARTED) {
+      marked += 1;
+      inFlight = true;
+    } else if (entry.kind === REQUEST_ENDED) {
+      if (unsent(entry)) marked -= 1;
+      inFlight = false;
+    } else if (entry.kind === "pi.assistant" && message) {
       requests += 1;
-      const cost = obj(obj(message.usage)?.cost)?.total;
-      usd = typeof cost === "number" && usd !== null ? usd + cost : null;
+      if (marked > 0) answered += 1;
+      // A request cut before its end has no final usage: its stream had reported none (the Responses API reports it at
+      // the end) or only the start (Anthropic's input and first token), never what the provider charged. Unknown.
+      addCost(message.stopReason === "aborted" ? undefined : obj(obj(message.usage)?.cost)?.total);
       if (message.stopReason === "error") {
         const why = str(message.errorMessage) ?? "unknown error";
         add(make("error", conv, base, { summary: `Model request failed: ${firstLine(why)}`, text: why }));
@@ -179,8 +248,10 @@ function createProjector(options: TimelineOptions) {
       const id = str(message.toolCallId) ?? "";
       const call = calls.get(`${conv}:${id}`);
       const name = call?.name ?? str(message.toolName) ?? "tool";
-      const args = call?.args ?? {};
       const view = viewOf(message);
+      // A call that failed ended nothing: the agent goes on after it, so a message then is still a steer.
+      ended.set(conv, (previous.get(conv) !== "pi.tool-result" || ended.get(conv) === true) && endsTurn(name) && !view.isError);
+      const args = call?.args ?? {};
       const named = label(name, args, view);
       if (call) {
         call.done = true;
@@ -222,7 +293,7 @@ function createProjector(options: TimelineOptions) {
       else if (state === "declined") add(make("user_message", conv, base, { summary: "You declined to sign in", session }));
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
       const author = str(obj(entry.data)?.author);
-      const steer = previous.get(conv) === "pi.tool-result";
+      const steer = previous.get(conv) === "pi.tool-result" && !ended.get(conv);
       const text = textOf(message);
       add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
     }
@@ -270,11 +341,18 @@ function createProjector(options: TimelineOptions) {
   }
 
   function usage(): TimelineEvent | undefined {
-    if (!requests || root === undefined) return undefined;
-    const total = usd === null ? null : Math.round(usd * 1e6) / 1e6;
+    // A request marked as it left with no entry for it, other than one still in flight: counted, at a cost no one knows.
+    // One in flight alone makes no row yet, so the row appears where it did before requests were marked.
+    // A settled run has nothing in flight: its last request with no entry, or its open compaction, was cut by the
+    // process that ended.
+    const open = (flying: boolean) => (flying && !options.settled ? 1 : 0);
+    const cut = marked - open(inFlight) > answered || compacting - open(compactionOpen) > compactions;
+    if ((!requests && !compactions && !cut) || root === undefined) return undefined;
+    const count = requests + Math.max(0, marked - answered) + Math.max(compactions, compacting);
+    const total = unknown > 0 || pending > 0 || cut ? null : Math.round(known * 1e6) / 1e6;
     return make("usage", root, `${root}:usage`, {
-      summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${requests} model request${requests === 1 ? "" : "s"}`,
-      usage: { usd: total, requests },
+      summary: `Cost so far: ${total === null ? "unknown" : dollars(total)} over ${count} model request${count === 1 ? "" : "s"}`,
+      usage: { usd: total, requests: count },
     });
   }
 
@@ -311,6 +389,8 @@ const modelName = (agent: unknown): string | undefined => {
 
 /** Live rows from `watchEvents` batches. Committed entries go through the same projector `timelineOf` uses. */
 export function timelineReducer(options: TimelineOptions = {}) {
+  // Ids of live rows: events made them, and they go when they end (timelineReducer's isLive).
+  const liveIds = new Set<string>();
   const now = options.now ?? Date.now;
   const thinkingCap = options.caps?.thinking ?? CAPS.thinking;
   let projector = createProjector(options);
@@ -324,6 +404,7 @@ export function timelineReducer(options: TimelineOptions = {}) {
     const put = (row: TimelineEvent) => { store.set(row.id, row); changed.set(row.id, row); dropped.delete(row.id); };
     const del = (id: string) => { if (store.delete(id)) { changed.delete(id); dropped.add(id); } };
     const live = (kind: TimelineKind, id: string, summary: string | undefined, fields: Partial<TimelineEvent> = {}) => {
+      liveIds.add(id);
       const old = store.get(id);
       if (summary === undefined) return del(id);
       if (old && old.summary === summary && old.text === (fields.text ?? null)) return;
@@ -490,5 +571,9 @@ export function timelineReducer(options: TimelineOptions = {}) {
     apply,
     /** Every row now, in log order. */
     rows: () => [...store.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)),
+    /** Whether `id` is a live row (one the events made: a stream, a wait, a phase), not one a committed entry made.
+     *  A live row ends when it is gone; a committed one was shown and stays, though a snapshot of a compacted
+     *  conversation no longer holds it. */
+    isLive: (id: string) => liveIds.has(id),
   };
 }

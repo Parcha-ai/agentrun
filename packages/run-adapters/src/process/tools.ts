@@ -1,7 +1,8 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/tools.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; message prefixes; comments name Codex only.
-import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy } from '../kernel/index.js';
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-message-prefix, 003-comments-name-this-host, 008-tool-images
+import { type DriveContext, EffectFailure, type EffectError, type HostTool, hostToolIO, type ReplayPolicy, type ToolOutput } from '../kernel/index.js';
+import type { ToolImage } from '../types.js';
 
 /**
  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
@@ -24,6 +25,8 @@ export interface ToolResult {
   isError: boolean;
   /** The call's intent was committed and its outcome lost (see `EffectError.interrupted`). */
   interrupted?: boolean;
+  /** Images the tool answered with, as it gave them (recorded with its outcome). */
+  images?: readonly ToolImage[];
 }
 
 /** One tool, harness-neutral. */
@@ -98,7 +101,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
       if (fresh && tool.replay === 'never') await options.beforeNever?.({ name: tool.name, callId, args });
       if (fresh && live) ctx.live({ type: 'tool_start', name: tool.name, args, callId });
       try {
-        const text = await ctx.effect(
+        const output = await ctx.effect(
           key,
           {
             name: `tool.${tool.name}`,
@@ -109,12 +112,15 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
           },
           (io) => tool.execute(args, hostToolIO(io, ctx, { signal: signal ? AbortSignal.any([signal, io.signal]) : io.signal }))
         );
+        // A tool answers in text, or in text with images (a screenshot): the images come back as recorded.
+        const { text, images } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined };
         if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text });
-        return { text: String(text), isError: false };
+        return { text: String(text), isError: false, ...(images?.length ? { images } : {}) };
       } catch (err) {
         if (err instanceof EffectFailure) {
-          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true });
-          return { text: failureText(err.error, options.partialChars), isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
+          const text = failureText(err.error, options.partialChars);
+          if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text });
+          return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}) };
         }
         ctx.halt?.(err);
         throw err;

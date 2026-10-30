@@ -1,0 +1,38 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-89d9-76d5-9e3d-4213ee493a7d"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-89d9-76d5-9e3d-4213ee493a7d",
+    "agent_id": "invoice-checker",
+    "agent_version": 3,
+    "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+    "kind": "agentic",
+    "sha": null,
+    "status": "failed",
+    "state": "idle",
+    "title": "Check invoice INV-1049 from the hosting vendor: hosting 440.00, 6 support hours…",
+    "created_at": "2026-10-28T19:33:22.579Z",
+    "updated_at": "2026-10-28T21:19:54.748Z",
+    "ended_at": "2026-10-28T19:33:26.803Z",
+    "result": null,
+    "error": {
+      "code": "spend_cap_reached",
+      "message": "the next model request was not sent. It could cost up to $0.247957, and with $0.000000 spent the run would pass its cap of $0.000001: the run is out of budget.",
+      "retryable": false
+    },
+    "cost": {
+      "usd": 0,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": 0.000001
+    },
+    "archived_at": null,
+    "poll_after_ms": 0
+  }
+}

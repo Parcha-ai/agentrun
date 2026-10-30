@@ -1,95 +1,153 @@
 # Agent instructions
 
-Guidance for coding agents working in this repository. [CONTRIBUTING.md](CONTRIBUTING.md) is the authority where the two differ. To add AgentRun to another project, use [docs/agent-instructions.md](docs/agent-instructions.md) instead.
+Guidance for coding agents working in this repository. [CONTRIBUTING.md](CONTRIBUTING.md) is the
+authority where the two differ. To add AgentRun to another project, use
+[docs/agent-instructions.md](docs/agent-instructions.md) instead.
 
 ## What this is
 
-AgentRun is a workflow language for agents a host already runs. A workflow is a JSON document (or TypeScript builder output) of typed nodes. The interpreter executes it and calls back into the host for every model call and side effect. The host keeps its tools, models, permissions, budgets and delivery. The DSL fixes the steps, state contracts, bounded control flow and escalation points, so a repeatable procedure can be inspected, rerun, tested with fixtures and offered to an agent as one tool.
+AgentRun is a workflow language for agents a host already runs. A workflow is a JSON document (or
+TypeScript builder output) of typed nodes; the interpreter executes it and calls back into the host
+for every model call and side effect, while the host keeps its tools, models, permissions, budgets
+and delivery.
 
 ## Layout
 
-| Path | What |
-| --- | --- |
-| `packages/dsl` | `@parcha/agentrun-dsl`: types, `validateWorkflow`, `runWorkflow`, dry run, inspection, CLI (`agentrun`) |
-| `packages/dsl/src/workflow.ts` | The interpreter: node execution, state paths, parallel merge, desugaring |
-| `packages/dsl/skills/author/` | Packaged authoring skill. `references/language.md` is the full node reference; `references/jev-decisions.md` covers judgment design |
-| `packages/dsl/schema/workflow.schema.json` | Generated editor schema |
-| `packages/jev` | `@parcha/agentrun-jev`: `createJevRunner()`, the `runJudge` adapter for Jev |
-| `packages/pi` | `@parcha/agentrun-pi`: the Pi extension (`/agentrun`) and Pi-backed `runNode` runner |
-| `packages/pi-durable-disk` | `@parcha/pi-durable-disk`: a durable pi host on a network disk, Archil in this release (claim, fence, lease, supervisor). It does not depend on the other packages. Its live suites (`PDA_LIVE=1`) need an Archil account and are not part of `npm test` or CI |
-| `packages/pi-browser` | `@parcha/pi-browser`: a browser for pi agents (session custody, evidence, typed failures; the pi coding agent's extension, a pi-durable adapter, Browserbase and local-Chrome providers, a fake backend in `./testing`). It does not depend on the other packages. It is a synced snapshot of the agentrun harness's `packages/pi-browser`: do not edit it here, the change goes to the harness and comes back through the sync. Its real-Chrome suites run in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`), not in `npm test` |
-| `packages/pi-vision` | `@parcha/pi-vision`: eyes for pi agents (documents, images, scans and video read within the model's limits, typed misses, a receipt with SHA-256 and price for every look; a host-neutral core, a pi-durable adapter, providers, fake eyes and a provider conformance suite in `./testing`). It does not depend on the other packages. Its suites that run ffmpeg and poppler live in `test/binaries` and run in the `vision-binaries` CI job (`npm run test:binaries -w @parcha/pi-vision`), not in `npm test`; its peers accept pi-durable and chord from 1.0.4 to 1.3.x and pi-ai at any version, so the `pi-1-2` job runs its suite on pi 1.2.0 and 1.3.0, and the `pi-vision-pi-floor` job runs it through `scripts/pi-leg.mjs` with pi-durable, chord and pi-ai at 1.0.4, the lowest its peers accept |
-| `packages/pi-transport` | `@parcha/pi-transport`: a pi agent's tools on the machine each step needs. A `Box` interface with providers for this machine, Docker, Daytona and Modal (`./box/*`); `boxEnv` and `transport()`, which run a session's tools in a box, from a strict transport config (`./hands`); a session's home in a box, its moves, checkpoints and restores (`./home`); the box place (`./place`); Jev's placer (`jevPlacer`) and box receipts (`boxReceipts`); and a box conformance suite in `./testing`. It does not depend on the other packages. Its tests run with Vitest on source (`npm test -w @parcha/pi-transport`), and its Docker suite is opt-in (`npm run test:live:docker -w @parcha/pi-transport`) |
-| `packages/pi-durable-agent` | `@parcha/pi-durable-agent`: an agent home, one directory of pi-durable stores that keeps an agent's definition, skills, browser sign-ins and runs index (`createAgentHome`, `startRun`, `durableProfileStore`, `carryBack`), the one packer that moves a home as a tar (`packHome`, `readPack`, `importPack`), its `./timeline` subpath, one human-readable timeline of a run (`timelineOf`, `timelineReducer`, `groupTimeline`, `renderText`), its `./export` subpath, the export lists with no import (`EXPORTABLE_KINDS`, `SECRET_KINDS`, `projectForExport`), and its `./workflow` subpath, which checks a workflow revision's body, runs it on its run's store with agentrun-pi's workflow task and reads the run back (`checkWorkflowBody`, `runWorkflowRevision`, `readWorkflowRun`, `revisionGraph`). It depends on `dsl` and `pi`, which only the `./workflow` functions load, lazily, so the root never does. Its tests run with `node --test` on `dist/` (`npm test -w @parcha/pi-durable-agent`) |
-| `packages/serve` | `@parcha/agentrun-serve`: the Agentrun v2 API (`agentrun.v2/0`) on this machine, over one agent store of `@parcha/pi-durable-agent` in a data directory (many agents, immutable revisions, agentic or workflow, and runs pinned to a revision), on `http://127.0.0.1:7340/v2` with a bearer token. Each run is a child process of `pi-durable-disk run` with the package's own app, which runs an agentic revision's root agent or a workflow revision's workflow; a faux model module (`--faux`) runs it with no key. It is held (`"private": true` in its manifest). Its tests run with `node --test` on `dist/` (`npm test -w @parcha/agentrun-serve`) and start real run processes on the faux model |
-| `packages/pi-git-remote` | `@parcha/pi-git-remote`: a git repository a host keeps for its agent (`openRepo`; the remotes `local`, `https` and `codeStorage`; `commitTo` through plumbing, idempotent by a `Run-Id` trailer, `push` by sha, `merge`, `revert`, `checkout`), and its `./coding-agent` subpath, a pi coding-agent extension (`createGitRemoteExtension`) that checks a ref out for a session and commits the allowlisted changes to `sessions/{sessionId}` when it ends. No hook, filter or driver of either repository runs, and an https credential reaches git only on fd 3. It does not depend on the other packages; its `@earendil-works/pi-coding-agent` peer is optional at `*`, pi 1.1.0 is its dev dependency, and the `pi-1-2` job runs its type-check and suite on pi 1.2.0 and 1.3.0. Its tests run with `node --test` on `dist/` (`npm test -w @parcha/pi-git-remote`) and need git 2.40 or later and `openssl`; `test/https.test.mjs` runs a TLS smart-HTTP server on 127.0.0.1 over `git http-backend` and answers only git's own requests; `test/hostile/` is a hostile-repository corpus with its own control under plain git |
-| `packages/pi-agent-learn` | `@parcha/pi-agent-learn`: an agent that learns in its own git repository, on top of `@parcha/pi-git-remote` (`agentLearn`, the pi-durable extension with the `learn` tool and the `<learned>` section; `seedLearning`, the host step that seeds a run from a commit; `guard`, the structural check every writer runs, and `proposeLearning`, the host step that commits a run's candidates to `runs/<run id>` once the guard passes them; the repository layout, with `agent.json` and `AGENTS.md` locked against every writer). Its pi-durable and chord peers accept 1.1 to 1.3.x, so the `pi-1-2` job runs its suite on pi 1.2.0 and 1.3.0. Its tests run with `node --test` on `dist/` (`npm test -w @parcha/pi-agent-learn`) and need git 2.40 or later |
-| `packages/learn` | `@parcha/agentrun-learn`: self-learning on any harness, as files. `SPEC.md` is the contract of an agent's own learning repository (the layout, the locked paths, the memo and note formats, the rules, the caps and the merge policy). `checkRun`, `checkBranch` and the `agentrun-learn check --base <ref>` bin are the structural checker of a run's branch before any merge, in a plain checkout, a pre-push hook or CI: it reads git objects with plumbing only, and refuses a workflow draft the DSL's `validateWorkflow` refuses, given the host's tool list (`--tools`) as its `tools` option; with no list, a draft that names any tool is refused, and a code node or a call node via shell or executor is always refused. It depends on `@parcha/agentrun-dsl` alone. It is held (`"private": true` in its manifest). Its tests run with `node --test` on `dist/` (`npm test -w @parcha/agentrun-learn`) and need git |
-| `packages/harness` | `@parcha/agentrun-harness`: the reference host as a package, so an example runs from an npm install: `run`, `demo` (the supervisor that kills and resumes a run's process anywhere), `localHost`, `placeAt`, the recorder and `codeOf`, with `./scan` (the one credential and machine-path scanner), `./child-app` (the app module for `pi-durable-disk run --app`) and `./place`. `@parcha/pi-transport` is an optional peer, needed only by a demo that declares `boxes`. Its example job is `examples/reference/` |
-| `packages/run-adapters` | `@parcha/agentrun-adapters`: the seam for agent harnesses other than Pi. `createHarnessRunner(adapter, options)` is exactly `runNode` (an injected `submit` on `submitParameters` from dsl, the turn cap and the host's `beforeRequest` before every paid request, sessions keyed by the recovery step's `sessionId`), `AgentAdapter` the interface a harness implements, `./kernel` the durable kernel an adapter runs on (effects recorded before they run, a crash's open `never` call reported interrupted and never rerun), `./host` the session's provider-neutral model proxy (a `ProviderPolicy` per provider), `./process` the shared process-harness layer copied from vercel-labs/durable-harness (`scripts/vendor-durable-harness.mjs` checks each copy against its pristine upstream file under `vendor/durable-harness/upstream/`, which never ships), and `./testing` a scripted harness. It is host-neutral: `scripts/check-package-imports.mjs` refuses an import of serve, the reference harness or the Pi runtime in it and in every `run-adapters-*` package. Code copied from vercel-labs/durable-harness is recorded in `vendor/durable-harness/UPSTREAM.json` and checked by `scripts/upstream-attribution.mjs` in `verify:packages`. It is held. Its tests run with `node --test` on `dist/` (`npm test -w @parcha/agentrun-adapters`) |
-| `spec/lean` | Optional Lean model of validation and execution, plus a conformance corpus shared with TypeScript, and a Lean model of a recovery driver's effects (`AgentRunRecovery/`) |
-| `spec/receipts` | TLA+ model of a recovery driver's effects across crashes and failed commits, with its TLC configs; `scripts/spec/` checks it and its guard mutants |
-| `examples/` | Support, typed research and starter app, offline by default with scripted adapters |
-| `changes/` | One changelog fragment per pull request, folded into the changelogs by the release |
-| `docs/` | `guide.md` (primitives, limits), `authoring.md`, `host-integration.md`, `releasing.md` |
-| `scripts/` | Node floor, schema and contract generation, source export, package and release verification |
+Each package's README is its API reference. Packages with no dependency on the others:
+`pi-durable-disk`, `pi-browser`, `pi-vision`, `pi-transport`, `pi-git-remote`.
 
-The thirteen packages share one version. `dsl`, `jev` and `pi` are published in that order, then `pi-durable-disk`, `pi-browser`, `pi-vision` and `pi-transport`, which depend on none of them, `pi-durable-agent`, which depends on `dsl` and `pi`, and `pi-git-remote`, which depends on none of them, then `pi-agent-learn`, which depends on `dsl`, `pi` and `pi-git-remote`. `harness`, `serve` and `learn` are held (`"private": true` in their manifests) while publishing them is on hold: each is built, tested, verified and kept at the workspace version like the others, and is in no publish path. Removing that one flag lifts a hold.
+| Path | What an agent must know |
+| --- | --- |
+| `packages/dsl` | `@parcha/agentrun-dsl`: types, validator, interpreter (`src/workflow.ts`), CLI (`agentrun`). Node reference: `skills/author/references/language.md`, generated from `src/author.ts` (edit the source); judgment design: `jev-decisions.md` beside it. `schema/workflow.schema.json` is generated too |
+| `packages/jev`, `packages/pi` | `runJudge` adapter for Jev; the Pi extension (`/agentrun`) and Pi-backed `runNode` |
+| `packages/pi-durable-disk` | Durable pi host on Archil. Tests run on `src/*.ts`; `PDA_LIVE=1` suites need Archil (or Daytona) credentials and run nowhere by default |
+| `packages/pi-browser` | Synced snapshot of the agentrun harness's `packages/pi-browser`: never edit it here. Real-Chrome suites run only in the `real-chrome` CI job (`npm run test:chrome -w @parcha/pi-browser`) |
+| `packages/pi-vision` | ffmpeg/poppler suites run only in the `vision-binaries` CI job; `pi-1-2` and `pi-vision-pi-floor` cover its peer range |
+| `packages/pi-transport` | Vitest on source; its biome `lint` and Docker suite (`test:live:docker`) run in the `transport-docker` CI job |
+| `packages/pi-durable-agent` | Agent home; subpaths `./timeline`, `./export`, `./workflow`, `./serve`; bin `pi-durable-agent`. Only `./workflow` loads `dsl` and `pi`, lazily |
+| `packages/serve` | Held. v2 API on `127.0.0.1:7340/v2`; each run is a `pi-durable-disk run` child; `--faux` needs no key and its tests use it |
+| `packages/pi-git-remote` | No repository hook, filter or driver ever runs; https credentials reach git only on fd 3. Tests need git 2.40+ and `openssl` |
+| `packages/pi-agent-learn` | Learning agent on `pi-git-remote`; locks `agent.json` and `AGENTS.md`, so `examples/agent-learn/agent/AGENTS.md` is runtime content. Tests need git 2.40+ |
+| `packages/learn` | Held. `SPEC.md` is the learning-repository contract; `agentrun-learn check` reads git with plumbing only. Depends on `dsl` alone |
+| `packages/harness` | Held. The reference host; `pi-transport` is an optional peer. Covered by `examples/reference*.test.mjs` |
+| `packages/run-adapters`, `run-adapters-claude-agent`, `run-adapters-codex` | Held. Host-neutral (`scripts/check-package-imports.mjs`). Code from vercel-labs/durable-harness is tracked in `vendor/durable-harness/UPSTREAM.json`; never hand-edit `vendor/durable-harness/upstream/`. `scripts/port-durable-harness.mjs` regenerates the copies from those pristine files, the named patches and the import table under `vendor/durable-harness/port/`; `npm run verify:port` (`--check`) fails on any byte it does not make. The Claude adapter pins an exact SDK/CLI pair, the Codex adapter Codex 0.164.0 (its key-holding proxy forwards only `POST /v1/responses`); their real-binary `test/tool-off.test.mjs` skips locally without the binary, and CI sets `AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1` and `AGENTRUN_CODEX_REQUIRE_BINARY=1` so it fails instead |
+| `apps/viewer` | Run viewer; `npm run test:viewer` (in `npm run check`) |
+| `spec/lean`, `spec/receipts` | Lean model plus conformance corpus; TLA+ models `Receipts.tla` and `Door.tla` (see Models of recovery) |
+| `examples/` | Offline (`npm run test:examples`, `*-live.test.mjs` included); runs with real keys are opt-in. Index: `docs/examples.md` |
+| `changes/`, `docs/`, `scripts/` | Changelog fragments; guides (`guide.md`, `authoring.md`, `host-integration.md`, `releasing.md`); generation and verification scripts |
+
+Sixteen packages share one version. `"private": true` holds `harness`, `serve`, `learn`,
+`run-adapters`, `run-adapters-claude-agent` and `run-adapters-codex`: built, tested, verified and versioned like the
+rest, never published; removing the flag lifts a hold. Release order: `scripts/release-preflight.mjs`.
 
 ## Setup and checks
 
-Use Node 22.19+ or 24.2+ (`.nvmrc`; release verification uses 22.23.2) and npm. `scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`.
+Use Node 22.19+ or 24.2+ (`.nvmrc` pins 22.23.2, the release toolchain) and npm 11 (CI pins 11.21.0).
+`scripts/check-node.mjs` refuses Node 23 and 24.0-24.1, which have no `import.meta.main`.
+Regenerate `package-lock.json` only with npm 11 (`npm install --package-lock-only`), never by hand,
+then `npm run export:source` and commit `docs/dependencies.md`: CI's `check-generated.mjs` fails on
+a stale one and `npm run check` does not catch it.
 
 ```sh
 npm ci --ignore-scripts
 npm run build
 npm test
-npm run check   # build, generated-file checks, typecheck, all tests
+npm run check   # build, generated-file checks, typecheck, all tests, examples, viewer
+npm run verify:packages   # packs each package into a clean consumer (install needs network; CI checks shard)
 ```
 
-Tests import from `dist/`, so rebuild before running a single file with `node --test`. Tests use scripted adapters and need no credentials or network. Live examples are opt-in. After changing workflow types, run `node scripts/generate-schema.mjs` and `node scripts/generate-author-contract.mjs`. For packaging changes, run `npm run export:source` and `npm run verify:source`.
+- Most package suites import `dist/`, so rebuild before running one file with `node --test`.
+  Exceptions: `pi-durable-disk` runs on `src/*.ts`, `pi-transport` runs Vitest on source.
+- Tests use scripted adapters and need no credentials or network. Live examples are opt-in.
+- After changing workflow types: `npm run build`, then `node scripts/generate-schema.mjs`,
+  `node scripts/generate-author-contract.mjs` (reads `packages/dsl/dist/`) and
+  `node scripts/generate-author-references.mjs`; `npm run check` fails on any stale output.
+- Fragments are validated by `node scripts/changes.mjs --check --base origin/main` (CI step 1),
+  which also fails any edit of an `Unreleased` section.
+- Packaging changes: `npm run export:source` and `npm run verify:source`.
 
 ## The host boundary
 
 The engine is policy-agnostic. It reaches the outside world only through three adapters:
 
-- `runNode` runs generative nodes (`agent`, `decide`, `extract`, `report`, and `markdown` or `report` artifacts) in the host's agent. A file `artifact` only names a file an earlier shell call produced.
+- `runNode` runs generative nodes (`agent`, `decide`, `extract`, `report`, and `markdown` or
+  `report` artifacts) in the host's agent. A file `artifact` only names a file an earlier shell call
+  produced.
 - `runJudge` answers typed questions (`judge`, `pick`, `sift`, `route`, `ask`, `verify`).
 - `runEffect` performs `call` nodes (tool, executor, shell).
 
-Provider configuration, SOP text, budgets and application policy stay in the host or in the workflow document that travels with the task, never in the interpreter. Node `metadata` belongs to the host; the engine never reads it.
+Provider configuration, SOP text, budgets and application policy stay in the host or in the workflow
+document that travels with the task, never in the interpreter. Node `metadata` belongs to the host;
+the engine never reads it.
 
 ## Jev
 
-Jev (TypeSafe System One) returns typed answers with probabilities: a boolean's yes-probability, a choice with confidence, or a leveled score. It writes no prose and calls no tools. Use it for one focused semantic decision per property: select evidence, compare a claim to its source, choose a route. Code does exact work (lookups, arithmetic, joins); agents do open-ended research. Give Jev the original source text, not an agent's paraphrase. Thresholds live in the workflow (`gte`, `route.unsure`, or a code gate on `<as>$answers`), and uncertainty escalates or takes an explicit fallback. Live calls need `TYPESAFE_API_KEY` (or `OPENROUTER_API_KEY` with `provider: "openrouter"`); tests never do.
+Jev (TypeSafe System One) returns typed answers with probabilities: a boolean's yes-probability, a
+choice with confidence, or a leveled score. It writes no prose and calls no tools. Use it for one
+focused semantic decision per property: select evidence, compare a claim to its source, choose a
+route. Code does exact work (lookups, arithmetic, joins); agents do open-ended research. Give Jev
+the original source text, not an agent's paraphrase. Thresholds live in the workflow (`gte`,
+`route.unsure`, or a code gate on `<as>$answers`), and uncertainty escalates or takes an explicit
+fallback. Live calls need `TYPESAFE_API_KEY` (or `OPENROUTER_API_KEY` with `provider:
+"openrouter"`); tests never do.
 
 ## Lean
 
-`spec/lean` is a contributor tool, not a runtime dependency. It proves properties of a model of the interpreter, and the cases in `spec/lean/conformance/*.json` check that the model and TypeScript agree on them. When validation, state paths, branch merges, loops or desugaring change:
+`spec/lean` is a contributor tool, not a runtime dependency. It proves properties of a model of the
+interpreter, and the cases in `spec/lean/conformance/*.json` check that the model and TypeScript
+agree on them. When validation, state paths, branch merges, loops or desugaring change:
 
-1. Add a TypeScript regression test whose expected result was chosen independently of the implementation.
-2. Update the Lean definitions or proofs if the model or its assumptions changed, and add a conformance case.
-3. Run the Lean checks in [CONTRIBUTING.md](CONTRIBUTING.md#changing-workflow-behavior) (`lake build`, `lake exe conformance`, the validator sweep).
+1. Add a TypeScript regression test whose expected result was chosen independently of the
+   implementation.
+2. Update the Lean definitions or proofs if the model or its assumptions changed, and add a
+   conformance case.
+3. Run the Lean checks in [CONTRIBUTING.md](CONTRIBUTING.md#changing-workflow-behavior) (`lake
+   build`, `lake exe conformance`, the validator sweep).
 
 CI runs Lean separately from `npm run check`. Documentation-only changes don't need Lean.
 
 ## Models of recovery
 
-`spec/receipts/Receipts.tla` (TLA+, checked by TLC with guard mutants) and `spec/lean/AgentRunRecovery/Frozen.lean` (Lean) state what a recovery driver does with effects across crashes, failed commits and the host's cancel: admit before dispatch, one dispatch per effect, a resume that answers a completed effect and refuses an unknown one, nothing admitted after a failed commit or a stop, a stop the host lets go of on the journal or reported as refused, and a cancelled run that never resumes.
+`spec/receipts/Receipts.tla` (TLA+, checked by TLC with guard mutants) and
+`spec/lean/AgentRunRecovery/Frozen.lean` (Lean) state what a recovery driver does with effects
+across crashes, failed commits and the host's cancel (admit before dispatch, one dispatch per
+effect, never resume a cancelled run). `spec/receipts/Door.tla` models the serve door's journal.
 
-**A change to modeled behavior changes the model in the same pull request.** When a change touches what either model states (the recovery hooks in `workflow.ts`, the `RecoveryStore` contract, or a driver over it), update `Receipts.tla`, its mutants and `Frozen.lean` together, run `scripts/spec/check-receipts.sh`, `node scripts/spec/receipts-mutants.mjs` and `lake build`, or say in the pull request why the model does not move. A property that breaks is fixed in code or recorded with a test that reproduces its counterexample, never deleted.
+**A change to modeled behavior changes the model in the same pull request.** When a change touches
+what a model states (the recovery hooks in `workflow.ts`, the `RecoveryStore` contract, a driver
+over it, or the door in `packages/pi-durable-disk/src/door.ts`), update the TLA+ model and its
+mutants (plus `Frozen.lean` for a driver; the door is `Door.tla` only) and run the checks in
+[CONTRIBUTING.md](CONTRIBUTING.md#changing-recovery-behavior) (Java 11+ and `TLA2TOOLS` set to
+`tla2tools.jar`; `lake build` runs in `spec/lean`), or say in the pull request why the model does
+not move. A property that breaks is fixed in code or recorded with a test that reproduces its
+counterexample, never deleted.
 
 ## Rules
 
-- For a behavior change, add a test that fails before the change and asserts what the caller depends on. Mock at adapter boundaries.
-- Keep semantic judgment in the model and execution invariants in code. Structural checks (shape, schema, reachability, state paths) belong in the validator; meaning belongs in a typed question. A heuristic patched a second time for new phrasing should become a question.
-- Change one falsifiable thing at a time. A passing unit test or a model verdict does not prove a host integration works.
-- Make failures observable: keep evidence, provenance, limits and cancellation. Never rerun an uncertain effect blindly.
-- Never edit a fixture, check or threshold just to make a changed implementation pass, and never let a candidate rewrite its own verifier.
-- A generative node carries the whole rubric it applies: `sopSection` lists every SOP section the decision depends on, and merged nodes inherit the union. Don't paraphrase policy into `instructions`.
-- Extend the existing node, adapter and lifecycle interfaces before adding a mechanism. Delete superseded machinery only after its replacement passes.
-- Document breaking changes and failure behavior in a fragment, `changes/<slug>.md` (see [changes/README.md](changes/README.md)); the release folds fragments into the changelogs. Never edit an `Unreleased` section of a `CHANGELOG.md`.
-- Before a pull request goes to the maintainer, its author runs the ship-pr skill (`.agents/skills/ship-pr/SKILL.md`): one gate for every package, from a fresh base to CI and review threads.
-- This repository is public. Keep machine paths, internal hostnames, credentials and customer data out of code, tests, commits and issues. `npm run export:source` rejects many of these.
-- Never publish from a local machine. Releases go through the reviewed workflow in [docs/releasing.md](docs/releasing.md).
+- For a behavior change, add a test that fails before the change and asserts what the caller depends
+  on. Mock at adapter boundaries.
+- Keep semantic judgment in the model and execution invariants in code. Structural checks (shape,
+  schema, reachability, state paths) belong in the validator; meaning belongs in a typed question. A
+  heuristic patched a second time for new phrasing should become a question.
+- Change one falsifiable thing at a time. A passing unit test or a model verdict does not prove a
+  host integration works.
+- Make failures observable: keep evidence, provenance, limits and cancellation. Never rerun an
+  uncertain effect blindly.
+- Never edit a fixture, check or threshold just to make a changed implementation pass, and never let
+  a candidate rewrite its own verifier.
+- A generative node carries the whole rubric it applies: `sopSection` lists every SOP section the
+  decision depends on, and merged nodes inherit the union. Don't paraphrase policy into
+  `instructions`.
+- Extend the existing node, adapter and lifecycle interfaces before adding a mechanism. Delete
+  superseded machinery only after its replacement passes.
+- Document breaking changes and failure behavior in a fragment, `changes/<slug>.md` (see
+  [changes/README.md](changes/README.md)); the release folds fragments into the changelogs. Never
+  edit an `Unreleased` section of a `CHANGELOG.md`.
+- Before a pull request goes to the maintainer, its author runs the ship-pr skill
+  (`.agents/skills/ship-pr/SKILL.md`): one gate for every package, from a fresh base to CI and
+  review threads.
+- This repository is public. Keep machine paths, internal hostnames, credentials and customer data
+  out of code, tests, commits and issues. `npm run export:source` rejects many of these.
+- Never publish from a local machine. Releases go through the reviewed workflow in
+  [docs/releasing.md](docs/releasing.md).
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md), never in a public issue.

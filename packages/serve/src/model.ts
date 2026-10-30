@@ -37,18 +37,20 @@ export function modelSource(env: NodeJS.ProcessEnv): ModelSource {
   return { source: "providers", ...each((tier) => tierModel(env, tier) ?? null) };
 }
 
-/** The tiers a workflow's model nodes name; a node that names none is `default`. */
-export function nodeTiers(workflow: unknown): Tier[] {
+/** A workflow's nodes as the DSL's inspection lists them, each read from the document at its path: only what the
+ *  workflow's structure makes a node, never data shaped like one (a node's `state` may hold an example node). */
+export function workflowNodes(workflow: unknown, inspection: { nodes: readonly { path: string }[] }): Record<string, unknown>[] {
+  const at = (path: string) => path.split("/").slice(1).reduce<unknown>((value, part) => (value as Record<string, unknown>)[part.replace(/~1/g, "/").replace(/~0/g, "~")], workflow);
+  return inspection.nodes.map(({ path }) => at(path) as Record<string, unknown>);
+}
+
+/** The tiers a workflow's model nodes name (`nodes` from workflowNodes); a node that names none is `default`. */
+export function nodeTiers(nodes: readonly Record<string, unknown>[]): Tier[] {
   const tiers = new Set<Tier>();
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) return value.forEach(visit);
-    if (typeof value !== "object" || value === null) return;
-    const node = value as Record<string, unknown>;
+  for (const node of nodes) {
     const model = (MODEL_NODES as readonly unknown[]).includes(node.node) || (node.node === "artifact" && ["markdown", "report"].includes(String(node.type)));
     if (model) tiers.add((TIERS as readonly unknown[]).includes(node.tier) ? (node.tier as Tier) : "default");
-    Object.values(node).forEach(visit);
-  };
-  visit((workflow as { root?: unknown } | null)?.root);
+  }
   return TIERS.filter((tier) => tiers.has(tier));
 }
 
@@ -124,12 +126,13 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | undefined,
   const models = createModels();
   if (!ids.length) return { models, model, byTier };
   if (faux) {
-    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | "unknown" };
+    const mod = (await import(pathToFileURL(faux).href)) as { default?: unknown; cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | "unknown"; contextWindow?: number };
     const price = typeof mod.cost === "object" ? mod.cost : undefined;
     if (typeof mod.default !== "function") throw new Error(`the faux module ${faux} has no default export function`);
     const reply = mod.default as (context: unknown, helpers: FauxHelpers) => unknown;
     const helpers: FauxHelpers = { message: ai.fauxAssistantMessage, text: ai.fauxText, thinking: ai.fauxThinking, toolCall: ai.fauxToolCall };
-    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}) })) as [{ id: string }, ...{ id: string }[]] });
+    // `contextWindow` sizes the faux model's window, so a test can make a run long enough to compact.
+    const core = ai.createFauxCore({ models: ids.map((id) => ({ id, ...(price ? { cost: price } : {}), ...(typeof mod.contextWindow === "number" ? { contextWindow: mod.contextWindow } : {}) })) as [{ id: string }, ...{ id: string }[]] });
     const step = (async (context: unknown, options?: { signal?: AbortSignal }) => reply(context, { ...helpers, ...(options?.signal ? { signal: options.signal } : {}) })) as unknown as Parameters<typeof core.setResponses>[0][number];
     core.setResponses(Array.from({ length: 10_000 }, () => step));
     // `cost` (USD per million tokens) prices the faux model's usage, which the faux core leaves at $0, so a run's

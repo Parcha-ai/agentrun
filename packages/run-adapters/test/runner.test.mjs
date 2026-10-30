@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test as nodeTest } from 'node:test';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { openRecovery, openJournal, withRecovery, memoryStore } from '@parcha/agentrun-dsl/recovery';
-import { createHarnessRunner, HarnessRunError, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
+import { createHarnessRunner, HarnessRunError, modelPortFor, RUNNER_RECORDS } from '@parcha/agentrun-adapters';
 import { fauxAdapter as scriptedAdapter, memorySessionStore, FAUX_RECORDS } from '@parcha/agentrun-adapters/testing';
 
 /** Every test fails in 30 s at most: a node a regression leaves waiting fails the run instead of hanging it. */
@@ -357,13 +357,46 @@ test("after a crash cut a paid request off, the host's beforeRequest sees it: th
   assert.deepEqual(outcome.value, { answer: 'ok' });
 });
 
+test('a paid request a crash cut off is booked once as cut, at an unknown price, however many times the session is recovered', async () => {
+  const store = memorySessionStore();
+  const ends = [];
+  const onEvent = (e) => { if (e.type === 'request_end') ends.push({ turn: e.turn, ...e.usage }); };
+  // The first process: its paid request leaves and the process dies before an answer.
+  const dying = fauxAdapter({ script: () => [{ cut: true }] });
+  const died = new AbortController();
+  const first = createHarnessRunner(dying, { store, onEvent, signal: died.signal, timeoutMs: 5_000 })(stepRequest());
+  await until(() => dying.requests >= 1, 'a paid request');
+  died.abort(new Error('the process died'));
+  await assert.rejects(first);
+  // The second process dies before its harness opens; the third delivers.
+  const gone = { id: 'gone', version: '0', capabilities: () => ({ fork: false }), check: () => [], open: async () => { throw new Error('the box was lost'); } };
+  await assert.rejects(createHarnessRunner(gone, { store, onEvent, timeoutMs: 5_000 })(stepRequest()));
+  const next = fauxAdapter({ script: () => [{ submit: { answer: 'ok' } }] });
+  assert.deepEqual(await createHarnessRunner(next, { store, onEvent })(stepRequest()), { answer: 'ok' });
+  const cuts = (await store.read('step:s1')).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true);
+  assert.deepEqual(cuts.map((r) => r.data), [{ usd: null, cut: true, turn: 1 }], 'one cut booking, for turn 1');
+  assert.deepEqual(ends.filter((e) => e.cut), [{ turn: 1, input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }], 'the host was told once');
+  assert.equal(ends.filter((e) => !e.cut).length, 1, "the third process's own request");
+});
+
 test('a session that opens after the run was stopped is interrupted and closed, so no harness outlives the node', async () => {
-  const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'late' } }], openDelayMs: 200 });
+  const adapter = fauxAdapter({ script: () => [{ submit: { answer: 'late' } }] });
+  // A slow harness start, held by the test: the open begins, the run is stopped, and only then does the open finish.
+  let opening = false;
+  let finishOpen;
+  const gate = new Promise((resolve) => { finishOpen = resolve; });
+  const open = adapter.open.bind(adapter);
+  adapter.open = async (spec, io) => { opening = true; await gate; return open(spec, io); };
   const stop = new AbortController();
   const running = createHarnessRunner(adapter, { store: memorySessionStore(), timeoutMs: 5_000 })(stepRequest({ signal: stop.signal }));
-  setTimeout(() => stop.abort(new Error('cancel')), 50);
-  await assert.rejects(running, (error) => error.reason === 'aborted');
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await until(() => opening, 'the session opening');
+  stop.abort(new Error('cancel'));
+  const rejected = assert.rejects(running, (error) => error.reason === 'aborted');
+  finishOpen();
+  await rejected;
+  await until(() => adapter.closed.length === 1, 'the late session closed');
+  // A window for a request the closed session must not make; it can only miss one, never fail the test by itself.
+  await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual([adapter.opened.length, adapter.closed.length, adapter.requests], [1, 1, 0]);
 });
 
@@ -462,4 +495,222 @@ test('a stop that lands while the session store is being read rejects aborted at
     assert.ok(Date.now() - released < 200, `${via}: promptly`);
     assert.equal(adapter.opened.length, 0, `${via}: no session was opened`);
   }
+});
+
+test("modelPortFor, alone (a chat run's session): the runner's records and events, its turn limit and refusal, and a cut request booked once across processes", async () => {
+  const store = memorySessionStore();
+  const key = 'chat:c1';
+  const events = [];
+  const asked = [];
+  const port = async (extra = {}) => modelPortFor(await store.open(key), { key, maxTurns: 3, beforeRequest: (r) => { asked.push([r.key, r.turn, r.spentUsd]); }, onEvent: (e) => events.push(e), ...extra });
+  const runnerRecords = async () => (await store.read(key)).filter((r) => r.kind.startsWith('runner.')).map((r) => [r.kind, r.data]);
+
+  // The first process: one answered request, then one a crash cuts off (it left, no answer came back).
+  const first = await port();
+  await first.models.beforeRequest({ model: 'm' });
+  await first.models.afterRequest({ input: 10, output: 2, cacheRead: 0, usd: 0.5 });
+  await first.models.beforeRequest({ model: 'm' });
+  assert.deepEqual(await runnerRecords(), [[RUNNER_RECORDS.request, { turn: 1, model: 'm' }], [RUNNER_RECORDS.turn, { turn: 1, usd: 0.5 }], [RUNNER_RECORDS.request, { turn: 2, model: 'm' }]], "the runner's own records: each answer names its turn");
+  assert.deepEqual([first.turns(), first.spentUsd()], [2, 0.5]);
+
+  // The next process: the cut request counts as a turn, the spend is unknown, and it is booked once, as cut.
+  events.length = 0;
+  const second = await port();
+  assert.deepEqual([second.turns(), second.spentUsd()], [2, null]);
+  await second.bookCut();
+  await second.bookCut();
+  const third = await port();
+  await third.bookCut();
+  const cuts = (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut === true).map((r) => r.data);
+  assert.deepEqual(cuts, [{ usd: null, cut: true, turn: 2 }], 'booked once, across processes');
+  assert.deepEqual(events, [{ type: 'request_end', turn: 2, usage: { input: 0, output: 0, cacheRead: 0, usd: null, estimated: true, cut: true }, key, label: key }], "the host is told once, with the session's key and the request's turn");
+
+  // The turn limit counts the cut request; the host's beforeRequest saw the session's key, its turn and the spend.
+  await third.models.beforeRequest({ model: 'm' });
+  await assert.rejects(third.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'turn_limit');
+  assert.deepEqual(asked, [[key, 1, 0], [key, 2, 0.5], [key, 3, null]]);
+  // A refusal from the host refuses the request, and nothing is written for it.
+  const refusing = await port({ maxTurns: null, beforeRequest: () => ({ refuse: 'over budget' }) });
+  const before = (await store.read(key)).length;
+  await assert.rejects(refusing.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'refused');
+  assert.equal((await store.read(key)).length, before);
+});
+
+test('requests in flight together are each booked under the turn they were admitted as: answers in reverse, and a cut one booked by its own turn', async () => {
+  const store = memorySessionStore();
+  const key = 'chat:overlap';
+  const ends = [];
+  const port = async () => modelPortFor(await store.open(key), { key, onEvent: (e) => { if (e.type === 'request_end') ends.push([e.turn, e.usage.usd, e.usage.cut ?? false]); } });
+  const turnsOf = async () => (await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn).map((r) => [r.data.turn, r.data.usd, r.data.cut ?? false]);
+
+  // Two in flight, answered in reverse: each answer names its own turn, once.
+  const a = await port();
+  const t1 = await a.models.beforeRequest({ model: 'main' });
+  const t2 = await a.models.beforeRequest({ model: 'small' });
+  await a.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.02 }, t2);
+  await a.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.01 }, t1);
+  assert.deepEqual(ends, [[2, 0.02, false], [1, 0.01, false]]);
+  assert.deepEqual(await turnsOf(), [[2, 0.02, false], [1, 0.01, false]]);
+
+  // Two more in flight; the later one answers, the earlier is cut by a crash: only the cut one is booked, by its turn.
+  const t3 = await a.models.beforeRequest({ model: 'main' });
+  const t4 = await a.models.beforeRequest({ model: 'small' });
+  await a.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.04 }, t4);
+  assert.deepEqual([t3?.turn, t4?.turn], [3, 4]);
+  ends.length = 0;
+  const b = await port();
+  await b.bookCut();
+  await (await port()).bookCut();
+  assert.deepEqual(ends, [[3, null, true]], 'turn 3 booked as cut, once, and turn 4 not again');
+  assert.deepEqual((await turnsOf()).filter(([, , cut]) => cut), [[3, null, true]]);
+});
+
+test("two paid requests asked for at once are admitted one after the other: the second waits for the first's durable write, then each has its own turn and its own record", async () => {
+  const inner = await memorySessionStore().open('chat:together');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let held = 0;
+  // The session's writer, with the first append held open.
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { held += 1; if (held === 1) await gate; await inner.append(records); } };
+  const starts = [];
+  const asked = [];
+  const booking = await modelPortFor(writer, { key: 'chat:together', beforeRequest: (r) => { asked.push(r.turn); }, onEvent: (e) => { if (e.type === 'request_start') starts.push(e.turn); } });
+  const both = Promise.all([booking.models.beforeRequest({ model: 'main' }), booking.models.beforeRequest({ model: 'small' })]);
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.equal(held, 1, 'the second admission has not reached the writer while the first is inside its write');
+  assert.deepEqual(asked, [1], 'nor asked the host');
+  release();
+  const tickets = await both;
+  assert.deepEqual(tickets.map((t) => t.turn), [1, 2]);
+  assert.deepEqual(asked, [1, 2]);
+  assert.deepEqual((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => [r.data.turn, r.data.model]), [[1, 'main'], [2, 'small']]);
+  assert.deepEqual(starts, [1, 2]);
+});
+
+test('two paid requests asked for at once never pass the turn limit together: with one turn left, the second is refused', async () => {
+  const store = memorySessionStore();
+  await assert.rejects(createHarnessRunner(plannedAdapter([{ both: true }]), { store, maxTurns: 1 })(stepRequest()), (error) => error instanceof HarnessRunError && error.reason === 'turn_limit');
+  assert.equal((await store.read('step:s1')).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'one paid request left');
+});
+
+test("the host sees the requests in flight, so a budget holds each one's worst case until it answers (two at once, each 0.6 of the cap: the second is refused)", async () => {
+  const cap = 1, worst = 0.6;
+  const seen = [];
+  // The host's rule: what is spent, plus the worst case of every request still in flight, plus this one's, within the cap.
+  const beforeRequest = (r) => {
+    seen.push(r.inFlight.map((f) => [f.turn, f.model]));
+    if ((r.spentUsd ?? Infinity) + r.inFlight.length * worst + worst > cap) return { refuse: 'over the cap' };
+  };
+  const booking = await modelPortFor(await memorySessionStore().open('chat:cap'), { key: 'chat:cap', beforeRequest });
+  const [first, second] = await Promise.allSettled([booking.models.beforeRequest({ model: 'main' }), booking.models.beforeRequest({ model: 'small' })]);
+  assert.deepEqual(first, { status: 'fulfilled', value: { turn: 1 } });
+  assert.ok(second.status === 'rejected' && second.reason instanceof HarnessRunError && second.reason.reason === 'refused', String(second.reason));
+  assert.deepEqual(seen, [[], [[1, 'main']]]);
+  // Answered, the first is no longer held: a third request fits (0.3 spent + 0.6).
+  await booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.3 }, first.value);
+  assert.deepEqual(await booking.models.beforeRequest({ model: 'main' }), { turn: 2 });
+  assert.deepEqual(seen[2], []);
+});
+
+// The booking's writes can fail. Each case below is one way a failed or stalled write once let a session spend
+// uncounted, lose a turn to nothing, hang past its cancellation, or book a cut request twice.
+
+test("modelPortFor with no stop of its own: a paid request whose cost can't be recorded stops the booking, and no later request is admitted", async () => {
+  const inner = await memorySessionStore().open('chat:costfail');
+  let failTurn = true;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (failTurn && records.some((r) => r.kind === RUNNER_RECORDS.turn)) { failTurn = false; throw new Error('disk full'); } await inner.append(records); } };
+  const booking = await modelPortFor(writer, { key: 'chat:costfail' });
+  const ticket = await booking.models.beforeRequest({ model: 'm' });
+  await assert.rejects(booking.models.afterRequest({ input: 1, output: 1, cacheRead: 0, usd: 0.1 }, ticket), /disk full/);
+  await assert.rejects(booking.models.beforeRequest({ model: 'm' }), (e) => e instanceof HarnessRunError && e.reason === 'model_error' && /could not be recorded/.test(e.message), 'the next paid request is refused');
+  assert.equal((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).length, 1, 'no second request was admitted');
+});
+
+test("a request whose admission record can't be written is refused and costs no turn: the next one is admitted as turn 1, within a limit of 1", async () => {
+  const inner = await memorySessionStore().open('chat:reqfail');
+  let failRequest = true;
+  const writer = { key: inner.key, read: () => inner.read(), append: async (records) => { if (failRequest && records.some((r) => r.kind === RUNNER_RECORDS.request)) { failRequest = false; throw new Error('write failed'); } await inner.append(records); } };
+  const booking = await modelPortFor(writer, { key: 'chat:reqfail', maxTurns: 1 });
+  await assert.rejects(booking.models.beforeRequest({ model: 'm' }), /write failed/);
+  assert.equal(booking.turns(), 0, 'the refused request is no turn');
+  assert.deepEqual(await booking.models.beforeRequest({ model: 'm' }), { turn: 1 });
+  assert.deepEqual((await inner.read()).filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => r.data.turn), [1], 'the saved turn numbers have no gap');
+});
+
+test('bookCut called twice at once books a cut request once, with one request_end', async () => {
+  const store = memorySessionStore();
+  const key = 'chat:cuttwice';
+  const first = await modelPortFor(await store.open(key), { key });
+  await first.models.beforeRequest({ model: 'm' });
+  // The next process, whose writes take a moment: both bookCut calls start before either write lands.
+  const inner = await store.open(key);
+  const writer = { key, read: () => inner.read(), append: async (records) => { await new Promise((resolve) => setTimeout(resolve, 20)); await inner.append(records); } };
+  const ends = [];
+  const second = await modelPortFor(writer, { key, onEvent: (e) => { if (e.type === 'request_end') ends.push(e.turn); } });
+  await Promise.all([second.bookCut(), second.bookCut()]);
+  assert.deepEqual((await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).map((r) => r.data.turn), [1], 'booked once');
+  assert.deepEqual(ends, [1], 'the host is told once');
+});
+
+test("a resumed node whose store stalls while booking a cut request still stops at its timeout, and opens no session", async () => {
+  const inner = memorySessionStore();
+  const key = 'step:s1';
+  // An earlier process admitted a paid request and was cut off before its answer.
+  await (await inner.open(key)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: 'm' } }]);
+  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, read: () => w.read(), append: (records) => (records.some((r) => r.data?.cut) ? new Promise(() => {}) : w.append(records)) }; } };
+  let opened = 0;
+  const planned = plannedAdapter([]);
+  const adapter = { ...planned, open: (...args) => { opened += 1; return planned.open(...args); } };
+  const started = Date.now();
+  await assert.rejects(createHarnessRunner(adapter, { store, timeoutMs: 200 })(stepRequest()), (e) => e instanceof HarnessRunError && e.reason === 'timeout');
+  assert.ok(Date.now() - started < 5_000, `stopped at its timeout (${Date.now() - started} ms)`);
+  assert.equal(opened, 0, 'no session was opened');
+});
+
+test('a bookCut whose write fails can be called again: the next call books the cut request, once', async () => {
+  const store = memorySessionStore();
+  const key = 'chat:cutretry';
+  await (await modelPortFor(await store.open(key), { key })).models.beforeRequest({ model: 'm' });
+  const inner = await store.open(key);
+  let failOnce = true;
+  const writer = { key, read: () => inner.read(), append: async (records) => { if (failOnce) { failOnce = false; throw new Error('store hiccup'); } await inner.append(records); } };
+  const booking = await modelPortFor(writer, { key });
+  await assert.rejects(booking.bookCut(), /store hiccup/);
+  await booking.bookCut();
+  assert.deepEqual((await store.read(key)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data.cut).map((r) => r.data.turn), [1], 'booked once, by the second call');
+});
+
+test('a node stopped while it books a cut request opens no session', async () => {
+  const inner = memorySessionStore();
+  const key = 'step:s1';
+  await (await inner.open(key)).append([{ kind: RUNNER_RECORDS.request, data: { turn: 1, model: 'm' } }]);
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let booking = false;
+  // The cut booking's write waits until released; the node is stopped meanwhile, then the write lands.
+  const store = { ...inner, open: async (k) => { const w = await inner.open(k); return { key: w.key, read: () => w.read(), append: async (records) => { if (records.some((r) => r.data?.cut)) { booking = true; await held; } return w.append(records); } }; } };
+  let opened = 0;
+  const planned = plannedAdapter([]);
+  const adapter = { ...planned, open: (...args) => { opened += 1; return planned.open(...args); } };
+  const stop = new AbortController();
+  const running = createHarnessRunner(adapter, { store, signal: stop.signal, timeoutMs: null })(stepRequest());
+  await until(() => booking, 'the cut booking under way');
+  stop.abort(new Error('stopped'));
+  await assert.rejects(running, (e) => e instanceof HarnessRunError && e.reason === 'aborted');
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(opened, 0, 'no session was opened, before or after the write landed');
+});
+
+test('the submit tool carries no criteria, and a submission is checked against the node schema as written', async () => {
+  // The local $ref only resolves in the original document: a check compiled from the envelope's relocated copy would
+  // refuse this valid submission.
+  const schemas = { Out: { type: 'object', required: ['label'], additionalProperties: false, properties: { label: { $ref: '#/definitions/Label' } },
+    definitions: { Label: { type: 'string', enum: ['bug', 'docs'], criteria: { bug: 'Broken.', docs: 'Documentation.' } } } } };
+  const seen = [];
+  const adapter = fauxAdapter({ script: (spec) => { seen.push(spec.tools.find((t) => t.name === 'submit').inputSchema); return [{ submit: { label: 'bug' } }]; } });
+  const result = await runWorkflow(doc(agent(), schemas), {}, { runNode: createHarnessRunner(adapter, { store: memorySessionStore() }) });
+  assert.deepEqual(result.output, { label: 'bug' });
+  assert.equal(JSON.stringify(seen[0]).includes('"criteria"'), false);
+  assert.equal(adapter.requests, 1, 'accepted at the first submit');
 });

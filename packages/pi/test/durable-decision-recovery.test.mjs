@@ -59,16 +59,20 @@ test('killed between a decision\'s commit and its use: the resumed run decides w
   assert.deepEqual(pick(second, 'rebuilt'), [receipt]);
 });
 
-test('killed at the same point, a host that does not answer from its rows asks the judge again and decides otherwise', async () => {
+test('killed at the same point, a host that does not answer from its rows routes the run to review instead of asking the judge again', async () => {
   judged = 0;
   const file = join(mkdtempSync(join(root, 'asked-')), 'run.sqlite');
   const first = await run('start', file, { KILL_AT: 'after-decision', REPLAY: '0' });
   assert.equal(first.exit, 'SIGKILL', first.err);
   const second = await run('resume', file, { REPLAY: '0' });
   assert.equal(second.exit, 0, second.err);
-  assert.deepEqual([judged, output(pick(second, 'ended'))], [2, { urgent: false }]);
-  // The same request asked again carries the same id.
-  assert.deepEqual(pick(second, 'rows').map((row) => row.decision_id), [pick(first, 'receipt').id, pick(first, 'receipt').id]);
+  // The answer the killed process was paid for never reaches this run, and the judge is not paid for it again.
+  const result = pick(second, 'ended')?.outcome?.result;
+  assert.deepEqual([judged, result?.status, result?.escalation?.kind, result?.escalation?.label], [1, 'escalated', 'decision_interrupted', 'triage']);
+  // The same request is booked again under the same id, at an unknown cost.
+  const rows = pick(second, 'rows');
+  assert.deepEqual(rows.map((row) => row.decision_id), [pick(first, 'receipt').id, pick(first, 'receipt').id]);
+  assert.equal(rows[1].cost_usd, null);
 });
 
 test('the same workflow and input under two keys in one Harness: the second run asks its own judge and decides by its own answer', async () => {
