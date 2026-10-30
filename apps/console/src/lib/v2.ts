@@ -5,7 +5,8 @@ export type RunState = "working" | "waiting" | "idle";
 
 export type ApiError = { code: string; message: string; retryable: boolean; request_id?: string };
 
-export type RunReview = { kind: string; node: string; reason: string; at: string };
+/** `kind` and `node` are null on a run escalated before serve named them; `reason` then comes from the escalation. */
+export type RunReview = { kind: string | null; node: string | null; reason: string; at: string };
 
 export type Cost = { usd: number | null; basis: string; charge_state: string | null; cap_usd: number | null };
 

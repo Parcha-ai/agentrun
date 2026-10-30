@@ -73,7 +73,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {view.needsYou && <NeedsYou waiting={waiting} />}
           {tab === "report" && <RunResult run={run} rows={rows} />}
           {tab === "report" && !run.result && !view.final && <Working title="Writing the answer" note="The answer appears here when the run finishes. Follow it on the timeline." spin={view.live} />}
-          {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && (
+          {tab === "report" && view.final && !run.result?.final_answer && !run.result?.output && !rows.some((r) => r.kind === "final_answer") && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-[13px] text-muted-foreground">This run gave no answer.</p>
           )}
           {tab === "timeline" && <Timeline rows={rows} live={view.live} />}
@@ -93,9 +93,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
 export function ReviewNotice({ review }: { review: RunReview }) {
   return (
     <section className="border border-warning/60 p-4" role="status">
-      <p className="caps text-[11px] text-warning-text">Needs review · {review.kind}</p>
+      <p className="caps text-[11px] text-warning-text">Needs review{review.kind ? ` · ${review.kind}` : ""}</p>
       <p className="mt-2 text-[14px]">{review.reason}</p>
-      <p className="mt-2 font-mono text-[11px] text-muted-foreground">Sent for review at {review.node}, {when(review.at)}.</p>
+      <p className="mt-2 font-mono text-[11px] text-muted-foreground">Sent for review{review.node ? ` at ${review.node}` : ""}, {when(review.at)}.</p>
     </section>
   );
 }
