@@ -17,11 +17,11 @@ import { dirname, join } from "node:path";
 import { CallsInFlight, openAdapterSession, READ_SKILL_FILE, readSkillFileTool, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage } from "@parcha/agentrun-kernel";
 import type { HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { hostHeaderProblems, type ModelProxyOptions, watchClose } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { builtinTools, type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
-import { type ConfineChild, localMachine } from "./host/machine.js";
+import { type ConfineChild, localMachine, type MachineBox } from "./host/machine.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
@@ -165,10 +165,10 @@ export interface ClaudeAgentAdapterOptions {
    *  NotebookEdit, WebFetch), `false` none, or a list of names. The tools whose state lives outside the log
    *  (CLAUDE_BUILTINS_OFF) and the provider-hosted ones stay off whatever this says. */
   builtins?: boolean | readonly string[];
-  /** Run the CLI's commands without its own sandbox when bubblewrap does not work on the machine. Off unless set: a
-   *  session whose built-ins are on then fails, with a named error, where bubblewrap does not work. Set it only where
-   *  something else is the boundary; it is never a quiet fallback. */
-  unsandboxedCommands?: boolean;
+  /** The host's box for the CLI (@parcha/agentrun-kernel/host's MachineBox), or `unsandboxed`, the operator's word
+   *  that there is none. Absent: the host gives none, and a session with built-ins on fails with a named error. The
+   *  CLI's own sandbox is never used: in the box it is off, the box being the boundary. */
+  box?: MachineBox | "unsandboxed";
 }
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
@@ -351,9 +351,11 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const builtins = options.builtins ?? true;
       // The built-ins this session offers the model, the Skill tool with skills: the proxy forwards exactly these.
       const native = [...(builtinTools(builtins === true ? true : builtins === false ? false : [...builtins]) ?? []), ...(skills.length ? ["Skill"] : [])];
-      const acquire = localMachine({
+      // A close that found the box not empty fails the drive (watchClose): the harness reads no close's verdict.
+      const watched = watchClose(localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
+        ...(options.box ? { box: options.box } : {}),
         proxy: {
           hooks: io.models,
           tools: tools.map((t) => t.name),
@@ -365,7 +367,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
         },
-      });
+      }));
+      const acquire = watched.acquire;
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
       // the session's level.
       const sdk = thinkingAt(options.sdk ?? (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeAgentSdk, thinkingOf(spec, thinking));
@@ -380,7 +383,6 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         tools: tools.map((tool) => kernelTool(tool, io, maxImageBytes, calls)),
         builtins: builtins === true || builtins === false ? builtins : [...builtins],
-        unsandboxedCommands: options.unsandboxedCommands === true,
         // A built-in call, counted in flight before the host hears of it, as a host tool's is: a pause the host starts on
         // its tool_start waits for it. One a pause has begun is refused before it is counted: a refused call never ends,
         // so counted it would hold the pause to its whole drainMs.
@@ -421,7 +423,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
         }
       };
-      return openAdapterSession({ name: "agentrun-harness-claude", io, drive: (drive) => harness.drive(drive), live, calls, restarts: RESTARTS });
+      return openAdapterSession({ name: "agentrun-harness-claude", io, drive: (drive) => watched.drive(harness.drive(drive)), live, calls, restarts: RESTARTS });
     },
   };
 }

@@ -31,8 +31,10 @@ const runNode = createHarnessRunner(
   Edit, Write, NotebookEdit, WebFetch); `false` leaves the host's tools only. The host's tools are served in-process and
   named back to the host's own names. Every call, the host's or the CLI's own, is a kernel effect whose intent is
   recorded before it runs, so a call a crash cut off is reported, never repeated. A `PreToolUse` hook denies every other
-  call, and every error inside it is a deny. With the CLI's own tools on, its command sandbox (bubblewrap) must start,
-  or the turn fails by name, unless `unsandboxedCommands: true` says something else is the boundary. Sub-agents, scheduled jobs, worktrees, background shells, settings, plugins and MCP servers from
+  call, and every error inside it is a deny. With the CLI's own tools on, they run only in the host's box (`box`, a
+  `MachineBox` from `@parcha/agentrun-kernel/host`), where the CLI's own sandbox is off; with no box the turn fails
+  by name (`box_unavailable`), unless `box: "unsandboxed"` says the operator chose none.
+  Sub-agents, scheduled jobs, worktrees, background shells, settings, plugins and MCP servers from
   settings are off by option, and `test/tool-off.test.mjs` runs the pinned CLI against a scripted model that tries each
   of them: nothing runs, writes or fetches.
 - **The model behind a proxy.** The CLI talks to a model proxy on the loopback interface with a key of its session's

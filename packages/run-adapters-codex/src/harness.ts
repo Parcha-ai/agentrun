@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's host layer (a local machine instead of a sandbox VM); the stand-in's guard; message prefixes; comments.
+// Changed by Parcha, 2026-10-27: imports from AgentRun's host layer (a local machine instead of a sandbox VM); the stand-in's guard; message prefixes; comments.; 2026-10-30: the sandbox mode comes from the host's box (host/box.ts's codexSandboxMode), never the self-test below, which is no longer called.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -32,6 +32,7 @@ import {
   type TranscriptEntry,
 } from './host/process.js';
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
+import { codexSandboxMode } from './host/box.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
@@ -50,8 +51,8 @@ import {
 
 /**
  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
- * --stdio` (Codex's JSON-RPC protocol for IDEs) **on the session's own
- * machine**, never on the machine that drives the session
+ * --stdio` (Codex's JSON-RPC protocol for IDEs) **on the session's own machine: a box or a
+ * Sandbox VM**, never on the machine that drives the session
  * (docs/workspaces.md §1 decision 2, §5.6). Every drive acquires the
  * session's VM through the sandbox tier (`attachInDrive` with the session
  * factory's acquire, `machine.acquire`), and refuses a machine the factory
@@ -504,7 +505,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
       // The log wins: the VM's cache dirs are wiped, and CODEX_HOME rebuilt from the log.
       await machine.files.wipe();
       let sandboxMode: NonNullable<CodexHarnessOptions['sandboxMode']> = 'read-only';
-      if (builtinsOn) sandboxMode = options.sandboxMode ?? (await sandboxVerdict(ctx, spec, machine, journal));
+      if (builtinsOn) sandboxMode = codexSandboxMode(machine.isolation, options.sandboxMode, log);
       const config = codexConfig({
         model,
         baseUrl: `${machine.modelUrl}/v1`,

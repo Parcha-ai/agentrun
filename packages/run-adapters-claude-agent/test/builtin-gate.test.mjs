@@ -1,6 +1,6 @@
 // The PreToolUse gate on the CLI's own calls: a built-in that comes while the session pauses is refused as not run (never
 // counted, never run, and the pause does not wait for it); a session skill's own failure is its own, never read as the
-// CLI turning the call down; and with built-ins on, the CLI's own sandbox is required unless the caller says otherwise.
+// CLI turning the call down; and with built-ins on, the host's box is required unless the operator said unsandboxed.
 //
 // On the scripted Agent SDK (./testing). No key, no network.
 import assert from 'node:assert/strict';
@@ -43,7 +43,7 @@ async function pauseThenAsk(t) {
   const { adapter, sessionsDir } = await adapterOf(t, {
     script: ['builtins [["Bash",{"command":"sleep 0.4; printf one > one.txt","description":"a"}],["Bash",{"command":"printf two > two.txt","description":"b"}]]'],
     sdk: { onDecision: (d) => decisions.push(d) },
-    unsandboxedCommands: true,
+    box: 'unsandboxed',
   });
   const spec = { key: 'step:gate', label: 'task', system: [], tools: [], context: 'fresh' };
   const store = memorySessionStore();
@@ -101,7 +101,7 @@ test('built-ins in flight together, the first of which fails before it starts: i
   // A Write under a directory that is not there fails in the call itself, before it says it started.
   const { adapter } = await adapterOf(t, {
     script: ['builtins [["Write",{"file_path":"no/such/dir/x.txt","content":"x"}],["Bash",{"command":"printf two > two.txt","description":"b"}]]', 'call submit {"value":{"answer":"ok"}}'],
-    unsandboxedCommands: true,
+    box: 'unsandboxed',
   });
   const events = [];
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [], onEvent: (e) => events.push(e) });
@@ -114,19 +114,12 @@ test('built-ins in flight together, the first of which fails before it starts: i
   assert.ok(write?.isError, `the Write is told as failed: ${JSON.stringify(write)}`);
 });
 
-test('with built-ins on and no word from the caller, the CLI must have its own sandbox: where it cannot start, the turn fails by name; set, it runs without', async (t) => {
+test("with built-ins on and no box from the host, the turn fails by name and the CLI never asks; unsandboxed, the operator's word, it runs", async (t) => {
   const node = { kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMA, tools: [] };
   const seen = [];
   const { adapter } = await adapterOf(t, { script: ['call submit {"value":{"answer":"ok"}}'], sdk: { onQuery: (options) => seen.push(options) } });
-  const result = await createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] })(node).then((output) => ({ output }), (error) => ({ error }));
-  if (result.error) {
-    // Here bubblewrap does not start (stock Ubuntu 24.04): the named refusal, and the CLI never asked.
-    assert.match(String(result.error?.message ?? result.error), /the CLI's own command sandbox \(bubblewrap\) doesn't start on this machine/);
-    assert.equal(seen.length, 0);
-    const { adapter: opted } = await adapterOf(t, { script: ['call submit {"value":{"answer":"ok"}}'], unsandboxedCommands: true });
-    assert.deepEqual(await createHarnessRunner(opted, { store: memorySessionStore(), tools: [] })(node), { answer: 'ok' }, 'set by the caller, it runs');
-  } else {
-    // Where bubblewrap starts, the CLI is given its own sandbox.
-    assert.ok(seen[0]?.sandbox?.enabled, 'the CLI runs under its own sandbox');
-  }
+  await assert.rejects(createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] })(node), (error) => /the CLI's own tools run only in the host's box, and the host gave this machine no box/.test(String(error?.message ?? error)));
+  assert.equal(seen.length, 0, 'the CLI never asked');
+  const { adapter: open } = await adapterOf(t, { script: ['call submit {"value":{"answer":"ok"}}'], box: 'unsandboxed' });
+  assert.deepEqual(await createHarnessRunner(open, { store: memorySessionStore(), tools: [] })(node), { answer: 'ok' });
 });

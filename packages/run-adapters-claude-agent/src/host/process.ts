@@ -7,6 +7,7 @@
 // as a model step through its own gateway; here `journalLedger` and `ModelSteps` record nothing, so no spend is recorded
 // twice.
 import type { DriveContext } from "./kernel.js";
+import type { Isolation } from "@parcha/agentrun-kernel/host";
 
 export {
   BuiltinCalls, NativeJournal, openTurn, placeSubmissions, recoveryNote, replayBy, restartEvent, toolBridge, waitForSubmissions,
@@ -56,6 +57,9 @@ export interface SessionMachine {
   /** What the model must hear about this machine (none locally), and its acknowledgement key. */
   readonly notes: readonly string[];
   readonly notesKey?: string;
+  /** What the host's box proved (undefined: the host gave none). The CLI's own tools run only in a box, or where the
+   *  operator said `unsandboxed`. */
+  readonly isolation?: Isolation;
   spawn(options: MachineSpawn): Promise<SessionProcess>;
   fsync(): Promise<void>;
   close(): Promise<void>;

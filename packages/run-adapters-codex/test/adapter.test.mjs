@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { createHarnessRunner, RUNNER_RECORDS } from '@parcha/agentrun-kernel';
 import { foldSession } from '@parcha/agentrun-kernel/kernel';
+import { startChild } from '@parcha/agentrun-kernel/host';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { CodexNotInstalled, CodexPinMismatch, codexAdapter } from '@parcha/agentrun-harness-codex';
 import { findCodex } from '../dist/binary.js';
@@ -345,4 +346,39 @@ test('the catalog reader is test-only: passed outside the stand-in guard, the ad
     if (saved.standin === undefined) delete process.env.AGENTRUN_CODEX_STANDIN; else process.env.AGENTRUN_CODEX_STANDIN = saved.standin;
     if (saved.node === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = saved.node;
   }
+});
+
+/** One turn of a Codex session opened on the adapter itself, over a box whose reap answers `verdict`: the turn's outcome. */
+async function codexTurnOver(verdict) {
+  const started = [];
+  // A box for the test that runs its child as itself.
+  const box = {
+    isolation: { mode: 'bwrap', cgroup: false },
+    start: (spec, child, recorder) => {
+      started.push(child.command);
+      const record = { id: `box-${started.length}`, writer: { pid: process.pid, startTime: '1' } };
+      recorder.ahead(record);
+      const proc = startChild({ command: child.command, args: child.args, env: spec.env }, {}, spec.workspace);
+      return { ...proc, record, ready: recorder.started({ ...record, pid: proc.child.pid }).then(() => record) };
+    },
+    reap: async () => verdict,
+  };
+  const { adapter: codex } = adapter(['hello'], { box: { box, recorder: { ahead: () => {}, started: async () => {} }, readOnly: [], modelSocket: '/run/m.sock', modelPort: 4100 } });
+  const spec = { key: 'step:box', label: 'task', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const session = await codex.open(spec, { store, writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} });
+  try {
+    await session.send('hello');
+    return { outcome: await session.turnEnd(), started };
+  } finally {
+    await session.close().catch(() => {});
+  }
+}
+
+test("a turn whose box a reap finds a process left in ends failed, by name: the session never ends it as clean", async () => {
+  const { outcome, started } = await codexTurnOver({ empty: false, left: 1, by: 'pidns' });
+  assert.ok(started.length >= 1, 'Codex ran in the box');
+  assert.equal(outcome.status, 'failed', JSON.stringify(outcome));
+  assert.match(outcome.error ?? '', /box_not_empty: the box still holds 1 process after its reap \(counted by pidns\)/);
+  assert.equal((await codexTurnOver({ empty: true, left: 0, by: 'pidns' })).outcome.status, 'completed', 'one counted empty ends the turn as it would have');
 });

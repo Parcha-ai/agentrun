@@ -7,13 +7,13 @@
 //    host's workspace;
 //  - the SDK's spawn hook adopts the child it starts (`start`), its raw streams, not a line protocol;
 //  - the proxy serves the Anthropic policy, and says once per session what the provider did with a token count.
-import { confined as kernelConfined, openLocalMachine, startChild as kernelStartChild, type ChildCommand, type ConfineChild, type MachineChild, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { confined as kernelConfined, openLocalMachine, startChild as kernelStartChild, type ChildCommand, type ConfineChild, type MachineBox, type MachineChild, type ModelProxyHooks, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import type { AcquireMachine, CacheDir, MachineSpawn, SessionMachine } from "./process.js";
 import { brandMachine } from "./process.js";
 import { anthropicPolicy, type AnthropicPolicyOptions } from "./policy.js";
 
 export { childEnv, INHERITED_ENV } from "@parcha/agentrun-kernel/host";
-export type { ChildCommand, ConfineChild, MachineChild } from "@parcha/agentrun-kernel/host";
+export type { ChildCommand, ConfineChild, MachineBox, MachineChild } from "@parcha/agentrun-kernel/host";
 
 const NAME = "agentrun-harness-claude";
 const DIRS: readonly CacheDir[] = ["home", "config", "tmp", "cache"];
@@ -23,6 +23,9 @@ export interface LocalMachineOptions {
   dir: string;
   /** Start every child of the session (the CLI) under the host's confinement. */
   confine?: ConfineChild;
+  /** The host's box for the CLI, or `unsandboxed` where the operator said there is none. Absent: none, and the CLI's
+   *  own tools stay off. */
+  box?: MachineBox | "unsandboxed";
   /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits. */
   proxy: {
     hooks: ModelProxyHooks;
@@ -72,6 +75,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       sessionId: ctx.runId,
       from,
       ...(options.confine ? { confine: options.confine } : {}),
+      ...(options.box ? { box: options.box } : {}),
       proxy: {
         policy: anthropicPolicy({
           model: route.models.model,
@@ -106,6 +110,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       modelKey: local.modelKey,
       notes: local.notes,
       from: local.from,
+      ...(local.isolation ? { isolation: local.isolation } : {}),
       start: local.start,
       spawn: async (spawnOptions) => local.start(spawnOptions),
       // A session with its built-ins off writes no files of its own to flush.

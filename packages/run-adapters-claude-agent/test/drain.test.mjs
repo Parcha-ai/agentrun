@@ -22,7 +22,7 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 const SCHEMA = { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } };
 const request = { kind: 'agent', label: 'task', system: [], user: 'Search, then answer.', schema: SCHEMA, tools: ['search'], step: { sessionId: 'pause', attempt: 0, earlierSessionIds: [] } };
 
-// The host's tools only, unless a test drives the CLI's own (`native`): those run without its sandbox, said, never by default.
+// The host's tools only, unless a test drives the CLI's own (`native`): those run with no box, said, never by default.
 async function claude(t, { script, sessionsDir, native = false }) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
@@ -33,7 +33,7 @@ async function claude(t, { script, sessionsDir, native = false }) {
     sessionsDir,
     standIn: { command: process.execPath },
     sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 10, script }),
-    ...(native ? { unsandboxedCommands: true } : { builtins: false }),
+    ...(native ? { box: 'unsandboxed' } : { builtins: false }),
   });
   return { adapter, provider };
 }

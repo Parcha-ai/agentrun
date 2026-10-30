@@ -2,6 +2,7 @@
 // and, written for AgentRun, the session machine's types (a local machine, machine.ts), its brand, the model route the
 // harness describes for its model proxy (the policy), and model-step tracking (nothing to track locally).
 import type { DriveContext } from "./kernel.js";
+import type { Isolation } from "@parcha/agentrun-kernel/host";
 
 export {
   BuiltinCalls, failureText, Mutex, NativeJournal, placeSubmissions, recoveryNote, restartEvent, toolBridge, toolKey, transcriptOf,
@@ -63,6 +64,9 @@ export interface SessionMachine {
   /** What the model must hear about this machine (none locally), and its acknowledgement key. */
   readonly notes: readonly string[];
   readonly notesKey?: string;
+  /** What the host's box proved (undefined: the host gave none). Codex's own tools run only in a box, or where the
+   *  operator said `unsandboxed`. */
+  readonly isolation?: Isolation;
   spawn(options: MachineSpawn): Promise<SessionProcess>;
   readonly files: {
     upload(dir: CacheDir, files: readonly CacheFile[]): Promise<void>;
