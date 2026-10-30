@@ -2,7 +2,7 @@
 // own records in the store as a real adapter does (the requests it made, each tool call's intent and outcome, its turns),
 // so a later process resumes from them: a request already made is not made again, and a call a crash cut off is
 // answered interrupted, never run again.
-import { SessionFenced } from "./errors.js";
+import { SessionFenced, SubmissionExists } from "./errors.js";
 import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
 
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
@@ -92,6 +92,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       const turnsStarted = records.filter((r) => r.kind === FAUX_RECORDS.turn).length;
       const turnsEnded = records.filter((r) => r.kind === FAUX_RECORDS.turnEnd).length;
       let state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
+      // The ids sent, as the adapter session holds them: taken before the first await, so two sends of one id at once
+      // cannot both land.
+      const ids = new Set(records.filter((r) => r.kind === FAUX_RECORDS.user).map((r) => (r.data as { id?: string }).id).filter((id) => id !== undefined));
       stats.opened.push({ key: spec.key, state });
       // A call whose intent is recorded and whose outcome is not: a crash cut it off. It is answered interrupted, once.
       const results = new Set(records.filter((r) => r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
@@ -156,8 +159,13 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       };
       const session: AdapterSession = {
         get state() { return state; },
-        async send(text) {
-          await append(FAUX_RECORDS.user, { text });
+        async send(text, sendOptions = {}) {
+          const { id } = sendOptions;
+          if (id !== undefined) {
+            if (ids.has(id)) throw new SubmissionExists(id, "faux");
+            ids.add(id);
+          }
+          await append(FAUX_RECORDS.user, id === undefined ? { text } : { id, text });
           await append(FAUX_RECORDS.turn, { n: turnsStarted + 1 });
           state = "idle";
           begin();
