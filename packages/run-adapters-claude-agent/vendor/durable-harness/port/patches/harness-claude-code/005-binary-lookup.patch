@@ -1,0 +1,26 @@
+Patch: 005-binary-lookup
+Reason: the CLI is looked up from process.cwd() (a host running from / or outside its install finds nothing) and the override is HARNESS_CLAUDE_CODE_EXECUTABLE
+Upstream: ours
+Pins: the pinned CLI is found beside the adapter's install, whatever the process's working directory
+---
+diff --git a/packages/harness-claude-code/src/binary.ts b/packages/harness-claude-code/src/binary.ts
+--- a/packages/harness-claude-code/src/binary.ts
++++ b/packages/harness-claude-code/src/binary.ts
+@@ -1,5 +1,6 @@
+ import { existsSync, readdirSync, readFileSync } from 'node:fs';
+ import { dirname, join } from 'node:path';
++import { fileURLToPath } from 'node:url';
+ import { CLAUDE_AGENT_SDK_VERSION } from './versions.ts';
+ 
+ /**
+@@ -25,8 +26,8 @@ import { CLAUDE_AGENT_SDK_VERSION } from './versions.ts';
+ 
+ export { CLAUDE_AGENT_SDK_VERSION };
+ 
+-export function findClaudeExecutable(cwd = process.cwd(), version = CLAUDE_AGENT_SDK_VERSION): string | undefined {
+-  const fromEnv = process.env.HARNESS_CLAUDE_CODE_EXECUTABLE;
++export function findClaudeExecutable(cwd = dirname(fileURLToPath(import.meta.url)), version = CLAUDE_AGENT_SDK_VERSION): string | undefined {
++  const fromEnv = process.env.AGENTRUN_CLAUDE_AGENT_EXECUTABLE;
+   if (fromEnv) return fromEnv;
+   const pkg = ['@anthropic-ai', `claude-agent-sdk-${platformSuffix()}`];
+   const bin = process.platform === 'win32' ? 'claude.exe' : 'claude';

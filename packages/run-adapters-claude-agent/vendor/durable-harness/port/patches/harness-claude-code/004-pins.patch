@@ -1,0 +1,28 @@
+Patch: 004-pins
+Reason: upstream pins SDK 0.3.296 / CLI 2.1.296 with a pnpm install line; the production deployment runs CLI 2.1.286 (SDK 0.3.286), installed with npm
+Upstream: ours
+Pins: the pins are the production deployment's: SDK 0.3.286, whose CLI is 2.1.286
+---
+diff --git a/packages/harness-claude-code/src/versions.ts b/packages/harness-claude-code/src/versions.ts
+--- a/packages/harness-claude-code/src/versions.ts
++++ b/packages/harness-claude-code/src/versions.ts
+@@ -13,16 +13,16 @@ import { Unavailable } from 'harness-world';
+  * that SDK release bundles (`claudeCodeVersion`). A test keeps these equal
+  * to package.json's, the installed SDK's and harness-world-sandbox's base.
+  */
+-export const CLAUDE_AGENT_SDK_VERSION = '0.3.296';
++export const CLAUDE_AGENT_SDK_VERSION = '0.3.286';
+ 
+ /** The Claude Code CLI the pinned SDK release bundles (its package.json's `claudeCodeVersion`), installed in the VM image. */
+-export const CLAUDE_CODE_VERSION = '2.1.296';
++export const CLAUDE_CODE_VERSION = '2.1.286';
+ 
+ /** Where the pinned CLI is in a session VM booted from the base (harness-world-sandbox's `CLAUDE_CLI`). */
+ export const CLAUDE_VM_EXECUTABLE = `/opt/dh/claude/${CLAUDE_CODE_VERSION}/claude`;
+ 
+ /** The install line for the pinned SDK. */
+-export const CLAUDE_AGENT_SDK_INSTALL = `pnpm add @anthropic-ai/claude-agent-sdk@${CLAUDE_AGENT_SDK_VERSION}`;
++export const CLAUDE_AGENT_SDK_INSTALL = `npm install --save-exact @anthropic-ai/claude-agent-sdk@${CLAUDE_AGENT_SDK_VERSION}`;
+ 
+ const SDK = '@anthropic-ai/claude-agent-sdk';
+ 

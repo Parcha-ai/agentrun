@@ -1,0 +1,87 @@
+Patch: 010-served-tools-with-images
+Reason: the session's tools are served by an MCP server of AgentRun's own, each JSON Schema as given and the arguments as sent, not through the SDK's zod tool(); a tool's images go to the model with its text; the SDK surface narrows to query() alone (tool(), createSdkMcpServer and the zod import are gone), and what the adapter verifies of the SDK reads off that surface
+Upstream: ours
+Pins: an image over the adapter's size is the call's error, by the tool's name and the image, and the session goes on
+Pins: a DSL agent node runs on the Claude Agent adapter: the host tool, then submit, each model request through the proxy
+---
+diff --git a/packages/harness-claude-code/src/harness.ts b/packages/harness-claude-code/src/harness.ts
+index 75eaa3e..f15956b 100644
+--- a/packages/harness-claude-code/src/harness.ts
++++ b/packages/harness-claude-code/src/harness.ts
+@@ -27,12 +27,12 @@ import {
+   settleAbandonedModelSteps,
+   toolBridge,
+   waitForSubmissions,
+-  zodShapeFromJsonSchema,
+ } from 'harness-world-process';
+ import { durableEnv, nativeModelId } from './env.ts';
+ import { uuidFrom } from './ids.ts';
+ import { MessageQueue } from './inbox.ts';
+ import { sandboxSpawn } from './spawn.ts';
++import { toolServer } from './host/tool-server.ts';
+ import { JournalSessionStore } from './store.ts';
+ import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.ts';
+ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.ts';
+@@ -104,7 +104,7 @@ import { assertAgentSdkVersion, CLAUDE_VM_EXECUTABLE } from './versions.ts';
+  */
+ 
+ /** The SDK functions the harness calls (the module `@anthropic-ai/claude-agent-sdk`, a peer dependency). */
+-export type ClaudeAgentSdk = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'query' | 'createSdkMcpServer' | 'tool'>;
++export type ClaudeAgentSdk = Pick<typeof import('@anthropic-ai/claude-agent-sdk'), 'query'>;
+ type QueryOptions = NonNullable<Parameters<ClaudeAgentSdk['query']>[0]['options']>;
+ type UserMessage = import('@anthropic-ai/claude-agent-sdk').SDKUserMessage;
+ 
+@@ -411,7 +411,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+       }
+       const sandbox = options.sandbox;
+       if (!sandbox) throw sandboxRequired();
+-      const [{ query, createSdkMcpServer, tool }, { z }] = await Promise.all([loadSdk(), import('zod')]);
++      const { query } = await loadSdk();
+       const journal = new NativeJournal(ctx);
+       const records = await journal.read();
+       const store = new JournalSessionStore(journal, { records, coalesceMs: options.coalesceMs ?? 150 });
+@@ -503,27 +503,23 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
+         /** Bash calls whose timeout the invocation clamped: their outcome, if it timed out, says so. */
+         const clamped = new Map<string, number>();
+         const bridged = (name: string) => name.startsWith(`mcp__${MCP_SERVER}__`);
+-        const server = createSdkMcpServer({
+-          name: MCP_SERVER,
+-          version: '1.0.0',
+-          tools: bridge.tools.map((t) =>
+-            tool(t.name, t.description, zodShapeFromJsonSchema(t.inputSchema, z), async (args, extra) => {
+-              const callId = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta?.['claudecode/toolUseId'];
+-              if (typeof callId !== 'string') return errorResult(`${t.name} was not run: the call carries no tool_use id`);
+-              await transcript.beforeCall(callId, t.name);
+-              const running = t.call(args, callId);
+-              calls.add(running);
+-              try {
+-                const result = await running;
+-                return { content: [{ type: 'text' as const, text: result.text }], ...(result.isError ? { isError: true } : {}) };
+-              } catch (err) {
+-                // The barrier timed out (nothing ran), or the drive stopped (the bridge halted it).
+-                return errorResult(`${t.name} was not run: ${(err as Error)?.message ?? String(err)}`);
+-              } finally {
+-                calls.delete(running);
+-              }
+-            })
+-          ),
++        const byName = new Map(bridge.tools.map((t) => [t.name, t]));
++        const server = await toolServer(MCP_SERVER, bridge.tools, async (name, args, callId) => {
++          const t = byName.get(name)!;
++          if (typeof callId !== 'string') return errorResult(`${t.name} was not run: the call carries no tool_use id`);
++          await transcript.beforeCall(callId, t.name);
++          const running = t.call(args, callId);
++          calls.add(running);
++          try {
++            const result = await running;
++            const images = (result.images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType }));
++            return { content: [{ type: 'text' as const, text: result.text }, ...images], ...(result.isError ? { isError: true } : {}) };
++          } catch (err) {
++            // The barrier timed out (nothing ran), or the drive stopped (the bridge halted it).
++            return errorResult(`${t.name} was not run: ${(err as Error)?.message ?? String(err)}`);
++          } finally {
++            calls.delete(running);
++          }
+         });
+ 
+         const allow = (updatedInput?: Record<string, unknown>) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'allow' as const, ...(updatedInput ? { updatedInput } : {}) } });
