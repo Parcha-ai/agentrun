@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openStore, openStoreReader } from "@parcha/pi-durable-agent";
 import { startServe } from "../dist/index.js";
@@ -30,8 +31,8 @@ function home(root) {
   writeFileSync(join(site, "CLAUDE.md"), `Keep the site fast. Deploy key: ${CANARY}\n`);
   writeFileSync(join(site, "AGENTS.md"), "Run the tests before a commit.\n");
   mkdirSync(join(site, ".claude", "skills", "deploy"), { recursive: true });
-  writeFileSync(join(site, ".claude", "skills", "deploy", "SKILL.md"), "---\nname: deploy\n---\nDeploy the site.\n");
-  writeFileSync(join(site, ".claude", "skills", "deploy", "steps.md"), "1. build\n2. upload\n");
+  writeFileSync(join(site, ".claude", "skills", "deploy", "SKILL.md"), `---\nname: deploy\n---\nDeploy the site with ${CANARY}.\n`);
+  writeFileSync(join(site, ".claude", "skills", "deploy", "steps.md"), `1. build\n2. upload, key ${CANARY}\n`);
   mkdirSync(join(site, ".agents", "skills", "review"), { recursive: true });
   writeFileSync(join(site, ".agents", "skills", "review", "SKILL.md"), "---\nname: review\n---\nReview a change.\n");
   claudeSession(at, site, 1, { output: `README.md (env ${CANARY})`, env: { OPENAI_API_KEY: CANARY } });
@@ -149,6 +150,13 @@ test("nothing written holds a key-shaped variable's value, and every file a run 
   assert.deepEqual(readdirSync(data).filter((name) => name.startsWith(".import-")), [], "no pending transcript left");
   const timeline = readFileSync(join(dir, "store", "run.sqlite"));
   assert.ok(timeline.includes("[redacted]"), "the canary's places are marked");
+  // The revision's skill texts, as the store keeps them (by content hash): the cut runs on each.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  const texts = db.prepare("SELECT content FROM skills").all().map((r) => r.content);
+  db.close();
+  assert.ok(texts.some((text) => text.startsWith("---\nname: deploy") && text.includes("[redacted]")), "SKILL.md, cut");
+  assert.ok(texts.some((text) => text.startsWith("1. build") && text.includes("[redacted]")), "the skill's other file, cut");
+  assert.ok(!texts.some((text) => text.includes(CANARY)));
 });
 
 test("an imported run takes no message (409 not_continuable, reason imported); a stop, a cancel and a restart answer as for an ended run and move nothing", { timeout: 60_000 }, async (t) => {
@@ -203,6 +211,8 @@ test("a link, a binary file, an oversized SKILL.md and a folder with no SKILL.md
   mkdirSync(join(skills, "huge"));
   writeFileSync(join(skills, "huge", "SKILL.md"), "x".repeat(256 * 1024 + 1));
   writeFileSync(join(skills, "deploy", "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]));
+  // Latin-1, not UTF-8, and no NUL byte: only a strict decode tells it is not text.
+  writeFileSync(join(skills, "deploy", "notes.md"), Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x20, 0x6f, 0x6b, 0x0a]));
   mkdirSync(join(skills, "notes"));
   writeFileSync(join(skills, "notes", "todo.md"), "not a skill\n");
   symlinkSync(join(outside, "SKILL.md"), join(h.notes, "AGENTS.md"));
@@ -216,6 +226,7 @@ test("a link, a binary file, an oversized SKILL.md and a folder with no SKILL.md
   assert.equal(why[join(skills, "linked")], "a link: not followed");
   assert.equal(why[join(skills, "huge", "SKILL.md")], `over ${256 * 1024} bytes`);
   assert.equal(why[join(skills, "deploy", "logo.png")], "not text");
+  assert.equal(why[join(skills, "deploy", "notes.md")], "not text", "invalid UTF-8 with no NUL byte");
   assert.equal(why[join(skills, "notes")], "no SKILL.md: not a skill");
   assert.equal(why[join(h.notes, "AGENTS.md")], "a link: not followed");
   assert.equal(why[join(h.notes, ".pi", "skills")], "a link: not followed", "a skill folder that is itself a link");
