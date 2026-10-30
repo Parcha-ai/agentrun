@@ -12,6 +12,7 @@ import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
@@ -352,3 +353,30 @@ test("with no decision key, Jev is unavailable and the reason names each way to 
   for (const name of ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL"]) assert.match(offer.reason, new RegExp(name), offer.reason);
   assert.match(offer.reason, /openrouter\.ai/, offer.reason);
 });
+
+test("a workflow that escalates ends completed and waits for review: no error, no output, and review names its kind, node and reason", async (t) => {
+  await withCanary(t);
+  const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
+  const gate = { node: "escalate", label: "review_is_coi", when: { predicate: "gte", path: "coi$answers.answers.is_coi.noul", n: 0.9 }, kind: "coi_review", stage: "coi", summary: "Review: is_coi is at least 0.9, so a person looks." };
+  const runId = await startFlow(api, [judge, gate, probe()]);
+  await follow(api, runId, ["completed", "failed"]);
+  const run = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([run.status, run.state, run.error, run.result?.output ?? null], ["completed", "idle", null, null], JSON.stringify(run.error));
+  const { at, ...review } = run.review ?? {};
+  assert.deepEqual(review, { kind: "coi_review", node: "review_is_coi", reason: "Review: is_coi is at least 0.9, so a person looks." });
+  assert.ok(Number.isFinite(Date.parse(at)), "review.at is a time");
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, run.review), [], "the review meets the served document");
+  assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.review, null), [], "and so does no review");
+  const listed = (await api("GET", "/runs")).body.runs.find((row) => row.run_id === runId);
+  assert.deepEqual([listed.status, listed.error, listed.review], ["completed", null, run.review], "the list says the same");
+  // A workflow run takes no messages here, escalated or not: the refusal it always had.
+  const message = await api("POST", `/runs/${runId}/messages`, { content: "approved" });
+  assert.deepEqual([message.status, message.body.error?.code], [501, "unsupported_here"]);
+  // A run that did not escalate has no review.
+  assert.equal((await api("POST", "/agents", flowAgent("plain", flow([judge, probe()])))).status, 201);
+  const plain = (await api("POST", "/agents/plain/runs", { input: { question: QUESTION } })).body.run_id;
+  await follow(api, plain, ["completed", "failed"]);
+  assert.equal((await api("GET", `/runs/${plain}`)).body.review, null);
+});
+
