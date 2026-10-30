@@ -333,3 +333,48 @@ test('a run waiting behind another of its key stops waiting when its own signal 
   assert.deepEqual(await first, { status: 'done' });
   assert.equal(sent.n, 1);
 });
+
+/** One session's submissions across processes, as the adapter session's seam holds them: a send names its submission,
+ *  and a settle withdraws only the submission it is named, while that is the oldest pending. Open while one is pending. */
+function submissionsLog() {
+  const log = { submissions: [], withdrawn: new Set(), settles: [] };
+  log.pending = () => log.submissions.filter((s) => !log.withdrawn.has(s.id));
+  return log;
+}
+/** One process's view of `log`: its turn never ends. */
+const targetOn = (log, extra = {}) => ({
+  get state() { return log.pending().length ? 'open_turn' : 'idle'; },
+  async send(text, { id } = {}) { log.submissions.push({ id, text }); },
+  turnEnd: () => new Promise(() => {}),
+  async settleOpenTurn(options = {}) {
+    log.settles.push(options);
+    if (options.opening !== undefined && log.pending()[0]?.id === options.opening) log.withdrawn.add(options.opening);
+  },
+  async interrupt() {},
+  ...extra,
+});
+
+test('a crash after the settle and before its record, then a person\'s message: the next run names its own prompt, so theirs is never withdrawn', async () => {
+  const { followUpOnce, followUpState } = await kernel();
+  const store = memorySessionStore();
+  const log = submissionsLog();
+  // The first process sends the follow-up's prompt, and dies before its harness places it.
+  const dying = followUpOnce(options(store));
+  const abort = new AbortController();
+  const first = dying.run(targetOn(log), abort.signal);
+  await settle();
+  abort.abort(new Error('the process died'));
+  await assert.rejects(first, /the process died/);
+  const own = `follow-up:${dying.key}`;
+  assert.deepEqual(log.submissions, [{ id: own, text: PROMPT }], 'the prompt is sent under an id of the follow-up\'s own');
+  // The next process settles the cut turn, which withdraws the prompt, and dies before it records the settle.
+  const settling = targetOn(log, { async settleOpenTurn(o) { await targetOn(log).settleOpenTurn(o); throw new Error('the process died'); } });
+  await assert.rejects(followUpOnce(options(store)).run(settling, new AbortController().signal), /the process died/);
+  assert.deepEqual([...log.withdrawn], [own], 'the follow-up\'s own prompt is withdrawn');
+  // A person's message arrives, so the session is open again, and a later process runs the follow-up once more.
+  log.submissions.push({ id: 'person', text: 'a person\'s message' });
+  assert.deepEqual(await followUpOnce(options(store)).run(targetOn(log), new AbortController().signal), { status: 'interrupted' });
+  assert.equal(followUpState(await store.read(dying.key)), 'interrupted');
+  assert.deepEqual(log.pending().map((s) => s.id), ['person'], 'the person\'s message is never withdrawn');
+  assert.deepEqual(log.settles, [{ opening: own }, { opening: own }]);
+});
