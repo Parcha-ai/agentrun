@@ -297,12 +297,14 @@ harness this server does not run yet saves with a warning on `definition.harness
 
 A workflow's typed questions (its `judge`, `pick`, `sift`, `route` and `ask` nodes) run on Jev, TypeSafe's System One,
 through `@parcha/agentrun-jev`, when this server's environment sets Jev's key. Set `TYPESAFE_API_KEY`: it is the route
-whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works, for Jev through OpenRouter. They are fast decisions, not agent turns: one System One request per
+whose key stays out of a run's reach (below). `OPENROUTER_API_KEY` also works, for Jev through OpenRouter, and so does a
+model gateway on OpenRouter: with `AGENT_MODEL_BASE_URL` on the host `openrouter.ai` and neither key set, Jev runs on
+`AGENT_MODEL_API_KEY`. They are fast decisions, not agent turns: one System One request per
 node, with typed answers and their probabilities.
 
 - `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev", available, reason?, note?}]`),
-  and `runJudge` is among `workflows.adapters` once Jev runs here. On the OpenRouter route, jev's `note` says that its
-  key is the model gateway's.
+  and `runJudge` is among `workflows.adapters` once Jev runs here. On the OpenRouter route, jev's `note` names the
+  variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the model gateway's key.
 - With no key, a workflow with typed questions saves with a `not_set_up_here` warning on `definition.workflow` naming
   the variable, and a run of it is `409 agent_not_runnable`, with `details.adapters: ["runJudge"]` and
   `details.decisions: {jev: {reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"]}}`.

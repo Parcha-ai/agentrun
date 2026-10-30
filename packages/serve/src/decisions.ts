@@ -31,23 +31,36 @@ export type DecisionOffer = { id: "jev"; available: boolean; reason?: string; no
 
 const isSet = (value: string | undefined) => typeof value === "string" && value.trim() !== "";
 
-/** How this server reaches Jev: TypeSafe's API when its key is set, else OpenRouter's System One when that key is. */
+/** The model gateway's key (model.ts), Jev's on the OpenRouter route when that gateway is OpenRouter. */
+export const JEV_GATEWAY_KEY_ENV = "AGENT_MODEL_API_KEY";
+
+/** The variable Jev's OpenRouter key is in: OPENROUTER_API_KEY, else the model gateway's key when AGENT_MODEL_BASE_URL's
+ *  host is exactly openrouter.ai. Jev sends it to openrouter.ai, so another host's key never goes there. */
+function openRouterKeyEnv(env: NodeJS.ProcessEnv): string | undefined {
+  if (isSet(env[JEV_OPENROUTER_KEY_ENV])) return JEV_OPENROUTER_KEY_ENV;
+  const onOpenRouter = URL.parse(env.AGENT_MODEL_BASE_URL ?? "")?.hostname === "openrouter.ai";
+  return onOpenRouter && isSet(env[JEV_GATEWAY_KEY_ENV]) ? JEV_GATEWAY_KEY_ENV : undefined;
+}
+
+/** How this server reaches Jev: TypeSafe's API when its key is set, else OpenRouter's System One when an OpenRouter key
+ *  is (openRouterKeyEnv). */
 export function jevRoute(env: NodeJS.ProcessEnv): "typesafe" | "openrouter" | undefined {
   if (isSet(env[JEV_KEY_ENV])) return "typesafe";
-  return isSet(env[JEV_OPENROUTER_KEY_ENV]) ? "openrouter" : undefined;
+  return openRouterKeyEnv(env) ? "openrouter" : undefined;
 }
 
 /** Why Jev does not run here, naming the variable to set. */
-export const jevMissing = `This server's environment does not set ${JEV_KEY_ENV} (or ${JEV_OPENROUTER_KEY_ENV}, for Jev through OpenRouter), which a workflow's judge, pick, sift, route and ask nodes need.`;
+export const jevMissing = `This server's environment does not set ${JEV_KEY_ENV} (or, for Jev through OpenRouter, ${JEV_OPENROUTER_KEY_ENV}, or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai), which a workflow's judge, pick, sift, route and ask nodes need.`;
 
 /** What this server offers of each decision provider. */
-/** Why the OpenRouter route is worth a note: its key is also the model gateway's, which a run's process holds. */
-export const jevGatewayNote = `The Jev key is the model gateway key on this server (${JEV_OPENROUTER_KEY_ENV}), which a run's processes hold in their environment for its model nodes. Set ${JEV_KEY_ENV} to keep the decision key out of them.`;
+/** Why the OpenRouter route is worth a note, naming the variable Jev runs on: its key is also the model gateway's, which
+ *  a run's process holds. */
+export const jevGatewayNote = (env: NodeJS.ProcessEnv) => `Jev runs on ${openRouterKeyEnv(env)}, the model gateway key on this server, which a run's processes hold in their environment for its model nodes. Set ${JEV_KEY_ENV} to keep the decision key out of them.`;
 
 export function decisionsOf(env: NodeJS.ProcessEnv): DecisionOffer[] {
   const route = jevRoute(env);
   if (route === "typesafe") return [{ id: "jev", available: true }];
-  return [route === "openrouter" ? { id: "jev", available: true, note: jevGatewayNote } : { id: "jev", available: false, reason: jevMissing }];
+  return [route === "openrouter" ? { id: "jev", available: true, note: jevGatewayNote(env) } : { id: "jev", available: false, reason: jevMissing }];
 }
 
 /** The TypeSafe key the server handed the run's process, read once and the descriptor closed; undefined when none was. */
@@ -65,9 +78,10 @@ function handedKey(env: NodeJS.ProcessEnv): string | undefined {
  *  to Jev. Called once per process, since the handed key can be read once. */
 export async function jevJudgeOf(env: NodeJS.ProcessEnv) {
   const handed = handedKey(env);
-  const route = handed !== undefined ? "typesafe" : isSet(env[JEV_OPENROUTER_KEY_ENV]) ? "openrouter" : undefined;
-  if (!route) return undefined;
+  const openRouter = openRouterKeyEnv(env);
+  const key = handed !== undefined ? { apiKey: handed } : openRouter ? { provider: "openrouter" as const, apiKey: env[openRouter] } : undefined;
+  if (!key) return undefined;
   const faux = env[FAUX_ENV] && env[FAUX_JEV_ENV] ? ((await import(pathToFileURL(env[FAUX_JEV_ENV]).href)) as { default: typeof fetch }).default : undefined;
   const { createJevRunner } = await import("@parcha/agentrun-jev");
-  return createJevRunner({ ...(route === "typesafe" ? { apiKey: handed } : { provider: "openrouter" }), ...(faux ? { fetch: faux } : {}) });
+  return createJevRunner({ ...key, ...(faux ? { fetch: faux } : {}) });
 }
