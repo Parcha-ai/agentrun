@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // One pi version for every package whose ranges accept it, while the workspace develops on the lockfile's version.
 //
-// `node scripts/pi-leg.mjs --pi <version> (--plan | --scratch) [--only <name,...>] [--require-all] [--npm "<command>"] [--out <file>]`
+// `node scripts/pi-leg.mjs --pi <version> (--plan | --scratch) [--only <name,...>] [--require-all] [--tests | --tests-except <name,...>] [--npm "<command>"] [--out <file>]`
 //
 // A workspace is in the leg when each pi-family peer range it declares accepts the version. `--plan` prints the leg and
 // changes nothing. `--scratch` says the checkout is disposable: the script pins the family at the version in the root
@@ -11,7 +11,9 @@
 // It fails unless every family package a leg workspace declares, and the chord and pi-ai its pi-durable loads, is that
 // one copy at that version, then builds the leg's workspaces and those they use and runs each leg workspace's type-check and tests with
 // PI_EXPECT_VERSION set. A leg workspace that depends on another pi workspace runs only with that one in the leg: their
-// tests load both in one process.
+// tests load both in one process. `--tests` runs the type-check and tests of only the named leg workspaces, and
+// `--tests-except` of every other one: CI runs a leg as two jobs, one with each and the same names, so each suite runs once
+// and a new pi workspace runs in the second. Both install and check the whole leg.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -75,6 +77,14 @@ export function legOf(workspaces, version, only) {
     if (needs.length) refused.push({ name: w.name, needs });
   }
   return { version, leg: leg.map((w) => w.name), out, refused, pi: pi.map((w) => w.name) };
+}
+
+/** The leg workspaces whose type-check and tests run here: all of them, those `tests.names` names, or, with
+ *  `tests.except`, every other one. A name that is not in the leg is refused: a misspelt one would run nothing. */
+export function testedOf(leg, tests) {
+  if (!tests) return leg;
+  for (const name of tests.names) if (!leg.includes(name)) throw new Error(`${name} is not in the leg`);
+  return leg.filter((name) => tests.names.includes(name) === !tests.except);
 }
 
 /** The workspaces a leg builds, in workspace order: the leg's and every workspace they use. A workspace outside the leg
@@ -161,13 +171,16 @@ export function extraCopies(rows) {
 }
 
 function argsOf(argv) {
-  const args = { only: undefined, requireAll: false, plan: false, scratch: false, npm: 'npm', out: undefined, pi: undefined, root: process.cwd() };
+  const args = { only: undefined, tests: undefined, requireAll: false, plan: false, scratch: false, npm: 'npm', out: undefined, pi: undefined, root: process.cwd() };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = () => { if (argv[i + 1] === undefined) throw new Error(`${flag} needs a value`); return argv[(i += 1)]; };
     if (flag === '--pi') args.pi = value();
     else if (flag === '--only') args.only = value().split(',').filter(Boolean);
-    else if (flag === '--require-all') args.requireAll = true;
+    else if (flag === '--tests' || flag === '--tests-except') {
+      if (args.tests) throw new Error('give --tests or --tests-except, once');
+      args.tests = { names: value().split(',').filter(Boolean), except: flag === '--tests-except' };
+    } else if (flag === '--require-all') args.requireAll = true;
     else if (flag === '--plan') args.plan = true;
     else if (flag === '--scratch') args.scratch = true;
     else if (flag === '--npm') args.npm = value();
@@ -194,6 +207,9 @@ function main() {
   const write = () => { if (args.out) { mkdirSync(dirname(resolve(args.out)), { recursive: true }); writeFileSync(args.out, `${JSON.stringify(report, null, 2)}\n`); } };
   console.log(`pi ${args.pi}: in the leg: ${plan.leg.join(', ') || 'none'}`);
   for (const { name, why } of plan.out) console.log(`pi ${args.pi}: not in the leg: ${name} (${why})`);
+  const tested = testedOf(plan.leg, args.tests);
+  report.tested = tested;
+  if (args.tests) console.log(`pi ${args.pi}: tests here: ${tested.join(', ') || 'none'}; tests not here: ${plan.leg.filter((name) => !tested.includes(name)).join(', ') || 'none'}`);
   let failed = false;
   for (const { name, needs } of plan.refused) { console.log(`pi ${args.pi}: REFUSED: ${name} depends on ${needs.join(', ')}, which is not in the leg; one process would load two pi-durable versions`); failed = true; }
   if (args.requireAll && plan.out.length) { console.log(`pi ${args.pi}: FAILED: --require-all, and ${plan.out.length} pi workspace(s) are not in the leg`); failed = true; }
@@ -236,7 +252,7 @@ function main() {
   const build = run('npm', ['run', 'build', '--if-present', ...report.built.flatMap((name) => ['-w', name])], { cwd: args.root, env });
   report.steps.push({ step: 'build', rc: build });
   if (build !== 0) { write(); process.exit(1); }
-  for (const workspace of leg) {
+  for (const workspace of leg.filter((w) => tested.includes(w.name))) {
     for (const step of ['typecheck', 'test']) {
       if (!workspace.manifest.scripts?.[step]) continue;
       const rc = run('npm', ['run', step, '-w', workspace.name], { cwd: args.root, env });
