@@ -139,6 +139,7 @@ export async function openAdapterSession(options: AdapterSessionOptions): Promis
       const now = drive.state();
       // A settle never infers which prompt to drop: it withdraws only the submission it is named, while that is unplaced
       // and the oldest pending. Then a settle again finds it withdrawn, and a message that came after it is never touched.
+      // Named behind an older pending message, it is not withdrawn: it runs as a later turn, and a re-send of it is refused.
       const opening = settleOptions.opening !== undefined && pendingSubmissions(now)[0]?.id === settleOptions.opening ? settleOptions.opening : undefined;
       if (openTurn(now) || opening) {
         // The withdraw and the turn's end, as the journal's next batch, in one write.
