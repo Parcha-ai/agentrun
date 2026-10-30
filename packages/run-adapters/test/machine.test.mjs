@@ -2,12 +2,13 @@
 // git ceiling, the host's confinement, the process group ended whole, the private directories and the tail. Each adapter
 // suite covers the same machine through its own harness; this one holds the shared code where it lives.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
+import { createHash } from 'node:crypto';
 import { socketBase, traversable } from '../dist/host/machine.js';
 import { BOX_EGRESS_SOCKET, BOX_MODEL_SOCKET, childEnv, confined, INHERITED_ENV, openLocalMachine, processAlive, startChild } from '@parcha/agentrun-kernel/host';
 
@@ -485,4 +486,33 @@ test("a temp directory only its owner may search sends the default socket direct
   } finally {
     if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
   }
+});
+
+test("a default socket directory another user made first is never used and never fails the session: it gets a fresh one", async (t) => {
+  // The squat, as it looks to this user: the default name is there, and it is not this user's own 0700 directory.
+  const temp = mkdtempSync('/tmp/krs-');
+  t.after(() => rmSync(temp, { recursive: true, force: true }));
+  chmodSync(temp, 0o755);
+  const dir = scratch();
+  const squatted = join(temp, `arb-${createHash('sha256').update(dir).digest('hex').slice(0, 12)}`);
+  mkdirSync(squatted, { mode: 0o755 });
+  chmodSync(squatted, 0o755);
+  const before = process.env.TMPDIR;
+  process.env.TMPDIR = temp;
+  try {
+    const box = fakeBox();
+    const machine = await machineAt(t, dir, { box: boxOf(box) });
+    await machine.start({ command: '/bin/true' }).exited;
+    const used = dirname(box.specs[0].spec.modelSocket);
+    assert.notEqual(used, squatted, 'the squatted name is not used');
+    assert.ok(used.startsWith(join(temp, 'arb-')) && (statSync(used).mode & 0o777) === 0o700, used);
+    assert.deepEqual(readdirSync(squatted), [], 'the squatted directory is left as it was');
+  } finally {
+    if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
+  }
+  // A runtime directory the host names itself is still refused, never replaced: the host chose it.
+  const named = join(shortDir(), 'open');
+  mkdirSync(named, { recursive: true });
+  chmodSync(named, 0o755);
+  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: named }) }), /must be this user's own, 0700, and not a link/);
 });

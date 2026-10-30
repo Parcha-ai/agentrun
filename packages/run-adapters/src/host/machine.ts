@@ -12,7 +12,7 @@
 //    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, rmdirSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
@@ -172,11 +172,23 @@ export function socketDir(dir: string, name: string, statfs: (dir: string) => { 
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || (stat.mode & 0o777) !== 0o700 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
-    throw new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`);
+    throw Object.assign(new Error(`${name}: the session's socket directory ${dir} must be this user's own, 0700, and not a link`), { code: "runtime_dir_not_owned" });
   }
   const kind = process.platform === "linux" ? NOT_LOCAL[statfs(dir).type] : undefined;
   if (kind) throw new Error(`${name}: runtime_dir_not_local: the session's socket directory ${dir} is on ${kind}, not a local filesystem`);
   return dir;
+}
+
+/** The default socket directory: its name is the session's (a relaunch finds and replaces a dead session's sockets
+ *  there), but it sits in a directory others may write (/tmp), where another user can make that name first. A name
+ *  someone else holds is never used and never fails the session: it gets a fresh directory of its own instead. */
+function defaultSocketDir(dir: string, name: string): string {
+  try {
+    return socketDir(dir, name);
+  } catch (error) {
+    if ((error as { code?: string }).code !== "runtime_dir_not_owned") throw error;
+    return socketDir(mkdtempSync(join(dirname(dir), "arb-")), name);
+  }
 }
 
 /** Whether `dir` and every directory above it can be passed through by anyone (search for others): a box's binds
@@ -311,7 +323,7 @@ export async function openLocalMachine<D extends string>(spec: LocalMachineSpec<
 
   const key = randomBytes(32).toString("base64url");
   // In a box, the front's only door is a socket of the session's own, which the box is given; outside one, loopback.
-  const sockets = boxing ? socketDir(boxing.runtimeDir ?? join(socketBase(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name) : "";
+  const sockets = !boxing ? "" : boxing.runtimeDir !== undefined ? socketDir(boxing.runtimeDir, name) : defaultSocketDir(join(socketBase(), `arb-${createHash("sha256").update(base).digest("hex").slice(0, 12)}`), name);
   const modelSocket = join(sockets, "model.sock");
   const egressSocket = join(sockets, "egress.sock");
   const proxy = await startModelProxy(boxing ? { ...spec.proxy, socketPath: modelSocket } : spec.proxy, key);
