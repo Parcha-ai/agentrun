@@ -71,7 +71,9 @@ test("a memo the agent committed and a note it left uncommitted are one commit w
   assert.match(memo, new RegExp(`^---\\nrun: ${RUN}\\nbase: ${s.seed}\\nharness: pi\\noutcome: completed\\ncost_usd: 0.42\\n---\\n## What happened\\nIt answered\\.`));
   // One commit on the seed, the host's, dated the run's end, with the run's trailer; nothing of the agent's commit.
   assert.equal(git(["--git-dir", s.bare, "rev-list", "--count", `${s.seed}..${branch}`]), "1");
-  assert.equal(git(["--git-dir", s.bare, "log", "-1", "--format=%aI|%cI|%(trailers:key=Run-Id,valueonly)", branch]), `2026-10-29T23:30:00+00:00|2026-10-29T23:30:00+00:00|${RUN}`);
+  // Instants, not strings: how git prints a UTC offset differs between versions.
+  const end = String(END.getTime() / 1000);
+  assert.equal(git(["--git-dir", s.bare, "log", "-1", "--format=%at|%ct|%(trailers:key=Run-Id,valueonly)", branch]), `${end}|${end}|${RUN}`);
   assert.doesNotMatch(git(["--git-dir", s.bare, "log", "--format=%an %s", branch]), /agent|reflect$/m);
   // Again from this host: the branch already holds it. Again from a host with nothing of the first's, a moment later,
   // into a copy of the repository as it was before: the same commit.
