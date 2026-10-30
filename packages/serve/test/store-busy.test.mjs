@@ -107,6 +107,9 @@ test("an edit whose commit meets a reader of the agent store waits for it, then 
   assert.equal((await api("POST", "/agents", agent("edited"))).status, 201);
   const release = hold(t, data, "READ");
   const edited = timed(port, token, "PUT", "/agents/edited/definition", agent("edited", { instructions: "Answer briefly.", version: 2 }));
+  // Handled now: should the bound below fail while the edit still waits, the server's close ends it, and its rejection
+  // is not reported beside the failure. `await edited` still sees it.
+  edited.catch(() => {});
   const slowest = await slowestWhile(port, token, sleep(HOLD_MS));
   release();
   t.diagnostic(`slowest GET /capabilities while the edit waited: ${slowest} ms`);
