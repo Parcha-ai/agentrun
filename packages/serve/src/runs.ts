@@ -92,6 +92,8 @@ type RunMeta = {
   stopped_at?: string;
   /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
   stopped_after?: number;
+  /** How the run's cost was reached, as its end found it (`costSource`); absent on a run not yet ended. */
+  cost_source?: CostSource;
 };
 type RunError = { code: string; message: string; retryable: boolean };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
@@ -150,6 +152,8 @@ export type Run = {
   costUsd?: number | null;
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
+  /** Whether every one of those receipts' costs is its provider's report, read with them. */
+  decisionsReported?: boolean;
   /** A workflow run's decision rows, from its released store: its timeline shows one row each (decision-rows.ts). */
   decisions?: Record<string, unknown>[];
   relaunches: number;
@@ -204,6 +208,14 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
+/** How a run's cost is reached: `reported` when it made decisions, each one's cost its provider's own report, and no
+ *  model request (a model's cost is always this server's estimate); else `estimate`. */
+export type CostSource = "reported" | "estimate";
+export function costSource(rows: readonly TimelineEvent[], decisionsReported: boolean | undefined): CostSource {
+  const usage = usageOf(rows);
+  const noModel = !usage || (usage.usage?.requests === 0 && usage.usage.usd === 0);
+  return decisionsReported === true && noModel ? "reported" : "estimate";
+}
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
@@ -394,6 +406,7 @@ export class Runs {
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
       ...(isObject(stored?.review) ? { review: stored.review as RunReview } : {}),
+      ...(stored?.cost_source === "reported" || stored?.cost_source === "estimate" ? { cost_source: stored.cost_source } : {}),
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
     };
@@ -844,8 +857,10 @@ export class Runs {
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
     // Its decisions' receipts carry their cost: a receipt whose cost is unknown leaves the run's unknown, never $0.
     const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-    const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
+    const rows = durableDecisions(this.storeFile(run));
+    const receipts = rows.map((row) => row.cost_usd);
     if (receipts.length) run.decisionCost = receipts.every((cost) => typeof cost === "number") ? (receipts as number[]).reduce((a, b) => a + b, 0) : null;
+    if (rows.length) run.decisionsReported = rows.every((row) => row.cost_basis === "reported");
     return { outcome: STATUS_OF[state], state, summary };
   }
 
@@ -854,6 +869,7 @@ export class Runs {
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
+    run.meta.cost_source = costSource(run.rows, run.decisionsReported);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
@@ -1129,7 +1145,7 @@ export class Runs {
 
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    return { usd: costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", source: run.meta.cost_source ?? "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
@@ -1189,7 +1205,7 @@ export class Runs {
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
       review: reviewOfRow(row, meta),
-      cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
+      cost: { usd: row.costUsd ?? null, basis: "estimate", source: meta?.cost_source === "reported" ? "reported" : "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
     };
   }

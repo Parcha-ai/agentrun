@@ -201,3 +201,12 @@ test("the decision providers' widening to parallel is its own addition, decision
   assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });
+
+test("cost.source is this server's own, cost/1, on the contract's Cost, which every run's cost is, and info lists it; the rest of Cost is the vendored contract's, byte for byte", async (t) => {
+  const { doc } = await served(t);
+  const { source, ...properties } = doc.components.schemas.Cost.properties;
+  assert.deepEqual([source?.["x-agentrun-serve"], source?.enum], ["cost/1", ["reported", "estimate"]], "a client that validates against the contract alone refuses it, so it is a mark of its own");
+  assert.ok(doc.info["x-agentrun-serve"].fields.includes("Cost.source"), "info names it among the marked properties");
+  assert.equal(JSON.stringify({ ...doc.components.schemas.Cost, properties }), JSON.stringify(VENDORED.components.schemas.Cost), "basis, its enum and what Cost requires are the contract's");
+  for (const name of ["Run", "RunSummary", "TimelinePage"]) assert.deepEqual(doc.components.schemas[name].properties.cost, VENDORED.components.schemas[name].properties.cost, `${name}.cost is the contract's Cost`);
+});

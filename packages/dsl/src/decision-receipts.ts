@@ -1,7 +1,7 @@
 // Decision receipts: one record per typed-question request, holding what was asked, what came back, the
 // rule that turns those answers into an action (its thresholds included) and the action itself. A receipt
 // alone explains a decision: `rederiveDecision` recomputes the action from it without a model call.
-import type { DecisionEvidence } from "./decision-provider.js";
+import type { CostBasis, DecisionEvidence } from "./decision-provider.js";
 import { answerConfidence, answersToValue, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 
 export const DECISION_RECEIPT_VERSION = 1;
@@ -70,6 +70,8 @@ export type DecisionReceipt = {
   model: string | null;
   usage: { input_tokens: number; output_tokens: number } | null;
   cost_usd: number | null;
+  /** How `cost_usd` was reached, when the judge said: reported by the provider, estimated by the host, or unknown. */
+  cost_basis?: CostBasis;
   request_sha256: string | null;
   /** Wall time of the judge call, in milliseconds. */
   latency_ms: number;

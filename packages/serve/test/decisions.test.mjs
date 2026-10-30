@@ -418,3 +418,65 @@ test("capabilities lists parallel: available where PARALLEL_API_KEY is set, why 
   assert.deepEqual(on.decisions.providers[1], { id: "parallel", available: true });
   assert.ok(on.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
 });
+
+/** The agent `id` on `definition`, and its run on the question: the run's id. */
+async function startAs(api, id, definition) {
+  const made = await api("POST", "/agents", flowAgent(id, definition));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const started = await api("POST", `/agents/${id}/runs`, { input: { question: QUESTION } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { last } = await follow(api, started.body.run_id, ["completed", "failed"]);
+  assert.equal(last.status, "completed");
+  return started.body.run_id;
+}
+/** A flow of decisions alone, whose output is the first judge's: a run of it makes no model request. */
+const decisionsOnly = (steps) => ({ ...flow(steps), output: { schemaId: "Coi", path: "coi" } });
+/** The run's cost.source on the run, in the runs list and on its timeline page. */
+async function sourcesOf(api, runId) {
+  return [
+    (await api("GET", `/runs/${runId}`)).body.cost.source,
+    (await api("GET", "/runs")).body.runs.find((run) => run.run_id === runId).cost.source,
+    (await api("GET", `/runs/${runId}/timeline`)).body.cost.source,
+  ];
+}
+
+test("a run whose every decision's cost Jev reports, and that makes no model request, is cost.source reported: its row keeps cost_basis reported, and the run, the list and the timeline say so, before and after a restart", async (t) => {
+  await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
+  const { api, data, close } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startAs(api, "coi", decisionsOnly([judge]));
+  const rows = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
+  assert.deepEqual(rows.map((row) => [row.cost_usd, row.cost_basis]), [[0.00003, "reported"]], "the row keeps the basis its provider's answer gave");
+  const { cost } = (await api("GET", `/runs/${runId}`)).body;
+  assert.deepEqual([cost.usd, cost.basis], [0.00003, "estimate"], "usd as before, and basis stays the contract's");
+  assert.deepEqual(await sourcesOf(api, runId), ["reported", "reported", "reported"]);
+  await close();
+  const again = await startServe({ data, port: 0, faux: FAUX, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => again.close());
+  assert.deepEqual(await sourcesOf(client(again.baseUrl, again.token), runId), ["reported", "reported", "reported"], "the next server reads it from the run's serve.json");
+});
+
+test("a run whose decisions Jev answers with no cost, each booked at TypeSafe's published price, is cost.source estimate, and each row keeps cost_basis estimate", async (t) => {
+  await withCanary(t);
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV });
+  const runId = await startAs(api, "coi", decisionsOnly([judge, { ...judge, label: "coi_again", as: "coi_again" }]));
+  const each = (120 * 0.042 + 0 * 0) / 1_000_000;
+  const rows = durableDecisions(join(data, "runs", runId, "store", "run.sqlite"));
+  assert.deepEqual(rows.map((row) => [row.cost_usd, row.cost_basis]), [[each, "estimate"], [each, "estimate"]]);
+  assert.equal((await api("GET", `/runs/${runId}`)).body.cost.usd, each + each);
+  assert.deepEqual(await sourcesOf(api, runId), ["estimate", "estimate", "estimate"]);
+});
+
+test("a reported decision beside a model request, even a free one, or beside a decision booked at a list price, leaves the run cost.source estimate", async (t) => {
+  await withKeys(t, { jev: true, parallel: true });
+  process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
+  const { api, data } = await serve(t, { fauxJev: FAUX_JEV, fauxParallel: FAUX_PARALLEL });
+  const bases = (runId) => durableDecisions(join(data, "runs", runId, "store", "run.sqlite")).map((row) => [row.node, row.cost_basis]);
+  const withModel = await startAs(api, "with-model", flow([judge, probe()]));
+  assert.deepEqual(bases(withModel), [["coi", "reported"]]);
+  assert.equal((await api("GET", `/runs/${withModel}`)).body.cost.usd, 0.00003, "the model node is free under the fake: only its request makes the run's cost an estimate");
+  assert.deepEqual(await sourcesOf(api, withModel), ["estimate", "estimate", "estimate"]);
+  const withParallel = await startAs(api, "with-parallel", decisionsOnly([judge, onParallel]));
+  assert.deepEqual(bases(withParallel), [["coi", "reported"], ["coi-parallel", "estimate"]]);
+  assert.deepEqual(await sourcesOf(api, withParallel), ["estimate", "estimate", "estimate"]);
+});

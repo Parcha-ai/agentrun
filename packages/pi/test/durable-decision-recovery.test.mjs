@@ -143,3 +143,18 @@ test('decisionRecovery: a row keeps the provider that answered, the sources it c
   assert.deepEqual(await decisions.decision('a'), answered, 'the replayed receipt is the one recorded, provider and sources included');
   await harness.close(ctx);
 });
+
+test('decisionRecovery: a row keeps how its cost was reached, and the replayed receipt has it again', async () => {
+  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'basis-')), 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
+  const runtime = { commit: (change, context) => harness.commit(change, context), snapshot: (...args) => harness.snapshot(...args) };
+  const decisions = decisionRecovery({ key: 'run-1', runtime, context: ctx });
+  const reported = receiptOf('a', { cost_basis: 'reported' });
+  await decisions.recordDecision(reported, exchange);
+  await decisions.recordDecision(receiptOf('b', { cost_basis: 'estimate' }), exchange);
+  await decisions.recordDecision(receiptOf('c', { cost_usd: null, cost_basis: 'unknown', status: 'failed', rule: null, action: null, error: 'lost' }), exchange);
+  await decisions.recordDecision(receiptOf('d'), exchange);
+  const rows = await readDecisions(harness, ctx);
+  assert.deepEqual(rows.map((row) => [row.decision_id, row.cost_usd, row.cost_basis]), [['a', 0.01, 'reported'], ['b', 0.01, 'estimate'], ['c', null, 'unknown'], ['d', 0.01, undefined]], 'a receipt that names no basis leaves none');
+  assert.deepEqual(await decisions.decision('a'), reported, 'the replayed receipt is the one recorded, its basis included');
+  await harness.close(ctx);
+});

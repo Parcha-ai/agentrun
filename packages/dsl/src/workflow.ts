@@ -2073,6 +2073,7 @@ async function decide<T>(
       rule: outcome.rule, action: outcome.action,
       model: result?.model ?? null, usage: result?.usage ?? null, cost_usd: typeof result?.cost_usd === "number" ? result.cost_usd : null, request_sha256: result?.request_sha256 ?? null,
       latency_ms: Date.now() - startedAt,
+      ...(result?.cost_basis !== undefined ? { cost_basis: result.cost_basis } : {}),
       ...(refused.length ? { refused } : {}),
       ...(source && typeof source === "object" && !Array.isArray(source) ? { confidence_source: { ...source } } : {}),
       ...(providerOf(result) ? { provider: providerOf(result) } : {}),

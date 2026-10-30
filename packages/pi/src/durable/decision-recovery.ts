@@ -22,12 +22,14 @@ export type DecisionRecovery = {
 };
 
 /** What a receipt says of its provider beside its answers, each only when present: who answered, the sources, the
- *  questions refused and where each confidence came from. A replay gives the run all of it again. */
-const kept = (from: Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source"> | DecisionRow) => ({
+ *  questions refused, where each confidence came from and how its cost was reached. A replay gives the run all of it
+ *  again. */
+const kept = (from: Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source" | "cost_basis"> | DecisionRow) => ({
   ...(from.provider !== undefined ? { provider: from.provider } : {}),
   ...(from.evidence !== undefined ? { evidence: from.evidence } : {}),
   ...(from.refused !== undefined ? { refused: from.refused } : {}),
   ...(from.confidence_source !== undefined ? { confidence_source: from.confidence_source } : {}),
+  ...(from.cost_basis !== undefined ? { cost_basis: from.cost_basis } : {}),
 });
 
 /** A receipt as the row the run `key` stores: the receipt's own fields, its identity, and the request's size. */
@@ -54,7 +56,7 @@ function answeredReceipt(rows: DecisionRow[], id: string, key: string): Decision
     request: row.request!, status: "answered", state_sha256: row.state_sha256!,
     questions: row.questions as DecisionReceipt["questions"], answers: row.answers as DecisionReceipt["answers"], rule: row.rule as DecisionRule, action: row.action,
     model: row.model, usage: row.usage, cost_usd: row.cost_usd, request_sha256: row.request_sha256, latency_ms: row.latency_ms,
-    ...(kept(row) as Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source">),
+    ...(kept(row) as Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source" | "cost_basis">),
   };
 }
 

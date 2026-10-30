@@ -136,6 +136,12 @@ const REVIEW: Json = {
   description: "Set when a workflow run escalated: it completed, and waits for a person to review it. Like every workflow run, it takes no messages (501 unsupported_here).",
   "x-agentrun-serve": "review/1",
 };
+/** How a cost was reached, beside the contract's `basis`, which stays `estimate` here. */
+const COST_SOURCE: Json = {
+  enum: ["reported", "estimate"],
+  description: "`reported`: the run made decisions, the cost of each is its provider's own report, and it made no model request. `estimate`: any other run, its cost (or part of it) this server's estimate. Given on every run's cost: the run, its summary and its timeline page.",
+  "x-agentrun-serve": "cost/1",
+};
 /** This server's own properties on the contract's objects, outside the contract, by where they go (a schema of
  *  components.schemas, then property names down to the object that takes them). Each is marked x-agentrun-serve with
  *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
@@ -143,6 +149,7 @@ const REVIEW: Json = {
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Run: { review: REVIEW },
   RunSummary: { review: REVIEW },
+  Cost: { source: COST_SOURCE },
   DefinitionInput: {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },

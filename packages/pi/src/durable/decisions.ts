@@ -49,6 +49,8 @@ export type DecisionRow = {
   action: unknown;
   usage: { input_tokens: number; output_tokens: number } | null;
   cost_usd: number | null;
+  /** How `cost_usd` was reached (`reported`, `estimate` or `unknown`), as the receipt has it; absent when it says not. */
+  cost_basis?: "reported" | "estimate" | "unknown";
   latency_ms: number;
   error?: string;
   /** How the request ended (`answered`, `failed` or `cancelled`); absent on a row written before it was kept. */
