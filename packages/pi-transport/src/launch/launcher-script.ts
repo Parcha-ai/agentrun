@@ -338,10 +338,7 @@ stopit() {
 # may wipe $D at once after), and printed from memory, never read again.
 stop_end() {
   if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
-  for f in launcher watch; do
-    p=$(rd $f.pid)
-    if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi
-  done
+  end_launcher
   # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s).
   rmdir "$D/trim" 2>/dev/null
   case "$before" in
@@ -355,6 +352,32 @@ stop_end() {
   : > "$D/done"
   : > "$D/stop.done"
   printf '%s\n' "$final"
+}
+
+# The supervisor and the watchdog ended, with what each runs at that moment: a lock's mkdir in flight outlives a kill of its
+# shell alone and would take the lock after its holder is gone, so a stop's trim would wait out the lock (15 s). With setsid
+# each leads a group of its own, which is killed; without, the shell is stopped first (it starts nothing more), then its
+# children and it are killed. Either way this returns once none of them is left, or after 2 s.
+end_launcher() {
+  groups=
+  kids=
+  for f in launcher watch; do
+    p=$(rd $f.pid)
+    if [ -n "$SETSID" ]; then
+      if own_group "$p" "$(rd $f.ticks)"; then gkill KILL "$p"; groups="$groups $p"; fi
+    elif alive "$p" "$(rd $f.ticks)"; then
+      kill -s STOP "$p" 2>/dev/null
+      for c in $(children_of "$p"); do kill -s KILL "$c" 2>/dev/null; kids="$kids $c"; done
+      kill -s KILL "$p" 2>/dev/null
+    fi
+  done
+  began=$(centis)
+  for g in $groups; do
+    while group_live "$g" && [ $(( $(centis) - began )) -lt 200 ]; do sleep $STEP; done
+  done
+  for c in $kids; do
+    while pid_live "$c" && [ $(( $(centis) - began )) -lt 200 ]; do sleep $STEP; done
+  done
 }
 
 # A stop that did not claim the launch waits for the owner's end, within its own bound ($1 tenths of drain, the hook at its
@@ -667,10 +690,7 @@ run_hook() {
 }
 
 clear_dir() {
-  for f in launcher watch; do
-    p=$(rd $f.pid)
-    if alive "$p" "$(rd $f.ticks)"; then kill -s KILL "$p" 2>/dev/null; fi
-  done
+  end_launcher
   i=0
   while [ "$i" -lt 25 ]; do
     rm -rf "$D" 2>/dev/null
@@ -722,6 +742,24 @@ const GROUP_LIVE = [
 	'    if [ "$3" = "$g" ] && [ "$1" != Z ]; then return 0; fi',
 	"  done",
 	"  return 1",
+	"} 2>/dev/null",
+	"# The ids of the processes whose parent is $1 and that are not zombies (shell builtins only, like group_live).",
+	"children_of() {",
+	"  pp=$1",
+	'  for f in "$PROC"/[0-9]*/stat; do',
+	'    read -r line < "$f" || continue',
+	"    r=\x24{line##*) }",
+	'    [ "$r" != "$line" ] || continue',
+	"    set -- $r",
+	"    ck=\x24{f%/stat}",
+	'    if [ "$2" = "$pp" ] && [ "$1" != Z ]; then echo "\x24{ck##*/}"; fi',
+	"  done",
+	"} 2>/dev/null",
+	"# Whether process $1 is left and not a zombie, read from $PROC like group_live.",
+	"pid_live() {",
+	'  read -r line < "$PROC/$1/stat" || return 1',
+	"  r=\x24{line##*) }",
+	'  [ "\x24{r%% *}" != Z ]',
 	"} 2>/dev/null",
 	"# Hundredths of a second on a clock that only goes forward, as a plain decimal: shell arithmetic reads a leading zero as octal,",
 	"# and 0.88 s of uptime written as 088 is a syntax error (a fresh VM reports such an uptime).",
@@ -930,6 +968,10 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"final",
 	"rec",
 	"seen",
+	"pp",
+	"ck",
+	"groups",
+	"kids",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */

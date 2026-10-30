@@ -3,7 +3,17 @@
 // fact is measured all the same, 0 on a box with its own kernel (a vm) is raised to 1 and read back, and 0 where it cannot
 // be raised refuses. A stop drains the program (SIGTERM, then the grace), then runs `beforeStop`, then kills what is left.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -14,7 +24,7 @@ import { finish } from "../src/box/files.ts";
 import { localBoxes } from "../src/box/local.ts";
 import { launch, launchState, launchStop } from "../src/launch/index.ts";
 import { RECLAIM_SCRIPT } from "../src/launch/launch.ts";
-import { LAUNCHER_SCRIPT, PTRACE_FILE_LINE } from "../src/launch/launcher-script.ts";
+import { LAUNCHER_SCRIPT, PROC_LINE, PTRACE_FILE_LINE } from "../src/launch/launcher-script.ts";
 import { until } from "./home-launch-support.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -477,4 +487,116 @@ describe("a stop in progress", () => {
 		expect(took).toBeLessThan(10_000);
 		await box.destroy(context);
 	});
+
+	for (const setsid of [true, false]) {
+		it(`ends what the watchdog was running as it killed it, so its lock's mkdir never takes the lock after the stop (${setsid ? "with" : "without"} setsid)`, async () => {
+			const box = await boxOn(setsid, true);
+			try {
+				const started = getOrThrow(await launch(box, "held", { argv: ["sleep", "300"] }, context));
+				const at = (file: string) => `${started.directory}/${file}`;
+				// The trim lock as a killed watchdog left it, so the held mkdir can take it only once the stop has removed it.
+				const planted = getOrThrow(
+					await box.exec(["sh", "-c", 'mkdir "$1/trim"', "sh", started.directory], undefined, context),
+				);
+				expect(getOrThrow(await finish(planted)).exitCode).toBe(0);
+				await until("the watchdog in its trim lock's mkdir", async () => fileIn(box, at("seam.held")));
+				const began = Date.now();
+				const stopped = getOrThrow(await launchStop(box, started.launch, { graceMs: 300 }, context));
+				const took = Date.now() - began;
+				expect(stopped.phase).toBe("stopped");
+				expect(await fileIn(box, at("seam.made"))).toBeUndefined();
+				expect(took).toBeLessThan(10_000);
+			} finally {
+				await box.destroy(context);
+			}
+		});
+
+		it(`removes the trim lock only once what it killed is gone: a process of the watchdog's still listed holds it (${setsid ? "with" : "without"} setsid)`, async () => {
+			const box = await boxOn(setsid, false);
+			try {
+				const started = getOrThrow(await launch(box, "listed", { argv: ["sleep", "300"] }, context));
+				const at = (file: string) => join(started.directory, file);
+				const watch = Number(readFileSync(at("watch.pid"), "utf8").trim());
+				// A trim lock held by nobody keeps the watchdog in its lock's wait, so the stop is the one that ends it.
+				mkdirSync(at("trim"));
+				// The stop's own process table, with a clock that stands still (its 2 s bound never passes), listing one process it
+				// cannot end: in the watchdog's group (setsid) or its child (no setsid). Its id is past any kernel's pid_max, so a
+				// signal to it reaches nothing.
+				const proc = mkdtempSync(join(root, "proc-"));
+				writeFileSync(join(proc, "uptime"), "100.00 0\n");
+				mkdirSync(join(proc, "4194999"));
+				writeFileSync(
+					join(proc, "4194999", "stat"),
+					setsid ? `4194999 (held) S 1 ${watch} ${watch} 0\n` : `4194999 (held) S ${watch} 4194999 4194999 0\n`,
+				);
+				writeFileSync(at("launcher.sh"), LAUNCHER_SCRIPT.replace(PROC_LINE, `PROC='${proc}'`));
+				const stopping = launchStop(box, started.launch, { graceMs: 300 }, context);
+				await until("the watchdog killed", async () => (/ [^Z]/.test(statOf(watch)) ? undefined : true));
+				await new Promise((resolve) => setTimeout(resolve, 1_000));
+				expect(existsSync(at("stop.done"))).toBe(false);
+				rmSync(join(proc, "4194999"), { recursive: true });
+				expect(getOrThrow(await stopping).phase).toBe("stopped");
+				expect(existsSync(at("stop.done"))).toBe(true);
+			} finally {
+				await box.destroy(context);
+			}
+		});
+	}
 });
+
+/** The state letter of process `pid` after its name in /proc, with a space before it; empty once it is gone. */
+function statOf(pid: number): string {
+	try {
+		return readFileSync(`/proc/${pid}/stat`, "utf8")
+			.replace(/^.*\) /, " ")
+			.slice(0, 2);
+	} catch {
+		return "";
+	}
+}
+
+/**
+ * A local box; without setsid, its PATH has every program of the default one but setsid. With `heldMkdir`, its `mkdir` holds the
+ * watchdog's mkdir of its trim lock while the watchdog's shell lives, as an exec under load can be held. Once the shell is gone
+ * it waits for the lock to be free and takes it (writing seam.made), as a mkdir left running by a kill of the shell alone would.
+ * The stop's mkdir of the lock goes on once that one has taken it or has ended. Every other mkdir is the real one.
+ */
+async function boxOn(setsid: boolean, heldMkdir: boolean): Promise<Box> {
+	const bin = mkdtempSync(join(root, "bin-"));
+	const dirs = ["/usr/local/bin", "/usr/bin", "/bin"];
+	const real = dirs.map((dir) => join(dir, "mkdir")).find((path) => existsSync(path));
+	if (heldMkdir)
+		writeFileSync(
+			join(bin, "mkdir"),
+			`#!/bin/sh
+live() { s=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null) && [ "\${s%% *}" != Z ]; }
+for t; do :; done
+case "$t" in */trim) ;; *) exec ${real} "$@" ;; esac
+d=\${t%/trim}
+case "$(tr '\\0' '\\n' < "/proc/$PPID/cmdline" | sed -n 3p)" in
+watch)
+  shell=$PPID
+  echo $$ > "$d/seam.held"
+  while live "$shell"; do sleep 0.05; done
+  while [ -d "$t" ]; do sleep 0.05; done
+  ${real} "$@" && : > "$d/seam.made"
+  exit 1 ;;
+stop)
+  held=$(cat "$d/seam.held" 2>/dev/null)
+  while [ ! -e "$d/seam.made" ] && [ -n "$held" ] && live "$held"; do sleep 0.05; done ;;
+esac
+exec ${real} "$@"
+`,
+			{ mode: 0o755 },
+		);
+	let path = `${bin}:${dirs.join(":")}`;
+	if (!setsid) {
+		for (const dir of dirs.filter((dir) => existsSync(dir)))
+			for (const name of readdirSync(dir))
+				if (name !== "setsid" && !existsSync(join(bin, name))) symlinkSync(join(dir, name), join(bin, name));
+		path = bin;
+	}
+	return getOrThrow(
+		await localBoxes({ root: mkdtempSync(join(root, "box-")), path }).create({ maxLifetimeMs: 600_000 }, context),
+	);
+}
