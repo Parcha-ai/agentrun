@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { createHash } from 'node:crypto';
@@ -488,31 +488,75 @@ test("a temp directory only its owner may search sends the default socket direct
   }
 });
 
-test("a default socket directory another user made first is never used and never fails the session: it gets a fresh one", async (t) => {
-  // The squat, as it looks to this user: the default name is there, and it is not this user's own 0700 directory.
-  const temp = mkdtempSync('/tmp/krs-');
-  t.after(() => rmSync(temp, { recursive: true, force: true }));
+/** A temp directory every caller can pass through, `bytes` long, and the session whose default name the test squats. */
+function squatted(t, bytes) {
+  const root = mkdtempSync('/tmp/krs-');
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  chmodSync(root, 0o755);
+  const temp = Buffer.byteLength(root) >= bytes ? root : join(root, 't'.repeat(bytes - Buffer.byteLength(root) - 1));
+  mkdirSync(temp, { recursive: true });
   chmodSync(temp, 0o755);
   const dir = scratch();
-  const squatted = join(temp, `arb-${createHash('sha256').update(dir).digest('hex').slice(0, 12)}`);
-  mkdirSync(squatted, { mode: 0o755 });
-  chmodSync(squatted, 0o755);
+  const name = join(temp, `arb-${createHash('sha256').update(dir).digest('hex').slice(0, 12)}`);
+  // The squat, as it looks to this user: the default name is there, and it is not this user's own 0700 directory.
+  mkdirSync(name, { mode: 0o755 });
+  chmodSync(name, 0o755);
+  return { temp, dir, name };
+}
+async function withTmp(temp, run) {
   const before = process.env.TMPDIR;
   process.env.TMPDIR = temp;
-  try {
-    const box = fakeBox();
-    const machine = await machineAt(t, dir, { box: boxOf(box) });
-    await machine.start({ command: '/bin/true' }).exited;
-    const used = dirname(box.specs[0].spec.modelSocket);
-    assert.notEqual(used, squatted, 'the squatted name is not used');
-    assert.ok(used.startsWith(join(temp, 'arb-')) && (statSync(used).mode & 0o777) === 0o700, used);
-    assert.deepEqual(readdirSync(squatted), [], 'the squatted directory is left as it was');
-  } finally {
-    if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before;
-  }
+  try { return await run(); } finally { if (before === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = before; }
+}
+const openBoxed = (dir, box, extra = {}) => openLocalMachine({ name: 'agentrun-test', dir, dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(box, extra) });
+
+test("a default socket directory another user made first is never used and never fails the session: it gets one of its own beside it", async (t) => {
+  const { temp, dir, name } = squatted(t, 40);
+  const box = fakeBox();
+  const machine = await withTmp(temp, () => machineAt(t, dir, { box: boxOf(box) }));
+  await machine.start({ command: '/bin/true' }).exited;
+  const used = dirname(box.specs[0].spec.modelSocket);
+  assert.ok(used.startsWith(`${name}-`), used);
+  // The fresh directory keeps every rule the default has: this user's own, 0700, not a link, within the bound.
+  const fresh = lstatSync(used);
+  assert.ok(fresh.isDirectory() && (fresh.mode & 0o777) === 0o700 && fresh.uid === process.getuid(), used);
+  assert.ok(Buffer.byteLength(used) <= 81, `${used} is ${Buffer.byteLength(used)} bytes`);
+  assert.deepEqual(readdirSync(name), [], 'the squatted directory is left as it was');
   // A runtime directory the host names itself is still refused, never replaced: the host chose it.
   const named = join(shortDir(), 'open');
   mkdirSync(named, { recursive: true });
   chmodSync(named, 0o755);
-  await assert.rejects(openLocalMachine({ name: 'agentrun-test', dir: scratch(), dirs: [], sessionId: 's', from: {}, proxy: { policy, hooks: { beforeRequest: async () => {}, afterRequest: async () => {} }, model: 'm', origin: 'https://provider.invalid', credential: () => 'c' }, box: boxOf(fakeBox(), { runtimeDir: named }) }), /must be this user's own, 0700, and not a link/);
+  await assert.rejects(openBoxed(scratch(), fakeBox(), { runtimeDir: named }), /must be this user's own, 0700, and not a link/);
+});
+
+test("the fresh directory's name is held to the bound before anything is made: at the longest default base it is refused by name", async (t) => {
+  // A 64-byte temp directory: the default (17 more bytes) is exactly 81; the fresh one would be 88.
+  const { temp, dir, name } = squatted(t, 64);
+  assert.equal(Buffer.byteLength(name), 81);
+  await assert.rejects(withTmp(temp, () => openBoxed(dir, fakeBox())), /runtime_dir_too_long: the session's fresh socket directory .* would be 88 bytes/);
+  assert.deepEqual(readdirSync(temp).filter((e) => e.startsWith(`${basename(name)}-`)), [], 'nothing was made');
+});
+
+test("beside a squat, a planted link or a directory not this user's own 0700 is never taken; one of the session's own from an earlier run is", async (t) => {
+  const { temp, dir, name } = squatted(t, 40);
+  const elsewhere = mkdtempSync('/tmp/kre-');
+  t.after(() => rmSync(elsewhere, { recursive: true, force: true }));
+  symlinkSync(elsewhere, `${name}-aaaaaa`);
+  mkdirSync(`${name}-bbbbbb`, { mode: 0o755 });
+  chmodSync(`${name}-bbbbbb`, 0o755);
+  const box = fakeBox();
+  const machine = await withTmp(temp, () => machineAt(t, dir, { box: boxOf(box) }));
+  await machine.start({ command: '/bin/true' }).exited;
+  const used = dirname(box.specs[0].spec.modelSocket);
+  assert.ok(used.startsWith(`${name}-`) && used !== `${name}-aaaaaa` && used !== `${name}-bbbbbb`, used);
+  assert.equal(existsSync(join(elsewhere, 'model.sock')), false, 'nothing was made through the link');
+  // A crash leaves the session's own directory behind: the next run takes it again, so crashes leave at most one.
+  const kept = `${name}-cccccc`;
+  mkdirSync(kept, { mode: 0o700 });
+  chmodSync(kept, 0o700);
+  rmSync(used, { recursive: true, force: true });
+  const again = fakeBox();
+  const next = await withTmp(temp, () => machineAt(t, dir, { box: boxOf(again) }));
+  await next.start({ command: '/bin/true' }).exited;
+  assert.equal(dirname(again.specs[0].spec.modelSocket), kept, "the session's own earlier directory is taken again");
 });

@@ -12,9 +12,9 @@
 //    (./box-slot.ts): a box is reaped as soon as its child exits, and only the reap's own count lets the next one start.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmdirSync, rmSync, statfsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, normalize, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { FileTail } from "../process/tail.js";
 import { BoxError, type Box, type BoxedChild, type BoxRecord, type BoxRecorder, type BoxSpec, type Isolation, type Reaped } from "./box.js";
 import { BOX_FORWARD, BOX_LOOPBACK, forwardChild } from "./box-forward.js";
@@ -187,7 +187,23 @@ function defaultSocketDir(dir: string, name: string): string {
     return socketDir(dir, name);
   } catch (error) {
     if ((error as { code?: string }).code !== "runtime_dir_not_owned") throw error;
-    return socketDir(mkdtempSync(join(dirname(dir), "arb-")), name);
+    // One of this session's own beside it first, which an earlier run of it left (so a crash leaves at most one): only one
+    // that passes every check the default would (this user's own, 0700, not a link, local) is taken.
+    const parent = dirname(dir);
+    const stem = `${basename(dir)}-`;
+    for (const entry of readdirSync(parent)) {
+      if (!entry.startsWith(stem)) continue;
+      try {
+        return socketDir(join(parent, entry), name);
+      } catch {
+        // Not this user's own 0700 directory: never reused.
+      }
+    }
+    // Else a fresh one. mkdtemp adds 6 characters: the name is checked against the bound before anything is made.
+    const prefix = join(parent, stem);
+    const bytes = Buffer.byteLength(prefix) + 6;
+    if (bytes > 81) throw new Error(`${name}: runtime_dir_too_long: the session's fresh socket directory under ${parent} would be ${bytes} bytes; a socket path in it must fit 107`);
+    return socketDir(mkdtempSync(prefix), name);
   }
 }
 
