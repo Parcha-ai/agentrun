@@ -15,7 +15,8 @@ export const REFLECT_UNCAPPED_USD = 0.05;
 export function reflectBudget(capUsd: number | undefined): number {
   if (capUsd === undefined) return REFLECT_UNCAPPED_USD;
   if (typeof capUsd !== "number" || !Number.isFinite(capUsd) || capUsd <= 0) throw new Error("a run's cap must be a number of dollars above 0");
-  return Math.min(REFLECT_MAX_USD, Math.round(capUsd * REFLECT_SHARE * 1e6) / 1e6);
+  // Rounded to 12 significant digits, never to fixed decimals: a cap above 0, however small, keeps a reserve above 0.
+  return Math.min(REFLECT_MAX_USD, Number((capUsd * REFLECT_SHARE).toPrecision(12)));
 }
 
 /** Control and invisible characters: none may reach the prompt through a value the host puts in it. */
