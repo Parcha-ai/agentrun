@@ -145,13 +145,21 @@ test("a child that forks a grandchild leaves none alive after close()", async (t
 const RECORDED_REQUEST = JSON.parse(readFileSync(new URL('./fixtures/responses-request-gpt-5.4-mini.json', import.meta.url), 'utf8'));
 const RECORDED_STREAM = readFileSync(new URL('./fixtures/responses-stream-gpt-5.4-mini.sse', import.meta.url), 'utf8');
 
+/** The user-agent of this test's own requests: another local client's keyless knock on a new loopback listener (a
+ *  shared machine's service does) is refused too, and is shown, never judged here. */
+const CROSS_RUN_AGENT = 'agentrun-cross-run-test';
+
 /** A run's session machine whose proxy's hooks and provider record what reached them. */
-async function runMachine(runId) {
+async function runMachine(t, runId) {
   const seen = { before: 0, after: 0, forwarded: 0, refused: [] };
   const acquire = localMachine({ dir: scratch(), proxy: {
     hooks: { beforeRequest: async () => { seen.before += 1; }, afterRequest: async () => { seen.after += 1; } },
     tools: ['lookup'],
-    log: (message, detail) => { if (/refused/.test(message)) seen.refused.push(detail.reason); },
+    log: (message, detail) => {
+      if (!/refused/.test(message)) return;
+      if (detail.userAgent === CROSS_RUN_AGENT) seen.refused.push(detail.reason);
+      else t.diagnostic(`the proxy refused another client: ${JSON.stringify(detail)}`);
+    },
     fetch: async () => { seen.forwarded += 1; return new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }); },
   } });
   const machine = await acquire({ ctx: { runId }, model: gatewayHandler(route) });
@@ -161,13 +169,13 @@ async function runMachine(runId) {
 /** Codex's model request, with `key`, to the proxy at `url`. */
 async function ask(url, key) {
   const body = { ...RECORDED_REQUEST, tools: [...RECORDED_REQUEST.tools, { type: 'function', name: 'lookup', parameters: { type: 'object', properties: {} } }] };
-  const res = await fetch(`${url}/v1/responses`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${key}`, accept: 'text/event-stream' }, body: JSON.stringify(body) });
+  const res = await fetch(`${url}/v1/responses`, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': CROSS_RUN_AGENT, ...(key === null ? {} : { authorization: `Bearer ${key}` }), accept: 'text/event-stream' }, body: JSON.stringify(body) });
   return { status: res.status, text: await res.text() };
 }
 
 test("run A's key at run B's proxy is refused by name: B books nothing, nothing reaches the provider, and each key still works at its own run's proxy", async (t) => {
-  const a = await runMachine('run-a');
-  const b = await runMachine('run-b');
+  const a = await runMachine(t, 'run-a');
+  const b = await runMachine(t, 'run-b');
   t.after(() => Promise.all([a.machine.close(), b.machine.close()]));
   assert.notEqual(a.machine.modelKey, b.machine.modelKey, 'each run has a key of its own');
   for (const [client, proxy] of [[a, b], [b, a]]) {
@@ -175,12 +183,15 @@ test("run A's key at run B's proxy is refused by name: B books nothing, nothing 
     assert.equal(refused.status, 401);
     assert.match(refused.text, /this session's key is required/);
   }
+  // No key at all is refused the same way.
+  const keyless = await ask(b.machine.modelUrl, null);
+  assert.deepEqual([keyless.status, /this session's key is required/.test(keyless.text)], [401, true]);
   // The only route without the key is Codex's local probe, which answers here and reaches nothing.
   assert.equal((await fetch(`${b.machine.modelUrl}/`, { headers: { authorization: `Bearer ${a.machine.modelKey}` } })).status, 404);
   await new Promise((resolve) => setTimeout(resolve, 50));
   for (const run of [a, b]) {
     assert.deepEqual({ before: run.seen.before, after: run.seen.after, forwarded: run.seen.forwarded }, { before: 0, after: 0, forwarded: 0 }, "the other run's request was never booked or forwarded");
-    assert.deepEqual(run.seen.refused, ["this session's key is required"], 'the refusal is said once, by name');
+    assert.deepEqual(run.seen.refused, Array(run === b ? 2 : 1).fill("this session's key is required"), 'each refusal is said, by name');
   }
   for (const run of [a, b]) assert.equal((await ask(run.machine.modelUrl, run.machine.modelKey)).status, 200);
   await new Promise((resolve) => setTimeout(resolve, 50));
