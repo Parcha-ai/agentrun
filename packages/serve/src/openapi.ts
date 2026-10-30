@@ -47,6 +47,12 @@ const archiving = (collection: string, noun: string, id: Json, answer: string): 
   );
 
 /** This server's own routes, outside the contract. */
+/** What a revision's runs learn with, read only: never taken on a request. */
+const LEARNING_VIEW: Record<string, Json> = {
+  learning_effective: { enum: ["auto", "approve", "off"], description: "What the revision's runs learn with: its learning on pi; off on another harness, where learning does not run, and for a workflow revision or none.", "x-agentrun-serve": "learning/2" },
+  learning_reason: { type: ["string", "null"], description: "Why learning_effective is off where learning says auto or approve; else null.", "x-agentrun-serve": "learning/2" },
+};
+
 const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/openapi.json": {
     get: {
@@ -90,11 +96,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
             revisions: {
               type: "array",
               items: {
-                type: "object", required: ["revision", "version", "parent", "kind", "current", "note", "created_at", "definition"],
+                type: "object", required: ["revision", "version", "parent", "kind", "current", "note", "created_at", "definition", "learning_effective", "learning_reason"],
                 properties: {
                   revision: { type: "string" }, version: { type: "integer", minimum: 1 }, parent: { type: ["string", "null"] },
                   kind: { type: "string", enum: ["agentic", "workflow"] }, current: { type: "boolean" }, note: { type: ["string", "null"] },
-                  created_at: ref("schemas/Timestamp"), definition: ref("schemas/Definition"),
+                  created_at: ref("schemas/Timestamp"), definition: ref("schemas/Definition"), ...LEARNING_VIEW,
                 },
               },
             },
@@ -127,13 +133,14 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     harness: { enum: [...HARNESSES], description: "The harness that runs the revision. Absent on a request, pi; every answer names it. One this server does not run saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.harnesses).", "x-agentrun-serve": "harness/1" },
-    learning: { enum: ["auto", "approve", null], description: "Whether an agentic agent's runs learn (auto merges by itself, approve waits for a person; null or absent, off). A new agentic agent gets auto. Unlike every other field, an edit that leaves it out keeps the current value; null turns it off. A workflow revision does not learn.", "x-agentrun-serve": "learning/1" },
+    learning: { enum: ["auto", "approve", null], description: "Whether an agentic agent's runs learn (auto merges by itself, approve waits for a person; null or absent, off). A new agentic agent gets auto. Learning runs on pi only: a definition that asks for it on another harness is refused, and one that leaves it out there keeps the value, which does not run (learning_effective says off, and learning_reason why). Unlike every other field, an edit that leaves it out keeps the current value; null turns it off. A workflow revision does not learn. Learning adds read, write and edit on the run's working copy of the agent's repository only; a tool the revision names keeps its own scope, the run's work/. A learning revision names no tool that runs a process (bash, powershell, code).", "x-agentrun-serve": "learning/1" },
   },
   Agent: {
     kind: { enum: ["agentic", "workflow", null], description: "The current revision's kind; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revision: { type: ["string", "null"], description: "The current revision's id; null before the agent has one.", "x-agentrun-serve": "serve/1" },
     revisions: { type: "integer", minimum: 0, description: "How many revisions the agent has.", "x-agentrun-serve": "serve/1" },
     archived_at: { type: ["string", "null"], description: "When the agent was archived, while it is; else null.", "x-agentrun-serve": "serve/1" },
+    ...LEARNING_VIEW,
   },
   Capabilities: {
     harnesses: {

@@ -410,8 +410,22 @@ agent does not learn.
   turns it off.
 - A revision saved before the field existed does not learn.
 - A workflow definition does not take it (`422 not_an_option`).
-- The `learn` tool comes with learning. Naming `learn` in `tools` while learning is off is `422` on `definition.tools[i]`,
-  and the fix is to set `learning` to `auto` or `approve`.
+- Learning runs on pi only. A definition that asks for it on another harness is `422 not_an_option` on
+  `definition.learning` ("learning runs on pi; codex runs without it. Set definition.learning to null, or use pi."). One
+  that leaves it out there saves and keeps the value (the default, or the one an edit keeps), which does not run: the
+  agent and revision views say what applies, read only, in `learning_effective` (`auto`, `approve` or `off`) and
+  `learning_reason` ("learning runs on pi; this agent runs on codex", else null). Moved to pi, the kept value runs. A
+  revision stored with learning on another harness before this rule runs as it did, without learning.
+- Learning adds `read`, `write` and `edit` on the run's working copy of the agent's repository only: a file tool the
+  revision did not name works inside `work/.agent/repo` (`read` also in `work/.agent/learnings`, the seeded notes) and
+  nowhere else, never through a link, and a call outside it is refused by name ("write is the learning copy's only here:
+  ... is outside .agent/repo"). A file tool the revision named keeps its own scope, the run's `work/`, which holds the
+  copy: whatever writes there, the harvest's scan reads every file it commits. Learning never widens what a revision may
+  do. A learning revision that names a tool
+  that runs a process (`bash`, `powershell`, `code`, or a tool of the table that spawns one) is `422 not_an_option` on
+  `definition.tools[i]`, so what a learning run writes never comes from a command. There is no `learn` tool. A learning
+  revision may still name `learn`, as one could before; the name binds nothing. On a revision that does not learn it is
+  `422 not_an_option`.
 
 Learning needs git 2.40 or later on `PATH`. The container image is on Debian bookworm, which has git 2.39. On a host
 without it, a new agent does not learn. A definition that asks for learning saves with a `not_set_up_here` warning, and
@@ -430,22 +444,39 @@ its runs are refused with `409 agent_not_runnable` until git is there.
   store (`learn.seed`), and a process that opens the run again reads it back, so the run's base never moves. The
   notes active at that commit are copied to `work/.agent/learnings/`, and their index is the `<learned>` section of
   the prompt. The skills the agent wrote at that commit join the revision's own; a revision skill of the same name
-  wins. The run gets the `learn` tool, which notes a lesson, a fact or a correction in its store. The run's process
-  reads the repository through a clone of its own, `runs/<id>/learning.git`. That clone is outside `work/`, so no tool
-  of the run reaches it or the repository, and the process never pushes.
-- Once the run's end is carried back, the server proposes what the run learned as the branch `runs/<run id>` from that
-  commit. It reads the outcome and the cost from the carry back. The branch holds the memo `memos/<run id>.md`, a note
-  for each lesson and the index. The memo's front matter is the server's: `run`, `base`, `harness: pi`, `outcome`
-  (`completed`, `failed`, or `stopped` for a cancelled run), `untrusted` and `cost_usd`. `untrusted` is true when the
-  run called an external tool, meaning any tool but `read`, `write`, `edit`, `ask_person` and `learn`.
-- The server records each proposal in `DATA/agents/<id>/learning/runs/<run id>.json` (`proposed`, `empty` or
-  `refused`). At start it proposes every ended run of a learning agent that has no record yet, so a server that stopped
+  wins. The run's process reads the repository through a clone of its own, `runs/<id>/learning.git`. That clone is
+  outside `work/`, so no tool of the run reaches it or the repository, and the process never pushes.
+- The run also gets that commit as plain files, its working copy `work/.agent/repo`, with the memo's front matter in
+  `memos/<run id>.md`. Its instructions end with a `<saving-learning>` section that says where the copy is, how to write
+  the memo's sections, a note and its index line, and which paths are kept. A process that opens the run again keeps the
+  copy it has.
+- Once the run's end is carried back and its process has ended, the server harvests the working copy into one commit
+  on the branch `runs/<run id>` from that commit: the seed's tree with the layout's paths as they are on disk. A run
+  whose process is still alive is not harvested: its record says `waiting`, with the reason, and the server looks at
+  the process every 2 s and harvests the run once it has exited. The process is told by its pid with the boot and start
+  time its holder recorded, so a later process given the same pid is not the run's. A server that closes first stops
+  looking, and the next start's catch-up harvests the run. Links, paths outside what a run may write, oversized files and any
+  `.git` the agent made are left out and never run; a directory that cannot be read stops the harvest. The commit is
+  dated the run's end, so a harvest again is the same commit. The memo's front matter is the server's: `run`, `base`,
+  `harness`, `outcome` (`completed`, `failed`, or `stopped` for a cancelled run), `cost_usd` when it is known, and
+  `untrusted`, true when the run called an external tool, meaning any tool but `read`, `write`, `edit` and
+  `ask_person`.
+- The server records each proposal in `DATA/agents/<id>/learning/runs/<run id>.json` (`proposed`, `empty`, `refused`,
+  or `waiting` while the run's process outlives its end). At start it proposes every ended run of a learning agent that has no record yet, so a server that stopped
   between a carry back and its proposal loses nothing. That pass waits for an agent store another writer holds, and
   says so in the log; if the store stays busy, the next start proposes what is left. The commit's `Run-Id` trailer makes a second proposal of the
   same run add nothing. A proposal that fails (a push the repository refuses) is logged; the run has ended as it would
-  have, and the next start proposes it. A run that learned nothing leaves no branch.
-- The guard refuses a note that holds a value of one of the server's secrets: the variables whose names end in `KEY`,
-  `TOKEN`, `SECRET` or `PASSWORD`. A credential inside a variable named otherwise (a `..._URL` such as
+  have, and the next start proposes it. A run that learned nothing leaves no branch: the memo it was seeded with,
+  left with nothing past its front matter, proposes nothing alone. A run that ended before working
+  copies existed is recorded once as `empty`, with that reason; one that had a working copy and lost it is an error,
+  logged, and tried again at the next start.
+- A harvest that would hold the run's input values or a value of one of the server's secrets, in a file or in a path
+  it writes or deletes, is refused whole, and nothing is committed; the refusal names the file, or counts the paths, and never
+  quotes the value. A value is found as it is and JSON-escaped, and, from 12 bytes on, hex or percent-encoded in any
+  case, and base64 or base64url at any offset in a longer blob, wrapped or not. Every input value counts, nested ones included, and a JSON number counts as its digits. An
+  input value under 4 characters once trimmed, or a bare `yes`, `no`, `true` or `false`, is not checked: it would
+  refuse every harvest. A number of 4 or more digits is. The secrets are the values of the variables whose names end in `KEY`, `TOKEN`, `SECRET` or
+  `PASSWORD`. A credential inside a variable named otherwise (a `..._URL` such as
   `postgres://user:password@host/db`) is not among them.
 - Nothing merges into `main` yet. A run's branch stays a proposal until review and merge exist, and those wait for an
   injection screen on this server.

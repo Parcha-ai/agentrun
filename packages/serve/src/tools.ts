@@ -64,6 +64,8 @@ export type ToolEntry = {
   needs: readonly string[];
   /** Whether a workflow's model node may name it. */
   nodes: boolean;
+  /** Whether any call of it can start a process on this host. A learning revision names none (runnable.ts). */
+  spawns: boolean;
   /** What the name stands for, bound in the run's process once. */
   bind(host: ToolHost): Promise<ToolBinding>;
   /** What a workflow's `call` node `via: "tool"` naming it runs: its interpolated `args` in, the value its `out` schema
@@ -75,6 +77,7 @@ const fileTool = (name: string, summary: string): ToolEntry => ({
   summary,
   needs: [],
   nodes: true,
+  spawns: false,
   bind: async () => ({ tools: (CodingTools.tools ?? []).filter((tool) => tool.name === name), extensions: [CodingTools] }),
 });
 
@@ -112,6 +115,7 @@ const browserTool: ToolEntry = {
   summary: "Drive a Browserbase browser: open pages, read and screenshot them, and act on them.",
   needs: ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
   nodes: true,
+  spawns: false,
   bind: async (host) => {
     const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY }] = await Promise.all([
       import("@earendil-works/chord/context"),
@@ -149,6 +153,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     summary: "Ask the person who started the run; the turn ends until a message answers.",
     needs: [],
     nodes: false,
+    spawns: false,
     bind: async (host) => {
       const person = defineExtension({ name: "person", tools: [askPerson] });
       host.install(person);
@@ -159,6 +164,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     summary: "Fetch one public web page: { ok, url, status, title, text, links }; a private or local address, or a scheme other than http(s), is refused.",
     needs: [],
     nodes: true,
+    spawns: false,
     bind: async (host) => {
       const tool = fetchPageTool(() => fetchOptions(host.env, FAUX_ENV)) as unknown as ToolRegistration;
       const extension = defineExtension({ name: "fetch-page", tools: [tool] });
@@ -174,6 +180,9 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
 export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
 export const CALL_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.effect !== undefined);
+
+/** The tools that run a command: pi's shells, a code tool, and any entry of the table that spawns. */
+export const SPAWNING_TOOLS: readonly string[] = ["bash", "powershell", "code", ...BOUND_TOOLS.filter((name) => TOOLS[name]!.spawns)];
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
  *  `via: "tool"` (`tool`). */

@@ -5,6 +5,7 @@
 // agent's own `.git`, which is never read or run, so nothing the agent committed or configured counts. The memo's front
 // matter is the host's facts; its sections are the agent's. The commit is dated the run's end, with a fixed message and
 // the run's `Run-Id`, so a harvest again, on any host, is the same commit.
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -23,9 +24,12 @@ export type HarvestOptions = {
   /** The run's end: the commit's date. */
   date: Date;
   head: HarvestHead;
+  /** Values no harvested file or path may hold (this host's secrets, the run's input), as they are or encoded
+   *  (`privateFormsOf`): one that does refuses the whole harvest, and nothing is committed or pushed. */
+  refuse?: readonly string[];
 };
 export type Ignored = { path: string; reason: string };
-export type HarvestResult = { status: "proposed" | "already" | "empty"; sha?: string; deleted: string[]; ignored: Ignored[] };
+export type HarvestResult = { status: "proposed" | "already" | "empty" | "refused"; sha?: string; deleted: string[]; ignored: Ignored[]; refused?: string[] };
 
 export const HARVEST_MESSAGE = "harvest: the run's learning";
 
@@ -60,12 +64,56 @@ async function readRegular(full: string, cap: number): Promise<Buffer | "over" |
   }
 }
 
+/** A value is looked for encoded only from this many bytes on: the base64 or hex of a shorter one is short enough to
+ *  turn up in ordinary text. */
+export const MIN_ENCODED = 12;
+
+/** The base64 of `bytes` where they start at each of the three offsets in a longer encoded run, each cut to the
+ *  characters only `bytes` decide, so a value inside a bigger blob is found whatever comes before or after it. */
+function base64Cores(bytes: Buffer): string[] {
+  return [0, 1, 2].map((lead) => Buffer.concat([Buffer.alloc(lead), bytes]).toString("base64").slice(Math.ceil((8 * lead) / 6), Math.floor((8 * (lead + bytes.length)) / 6)));
+}
+
+/** The bytes encodeURIComponent leaves as they are: A-Z a-z 0-9 - _ . ! ~ * ' ( ). */
+const UNRESERVED = new Set(Buffer.from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"));
+/** `bytes` percent-encoded as encodeURIComponent writes a string, lowercased: built from the UTF-8 bytes, so a string no
+ *  URI encoder takes (a lone surrogate, read as U+FFFD) never throws. */
+const uriComponent = (bytes: Buffer) => [...bytes].map((byte) => (UNRESERVED.has(byte) ? String.fromCharCode(byte) : `%${byte.toString(16).padStart(2, "0")}`)).join("").toLowerCase();
+
+/** How `value` may be written down: `exact` as it is or JSON-escaped; from `MIN_ENCODED` bytes on, `folded` (hex and
+ *  percent-encoding, matched in any case) and `base64` (base64 and base64url at every offset, matched with whitespace
+ *  taken out, so a wrapped blob is read whole). */
+export function privateFormsOf(value: string): { exact: string[]; folded: string[]; base64: string[] } {
+  const exact = [...new Set([value, JSON.stringify(value).slice(1, -1)])];
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length < MIN_ENCODED) return { exact, folded: [], base64: [] };
+  const hex = bytes.toString("hex");
+  const folded = [...new Set([hex, hex.replace(/../g, "%$&"), uriComponent(bytes)])];
+  const cores = base64Cores(bytes);
+  return { exact, folded, base64: [...new Set([...cores, ...cores.map((core) => core.replace(/\+/g, "-").replace(/\//g, "_"))])] };
+}
+
+/** Whether `text` holds any form of any of `values`. */
+function holdsPrivate(text: Buffer, values: readonly ReturnType<typeof privateFormsOf>[]): boolean {
+  if (!values.length) return false;
+  const latin = text.toString("latin1");
+  const lower = latin.toLowerCase();
+  const packed = latin.replace(/\s+/g, "");
+  return values.some((forms) => forms.exact.some((form) => text.includes(form)) || forms.folded.some((form) => lower.includes(form)) || forms.base64.some((form) => packed.includes(form)));
+}
+
+/** A blob's git id: sha-1, or sha-256 in a repository whose ids are 64 digits. */
+const blobId = (bytes: Buffer, idLength: number) => createHash(idLength === 64 ? "sha256" : "sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+
+/** Whether a memo says nothing past its front matter: the stub a run is seeded with, left as it was. */
+const blankMemo = (text: string) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").trim() === "";
+
 /** The memo with the host's front matter in place of whatever the agent's file opens with. */
 function withHostHead(text: string, runId: string, seed: string, head: HarvestHead): string {
   const body = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text) ? text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "") : text;
   const lines = [`run: ${runId}`, `base: ${seed}`, `harness: ${head.harness}`, `outcome: ${head.outcome}`];
   if (typeof head.costUsd === "number" && Number.isFinite(head.costUsd) && head.costUsd >= 0) lines.push(`cost_usd: ${head.costUsd}`);
-  if (head.untrusted) lines.push("untrusted: true");
+  if (typeof head.untrusted === "boolean") lines.push(`untrusted: ${head.untrusted}`);
   return `---\n${lines.join("\n")}\n---\n${body}`;
 }
 
@@ -124,8 +172,9 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
     }
   };
   await walk("");
+  const memo = `memos/${runId}.md`;
   const commit: Record<string, Uint8Array | string | null> = {};
-  for (const [path, bytes] of found) commit[path] = path === `memos/${runId}.md` ? withHostHead(bytes.toString("utf8"), runId, seed, head) : new Uint8Array(bytes);
+  for (const [path, bytes] of found) commit[path] = path === memo ? withHostHead(bytes.toString("utf8"), runId, seed, head) : new Uint8Array(bytes);
   // A seed file the run may write that is gone from disk: deleted. One still there but left out (a link in its place) stays.
   const deleted: string[] = [];
   const left = new Set(ignored.map((i) => i.path));
@@ -136,6 +185,19 @@ export async function harvestWorktree(options: HarvestOptions): Promise<HarvestR
     commit[entry.path] = null;
     deleted.push(entry.path);
   }
+  // The memo stub every run is seeded with proposes nothing alone: a run that changed nothing else has nothing to propose.
+  const seedIds = new Map(seedFiles.map((entry) => [entry.path, entry.oid]));
+  const changed = deleted.length > 0 || [...found].some(([path, bytes]) => path !== memo && seedIds.get(path) !== blobId(bytes, seedIds.get(path)?.length ?? 40));
+  if (!changed && (!found.has(memo) || blankMemo(found.get(memo)!.toString("utf8")))) return { status: "empty", deleted: [], ignored };
+  // A refused value is found in every file and every path, a deleted one too, as it is or encoded, and named by the file
+  // that holds it, or by a count for a path, never quoted.
+  const values = (options.refuse ?? []).filter((value) => typeof value === "string" && value.trim() !== "").map(privateFormsOf);
+  const inPaths = Object.keys(commit).filter((path) => holdsPrivate(Buffer.from(path, "utf8"), values));
+  const holding = Object.entries(commit)
+    .filter(([path, content]) => content !== null && !inPaths.includes(path) && holdsPrivate(Buffer.from(content), values))
+    .map(([path]) => `${path} holds a value no learning may keep`);
+  if (inPaths.length) holding.push(`${inPaths.length === 1 ? "a path" : `${inPaths.length} paths`} in the harvest ${inPaths.length === 1 ? "holds" : "hold"} a value no learning may keep`);
+  if (holding.length) return { status: "refused", deleted: [], ignored, refused: holding };
   const branch = `runs/${runId}`;
   const sorted = Object.fromEntries(Object.keys(commit).sort().map((path) => [path, commit[path]!]));
   const made = await repo.commitTo(branch, { files: sorted, message: HARVEST_MESSAGE, trailers: { "Run-Id": runId }, parent: seed, date });
