@@ -68,8 +68,6 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
     unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
-    /** An agent's revisions, newest first, each with its definition (`definition.harness`; none means the default, pi). */
-    listRevisions: (agentId: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; definition: { harness?: string } }[]; next_cursor: string | null }>("GET", `/agents/${encodeURIComponent(agentId)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     getTimeline: (id: string, { after, waitMs, signal }: { after?: number; waitMs?: number; signal?: AbortSignal } = {}) => {
       const q = new URLSearchParams();
       if (after !== undefined) q.set("after", String(after));
