@@ -1,12 +1,12 @@
 // Decision providers: the models a workflow's judge, pick, sift, route and ask nodes ask, through the DSL's `runJudge`.
 // Jev (TypeSafe's System One) is the one this server runs, when its environment names Jev's key: TYPESAFE_API_KEY (the
-// route to use), or OPENROUTER_API_KEY for Jev through OpenRouter.
+// route to use), or for Jev through OpenRouter OPENROUTER_API_KEY, else an OpenRouter model gateway's AGENT_MODEL_API_KEY.
 //
-// The TypeSafe key never enters a run's environment, which the run's tools and its model's provider read
-// (`ToolHost.env`, a call node's effect). The server drops the variable from the run's process and hands the value over
-// once, on an inherited pipe (`DECISION_KEY_FD`), at each launch of a workflow run. The run's process reads it into the
-// judge's runner and nowhere else. On the OpenRouter route the key is also the model gateway's key, which the run's
-// process already holds in its environment for its model nodes. That route keeps it there.
+// The server chooses the key (jevKey) and hands it, with its route, once on an inherited pipe (`DECISION_KEY_FD`) at
+// each launch of a workflow run. The run's process reads it into the judge's runner and nowhere else; the judge never
+// reads a key from the environment. The TypeSafe key never enters a run's environment, which the run's tools and its
+// model's provider read (`ToolHost.env`, a call node's effect): the server drops the variable from the run's process.
+// On the OpenRouter route the key is also the model gateway's key, which the run's process holds for its model nodes.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { FAUX_ENV } from "./model.js";
@@ -42,12 +42,16 @@ function openRouterKeyEnv(env: NodeJS.ProcessEnv): string | undefined {
   return onOpenRouter && isSet(env[JEV_GATEWAY_KEY_ENV]) ? JEV_GATEWAY_KEY_ENV : undefined;
 }
 
-/** How this server reaches Jev: TypeSafe's API when its key is set, else OpenRouter's System One when an OpenRouter key
- *  is (openRouterKeyEnv). */
-export function jevRoute(env: NodeJS.ProcessEnv): "typesafe" | "openrouter" | undefined {
-  if (isSet(env[JEV_KEY_ENV])) return "typesafe";
-  return openRouterKeyEnv(env) ? "openrouter" : undefined;
+/** The key Jev runs on here and its route: TypeSafe's API when its key is set, else OpenRouter's System One when an
+ *  OpenRouter key is (openRouterKeyEnv). What the server hands a workflow run's process. */
+export function jevKey(env: NodeJS.ProcessEnv): { route: "typesafe" | "openrouter"; key: string } | undefined {
+  if (isSet(env[JEV_KEY_ENV])) return { route: "typesafe", key: env[JEV_KEY_ENV]! };
+  const name = openRouterKeyEnv(env);
+  return name ? { route: "openrouter", key: env[name]! } : undefined;
 }
+
+/** How this server reaches Jev, when it does. */
+export const jevRoute = (env: NodeJS.ProcessEnv) => jevKey(env)?.route;
 
 /** Why Jev does not run here, naming the variable to set. */
 export const jevMissing = `This server's environment does not set ${JEV_KEY_ENV} (or, for Jev through OpenRouter, ${JEV_OPENROUTER_KEY_ENV}, or ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai), which a workflow's judge, pick, sift, route and ask nodes need.`;
@@ -63,25 +67,29 @@ export function decisionsOf(env: NodeJS.ProcessEnv): DecisionOffer[] {
   return [route === "openrouter" ? { id: "jev", available: true, note: jevGatewayNote(env) } : { id: "jev", available: false, reason: jevMissing }];
 }
 
-/** The TypeSafe key the server handed the run's process, read once and the descriptor closed; undefined when none was. */
-function handedKey(env: NodeJS.ProcessEnv): string | undefined {
+/** What the server writes on the decision descriptor: the route, a newline, the key. */
+export const handedJev = ({ route, key }: { route: string; key: string }) => `${route}\n${key}`;
+
+/** The route and key the server handed the run's process, read once and the descriptor closed; undefined when none was. */
+function handedKey(env: NodeJS.ProcessEnv): { route: string; key: string } | undefined {
   const fd = Number(env[DECISION_KEY_FD_ENV]);
   if (!Number.isSafeInteger(fd) || fd < DECISION_KEY_FD) return undefined;
+  let handed: string;
   try {
-    return readFileSync(fd, "utf8");
+    handed = readFileSync(fd, "utf8");
   } finally {
     closeSync(fd);
   }
+  const at = handed.indexOf("\n");
+  return at > 0 ? { route: handed.slice(0, at), key: handed.slice(at + 1) } : undefined;
 }
 
-/** In a run's process: the judge its workflow's typed questions run on, or undefined when the server gave it no route
- *  to Jev. Called once per process, since the handed key can be read once. */
+/** In a run's process: the judge its workflow's typed questions run on, on the key the server handed it, or undefined
+ *  when it handed none. Called once per process, since the handed key can be read once. */
 export async function jevJudgeOf(env: NodeJS.ProcessEnv) {
   const handed = handedKey(env);
-  const openRouter = openRouterKeyEnv(env);
-  const key = handed !== undefined ? { apiKey: handed } : openRouter ? { provider: "openrouter" as const, apiKey: env[openRouter] } : undefined;
-  if (!key) return undefined;
+  if (!handed) return undefined;
   const faux = env[FAUX_ENV] && env[FAUX_JEV_ENV] ? ((await import(pathToFileURL(env[FAUX_JEV_ENV]).href)) as { default: typeof fetch }).default : undefined;
   const { createJevRunner } = await import("@parcha/agentrun-jev");
-  return createJevRunner({ ...key, ...(faux ? { fetch: faux } : {}) });
+  return createJevRunner({ ...(handed.route === "openrouter" ? { provider: "openrouter" as const } : {}), apiKey: handed.key, ...(faux ? { fetch: faux } : {}) });
 }

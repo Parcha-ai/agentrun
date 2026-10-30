@@ -316,8 +316,9 @@ node, with typed answers and their probabilities.
   `TYPESAFE_API_KEY` from every run's process. It hands the value to a workflow run's process once, on an inherited pipe
   (descriptor 63), at each launch, a resume after a restart included. The process reads it into the judge's runner,
   closes the descriptor before anything else runs, and keeps the key nowhere else. It is never in an environment, an
-  argument list or a file, and no program the run starts inherits it. With no key, no descriptor is opened. On the OpenRouter route the key is also the model gateway's key, which a run's
-  process already holds in its environment for its model nodes, and it stays there.
+  argument list or a file, and no program the run starts inherits it. With no key, no descriptor is opened. On the
+  OpenRouter route the judge's key comes on the same descriptor, never from the run's environment; that key is also the
+  model gateway's key, which a run's process holds for its model nodes.
 
 ## Archiving
 
