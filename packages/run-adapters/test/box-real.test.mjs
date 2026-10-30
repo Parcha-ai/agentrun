@@ -3,9 +3,9 @@
 // without one they skip, naming the probe's answer, unless AGENTRUN_BOX_REAL=1 (the CI job that installs it) makes them fail.
 // The server's home is never bound into a box, so the job runs them with a HOME outside the checkout.
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir, userInfo } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { chmodSync, existsSync, readdirSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir, userInfo } from 'node:os';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { test } from 'node:test';
 import { BOX_FORWARD, boxListens, bwrapBox, countInPidns, forwardChild, probeBox } from '@parcha/agentrun-kernel/host';
 
@@ -28,7 +28,7 @@ function run(name) {
   mkdirSync(workspace, { recursive: true });
   const modelSocket = join(root, 'model.sock');
   writeFileSync(modelSocket, '');
-  const spec = { workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
+  const spec = { session: dirname(workspace), workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
   return { root, workspace, spec, remove: () => rmSync(root, { recursive: true, force: true }) };
 }
 
@@ -137,6 +137,80 @@ test('a read-only path given through a link is its target, seen at the path as g
   }
 });
 
+test("the default install under a real $HOME boxes: a session under serve's default data root, node and the kernel as the machine names them; the home shows only the path to each bind, and ~/.ssh, ~/.claude and the run's store are absent", { skip }, async () => {
+  const home = homedir();
+  const data = join(home, '.local', 'share', 'agentrun', 'agents');
+  const id = `box-real-${process.pid}-${Date.now()}`;
+  const run = join(data, 'runs', id);
+  const session = join(run, 'harness');
+  // Made here, removed after by exact path: the first directory this test created toward the run, and the canaries.
+  const made = [mkdirSync(join(session, 'work'), { recursive: true }), mkdirSync(join(session, 'home'), { recursive: true })].find(Boolean) ?? run;
+  mkdirSync(join(run, 'store'));
+  writeFileSync(join(run, 'store', 'run.sqlite'), "the run's records");
+  const canaries = [];
+  for (const name of ['.ssh', '.claude']) {
+    const path = join(home, name);
+    if (!existsSync(path)) {
+      mkdirSync(path);
+      writeFileSync(join(path, 'canary'), 'host secret');
+      canaries.push(path);
+    }
+  }
+  const sockets = mkdtempSync(join(tmpdir(), 'box-real-home-'));
+  const modelSocket = join(sockets, 'model.sock');
+  writeFileSync(modelSocket, '');
+  const prefix = dirname(dirname(process.execPath));
+  const spec = {
+    session,
+    workspace: join(session, 'work'),
+    homes: { HOME: join(session, 'home') },
+    readOnly: [prefix, BOX_FORWARD],
+    modelSocket,
+    modelPort: 8123,
+    env: { PATH: '/usr/bin:/bin' },
+  };
+  // What the box may show under the home: each directory toward a bind holds only the next component toward each bind
+  // under it; node's prefix, bound whole, holds what it holds on the host.
+  const binds = [spec.workspace, spec.homes.HOME, prefix, BOX_FORWARD].filter((path) => path.startsWith(`${home}${sep}`));
+  const expected = new Map();
+  for (const bind of binds) {
+    for (let at = home; at !== bind; ) {
+      const next = relative(at, bind).split(sep)[0];
+      expected.set(at, [...new Set([...(expected.get(at) ?? []), next])].sort());
+      at = join(at, next);
+    }
+  }
+  if (binds.includes(prefix)) expected.set(prefix, readdirSync(prefix).sort());
+  const absent = [join(home, '.ssh'), join(home, '.claude'), join(run, 'store')];
+  const script = `const fs = require("node:fs"); const p = JSON.parse(process.env.BOX_LOOK); const out = { version: process.version, lists: {}, absent: {} };
+for (const d of p.dirs) { try { out.lists[d] = fs.readdirSync(d).sort(); } catch (e) { out.lists[d] = e.code; } }
+for (const f of p.absent) { try { fs.statSync(f); out.absent[f] = "present"; } catch (e) { out.absent[f] = e.code; } }
+console.log(JSON.stringify(out));`;
+  spec.env.BOX_LOOK = JSON.stringify({ dirs: [...expected.keys()], absent });
+  const box = bwrapBox({ reapMs: 5000, hidden: [data, join(run, 'store'), join(run, 'process.log')] });
+  try {
+    const boxed = box.start(spec, forwardChild({ command: process.execPath, args: ['-e', script] }, boxListens(spec)), { ahead() {}, async started() {} });
+    let out = '';
+    boxed.child.stdout.on('data', (chunk) => (out += chunk));
+    try {
+      await boxed.ready;
+    } catch (error) {
+      throw new Error(`the box did not start: ${error.message}; bwrap said: ${boxed.stderrTail().trim() || '(nothing)'}`, { cause: error });
+    }
+    await boxed.exited;
+    await box.reap(boxed.record);
+    const said = `stdout: ${JSON.stringify(out)}; stderr: ${JSON.stringify(boxed.stderrTail())}`;
+    const seen = JSON.parse(out.trim().split('\n').pop() || '{}');
+    assert.equal(seen.version, process.version, `node did not run in the box: ${said}`);
+    for (const [dir, names] of expected) assert.deepEqual(seen.lists[dir], names, `${dir} in the box`);
+    for (const path of absent) assert.equal(seen.absent[path], 'ENOENT', `${path} in the box`);
+  } finally {
+    rmSync(made, { recursive: true, force: true });
+    for (const path of canaries) rmSync(path, { recursive: true, force: true });
+    rmSync(sockets, { recursive: true, force: true });
+  }
+});
+
 test('a run directory under a parent of this user, mode 700 (a per-user TMPDIR), works: the box reads and writes its workspace there', { skip }, async () => {
   // The box runs as the server's own uid, mapped to itself in its user namespace, so a 700 directory of that uid stays
   // traversable to it: nothing is dropped to another uid before the workspace is bound.
@@ -147,7 +221,7 @@ test('a run directory under a parent of this user, mode 700 (a per-user TMPDIR),
   writeFileSync(join(workspace, 'in.txt'), 'from the host');
   const modelSocket = join(parent, 'model.sock');
   writeFileSync(modelSocket, '');
-  const spec = { workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
+  const spec = { session: dirname(workspace), workspace, homes: {}, readOnly: [dirname(dirname(process.execPath)), BOX_FORWARD], modelSocket, modelPort: 8123, env: { PATH: '/usr/bin:/bin' } };
   try {
     assert.equal(statSync(parent).mode & 0o777, 0o700);
     const { out, said } = await inBox(spec, `cat /workspace/in.txt; echo; echo 'from the box' > /workspace/out.txt`);
