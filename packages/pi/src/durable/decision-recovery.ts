@@ -21,6 +21,15 @@ export type DecisionRecovery = {
   decision(id: string): Promise<DecisionReceipt | undefined>;
 };
 
+/** What a receipt says of its provider beside its answers, each only when present: who answered, the sources, the
+ *  questions refused and where each confidence came from. A replay gives the run all of it again. */
+const kept = (from: Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source"> | DecisionRow) => ({
+  ...(from.provider !== undefined ? { provider: from.provider } : {}),
+  ...(from.evidence !== undefined ? { evidence: from.evidence } : {}),
+  ...(from.refused !== undefined ? { refused: from.refused } : {}),
+  ...(from.confidence_source !== undefined ? { confidence_source: from.confidence_source } : {}),
+});
+
 /** A receipt as the row the run `key` stores: the receipt's own fields, its identity, and the request's size. */
 function rowOf(receipt: DecisionReceipt, exchange: DecisionExchange, key: string): DecisionRow {
   return {
@@ -29,6 +38,7 @@ function rowOf(receipt: DecisionReceipt, exchange: DecisionExchange, key: string
     request_bytes: Buffer.byteLength(JSON.stringify({ state: exchange.request.state, questions: exchange.request.questions })),
     model: receipt.model, questions: receipt.questions, answers: receipt.answers, rule: receipt.rule, action: receipt.action,
     usage: receipt.usage, cost_usd: receipt.cost_usd, latency_ms: receipt.latency_ms, ...(receipt.error !== undefined ? { error: receipt.error } : {}),
+    status: receipt.status, ...kept(receipt),
     decision_id: receipt.id, request: receipt.request, state_sha256: receipt.state_sha256, run_key: key,
   };
 }
@@ -44,6 +54,7 @@ function answeredReceipt(rows: DecisionRow[], id: string, key: string): Decision
     request: row.request!, status: "answered", state_sha256: row.state_sha256!,
     questions: row.questions as DecisionReceipt["questions"], answers: row.answers as DecisionReceipt["answers"], rule: row.rule as DecisionRule, action: row.action,
     model: row.model, usage: row.usage, cost_usd: row.cost_usd, request_sha256: row.request_sha256, latency_ms: row.latency_ms,
+    ...(kept(row) as Pick<DecisionReceipt, "provider" | "evidence" | "refused" | "confidence_source">),
   };
 }
 
