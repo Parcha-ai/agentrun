@@ -148,9 +148,13 @@ export async function demo(options: DemoOptions): Promise<DemoResult | undefined
     // K4: a new error, its message, stack, cause chain and properties handed out (never the original, whose cause a caller's log would print).
     throw error instanceof Error ? handedOutError(error, sink.redact) : new Error(processText(String(error), sink.redact));
   }
-  const result = handedOut(raw, sink.redact);
+  // The paths a program opens (the result returned, and the JSON line a caller parses) are handed back as they are: the scrub takes the user
+  // name and the home out of what is recorded and shown, and a path rewritten by it (a segment named after the user becomes [user], the home ~)
+  // names nothing a program can open. The summary is shown, so it keeps the scrubbed text.
+  const shown = handedOut(raw, sink.redact);
+  const result = { ...shown, dir: raw.dir, ...(raw.recording !== undefined ? { recording: raw.recording } : {}) };
   if (values.json) console.log(JSON.stringify(result));
-  else summarize(options, result, Boolean(values.kill || values.debug));
+  else summarize(options, shown, Boolean(values.kill || values.debug));
   // A command line ends with a failing code when the run did not complete or went past its cap; a caller that passed its own arguments reads the result.
   if (options.argv === undefined && (result.overBudget || result.failedKills.length || result.failedSignals.length || result.unlanded.length || result.processes.at(-1)?.outcome?.status !== 'complete')) process.exitCode = 1;
   return result;

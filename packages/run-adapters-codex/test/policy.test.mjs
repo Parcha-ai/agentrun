@@ -16,12 +16,12 @@ const sse = (events) => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join
 const completed = (usage, extra = {}) => ({ type: 'response.completed', response: { object: 'response', status: 'completed', ...extra, usage } });
 
 /** A proxy on the Codex policy whose provider answers each request with `answer()` (a Response). */
-async function proxy({ tools = ['lookup'], answer = () => new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }) } = {}) {
+async function proxy({ tools = ['lookup'], announce, answer = () => new Response(RECORDED_STREAM, { status: 200, headers: { 'content-type': 'text/event-stream' } }) } = {}) {
   const forwarded = [];
   const asked = [];
   const reports = [];
   const p = await startModelProxy({
-    policy: codexPolicy({ model: 'session-model', tools }),
+    policy: codexPolicy({ model: 'session-model', tools, ...(announce ? { announce } : {}) }),
     hooks: { beforeRequest: async (r) => { asked.push(r); }, afterRequest: async (u) => { reports.push(u); } },
     model: 'session-model',
     origin: 'https://provider.invalid',
@@ -233,15 +233,197 @@ test('a paid answer cut at its output limit (response.incomplete) is booked at i
   assert.deepEqual(reports, [{ input: 2000, output: 32_000, cacheRead: 1000, cacheWrite: 0, usd: (2000 + 32_000 + 1000) / 1e6, estimated: true }]);
 });
 
-test("a code-mode request (its exec and wait carriers) is refused at the proxy: this adapter runs classic tools only", async () => {
+const CODE_MODE_CARRIER = {
+  type: 'additional_tools', id: 'at_1', role: 'developer',
+  tools: [
+    { type: 'namespace', name: 'functions', description: '', tools: [
+      { type: 'custom', name: 'exec', description: 'Run JavaScript.', format: { type: 'text' } },
+      { type: 'function', name: 'wait', description: 'Wait.', parameters: { type: 'object', properties: {} } },
+      { type: 'function', name: 'request_user_input', parameters: { type: 'object', properties: {} } },
+      { type: 'function', name: 'exec', parameters: { type: 'object', properties: {} } },
+    ] },
+    { type: 'namespace', name: 'collaboration', description: '', tools: [{ type: 'function', name: 'spawn_agent', parameters: { type: 'object', properties: {} } }] },
+  ],
+};
+
+test("a code-mode request passes with Codex's exec and wait and nothing else of its additional_tools: sub-agent and user-input tools are dropped", async () => {
   const { p, forwarded } = await proxy();
-  const carriers = { type: 'additional_tools', tools: [{ type: 'namespace', name: 'code_mode', tools: [{ type: 'custom', name: 'exec' }, { type: 'function', name: 'wait', parameters: { type: 'object', properties: {} } }] }] };
-  for (const input of [[carriers], [...RECORDED_REQUEST.input, carriers], [{ type: 'additional_tools', tools: [] }]]) {
-    const r = await send(p.url, { body: { ...RECORDED_REQUEST, input } });
-    assert.equal(r.status, 400, JSON.stringify(input).slice(0, 80));
-    assert.match(r.text, /code mode/);
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input: [...RECORDED_REQUEST.input, CODE_MODE_CARRIER] } });
+  assert.equal(r.status, 200, r.text);
+  const carrier = forwarded[0].body.input.find((item) => item.type === 'additional_tools');
+  assert.deepEqual(carrier.tools.map((t) => [t.name, t.tools.map((x) => `${x.type}:${x.name}`)]), [['functions', ['custom:exec', 'function:wait']]]);
+  assert.equal(carrier.id, 'at_1', 'the rest of the item is as sent');
+  assert.deepEqual(forwarded[0].body.input.filter((item) => item.type !== 'additional_tools'), RECORDED_REQUEST.input, 'other input items are as sent');
+  // A carrier of another shape is refused, never passed on as it is.
+  for (const bad of [{ type: 'additional_tools' }, { type: 'additional_tools', tools: [{ type: 'function', name: 'exec' }] }, { type: 'additional_tools', tools: 'exec' }]) {
+    const refused = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input: [...RECORDED_REQUEST.input, bad] } });
+    assert.equal(refused.status, 400, JSON.stringify(bad));
   }
   // A top-level carrier is not the session's tool either: it is dropped, so no code-mode runtime is offered.
   assert.equal((await send(p.url, { body: { ...RECORDED_REQUEST, tools: [{ type: 'custom', name: 'exec' }, { type: 'function', name: 'wait' }, { type: 'function', name: 'lookup' }] } })).status, 200);
-  assert.deepEqual(forwarded.map((f) => f.body.tools.map((t) => t.name)), [['lookup']]);
+  assert.deepEqual(forwarded.at(-1).body.tools.map((t) => t.name), ['lookup']);
+});
+
+test("a code-mode request has parallel tool calls off: written false when the CLI says nothing, false kept, true refused; a classic request is as sent", async () => {
+  const { p, forwarded } = await proxy();
+  const codeMode = { ...RECORDED_REQUEST, input: [...RECORDED_REQUEST.input, CODE_MODE_CARRIER] };
+  const { parallel_tool_calls: _, ...without } = codeMode;
+  assert.equal((await send(p.url, { body: without })).status, 200);
+  assert.equal(forwarded.at(-1).body.parallel_tool_calls, false, 'written when absent');
+  assert.equal((await send(p.url, { body: { ...codeMode, parallel_tool_calls: false } })).status, 200);
+  assert.equal(forwarded.at(-1).body.parallel_tool_calls, false);
+  const before = forwarded.length;
+  for (const value of [true, 'yes', 1, null]) assert.equal((await send(p.url, { body: { ...codeMode, parallel_tool_calls: value } })).status, 400, String(value));
+  assert.equal(forwarded.length, before, 'nothing was forwarded');
+  assert.equal(RECORDED_REQUEST.parallel_tool_calls, true, 'the recorded classic request allows them');
+  assert.equal((await send(p.url, { body: RECORDED_REQUEST })).status, 200);
+  assert.equal(forwarded.at(-1).body.parallel_tool_calls, true, 'a classic request is as the CLI sent it');
+});
+
+/** A request's input with a code-mode `exec` that yielded (and then, if `after` is given, the `wait` items after it). */
+const yielded = (...after) => [
+  ...RECORDED_REQUEST.input,
+  { type: 'custom_tool_call', name: 'exec', call_id: 'call_a', input: 'await tools.slow({})' },
+  { type: 'custom_tool_call_output', call_id: 'call_a', output: 'Script running with cell ID 1\nWall time 0.1 seconds\nOutput:\n' },
+  ...after,
+];
+const waitOn = (callId, cell) => ({ type: 'function_call', name: 'wait', call_id: callId, arguments: JSON.stringify({ cell_id: cell, yield_time_ms: 5000 }) });
+const waited = (callId, text) => ({ type: 'function_call_output', call_id: callId, output: [{ type: 'input_text', text }] });
+const offered = (forwarded) => forwarded.at(-1).body.input.find((item) => item.type === 'additional_tools').tools.find((t) => t.name === 'functions').tools.map((t) => t.name);
+
+test("exec is not offered while a script that yielded still runs, only wait; it is offered again once the script ended", async () => {
+  const { p, forwarded } = await proxy();
+  const ask = async (input) => {
+    const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input: [...input, CODE_MODE_CARRIER] } });
+    assert.equal(r.status, 200, r.text);
+    return offered(forwarded);
+  };
+  assert.deepEqual(await ask(RECORDED_REQUEST.input), ['exec', 'wait'], 'no script yet');
+  assert.deepEqual(await ask(yielded()), ['wait'], 'the script yielded and runs');
+  assert.deepEqual(await ask(yielded(waitOn('call_w', '1'), waited('call_w', 'Script running with cell ID 1\nWall time 5 seconds'))), ['wait'], 'still running after a wait');
+  assert.deepEqual(await ask(yielded(waitOn('call_w', '1'), waited('call_w', 'Script completed\nWall time 1.8 seconds\nOutput:\n'))), ['exec', 'wait'], 'ended');
+  assert.deepEqual(await ask(yielded(waitOn('call_w', '1'), waited('call_w', 'Script failed\nScript error:\nexec cell 1 not found'))), ['exec', 'wait'], 'gone');
+  assert.deepEqual(await ask([...RECORDED_REQUEST.input, { type: 'custom_tool_call', name: 'exec', call_id: 'call_b', input: 'text(1)' }, { type: 'custom_tool_call_output', call_id: 'call_b', output: 'Script completed\nWall time 0.0 seconds' }]), ['exec', 'wait'], 'an exec that finished at once');
+});
+
+/** Sends `pieces` as one answer through a proxy whose session is told by `told`; resolves with what the client had, and what the session was told, when the client first held an event ending after `marker` (its dispatch: the blank line). */
+async function dispatchedBefore(pieces, marker, announce) {
+  const told = [];
+  const encoder = new TextEncoder();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const stream = new ReadableStream({
+    async start(controller) {
+      for (const piece of pieces) controller.enqueue(encoder.encode(piece));
+      await gate;
+      controller.close();
+    },
+  });
+  const { p } = await proxy({
+    announce: { response: () => told.push('response'), exec: (id) => told.push(`exec ${id}`), failed: () => told.push('failed'), end: () => told.push('end'), ...announce },
+    answer: () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  });
+  const { hostname, port } = new URL(p.url);
+  return new Promise((resolve, reject) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      let text = '';
+      let at;
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        text += c;
+        // The client holds the exec event whole (its blank line is in): the session must already have been told.
+        if (at === undefined && new RegExp(`${marker}[\\s\\S]*?(\\r\\n\\r\\n|\\n\\n|\\r\\r)`).test(text)) { at = [...told]; setTimeout(() => { release(); }, 20); }
+      });
+      res.on('end', () => resolve({ atDispatch: at, told, text }));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ ...RECORDED_REQUEST, parallel_tool_calls: false }));
+  });
+}
+const execEvent = (id) => ({ type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: id, input: 'text(1)' } });
+
+test("the proxy tells the session which exec an answer carries before the client holds the event, however the event is split", async () => {
+  const whole = sse([{ type: 'response.output_item.done', item: { type: 'function_call', name: 'wait', call_id: 'call_w', arguments: '{}' } }, execEvent('call_x')]);
+  const at = whole.indexOf('call_x');
+  for (const cut of [at + 3, whole.length - 1, whole.length - 2, at]) {
+    const r = await dispatchedBefore([whole.slice(0, cut), whole.slice(cut)], 'call_x');
+    assert.deepEqual(r.atDispatch, ['response', 'exec call_x'], `split at ${cut}: told before the client held the event`);
+    assert.equal(r.told.filter((x) => x === 'exec call_x').length, 1, 'once');
+    assert.equal(r.told.at(-1), 'end', 'the answer is closed');
+  }
+});
+
+test("the reader takes an event as the format has it: data over several lines joined with LF, CRLF and bare-CR line ends", async () => {
+  const json = JSON.stringify(execEvent('call_x'));
+  const half = Math.floor(json.length / 2);
+  const multi = `data: ${json.slice(0, half)}\ndata: ${json.slice(half)}\n\n`;
+  const lineBreak = json.indexOf('"call_id"');
+  const joined = `data: ${json.slice(0, lineBreak)}\ndata:${json.slice(lineBreak)}\n\n`;
+  for (const [what, text] of [['an event over a CRLF', sse([execEvent('call_x')]).replace(/\n/g, '\r\n')], ['bare CRs', sse([execEvent('call_x')]).replace(/\n/g, '\r')], ['data on two lines (split inside the JSON at a space-free place)', joined], ['no space after data:', `data:${json}\n\n`]]) {
+    const r = await dispatchedBefore([text.slice(0, 20), text.slice(20)], 'call_x');
+    assert.deepEqual(r.told.filter((x) => x.startsWith('exec')), ['exec call_x'], what);
+  }
+  // A JSON string cannot hold a raw LF, so two data lines joined with LF must still parse where the LF fell between tokens.
+  const tokens = `data: {"type":"response.output_item.done",\ndata: "item":{"type":"custom_tool_call","name":"exec","call_id":"call_m","input":"x"}}\n\n`;
+  const r = await dispatchedBefore([tokens], 'call_m');
+  assert.deepEqual(r.told.filter((x) => x.startsWith('exec')), ['exec call_m'], multi.length ? 'data spread over several data: lines' : '');
+});
+
+test("an event over the cap is not read: the answer is reported as not watched, and the client still has it whole", async () => {
+  const huge = `data: {"type":"x","pad":"${'a'.repeat(4 * 1024 * 1024 + 10)}"}\n\n`;
+  const r = await dispatchedBefore([huge.slice(0, 1000), huge.slice(1000), sse([execEvent('call_after')])], 'call_after');
+  assert.ok(r.told.includes('failed'), 'reported as failed');
+  assert.ok(!r.told.some((x) => x.startsWith('exec')), 'nothing after the unread event is announced either');
+  assert.ok(r.text.includes('call_after'), 'the client has the whole answer');
+});
+test("a watcher that fails mid-answer is told to the session (failed), the answer still reaches the client whole, and a policy with no watcher answers the same bytes", async () => {
+  const exec = { type: 'response.output_item.done', item: { type: 'custom_tool_call', name: 'exec', call_id: 'call_x', input: 'text(1)' } };
+  const body = sse([exec, completed({ input_tokens: 5, output_tokens: 2 })]);
+  const told = [];
+  const answer = () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const watched = await proxy({ announce: { response: () => told.push('response'), exec: () => { throw new Error('the session could not take it'); }, failed: () => told.push('failed'), end: () => told.push('end') }, answer });
+  const plain = await proxy({ answer });
+  const a = await send(watched.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  const b = await send(plain.p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  assert.equal(a.status, 200);
+  assert.deepEqual(told, ['response', 'failed', 'end'], 'the failure was told, once, and the answer closed');
+  assert.equal(a.text, body, 'the client has the whole answer');
+  assert.equal(b.text, a.text, 'a policy with no watcher answers the same bytes');
+});
+
+test("a watcher that cannot start is told to the session as an answer not watched, and the answer still reaches the client", async () => {
+  const told = [];
+  const body = sse([completed({ input_tokens: 5, output_tokens: 2 })]);
+  const { p } = await proxy({
+    announce: { response: () => { throw new Error('cannot start'); }, exec: () => told.push('exec'), failed: () => told.push('failed'), end: () => told.push('end') },
+    answer: () => new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+  });
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false } });
+  assert.equal(r.status, 200);
+  assert.equal(r.text, body);
+  assert.deepEqual(told, ['failed'], 'the session was told this answer is not watched');
+});
+
+test("exec is offered after a script that finished and printed the running phrase: only Codex's status header says a cell runs", async () => {
+  const { p, forwarded } = await proxy();
+  const printed = 'Script running with cell ID 1';
+  const input = [...RECORDED_REQUEST.input,
+    { type: 'custom_tool_call', name: 'exec', call_id: 'call_p', input: 'text("Script running with cell ID 1")' },
+    { type: 'custom_tool_call_output', call_id: 'call_p', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_text', text: printed }] },
+    CODE_MODE_CARRIER];
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(offered(forwarded), ['exec', 'wait']);
+});
+
+test("exec is offered after a script that finished when Codex's header and the printed phrase share one text part: the header is read at the start only", async () => {
+  const { p, forwarded } = await proxy();
+  const input = [...RECORDED_REQUEST.input,
+    { type: 'custom_tool_call', name: 'exec', call_id: 'call_q', input: 'text("Script running with cell ID 1")' },
+    { type: 'custom_tool_call_output', call_id: 'call_q', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\nScript running with cell ID 1' }] },
+    CODE_MODE_CARRIER];
+  const r = await send(p.url, { body: { ...RECORDED_REQUEST, parallel_tool_calls: false, input } });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(offered(forwarded), ['exec', 'wait']);
 });
