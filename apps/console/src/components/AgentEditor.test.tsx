@@ -76,3 +76,10 @@ describe("AgentEditor, tools a person chose by hand", () => {
     done();
   });
 });
+
+describe("AgentEditor's Tools step says where tools run", () => {
+  it("names the server's box", () => {
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: null, caps: { ...caps, box: { mode: "bwrap", cgroup: true, egress: "open" } }, step: "tools" }));
+    expect(html).toContain("Tools run in a bwrap sandbox · network open");
+  });
+});

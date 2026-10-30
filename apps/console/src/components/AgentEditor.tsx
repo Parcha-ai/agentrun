@@ -4,10 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { type Agent, type AgentFields, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor } from "@/lib/agentForm";
 import { markdown, when } from "@/lib/format";
+import { type Box, boxLine } from "@/lib/box";
 import { cn } from "@/lib/utils";
 
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string };
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string; box?: Box };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -137,7 +138,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
           {step === "tools" && (
             <div className="max-w-3xl space-y-6">
-              <Field label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")}>
+              <Field label="Tools" note={`On by default: the tools this agent's harness runs on this server. Untick one to take it away.${boxLine(caps.box) ? ` ${boxLine(caps.box)}.` : ""}`} error={fieldError("tools")}>
                 <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {caps.tools.map((t) => {
                     const runs = toolsFor(f.harness ?? "pi", caps.tools).some((x) => x.name === t.name);
