@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { CallsInFlight, openAdapterSession, READ_SKILL_FILE, readSkillFileTool, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage } from "@parcha/agentrun-kernel";
 import type { HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
+import { hostHeaderProblems, type ModelProxyOptions, watchClose } from "@parcha/agentrun-kernel/host";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { builtinTools, type ClaudeAgentSdk, claudeCodeHarness } from "./harness.js";
@@ -351,7 +351,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const builtins = options.builtins ?? true;
       // The built-ins this session offers the model, the Skill tool with skills: the proxy forwards exactly these.
       const native = [...(builtinTools(builtins === true ? true : builtins === false ? false : [...builtins]) ?? []), ...(skills.length ? ["Skill"] : [])];
-      const acquire = localMachine({
+      // A close that found the box not empty fails the drive (watchClose): the harness reads no close's verdict.
+      const watched = watchClose(localMachine({
         dir,
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.box ? { box: options.box } : {}),
@@ -366,7 +367,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           ...(options.log ? { log: options.log } : {}),
           ...(options.fetch ? { fetch: options.fetch } : {}),
         },
-      });
+      }));
+      const acquire = watched.acquire;
       // The SDK this session runs on (the host's, or the one installed beside this package, checked above), thinking at
       // the session's level.
       const sdk = thinkingAt(options.sdk ?? (await import("@anthropic-ai/claude-agent-sdk")) as unknown as ClaudeAgentSdk, thinkingOf(spec, thinking));
@@ -421,7 +423,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           options.log?.("claude-agent: the CLI turned down a call to a tool this session does not have", { name: e.name, reason: e.reason });
         }
       };
-      return openAdapterSession({ name: "agentrun-harness-claude", io, drive: (drive) => harness.drive(drive), live, calls, restarts: RESTARTS });
+      return openAdapterSession({ name: "agentrun-harness-claude", io, drive: (drive) => watched.drive(harness.drive(drive)), live, calls, restarts: RESTARTS });
     },
   };
 }

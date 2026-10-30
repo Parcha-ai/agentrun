@@ -86,11 +86,32 @@ test('a refused built-in is told it was not run, because the session is pausing,
 
 test("a session skill's own failure is its own: never read as the CLI turning the call down", async (t) => {
   const skill = { name: 'x', files: { 'SKILL.md': '---\nname: x\ndescription: d\n---\nbody\n' } };
-  const { adapter, logs } = await adapterOf(t, { script: ['builtin Skill {"skill":"agentrun:x"}', 'call submit {"value":{"answer":"ok"}}'], skills: [skill], builtins: false });
+  const decisions = [];
+  const { adapter, logs } = await adapterOf(t, { script: ['builtin Skill {"skill":"agentrun:x"}', 'call submit {"value":{"answer":"ok"}}'], skills: [skill], builtins: false, sdk: { onDecision: (d) => decisions.push(d) } });
   const events = [];
   const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [], onEvent: (e) => events.push(e) });
-  await runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMA, tools: [] }).catch(() => {});
+  // The run reaches the skill, the gate allows it, and the turn goes on to its answer: a run that failed before the skill,
+  // or a gate that turned it down, would not get here.
+  assert.deepEqual(await runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMA, tools: [] }), { answer: 'ok' });
+  assert.deepEqual(decisions.filter((d) => d.name === 'Skill').map((d) => d.decision), ['allow'], JSON.stringify(decisions));
   assert.equal(logs.filter((line) => /turned down a call/.test(line)).length, 0, logs.join('\n'));
+});
+
+test('built-ins in flight together, the first of which fails before it starts: its error is its result, and the turn goes on', async (t) => {
+  // A Write under a directory that is not there fails in the call itself, before it says it started.
+  const { adapter } = await adapterOf(t, {
+    script: ['builtins [["Write",{"file_path":"no/such/dir/x.txt","content":"x"}],["Bash",{"command":"printf two > two.txt","description":"b"}]]', 'call submit {"value":{"answer":"ok"}}'],
+    box: 'unsandboxed',
+  });
+  const events = [];
+  const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [], onEvent: (e) => events.push(e) });
+  const ended = await Promise.race([
+    runNode({ kind: 'agent', label: 'q', system: ['Be brief.'], user: 'Go.', schema: SCHEMA, tools: [] }).then((output) => ({ output }), (error) => ({ error: String(error?.message ?? error) })),
+    new Promise((resolve) => setTimeout(() => resolve({ hung: true }), 15_000)),
+  ]);
+  assert.deepEqual(ended, { output: { answer: 'ok' } }, 'the turn ended, and went on to its answer');
+  const write = events.find((e) => e.type === 'tool_end' && e.name === 'Write');
+  assert.ok(write?.isError, `the Write is told as failed: ${JSON.stringify(write)}`);
 });
 
 test("with built-ins on and no box from the host, the turn fails by name and the CLI never asks; unsandboxed, the operator's word, it runs", async (t) => {

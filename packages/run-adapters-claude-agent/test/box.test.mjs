@@ -87,3 +87,27 @@ test('with its own tools off, the CLI runs with no box, as before', async (t) =>
   const { result } = await run(t, { builtins: false });
   assert.deepEqual(await result, { answer: 'ok' });
 });
+
+/** One turn of a session opened on the adapter itself, over a box whose reap answers `verdict`: the turn's outcome. */
+async function turnOver(t, verdict) {
+  const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
+  t.after(() => provider.close());
+  const box = fakeBox();
+  box.reap = async () => verdict;
+  const adapter = claudeAgentAdapter({ model: 'claude-test', provider: { origin: provider.url, credential: () => 'provider-secret' }, sessionsDir: join(scratch(), 'sessions'), standIn: { command: process.execPath }, sdk: fakeSdk({ remoteModel: true, mirrorLagMs: 10 }), box: machineBox(box) });
+  const spec = { key: 'step:box', label: 'task', system: [], tools: [], context: 'fresh' };
+  const store = memorySessionStore();
+  const session = await adapter.open(spec, { store, writer: await store.open(spec.key), models: { beforeRequest: async () => {}, afterRequest: async () => {} }, signal: new AbortController().signal, onEvent: () => {} });
+  t.after(() => session.close().catch(() => {}));
+  await session.send('hello');
+  return { outcome: await session.turnEnd(), started: box.started };
+}
+
+test("a turn whose box a reap finds a process left in ends failed, by name: the session never ends it as clean", async (t) => {
+  const { outcome, started } = await turnOver(t, { empty: false, left: 1, by: 'pidns' });
+  assert.deepEqual(started, [process.execPath], 'the CLI ran in the box');
+  assert.equal(outcome.status, 'failed', JSON.stringify(outcome));
+  assert.match(outcome.error ?? '', /box_not_empty: the box still holds 1 process after its reap \(counted by pidns\)/);
+  // One counted empty ends the turn as it would have.
+  assert.equal((await turnOver(t, { empty: true, left: 0, by: 'pidns' })).outcome.status, 'completed');
+});
