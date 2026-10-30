@@ -576,6 +576,9 @@ export function bwrapState(path = BWRAP): { ok: true } | { ok: false; error: "bw
 }
 
 
+/** Where the start probe listens on this host, and what the boxed node then tries to reach: the host's loopback. */
+const PROBE_HOST = "127.0.0.1"; // key-gate: loopback-rule the probe listens on host loopback to prove the box cannot reach it
+
 /** The start probe: a box built exactly as a harness's is, with node as its child, checked from inside by behaviour:
  *  pid 1 is the box's own (bwrap), /data is absent, and a listener on this host's loopback does not answer. Fails
  *  closed: any failure is `unavailable` with its named cause. `scratch` is a directory the probe may make a
@@ -589,7 +592,7 @@ export async function probeBox(options: { scratch: string; bwrap?: string; reapM
   const { mkdtempSync, rmSync, writeFileSync: write } = await import("node:fs");
   const { dirname, join } = await import("node:path");
   const listener = createServer((socket) => socket.end("host"));
-  await new Promise<void>((resolveListen) => listener.listen(0, "127.0.0.1", resolveListen));
+  await new Promise<void>((resolveListen) => listener.listen(0, PROBE_HOST, resolveListen));
   const port = (listener.address() as { port: number }).port;
   const dir = mkdtempSync(join(options.scratch, "box-probe-"));
   const box = bwrapBox({ bwrap, reapMs: options.reapMs ?? 5000 });
@@ -607,7 +610,7 @@ export async function probeBox(options: { scratch: string; bwrap?: string; reapM
     mkdirSync(spec.workspace);
     const script = `const fs = require("node:fs"); const net = require("node:net");
 const out = { pid1: fs.readFileSync("/proc/1/comm", "utf8").trim(), data: fs.existsSync("/data") };
-const s = net.connect(${port}, "127.0.0.1");
+const s = net.connect(${port}, ${JSON.stringify(PROBE_HOST)});
 s.on("connect", () => { out.loopback = "answered"; console.log(JSON.stringify(out)); process.exit(0); });
 s.on("error", (e) => { out.loopback = e.code; console.log(JSON.stringify(out)); process.exit(0); });`;
     let boxed: BoxedChild;
