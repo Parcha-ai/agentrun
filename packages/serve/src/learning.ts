@@ -56,16 +56,19 @@ export async function copyRefusal(work: string, tool: string, path: string): Pro
   return undefined;
 }
 
-/** `tool`, refusing by name any call whose path is outside the run's working copy (`copyRefusal`). */
+/** `tool`, refusing by name any call whose path is outside the run's working copy (`copyRefusal`), and run alone in its
+ *  round. The check and the tool's own open are two steps. pi-durable runs a round's calls at once by default (1.1.0:
+ *  `toolExecution` "parallel" at dist/harness/agent.js:46; startToolRound at dist/harness/generation.js:436-457), and one
+ *  sequential tool makes its whole round sequential, so no other call of the round runs between the check and the open.
+ *  That window is why the mode is here, not speed: it stays until these tools resolve their path on held directory
+ *  handles (pi-durable-disk's confinement). No tool this server binds can make a link today; a background process a
+ *  future shell leaves running is for the run box's mount allowlist to stop. */
 export function onCopyOnly<T extends ToolRegistration>(tool: T, work: string): T {
   return {
     ...tool,
+    executionMode: "sequential",
     execute: async (args, api, context) => {
       const path = isObject(args) && typeof args.path === "string" ? args.path : "";
-      // The check and the tool's own open are two steps, and pi runs one turn's calls at once (pi-durable's
-      // `toolExecution` is parallel by default), so another call of the round may run between them. No tool this server
-      // binds makes a link or renames, so none can swap a path there today; once pi's tools run in the run's box, the
-      // box's mount allowlist is the boundary.
       const refused = await copyRefusal(work, tool.name, path);
       if (refused) return { content: [{ type: "text", text: refused }], isError: true };
       return tool.execute(args, api, context);
