@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { serialWriter } from "./host/serial.js";
 import { openDrive, pendingSubmissions, Restart, type Drive } from "./kernel/index.js";
-import { NativeJournal, recoveryNote, transcriptOf } from "./process/index.js";
+import { NativeJournal, openTurn, recoveryNote, transcriptOf } from "./process/index.js";
 import type { AdapterSession, SessionIO, TurnStatus } from "./types.js";
 
 /** A session's calls in flight: begun (their intent recorded), their outcome not yet. A pause waits for these to have
@@ -58,6 +58,9 @@ export interface AdapterSessionOptions {
   /** How many times a turn's drive is rebuilt after a `Restart`. Default 3. */
   restarts?: number;
 }
+
+/** What a settled turn's record says ended it. */
+const SETTLED = "settled: the turn a crash cut off was ended, not resumed";
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
@@ -123,10 +126,20 @@ export async function openAdapterSession(options: AdapterSessionOptions): Promis
     async settleOpenTurn() {
       if (state !== "open_turn") throw new Error(`${name}: there is no turn to settle`);
       await ready();
-      // Input sent for the cut turn and never placed: withdrawn, so no later turn places it.
-      for (const submission of pendingSubmissions(drive.state())) await drive.submit({ id: randomUUID(), kind: "withdraw", target: submission.id });
+      const now = drive.state();
+      const cut = openTurn(now);
+      const last = transcriptOf(now).filter((r) => r.data?.type === "turn").at(-1)?.data as { error?: string } | undefined;
+      // Settled already, and no turn cut since: what is pending now is the next turn's, never this settle's to drop.
+      if (!cut && last?.error === SETTLED) {
+        state = pendingSubmissions(now).length ? "open_turn" : "idle";
+        return;
+      }
+      // Only what opened the cut turn is withdrawn: its prompt, when the turn never placed it (the oldest pending).
+      // Anything else pending reached the session meanwhile and is the next turn's input.
+      const [opening] = cut?.placed.length ? [] : pendingSubmissions(now);
+      if (opening) await drive.submit({ id: randomUUID(), kind: "withdraw", target: opening.id });
       const journal = new NativeJournal(drive);
-      journal.message({ type: "turn", status: "interrupted", error: "settled: the turn a crash cut off was ended, not resumed" });
+      journal.message({ type: "turn", status: "interrupted", error: SETTLED });
       await journal.flush();
       state = "idle";
       io.onEvent({ type: "turn_end", status: "interrupted" });
