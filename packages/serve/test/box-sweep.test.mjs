@@ -146,6 +146,32 @@ test("the sweep reaps and removes every run cgroup no record names, and leaves a
   assert.ok(cgroups.has("/cg/stuck") && quarantine.has("cgroup:/cg/stuck"), "one a reap cannot empty is quarantined, not removed");
 });
 
+test("a cgroup the reap already removed is let go, not failed: a box's record is marked and a leftover is not held", linux, async (t) => {
+  // bwrapBox's reap removes a cgroup it emptied, so serve's removal after it finds none (ENOENT): the removal is done.
+  const dir = await scratch(t);
+  const run = join(dir, "run-1");
+  await mkdir(run);
+  await writeFile(join(run, "box.json"), JSON.stringify({ id: "box-1", cgroup: "/cg/run-1", pid: 4242, startTime: "9", writer: await goneWriter() }));
+  const cgroups = new Set(["/cg/run-1", "/cg/leftover"]);
+  const removed = [];
+  const h = {
+    reap: async (record) => (cgroups.delete(record.cgroup), { empty: true, left: 0, by: "cgroup" }),
+    cgroups: {
+      list: async () => [...cgroups],
+      remove: async (path) => {
+        removed.push(path);
+        if (!cgroups.delete(path)) throw Object.assign(new Error(`ENOENT: no such file or directory, rmdir '${path}'`), { code: "ENOENT" });
+      },
+    },
+  };
+  const quarantine = await Quarantine.open(join(dir, BOX_QUARANTINE));
+  const settled = await sweepBoxes(h, quarantine, [{ id: "run-1", dir: run }]);
+  assert.equal(settled["run-1"], "reaped", "the run's box is let go");
+  assert.equal((await stored(run)).reaped.by, "cgroup", "its record is marked reaped");
+  assert.deepEqual(removed.sort(), ["/cg/leftover", "/cg/run-1"], "each removal found the cgroup already gone");
+  assert.equal(quarantine.has("cgroup:/cg/leftover"), false, "the leftover is not held");
+});
+
 // ---- through serve -----------------------------------------------------------------------------------------------------
 
 /** A finished run's directory given a box record (as its process's box start writes it), then serve again with `box`. */
@@ -175,6 +201,27 @@ test("no run starts a box before the start sweep has let go what earlier runs le
   assert.equal(run.status, 202);
   assert.deepEqual(order, ["sweep reaping", "sweep done", "run created"]);
   await follow(api, run.body.run_id, ["completed"]);
+});
+
+test("a start sweep that fails once is tried again by the next run, not kept: one transient error never holds every run back until a restart", linux, async (t) => {
+  let lists = 0;
+  const box = {
+    reap: async () => ({ empty: true, left: 0, by: "pidns" }),
+    cgroups: {
+      list: async () => {
+        if (lists++ === 0) throw Object.assign(new Error("EIO: i/o error, scandir '/cg'"), { code: "EIO" });
+        return [];
+      },
+      remove: async () => {},
+    },
+  };
+  const { api } = await servedWithRecord(t, { pid: 4242, startTime: "9", writer: await goneWriter() }, box);
+  const first = await api("POST", "/agents/plain/runs", { input: { content: "And 3 + 3?" } });
+  assert.notEqual(first.status, 202, `the run the failed sweep was for is not started: ${JSON.stringify(first.body)}`);
+  const second = await api("POST", "/agents/plain/runs", { input: { content: "And 4 + 4?" } });
+  assert.equal(second.status, 202, `the next run sweeps again and starts: ${JSON.stringify(second.body)}`);
+  assert.equal(lists, 2, "swept twice: once failed, once whole");
+  await follow(api, second.body.run_id, ["completed"]);
 });
 
 test("archiving a run lets its box go; archiving an agent lets every one of its runs' boxes go", linux, async (t) => {
