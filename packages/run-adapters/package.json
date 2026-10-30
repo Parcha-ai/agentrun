@@ -40,6 +40,9 @@
     },
     "./package.json": "./package.json"
   },
+  "bin": {
+    "agentrun-box": "./dist/box-cli.js"
+  },
   "files": [
     "dist",
     "README.md",
