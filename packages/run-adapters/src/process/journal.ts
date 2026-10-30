@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-process/src/journal.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's kernel; blobs are kept in the session's own records; message prefixes; the fence comment names the session writer's fence.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-message-prefix, 004-comments-name-the-session-writer
 import { randomUUID } from 'node:crypto';
 import { BLOB_PIECE_CHARS, blobStreamName, type DriveContext, Fatal, readBlobs, Restart, sha256Hex, writeBlob } from '../kernel/index.js';
 import {
