@@ -49,8 +49,9 @@ const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 const MAX_RELAUNCHES = 3;
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
-/** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`. */
-const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "failed", stopped: "cancelled" };
+/** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
+ *  completed its work and waits for a person (its `review`), which is not a failure. */
+const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // A run's process that exited and was never reaped (a zombie, under a PID 1 that does not reap) is not alive.
@@ -84,6 +85,8 @@ type RunMeta = {
   error?: { code: string; message: string; details?: { reason: string } };
   /** A workflow run's output, once it completed. */
   output?: unknown;
+  /** A workflow run that escalated: what a person is to look at. Its time is the run's saved end, read with it. */
+  review?: SavedReview;
   /** Where the run stood when its turn was stopped: the person's last message, by its timeline row's id (its store
    *  entry's), or the root conversation's place 0 before any. It stays stopped until a message newer than that is shown. */
   stopped_at?: string;
@@ -91,13 +94,22 @@ type RunMeta = {
   stopped_after?: number;
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
+/** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
+ *  and when the run ended (`at`, the run's `ended_at`). */
+export type RunReview = { kind: string | null; node: string | null; reason: string; at: string };
+/** A review as serve.json keeps it: `at` is not kept, as it is the run's saved end, which the store stamps. */
+type SavedReview = Omit<RunReview, "at">;
+/** `review` at the run's saved end `endedAt`, so review.at and ended_at are one time. */
+const reviewAt = (review: SavedReview | null, endedAt: string): RunReview | null => (review ? { kind: review.kind, node: review.node, reason: review.reason, at: endedAt } : null);
 
-/** An ended run's error from its row and serve.json: an escalated workflow says so (`escalated`, with its summary), a
- *  failed run keeps its own. */
+/** A failed run's error from its row and serve.json: its own, else the row's summary. */
 const errorOfRow = (row: RunRow, meta: Partial<RunMeta> | null): RunError =>
-  row.state === "escalated"
-    ? { code: "escalated", message: row.summary ?? meta?.error?.message ?? "The workflow escalated.", retryable: false }
-    : { code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false, ...(meta?.error?.details ? { details: meta.error.details } : {}) };
+  ({ code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false, ...(meta?.error?.details ? { details: meta.error.details } : {}) });
+
+/** An ended run's review from its row and serve.json: an escalated one's as its end saved it, else (an end saved before
+ *  reviews were kept) the row's summary; null for every other run. */
+const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMeta> | null): SavedReview | null =>
+  row.state !== "escalated" ? null : (meta?.review ?? { kind: null, node: null, reason: row.summary ?? "The workflow escalated." });
 
 /** One run as this server holds it. */
 export type Run = {
@@ -397,6 +409,7 @@ export class Runs {
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
+      ...(isObject(stored?.review) ? { review: stored.review as SavedReview } : {}),
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
     };
@@ -937,7 +950,10 @@ export class Runs {
     const at = { runId: run.id, storePath: this.storeFile(run), revision };
     const { state, summary } = await workflowCarry(at, ending);
     if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
-    else if (state === "escalated") run.error = { code: "escalated", message: summary, retryable: false };
+    else if (state === "escalated") {
+      const { escalation, escalatedAt } = await readWorkflowRun(at);
+      run.meta.review = { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? summary };
+    }
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
     await this.readDecisionCost(run);
     return { outcome: STATUS_OF[state], state, summary };
@@ -1252,6 +1268,7 @@ export class Runs {
     const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
     const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
+    const endedAt = TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null;
     return {
       run_id: run.id,
       agent_id: run.agentId,
@@ -1265,9 +1282,10 @@ export class Runs {
       ...(run.meta.effort ? { effort: run.meta.effort } : {}),
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
-      ended_at: TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null,
+      ended_at: endedAt,
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
+      review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
@@ -1276,8 +1294,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1298,6 +1316,7 @@ export class Runs {
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
+      review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
       imported_from: row.importedFrom ?? null,
