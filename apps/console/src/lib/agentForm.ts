@@ -44,6 +44,19 @@ export function createBody(f: { name: string; description: string; instructions:
   };
 }
 
+/** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, and, when the
+ *  server says, which harnesses run it. An older server lists bare names. */
+export type ToolOffer = { name: string; available: boolean; missing?: string[]; harnesses?: string[] };
+
+export function toolOffers(raw: unknown): ToolOffer[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
+    if (typeof t === "string") return [{ name: t, available: true }];
+    if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
+    const { name, available, missing, harnesses } = t as { name: string; available?: boolean; missing?: string[]; harnesses?: string[] };
+    return [{ name, available: available !== false, ...(missing?.length ? { missing } : {}), ...(harnesses ? { harnesses } : {}) }];
+  });
+}
+
 const LABEL: Record<HarnessId, string> = { pi: "Pi", "claude-agent": "Claude", codex: "Codex" };
 const ORDER: HarnessId[] = ["pi", "claude-agent", "codex"];
 

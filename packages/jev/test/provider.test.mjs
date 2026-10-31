@@ -102,13 +102,13 @@ test('usage with a cost alone is accepted, and a bad cost or bad tokens are not'
 });
 
 test('provider with a client, or an unknown provider, is a configuration error; retries and errors behave as before', async () => {
-  assert.throws(() => createJevRunner({ provider: 'openrouter', client: { systemOne: async () => ({ answers }) } }), /Supply either client or transport options/);
-  assert.throws(() => createJevRunner({ provider: 'other', apiKey: stockKey }), /provider must be typesafe or openrouter/);
+  assert.throws(() => createJevRunner({ retryAfterSend: true, provider: 'openrouter', client: { systemOne: async () => ({ answers }) } }), /Supply either client or transport options/);
+  assert.throws(() => createJevRunner({ retryAfterSend: true, provider: 'other', apiKey: stockKey }), /provider must be typesafe or openrouter/);
   let calls = 0;
-  const flaky = createJevRunner({ ...quick, provider: 'openrouter', apiKey: routerKey, fetch: async () => (++calls === 1 ? response({ error: 'slow down' }, 429) : response({ answers })) });
+  const flaky = createJevRunner({ retryAfterSend: true, ...quick, provider: 'openrouter', apiKey: routerKey, fetch: async () => (++calls === 1 ? response({ error: 'slow down' }, 429) : response({ answers })) });
   assert.deepEqual((await flaky(params)).answers, answers);
   assert.equal(calls, 2, 'a 429 retries');
-  const broke = createJevRunner({ ...quick, provider: 'openrouter', apiKey: routerKey, fetch: async () => response({ error: 'credit' }, 402) });
+  const broke = createJevRunner({ retryAfterSend: true, ...quick, provider: 'openrouter', apiKey: routerKey, fetch: async () => response({ error: 'credit' }, 402) });
   await assert.rejects(broke(params), error => { assert.equal(error.code, 'http'); assert.equal(error.status, 402); assert.doesNotMatch(error.message, /credit/); return true; });
 });
 

@@ -1,0 +1,103 @@
+Patch: 003-comments-name-this-host
+Reason: comments listed the other harnesses and their hooks, which this package does not carry; they describe the one it does
+Upstream: ours
+Pins: comments only
+---
+diff --git a/packages/harness-process/src/builtins.ts b/packages/harness-process/src/builtins.ts
+index c78eec8..6c2e72a 100644
+--- a/packages/harness-process/src/builtins.ts
++++ b/packages/harness-process/src/builtins.ts
+@@ -5,12 +5,9 @@ import { clip, failureText, toolKey, type ToolResult } from './tools.ts';
+  * A harness's own (built-in) tools, in the log.
+  *
+  * With its built-in tools on, a harness runs tools the drive never sees run:
+- * Claude Code's Bash and Edit run inside the CLI, Codex's shell and
+- * `apply_patch` inside app-server, OpenCode's tools inside its server. The
+- * drive sees them through the harness's own hooks: one before a call runs
+- * (Claude Code's `PreToolUse`, a Codex approval request, OpenCode's
+- * `tool.execute.before`), one after it (`PostToolUse`, `item/completed`,
+- * `tool.execute.after`). `BuiltinCalls` makes that pair the kernel's effect
++ * Codex's shell and `apply_patch` run inside app-server. The drive sees
++ * them through the harness's own hooks: one before a call runs (a Codex
++ * approval request), one after it (`item/completed`). `BuiltinCalls` makes that pair the kernel's effect
+  * sandwich for the call, keyed by the harness's own call id
+  * (`tool:<callId>`, step name `tool.<name>`, like a bridged tool):
+  *
+@@ -28,7 +25,7 @@ import { clip, failureText, toolKey, type ToolResult } from './tools.ts';
+  *   have taken effect" (`never`) / "safe to repeat" (`safe`).
+  * - Nothing reruns a built-in call by itself. The harness resumes its own
+  *   session, which answers a call that was in flight "interrupted, outcome
+- *   unknown" (Claude Code, OpenCode do it themselves; Codex gets it injected).
++ *   unknown" (Codex gets it injected).
+  *   A harness that dispatches the same call id again gets the log's answer
+  *   (`begin` returns it) and must not run it. For a built-in, `safe` only
+  *   changes the note's wording: the model decides what to repeat.
+@@ -66,9 +63,8 @@ export interface BuiltinCallsOptions {
+    * result the harness reports (`end`), or rejects with its failure. What
+    * the wrapper returns is the call's recorded outcome, and what it throws
+    * its failure. For a harness whose built-ins work on files the drive
+-   * keeps (OpenCode's, on a virtual workspace): sync the files in before
+-   * `run`, and commit what the call changed with its outcome (`io.docs`;
+-   * harness-world-hands' `DocWorkspace.run`). A wrapper that throws before
++   * keeps: sync the files in before `run`, and commit what the call changed
++   * with its outcome. A wrapper that throws before
+    * calling `run` fails the call: `begin` answers with that failure, and the
+    * call never runs. One that returns without calling `run` decides the
+    * outcome itself: `begin` answers with it, and the call never runs either
+diff --git a/packages/harness-process/src/records.ts b/packages/harness-process/src/records.ts
+index 8ce81fe..924b765 100644
+--- a/packages/harness-process/src/records.ts
++++ b/packages/harness-process/src/records.ts
+@@ -5,9 +5,8 @@ import type { EffectRecord, SessionState } from 'harness-world';
+  * readers for it. No Node imports: UIs (the demo's transcript, in a browser
+  * tab) read sessions with this module.
+  *
+- * A process harness mirrors its native session state (Claude Code's JSONL
+- * transcript, Codex's rollout, OpenCode's events) into the
+- * log as **journal batches**: record-only effects named `journal`, keyed
++ * A process harness mirrors its native session state (Codex's rollout) into
++ * the log as **journal batches**: record-only effects named `journal`, keyed
+  * `journal:<n>`, each carrying the records appended since the last batch,
+  * grouped by stream. The kernel's rules make the batches linear: the first
+  * committed step per key wins, a stale driver's step is fenced, and a batch
+diff --git a/packages/harness-process/src/recovery.ts b/packages/harness-process/src/recovery.ts
+index 57e4956..3c1ea6a 100644
+--- a/packages/harness-process/src/recovery.ts
++++ b/packages/harness-process/src/recovery.ts
+@@ -6,9 +6,8 @@ export { type OpenTurn, openTurn };
+ /**
+  * The recovery note: what a process harness tells its model when it resumes
+  * a turn a crash cut off. A CLI harness resumes its own session natively,
+- * but it never knows what happened to the calls that were in flight (Claude
+- * Code and OpenCode answer a dangling call "interrupted, outcome unknown";
+- * Codex and Cursor need one injected), and a resumed session needs a new
++ * but it never knows what happened to the calls that were in flight (Codex
++ * needs an output injected for a dangling call), and a resumed session needs a new
+  * user message to move. The note is that message, built from the log: the
+  * calls since the turn began, each with what the log knows about it.
+  */
+diff --git a/packages/harness-process/src/tools.ts b/packages/harness-process/src/tools.ts
+index 679c7da..f701639 100644
+--- a/packages/harness-process/src/tools.ts
++++ b/packages/harness-process/src/tools.ts
+@@ -2,8 +2,7 @@ import { type DriveContext, EffectFailure, type EffectError, type HostTool, host
+ 
+ /**
+  * The tool bridge: `HostTool`s as a harness-neutral list a port maps onto its
+- * harness's own tool mechanism (Claude Code's in-process MCP server, Codex's
+- * dynamic tools, OpenCode's plugin tools).
++ * harness's own tool mechanism (Codex's dynamic tools).
+  *
+  * Each call runs the kernel's effect sandwich keyed by the harness's own
+  * tool-call id, `tool:<callId>`, step name `tool.<name>`, with the tool's
+@@ -32,8 +31,8 @@ export interface BridgedTool {
+   inputSchema: Record<string, unknown>;
+   replay: ReplayPolicy;
+   /**
+-   * Run the call. `callId` is the harness's id for this call (Claude Code's
+-   * tool_use id, Codex's call_id, ...); it must be stable across a resume of
++   * Run the call. `callId` is the harness's id for this call (Codex's
++   * call_id); it must be stable across a resume of
+    * the harness's session, since it is the memo key. `signal` is the
+    * harness's own cancellation, if it has one; the drive's is always applied.
+    */

@@ -4,7 +4,7 @@ import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { LiveRun } from "@/components/LiveRun";
 import { Operator } from "@/components/Operator";
 import { Playground, type StartResult } from "@/components/Playground";
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, toolOffers } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
@@ -63,8 +63,9 @@ export function App() {
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where]);
   const agentName = (id: string) => names[id] ?? id;
-  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: string[]; features?: { thinking?: string[] }; models?: { default?: string } } | null;
-  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: c?.tools ?? [], thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
+  const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
+  // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
+  const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", operator: "#/start" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);

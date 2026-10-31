@@ -206,7 +206,7 @@ describe("the CLI on a local directory", () => {
       bootId: () => boot,
       snapshot() {
         if (listing === "fails") throw new Error("ps: cannot list processes");
-        return { info: (pid) => (pid === 4242 && listing !== "gone" ? { ppid: 1, pgrp: 4242, start: listing.start } : undefined), children: () => [], marked: () => false, commandLine: () => "?" };
+        return { info: (pid) => (pid === 4242 && listing !== "gone" ? { ppid: 1, pgrp: 4242, start: listing.start } : undefined), children: () => [], group: () => [], marked: () => false, withMark: () => [], commandLine: () => "?" };
       },
     });
     const status = async (with_: ProcessTable) => {
