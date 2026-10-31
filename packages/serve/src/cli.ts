@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // agentrun-serve: the Agentrun v2 API on this machine, over the agent store in a data directory.
-// First: the secrets the launcher hands over, read and its pipe closed before anything else runs (secrets.ts).
+// First: the secrets the launcher hands over, read and its pipe closed before anything else runs (secrets.ts). It loads
+// nothing but node:fs and node:os.
 import { secret } from "./secrets.js";
+// Then, before anything loads node:sqlite, the filter for its ExperimentalWarning (quiet-sqlite-warning.ts).
+import "./quiet-sqlite-warning.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
