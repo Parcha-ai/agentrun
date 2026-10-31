@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { LiveRun } from "@/components/LiveRun";
+import { Operator } from "@/components/Operator";
+import { Playground, type StartResult } from "@/components/Playground";
+import { type Agent, toolOffers } from "@/lib/agentForm";
 import { RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
-import { type Capabilities, ClientError, createClient } from "@/lib/client";
-import { toolOffers } from "@/lib/agentForm";
+import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
 
@@ -18,6 +20,8 @@ function route(): Where {
   m = h.match(/^#\/agents\/([^/?]+)$/);
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
+  if (h.startsWith("#/playground")) return { section: "playground" };
+  if (h.startsWith("#/start")) return { section: "operator" };
   m = h.match(/^#\/runs\?agent=([^&]+)$/);
   return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
 }
@@ -62,10 +66,52 @@ export function App() {
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
-  const nav = (s: Section) => { if (s === "runs") go("#/runs"); if (s === "agents") go("#/agents"); };
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", operator: "#/start" }[s]);
+  // The agents both start screens pick from, every page of them.
+  const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
+  const [pick, setPick] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (where.section !== "playground" && where.section !== "operator") return;
+    setStartError(null);
+    allPages((cursor) => v2.listAgents({ cursor }), (p) => p.agents)
+      .then((a) => {
+        setAgents(a);
+        // Keep the pick only while it is an active agent: one archived since is not offered, so not picked either.
+        const active = a.filter((x) => !x.archived_at);
+        setPick((p) => (p && active.some((x) => x.agent_id === p) ? p : active[0]?.agent_id ?? null));
+      })
+      .catch((e) => setStartError(e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e)));
+  }, [v2, where.section, retry]);
+  const revsAsked = useRef(0);
+  useEffect(() => {
+    // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
+    const n = ++revsAsked.current;
+    setRevs([]);
+    if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
+  }, [v2, pick]);
+  const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
+    const t0 = performance.now();
+    try {
+      const r = await v2.startRun(agentId, body, key);
+      return { status: r.status, ms: Math.round(performance.now() - t0), body: r.run, runId: r.run.run_id };
+    } catch (e) {
+      const ms = Math.round(performance.now() - t0);
+      return e instanceof ClientError ? { status: e.status, ms, body: { error: { ...e.toApiError(), ...(e.fields ? { fields: e.fields } : {}) } } } : { status: 0, ms, body: { error: { code: "network", message: String(e) } } };
+    }
+  };
+  const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   return (
     <Shell active={where.section} onNavigate={nav}>
-      {where.section === "agents"
+      {(where.section === "operator" || where.section === "playground") && startError
+        ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
+        : where.section === "operator"
+        ? agents && <Operator agents={agents} error={error} onSend={send} onStarted={(id) => go(`#/runs/${encodeURIComponent(id)}`)} />
+        : where.section === "playground"
+        ? agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)} />
+        : where.section === "agents"
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} /> : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
