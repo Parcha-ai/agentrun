@@ -179,3 +179,29 @@ test("OpenRouter's decision models run on the OpenRouter key Jev's route reads, 
   const none = decisionsOf({}).find((p) => p.id === "openrouter");
   assert.deepEqual([none.available, providerMissing({}, "openrouter").needs], [false, ["OPENROUTER_API_KEY"]]);
 });
+
+test("a judge naming provider openrouter is answered by the OpenRouter model it names on the handed key", async (t) => {
+  const placeholder = "faux-test-placeholder";
+  withEnv(t, { OPENROUTER_API_KEY: placeholder }, ["TYPESAFE_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS"]);
+  process.env.AGENTRUN_FAUX_SYSTEM_ONE_DELAY_MS = "0";
+  const fauxOpenrouter = new URL("../../decisions/dist/testing/faux-system-one.js", import.meta.url).pathname;
+  const { api } = await serve(t, { fauxOpenrouter });
+  const flow = {
+    v: 2, name: "asked",
+    schemas: {
+      In: { type: "object", required: ["doc"], properties: { doc: { type: "string" } } },
+      Verdict: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Verdict", path: "verdict" },
+    root: { node: "judge", label: "ask", provider: "openrouter", model: "liquid/d1", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+  };
+  const made = await api("POST", "/agents", flowAgent("asked", flow));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.deepEqual(made.body.warnings, []);
+  const id = (await api("POST", "/agents/asked/runs", { input: { doc: "Certificate of incorporation of Acme Widgets" } })).body.run_id;
+  await follow(api, id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const run = (await api("GET", `/runs/${id}`)).body;
+  assert.equal(run.status, "completed", JSON.stringify(run.error));
+  assert.equal(typeof run.result.output.is_coi, "boolean");
+});

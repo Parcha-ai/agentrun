@@ -33,8 +33,9 @@ export const FAUX_JEV_ENV = "AGENTRUN_SERVE_FAUX_JEV";
 /** Under --faux only: a module whose default export is the fetch the Parallel provider sends through, in place of
  *  Parallel's API (the tests' fake). */
 export const FAUX_PARALLEL_ENV = "AGENTRUN_SERVE_FAUX_PARALLEL";
-/** Under --faux only: a module whose default export is the fetch the OpenRouter decisions provider sends through, in
- *  place of OpenRouter's System One API (`@parcha/agentrun-decisions/testing/faux-system-one` is one). */
+/** Under `faux` only (startServe's `fauxOpenrouter`): a module whose default export is the fetch the OpenRouter decisions
+ *  provider sends through, in place of OpenRouter's System One API (`@parcha/agentrun-decisions/testing/faux-system-one`
+ *  is one). */
 export const FAUX_OPENROUTER_ENV = "AGENTRUN_SERVE_FAUX_OPENROUTER";
 
 /** One decision provider as capabilities lists it: whether this server runs it, when not why, and what to know when
