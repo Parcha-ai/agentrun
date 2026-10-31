@@ -35,6 +35,7 @@ const EXPECTED = {
   'retries-after-send': [/^a provider that cannot replay never retries a failure after the request was sent/],
   'declares-box': [/^it declares only what the seam can send/],
   'declares-image-input': [/^it declares only what the seam can send/],
+  'ignores-models': [/^a request beyond its declared capabilities is refused before anything is sent/],
 };
 
 test('every mutant has an expectation, and the provider that keeps every rule passes the suite', () => {

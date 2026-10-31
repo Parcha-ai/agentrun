@@ -63,13 +63,28 @@ test("the contract's operations are as vendored; this server's own are added and
   for (const { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
     if (!original) {
-      assert.equal(op["x-agentrun-serve"], true, `${method.toUpperCase()} ${path} is this server's own, and marked`);
+      assert.ok(op["x-agentrun-serve"] === true || /^[a-z]+\/\d+$/.test(op["x-agentrun-serve"]), `${method.toUpperCase()} ${path} is this server's own, and marked`);
       own.push(`${method.toUpperCase()} ${path}`);
       continue;
     }
-    const { "x-agentrun-serve-unsupported": _, ...rest } = op;
-    assert.ok(isDeepStrictEqual(rest, original), `${op.operationId} is the contract's, unchanged`);
+    const { "x-agentrun-serve-unsupported": _, "x-agentrun-serve-changed": changes, ...rest } = op;
     assert.equal(op["x-agentrun-serve"], undefined);
+    if (!changes) {
+      assert.ok(isDeepStrictEqual(rest, original), `${op.operationId} is the contract's, unchanged`);
+      continue;
+    }
+    // A changed operation: each change named, the contract's own body kept as the first choice, If-Match unchanged but
+    // for whether it is required and what it says, and the rest as vendored.
+    assert.ok(doc.info["x-agentrun-serve"].changed.includes(`${method.toUpperCase()} ${path}`), `${op.operationId} is listed as changed`);
+    for (const mark of Object.values(changes)) assert.match(mark, /^[a-z]+\/\d+$/);
+    assert.deepEqual(Object.keys(changes).sort(), ["If-Match", "requestBody"]);
+    const schema = (o) => o.requestBody.content["application/json"].schema;
+    assert.deepEqual(schema(op).oneOf[0], schema(original), "the contract's body is one of the two");
+    const plain = (params) => params.map(({ required, description, ...p }) => (p.name === "If-Match" ? p : { required, description, ...p }));
+    assert.deepEqual(plain(op.parameters), plain(original.parameters));
+    const { requestBody: _a, parameters: _b, ...same } = rest;
+    const { requestBody: _c, parameters: _d, ...vendoredSame } = original;
+    assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for its named changes`);
   }
   assert.equal(vendored.size + own.length, operations(doc).length, "no contract operation is gone");
   assert.deepEqual(own.sort(), [...doc.info["x-agentrun-serve"].extensions].sort(), "info lists the server's own");

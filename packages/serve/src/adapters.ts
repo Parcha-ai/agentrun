@@ -75,7 +75,7 @@ export function confineOf(prefix: readonly string[]): ConfineChild | undefined {
 }
 
 /** Hosts a gateway may be reached at over plain http: this machine. */
-const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]); // key-gate: loopback-rule names this machine only, the hosts a gateway may use plain http on; nothing connects here
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]); // key-gate: loopback-rule names this machine only, the hosts a gateway may use plain http on; an allow-list, the line dials nothing
 
 /**
  * The base `setting` (a gateway's URL) gives the model proxy: its origin and its path, one trailing `/v1` taken off, since
@@ -133,6 +133,13 @@ export function claudeProvider(env: NodeJS.ProcessEnv, model: ModelRef): { origi
   return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "" };
 }
 
+/** The model id claude-agent sends, and prices: Anthropic's own, the model id with dots as dashes. Anthropic's ids hold no
+ *  dot; a gateway such as OpenRouter names the same models with dots (anthropic/claude-sonnet-5.5) and takes Anthropic's
+ *  own id too, and the catalog prices them by Anthropic's id. */
+export function claudeModelId(model: ModelRef): string {
+  return model.provider === "anthropic" ? model.modelId.replaceAll(".", "-") : model.modelId;
+}
+
 /** claude-agent's model: the revision's (or the server's default) as `provider/model-id`, its price from pi-ai's
  *  catalog. Never the gateway's model or price, which serve the other harnesses. Whether it is an Anthropic model is
  *  claudeProvider's to say. */
@@ -141,25 +148,44 @@ export function claudeModel(env: NodeJS.ProcessEnv, ref: string | undefined): { 
   if (!named) return { why: "The revision names no model, and this host has no default: name an anthropic/<model-id> in the definition.", host: true };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: `claude-agent runs a model named anthropic/<model-id>; the run's model is ${named}.`, host: ref === undefined };
-  return { model: { provider: named.slice(0, slash), modelId: named.slice(slash + 1) } };
+  const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
+  // One provider, then the model's own id: a second segment (anthropic/anthropic/<model>, once a workaround) is refused
+  // by name, never sent on to fail at the provider.
+  if (modelId.includes("/")) return { why: `claude-agent runs a model named ${provider}/<model-id>; ${named} names more than one segment: name it ${provider}/${modelId.slice(modelId.lastIndexOf("/") + 1)}.`, host: ref === undefined };
+  // Anthropic's own id from here on, so the cap's model lookup, the price and the wire all name one model the catalog
+  // knows: a dotted name (OpenRouter's) would find no model, and a cap with no model would admit nothing it could price.
+  return { model: { provider, modelId: claudeModelId({ provider, modelId }) } };
 }
 
 /** The package that runs claude-agent, imported by a name the build does not resolve: it is installed beside serve
  *  only by the person who wants it (its SDK is an optional peer). */
 const CLAUDE_PACKAGE = "@parcha/agentrun-claude-agent";
 
-async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const claude = (await import(CLAUDE_PACKAGE).catch(() => {
+/** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
+export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = () => import(CLAUDE_PACKAGE)): Promise<AgentAdapter> {
+  const claude = (await load().catch(() => {
     throw new HarnessUnavailable(`claude-agent is not installed here: ${INSTALL["claude-agent"]}`);
   })) as { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter };
-  const provider = claudeProvider(env, needs.model);
+  // What no key fixes is said first: the adapter is built before the provider's refusal is thrown, and its construction
+  // checks the SDK's version, zod and the pinned CLI (claude --version, once). The provider is read only when a session
+  // opens, so an adapter built with an unusable one is never returned.
+  let provider: ReturnType<typeof claudeProvider> | undefined;
+  let refused: unknown;
   try {
-    // Its construction checks the SDK's version, zod and the pinned CLI (claude --version, once).
-    return claude.claudeAgentAdapter({ model: { default: needs.model.modelId }, provider, price: priceOf(needs), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
+    provider = claudeProvider(env, needs.model);
+  } catch (error) {
+    refused = error;
+  }
+  let adapter: AgentAdapter;
+  try {
+    const native = { ...needs, model: { ...needs.model, modelId: claudeModelId(needs.model) } };
+    adapter = claude.claudeAgentAdapter({ model: { default: native.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(native), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
   }
+  if (refused !== undefined) throw refused;
+  return adapter;
 }
 
 /** The run's thinking level as the harness takes it: serve's levels run to max; Codex's reasoning efforts stop at xhigh. */

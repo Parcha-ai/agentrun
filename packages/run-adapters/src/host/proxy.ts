@@ -55,10 +55,23 @@ export interface ProviderPolicy {
   /** The usage a completed response reports, if it reports one: from its whole text, or, for a long one, its first and
    *  last 64 KiB (a provider may report input tokens as a stream starts and output tokens as it ends). */
   usageOf(text: string): ProxyUsage | undefined;
+  /** Called once for each request the proxy forwards that the provider answers, as the answer starts. Requests overlap (a
+   *  client's background calls run beside its turn), so what it keeps is for the sink to tell apart: each call returns its own
+   *  observer. The observer is given each piece of the answer as text, BEFORE that piece is written to the client, so what it
+   *  saw of an answer, the client has not yet acted on: the one thing the proxy can say causally about what a client does
+   *  next. `end` is called when the answer is over, however it ended. It only reads; one that throws is reported, `failed` is
+   *  called (the answer was not watched to its end) and the answer goes on. A `watch` must not throw after it has told its
+   *  sink the answer started (its sink counts open answers, and only `end` closes one): do that last. */
+  watch?(): { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
+  /** Called when `watch` threw: this answer is not watched, so nothing the policy knew of an earlier one may stand for it. */
+  unwatched?(): void;
   /** The model the body `apply` returned asks for, once `apply` checked it is one this session may use (its own, or a
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
   modelOf?(body: Record<string, unknown>): string | undefined;
+  /** The input tokens the provider bills for the body `apply` returned that the body does not carry: a prompt it adds
+   *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Absent: none. */
+  serverInputOverhead?(body: Record<string, unknown>): number;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -76,8 +89,9 @@ export interface ModelUsageReport extends ProxyUsage {
 
 export interface ModelProxyHooks {
   /** Before a paid request leaves; a throw refuses it. What it returns (a ticket) is handed back to this request's
-   *  `afterRequest`, since requests may be in flight together. */
-  beforeRequest(request: { model: string }): Promise<unknown>;
+   *  `afterRequest`, since requests may be in flight together. `inputTokensMax` is the most input tokens it can be
+   *  billed for (see `inputTokensMaxOf`), undefined when that could not be measured. */
+  beforeRequest(request: { model: string; inputTokensMax?: number }): Promise<unknown>;
   /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
   afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
@@ -279,6 +293,25 @@ function baseOf(base: string): string {
 }
 
 /** Start a session's model proxy on the loopback interface, admitting `key`. */
+/**
+ * The most input tokens a request with body `sent` (the body `apply` returned, as it is sent) can be billed for: its UTF-8
+ * byte count, plus the input the policy says the provider adds that the body does not carry. A provider's tokenizer is a
+ * byte-level BPE, whose every token covers at least one byte of what it encodes, so the text the body carries can never
+ * be more tokens than bytes, however dense (CJK, emoji, base64). It is not an average of characters per token, which
+ * undercounts dense text. Undefined, never 0, when the policy's figure cannot be read: the input is then unmeasured.
+ */
+export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, unknown>, sent: string, say: (message: string, detail?: Record<string, unknown>) => void = () => {}): number | undefined {
+  try {
+    // Only a policy with no hook adds nothing. A hook's undefined or null is no figure, never 0: the input is unmeasured.
+    const overhead: unknown = policy.serverInputOverhead ? policy.serverInputOverhead(body) : 0;
+    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
+    return Buffer.byteLength(sent, "utf8") + overhead;
+  } catch (error) {
+    say(`model proxy (${policy.id}): the policy could not say what the provider adds to the body's input; its input is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    return undefined;
+  }
+}
+
 export async function startModelProxy(options: ModelProxyOptions, key: string): Promise<ModelProxy> {
   const { policy, hooks, model } = options;
   if (!key) throw new Error("agentrun-adapters: a model proxy needs the session's key");
@@ -356,6 +389,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
+    let sent: string;
+    try {
+      sent = JSON.stringify(body);
+    } catch (error) {
+      say(`model proxy (${policy.id}): the body could not be serialized`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      return refuse(res, 500, "the body could not be serialized", req);
+    }
+    const inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
     // The provider's credential and its headers come before the runner is asked: a request that could not be sent is
     // refused without being admitted, so it is never booked and spends no turn.
     let credential = "";
@@ -382,7 +424,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
-      if (!route.free) ticket = await hooks.beforeRequest({ model: asked });
+      if (!route.free) ticket = await hooks.beforeRequest({ model: asked, inputTokensMax });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
@@ -409,12 +451,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let answered: { ok: boolean } | undefined;
     /** That the provider's answer began, with its status: what a client that left before the end had of it. */
     let began: { ok: boolean } | undefined;
+    let watchEnd: (() => void) | undefined;
     /** The ids its headers gave it. */
     let ids: Record<string, string> | undefined;
     let reported: number | undefined;
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
-      const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
+      const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
       // its booking.
       try {
@@ -435,8 +478,27 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       began = { ok: upstream.ok };
       res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
       const decoder = new TextDecoder();
+      let watcher: { chunk(text: string): void; failed?(): void; end?(): void } | undefined;
+      try {
+        watcher = policy.watch?.();
+        watchEnd = watcher?.end?.bind(watcher);
+      } catch (error) {
+        say(`model proxy (${policy.id}): the response watcher could not start`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+        try { policy.unwatched?.(); } catch {}
+      }
       if (upstream.body) {
         for await (const chunk of upstream.body as unknown as AsyncIterable<Uint8Array>) {
+          // What the watcher reads of a piece, it reads before the client has the piece.
+          const text = decoder.decode(chunk, { stream: true });
+          if (watcher) {
+            try {
+              watcher.chunk(text);
+            } catch (error) {
+              say(`model proxy (${policy.id}): the response watcher failed`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+              try { watcher.failed?.(); } catch {}
+              watcher = undefined;
+            }
+          }
           // A client that reads slowly holds the provider back: nothing more is read until what was written drains.
           if (!res.write(chunk)) {
             // One wait, and nothing left behind: whichever comes first takes both listeners off.
@@ -447,7 +509,6 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
             });
           }
           // The usage is at the start, the end, or both: keep those, not the whole answer.
-          const text = decoder.decode(chunk, { stream: true });
           length += text.length;
           if (head.length < USAGE_WINDOW) head += text.slice(0, USAGE_WINDOW - head.length);
           tail = (tail + text).slice(-USAGE_WINDOW);
@@ -461,6 +522,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       else res.destroy();
     } finally {
       inflight.delete(controller);
+      try { watchEnd?.(); } catch {}
     }
     // Every paid request the proxy forwarded is booked exactly once, after the client has its answer (or lost it):
     // nothing here can turn an answer into an error the client sees and might pay again for. Its usage and price

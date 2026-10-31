@@ -14,6 +14,7 @@ import { startServe } from "../dist/index.js";
 import { DECISION_KEY_FD_ENV, decisionsOf, FAUX_JEV_ENV, jevRoute } from "../dist/decisions.js";
 import { FAUX_ENV } from "../dist/model.js";
 import { client, FAUX, flowAgent, follow, scratch, serve, storeRun, withEnv } from "./support.mjs";
+import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
@@ -604,3 +605,22 @@ test("capabilities lists parallel: available where PARALLEL_API_KEY is set, why 
   assert.deepEqual(on.decisions.providers[1], { id: "parallel", available: true });
   assert.ok(on.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
 });
+
+test("the missing-key 409's details, decisions included, meet what the served document gives agent_not_runnable", async (t) => {
+  withEnv(t, {}, KEYS);
+  const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
+  assert.equal((await api("POST", "/agents", flowAgent("coi", flow([judge, probe()])))).status, 201);
+  const refused = await api("POST", "/agents/coi/runs", { input: { question: "x" } });
+  assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
+  assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/ErrorBody" }, refused.body.error), [], "the error meets the contract's ErrorBody");
+  // The contract's details take any field; what agent_not_runnable's hold here is the server's own shape.
+  const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"].agent_not_runnable;
+  const blocked = shape.oneOf.find((part) => part.required.includes("unbound"));
+  assert.deepEqual(schemaProblems(doc, blocked, refused.body.error.details), [], "field by field, against the blocked revision's details");
+  const stray = { ...refused.body.error.details, decisions: { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"], extra: 1 } } };
+  assert.deepEqual(schemaProblems(doc, blocked, stray), ["$.decisions.jev.extra: is not a field here"], "a provider's entry takes no other field");
+  assert.deepEqual(schemaProblems(doc, shape, refused.body.error.details), [], JSON.stringify(refused.body.error.details));
+});
+

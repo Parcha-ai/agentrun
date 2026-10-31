@@ -1,0 +1,52 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/invoice-checker"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "invoice-checker",
+    "definition": {
+      "id": "invoice-checker",
+      "version": 3,
+      "name": "Invoice checker",
+      "description": "Recomputes an invoice's lines and total and reports what is off.",
+      "instructions": "Check the invoice the person pastes with the totals-rubric skill. If the currency is not stated, ask the person before you compute. Write your findings to findings.md, and answer with a table.",
+      "thinking": "high",
+      "harness": "pi",
+      "skills": [
+        "totals-rubric"
+      ],
+      "tools": [
+        "read",
+        "write",
+        "ask_person"
+      ]
+    },
+    "kind": "agentic",
+    "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+    "revisions": 3,
+    "source": null,
+    "skills": [
+      {
+        "path": "totals-rubric/SKILL.md",
+        "sha256": "25ac8503a84b654516153ef09c4e718eadbfd35b12e80d8b859b1709ab3d48c4",
+        "size_bytes": 267
+      }
+    ],
+    "sign_ins": [],
+    "runs": {
+      "count": 10,
+      "live": 1
+    },
+    "region": "local",
+    "home_etag": "\"3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe\"",
+    "archived_at": null,
+    "created_at": "2026-10-28T19:32:52.220Z",
+    "updated_at": "2026-10-28T19:32:53.408Z"
+  }
+}

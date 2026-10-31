@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { after, test } from "node:test";
+import { after, test as nodeTest } from "node:test";
 import sharp from "sharp";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { receiptFacts } from "@parcha/pi-vision";
@@ -18,6 +18,18 @@ import { createVisionExtension } from "@parcha/pi-vision/durable";
 import { nodeVisionEnv } from "@parcha/pi-vision/node";
 import { fakeEyes, fixtureDir, photoJpeg, textPdf } from "@parcha/pi-vision/testing";
 import { ANSWERS, fakeJev } from "../support/jev.mjs";
+
+// The tests run in shards, report-skill-<n>.test.mjs, each in a process of its own with its own fixtures. A file is node --test's
+// unit of parallelism and these tests run in series: as one file they were 784 s of an 805 s suite. A shard sets the range of
+// test numbers it runs (in this file's order) and imports this file; the last range runs to the end, so a test added here runs.
+// A shard sets the range before its import: a static import would run this file first. `register` is node:test's test, or a
+// check's own (report-skill-shard-filter.test.mjs).
+const { from, to, register = nodeTest } = globalThis.REPORT_SKILL_SHARD ?? { from: 0, to: Infinity };
+let number = -1;
+const test = (name, ...rest) => {
+  number += 1;
+  if (number >= from && number < to) register(name, ...rest);
+};
 
 const SKILL = fs.readFileSync(new URL("../../skills/report/SKILL.md", import.meta.url), "utf8");
 const pieces = [...SKILL.matchAll(/```js\n([\s\S]*?)```/g)].map((match) => match[1]);

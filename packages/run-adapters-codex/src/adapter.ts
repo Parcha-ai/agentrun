@@ -9,11 +9,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import type { AdapterEvent, AdapterSession, AgentAdapter, HostTool, SessionIO, SessionSpec, TurnStatus } from "@parcha/agentrun-adapters";
-import { openDrive, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
+import { abortedOutcome, openDrive, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { pendingSubmissions } from "@parcha/agentrun-adapters/kernel";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { CODEX_VERSION } from "./binary.js";
-import { readCodeModeModels } from "./code-mode.js";
 import { codexSchemaProblems, describedDescription } from "./schema.js";
 import { withCheckedBinary } from "./host/sandbox.js";
 import { verifyCodex } from "./verify.js";
@@ -52,10 +51,6 @@ export interface CodexAdapterOptions {
   standIn?: { command: string; args?: string[]; env?: Record<string, string> };
   /** For tests: the fetch the model proxy forwards with. */
   fetch?: typeof fetch;
-  /** TEST-ONLY (the stand-in's guard: AGENTRUN_CODEX_STANDIN=1 under a test runner, never in production; passed anywhere
-   *  else, the adapter throws when it is made): how the code-mode models are read from the checked binary, in place of its
-   *  own catalog. It must never switch off the refusal of code-mode models in a host. */
-  readCodeModeModels?: (binary: string) => ReadonlySet<string>;
 }
 
 /** The kernel's tool for a host tool: the same name, schema and replay policy; a host's error result is the call's failure.
@@ -91,20 +86,10 @@ function adapterEvent(event: unknown): AdapterEvent | undefined {
 
 const turnsIn = (drive: Drive) => transcriptOf(drive.state()).filter((r) => r.data?.type === "turn");
 
-/** The test-only options' guard, the stand-in's: only a test run with AGENTRUN_CODEX_STANDIN=1, never in production. */
-function testOnly(name: string): void {
-  if (process.env.AGENTRUN_CODEX_STANDIN !== "1") throw new TypeError(`agentrun-codex: ${name} is test-only and needs AGENTRUN_CODEX_STANDIN=1`);
-  if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== "test") throw new TypeError(`agentrun-codex: ${name} is test-only and runs only under a test runner`);
-  if (process.env.NODE_ENV === "production") throw new TypeError(`agentrun-codex: ${name} is test-only and is refused in production`);
-}
-
 export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
-  if (options.readCodeModeModels) testOnly("readCodeModeModels");
   // The binary is checked once, here, against the pins: a mismatch or a missing binary is the host's to report, before
   // any run starts (CodexPinMismatch, CodexNotInstalled). A test's stand-in runs no Codex.
   const checked = options.standIn ? undefined : verifyCodex().path;
-  // The models the binary runs in code mode, read from its own catalog the first time a session is checked.
-  let codeMode: ReadonlySet<string> | undefined;
   const modelFor = (spec: SessionSpec): string => {
     if (typeof options.model === "string") return options.model;
     return (spec.tier && spec.tier !== "default" ? options.model[spec.tier] : undefined) ?? options.model.default;
@@ -136,11 +121,6 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
         } catch (error) {
           problems.push(`${tool.name}: /: the tool's schema could not be checked (${String((error as Error)?.message ?? error).slice(0, 120)})`);
         }
-      }
-      if (checked !== undefined) {
-        codeMode ??= (options.readCodeModeModels ?? readCodeModeModels)(checked);
-        const model = modelFor(spec);
-        if (codeMode.has(model)) problems.push(`the model ${JSON.stringify(model.slice(0, 80))} runs tools in code mode, which this adapter does not support yet; use a model that calls tools as functions`);
       }
       return problems;
     },
@@ -207,8 +187,9 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
             const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
+            // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.
             outcome = current.signal.aborted
-              ? { status: "interrupted" }
+              ? abortedOutcome(current.signal, io.signal)
               : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
           }
           io.onEvent({ type: "turn_end", status: outcome.status });
@@ -241,13 +222,13 @@ export function codexAdapter(options: CodexAdapterOptions): AgentAdapter {
           return running;
         },
         async interrupt() {
-          drive.halt?.(new Error("interrupted"));
+          drive.halt?.(new SessionHalt("interrupted"));
           await running?.catch(() => {});
         },
         async close() {
           if (closed) return;
           closed = true;
-          drive.halt?.(new Error("closed"));
+          drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
         },
       };

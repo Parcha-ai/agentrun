@@ -20,6 +20,7 @@ The key is `PARALLEL_API_KEY`, read by name when a request is made, or `apiKey`.
 What it does with Parallel's answers:
 
 - **Types and limits.** It answers `noul`, `choice` and `score`. Before sending, it refuses as `invalid_request` anything over Parallel's documented limits: more than 100 questions, a choice outside 2 to 255 options, a score outside 2 to 10 levels, a question that renders past 5,000 characters, or a state over 96,000 bytes. A choice option with no description is described by its own name.
+- **Model.** It asks Parallel's `fast` mode and declares the one model it serves, `parallel-fast`. A node that pins another model is refused before the run starts when the host passes its providers to the run's checks, and as `invalid_request` before anything is sent otherwise.
 - **Refusals.** Parallel may decline a question (`{ "type": "refusal" }`). It stays a refusal: the DSL never decodes it to a value. The run escalates for a person (`decision_refused`), or a route takes its `unsure` branch.
 - **Confidence.** A choice or score that comes back without a confidence gets one derived from its probabilities, and the decision receipt's `confidence_source` says so.
 - **Evidence.** Parallel's citations apply to the whole request, not to one answer, so each is evidence with `scope: "call"`.
