@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, rmSync } from "node:fs";
-import { open as openFile, stat } from "node:fs/promises";
+import { open as openFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -22,18 +22,19 @@ import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/swee
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
-import { ApiError } from "./errors.js";
+import { ApiError, unsupported } from "./errors.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, withoutFaux } from "./model.js";
+import { NODE_LOG, pausedIn, readNodeLog, RUN_PAUSED } from "./pause.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
 import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 
-export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
+export type Status = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
-export const STATUSES: readonly Status[] = ["queued", "working", "input_required", "completed", "failed", "cancelled"];
+export const STATUSES: readonly Status[] = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"];
 type Ended = Exclude<RunState, "running">;
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 const RELEASED = new Set(["sleeping", "paused", "done", "failed"]);
@@ -208,7 +209,7 @@ const answerOf = (rows: readonly TimelineEvent[]) => {
 };
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
 /** The run's cost from its usage row: null when a response's cost is unknown, 0 before any request. */
-const costOf = (rows: readonly TimelineEvent[]): number | null => {
+export const costOf = (rows: readonly TimelineEvent[]): number | null => {
   const usage = usageOf(rows);
   return usage ? (usage.usage?.usd ?? null) : 0;
 };
@@ -254,7 +255,11 @@ export function keepCommitted(live: Set<string>, rows: readonly TimelineEvent[],
 export function statusOf(run: Run): { status: Status; state: State } {
   if (run.outcome) return { status: run.outcome, state: "idle" };
   if (run.finishing) return { status: run.finishing, state: "idle" };
-  if (run.kind === "workflow") return { status: run.working ? "working" : "queued", state: "working" };
+  // A paused workflow run finishes what it has in flight and starts nothing new until it is resumed (pause.ts).
+  // One whose process logged a node has started: between its process's exit and its carry back it still reads working.
+  // A held run read without its directory (a view built for a count) has no marks to read: queued or working by its flag.
+  const dir: string | undefined = run.dir;
+  if (run.kind === "workflow") return dir && pausedIn(dir) ? { status: "paused", state: "idle" } : { status: run.working || (dir !== undefined && existsSync(join(dir, NODE_LOG))) ? "working" : "queued", state: "working" };
   const users = usersOf(run.rows);
   if (run.submitted > 0) return { status: users ? "working" : "queued", state: "working" };
   // No rows is a run not shown yet (adopted, before its first snapshot), whatever an old stop says. Rows with no
@@ -355,6 +360,10 @@ export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
 
 export class Runs {
   private readonly runs = new Map<string, Run>();
+  /** Each workflow revision's workflow, by revision id, as a graph read it: a revision never changes. */
+  private readonly workflows = new Map<string, unknown>();
+  /** Each workflow run's last graph read whole: what a poll that met a busy store answers, marked stale. */
+  private readonly graphs = new Map<string, object>();
   private readonly adopting = new Map<string, Promise<Run>>();
   private readonly clock = new ChangeClock();
   private readonly cli = fileURLToPath(new URL("./cli.js", import.meta.resolve("@parcha/pi-durable-disk")));
@@ -966,7 +975,10 @@ export class Runs {
   private async readDecisionCost(run: Run): Promise<void> {
     const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
     const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
-    if (receipts.length) run.decisionCost = receipts.every((cost) => typeof cost === "number") ? (receipts as number[]).reduce((a, b) => a + b, 0) : null;
+    // Its `llm` calls' completions are paid as its decisions are, outside its model nodes' rows: from the node log.
+    const completions = (await readNodeLog(run.dir)).flatMap((line) => (line.t === "effect.end" && line.tool === "llm" && line.status === "done" ? [isObject(line.output) && typeof line.output.cost_usd === "number" ? line.output.cost_usd : null] : []));
+    const paid = [...receipts, ...completions];
+    if (paid.length) run.decisionCost = paid.every((cost) => typeof cost === "number") ? (paid as number[]).reduce((a, b) => a + b, 0) : null;
   }
 
   /** Ends the run in the agent store, once: how it ended, its cost and a line for the list. A store held by another
@@ -1227,6 +1239,49 @@ export class Runs {
       this.terminate(run);
     } else await this.settle(run, null, false);
     return true;
+  }
+
+  /** Pause a workflow run (`paused` true) or resume it: the mark in its directory, which its process reads before each
+   *  node starts. A run that has ended is not continuable. */
+  async pause(run: Run, paused: boolean): Promise<{ run_id: string; paused: boolean; status: Status }> {
+    if (run.kind !== "workflow") throw unsupported("runs.pause", "Only a workflow run pauses here: an agentic run's turn is stopped with POST /runs/{id}/stop.");
+    if (TERMINAL.has(statusOf(run).status) || run.cancel) throw this.finished(run);
+    const mark = join(run.dir, RUN_PAUSED);
+    if (paused) await writeWhole(mark, `${new Date().toISOString()}\n`);
+    else await rm(mark, { force: true });
+    this.mark(run);
+    return { run_id: run.id, paused, status: statusOf(run).status };
+  }
+
+  /** A workflow run's graph as it stands (graph-view.ts), live while it runs. */
+  async graph(run: Run) {
+    if (run.kind !== "workflow") throw new ApiError("not_found", `the run ${run.id} is an agentic run; only a workflow run has a graph`);
+    // A revision never changes: read once, waiting out a busy store as a run's end does, never failing a poll on it.
+    let workflow = this.workflows.get(run.revision);
+    if (workflow === undefined) {
+      const revision = (await whenFree(() => this.store.readRevision(run.revision), this.busyDelays(), this.onBusy(run.id, "the agent store"))) as Extract<Revision, { kind: "workflow" }>;
+      this.workflows.set(run.revision, (workflow = revision.body.workflow));
+    }
+    // The run's status as this server holds it, with no read of the agent store, which the run's process may be writing.
+    const { status } = statusOf(run);
+    const ended = TERMINAL.has(status);
+    const { runGraph } = await import("./graph-view.js");
+    const given = {
+      run: { id: run.id, agent: run.agentId, revision: run.revision, status, paused: status === "paused", startedAt: run.meta.created_at, endedAt: ended ? (run.endedAt ?? run.updatedAt) : null },
+      ended, workflow, storeFile: this.storeFile(run), root: run.dir, input: run.meta.input ?? {}, modelCost: costOf(run.rows),
+    };
+    // A poll never answers home_busy: a store still held answers the live view, or the last whole one, marked stale.
+    try {
+      const view = await runGraph(given);
+      this.graphs.set(run.id, view);
+      return { ...view, stale: false };
+    } catch (error) {
+      if (!storeBusy(error)) throw error;
+      warn(run.id, "its store is busy; the graph answers its live view, stale");
+      const held = this.graphs.get(run.id);
+      if (held) return { ...held, run: given.run, stale: true };
+      return { ...(await runGraph({ ...given, liveOnly: true })), stale: true };
+    }
   }
 
   /** How long a run's process gets after SIGTERM before SIGKILL: its drain and a second to exit. */

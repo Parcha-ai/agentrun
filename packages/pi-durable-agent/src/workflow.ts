@@ -37,24 +37,47 @@ export async function checkWorkflowBody(body: unknown): Promise<void> {
   if (!isRecord(body) || !isRecord(body.workflow)) throw invalid("a workflow revision's body must be an object holding its workflow as an object");
   const { tools = [] } = body;
   if (!Array.isArray(tools) || !tools.every((tool) => typeof tool === "string")) throw invalid("a workflow revision's tools must be a list of tool names");
-  const workflow = body.workflow as Workflow;
+  const { issues } = await workflowIssues(body.workflow, tools);
+  const issue = issues[0];
+  if (!issue) return;
+  // Every issue rides on the refusal, each with its message, for a caller that shows them by path.
+  const message = issue.code === "TOOL_NOT_LISTED" ? `the call node at ${issue.path} uses a tool the revision does not list`
+    : issue.code === "DUPLICATE_LABEL" ? "the workflow names two nodes with one label, and the durable runner needs each label once"
+    : issue.code.startsWith("DURABLE_") ? `the durable runner refuses the workflow before any step: ${issue.code.slice("DURABLE_".length)}`
+    : `the workflow is not valid at ${issue.path || "its root"}: ${issue.code}`;
+  throw Object.assign(invalid(message), { issues });
+}
+
+/** One thing wrong with a workflow, at its JSON Pointer path (empty for its root). */
+export type WorkflowIssue = { path: string; code: string; message: string };
+
+/**
+ * Every issue a save of `workflow` as a workflow revision listing `tools` would refuse, and the DSL's warnings: the DSL's
+ * structural validation (code not run, no input), a call node `via: "tool"` whose tool is not in `tools`
+ * (`TOOL_NOT_LISTED`; `tools` undefined lists every tool), and what the durable runner refuses before any step (only
+ * once the DSL found nothing). It writes nothing.
+ */
+export async function workflowIssues(workflow: unknown, tools?: readonly string[]): Promise<{ issues: WorkflowIssue[]; warnings: string[] }> {
+  if (!isRecord(workflow)) return { issues: [{ path: "", code: "NODE_FIELD_INVALID", message: "the workflow must be an object" }], warnings: [] };
   const { inspectWorkflow, validateWorkflow } = await import("@parcha/agentrun-dsl");
-  const checked = validateWorkflow(workflow, { executeCode: false });
-  if (!checked.ok) {
-    const issue = checked.issues[0];
-    throw invalid(`the workflow is not valid at ${issue?.path || "its root"}: ${issue?.code ?? "invalid"}`);
-  }
-  for (const entry of inspectWorkflow(workflow).nodes) {
-    if (entry.kind !== "call") continue;
-    const node = entry.path.split("/").slice(1).reduce<any>((at, part) => at?.[part.replace(/~1/g, "/").replace(/~0/g, "~")], workflow);
-    if (node?.via === "tool" && !tools.includes(node.tool)) throw invalid(`the call node at ${entry.path} uses a tool the revision does not list`);
+  const checked = validateWorkflow(workflow as Workflow, { executeCode: false });
+  const issues: WorkflowIssue[] = checked.ok ? [] : checked.issues.map(({ path, code, message }) => ({ path, code, message }));
+  const warnings = [...((checked as { warnings?: string[] }).warnings ?? [])];
+  if (issues.length) return { issues, warnings };
+  if (tools) {
+    for (const entry of inspectWorkflow(workflow as Workflow).nodes) {
+      if (entry.kind !== "call") continue;
+      const node = entry.path.split("/").slice(1).reduce<any>((at, part) => at?.[part.replace(/~1/g, "/").replace(/~0/g, "~")], workflow);
+      if (node?.via === "tool" && !tools.includes(node.tool)) issues.push({ path: entry.path, code: "TOOL_NOT_LISTED", message: `call node "${node.label}" uses the tool ${node.tool}, which the revision does not list in its tools` });
+    }
   }
   // What the durable runner refuses before any step (each label once), asked of the runner itself on a memory store.
   const { memoryStore, openRecovery } = await import("@parcha/agentrun-dsl/recovery");
-  const driver = await openRecovery(memoryStore(), workflow, { key: "check" });
+  const driver = await openRecovery(memoryStore(), workflow as Workflow, { key: "check" });
   const refusal = driver.preStepRefusal;
   await driver.close();
-  if (refusal) throw invalid(refusal.kind === "duplicate_label" ? "the workflow names two nodes with one label, and the durable runner needs each label once" : `the durable runner refuses the workflow before any step: ${refusal.code}`);
+  if (refusal) issues.push(refusal.kind === "duplicate_label" ? { path: "", code: "DUPLICATE_LABEL", message: refusal.message } : { path: "", code: `DURABLE_${refusal.code}`, message: refusal.message });
+  return { issues, warnings };
 }
 
 /** How a run of a workflow revision ended, as the store's `carryBack` takes it. */

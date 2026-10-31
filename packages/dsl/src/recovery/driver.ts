@@ -1060,6 +1060,8 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       return snapshot.escalation;
     },
     escalation(): EscalationRow | undefined { return snapshot.escalation; },
+    /** The driver's frame as it stands, serialized: what a host shows of a live run while its store is held. */
+    pinJson(): string { return JSON.stringify(snapshot.pin); },
     /** How many effects the driver admitted. */
     effectCalls(): number { return journal.effects().length; },
     /** What the continuation inherited, against the escalation that admitted it: the level, the sizes of what it
