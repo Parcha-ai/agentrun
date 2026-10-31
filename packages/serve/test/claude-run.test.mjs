@@ -49,16 +49,16 @@ const field = (status, name) => new RegExp(`^${name}:\\s+(.*)$`, "m").exec(statu
 const alive = processAlive;
 
 /** serve on the fake endpoint, with the env restored after. */
-async function claudeServe(t, fake) {
+async function claudeServe(t, fake, env = {}, model = MODEL) {
   const saved = { ...process.env };
   t.after(() => {
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
   });
   delete process.env.AGENT_MODEL_BASE_URL;
-  Object.assign(process.env, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` });
+  Object.assign(process.env, { ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${model}` }, env);
   const served = await serve(t, { faux: undefined });
-  assert.equal((await served.api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${MODEL}` }))).status, 201);
+  assert.equal((await served.api("POST", "/agents", agent("claude", { harness: "claude-agent", model: `anthropic/${model}` }))).status, 201);
   return served;
 }
 
@@ -158,4 +158,62 @@ test("a claude-agent run whose process dies while a request is in flight resumes
     assert.ok(i < 20, `the dead process's CLI (pid ${cli}) is gone within 2 s`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+});
+
+/** This test's own caller, by its user-agent. */
+const PROBE_AGENT = "serve-log-test";
+/** A value no log may carry, sent as a bearer and in a query string. */
+const CANARY = `not-a-secret-${"canary"}-7b21e4`;
+
+test("a model named as OpenRouter names it (anthropic/claude-haiku-4.5, dotted), on one gateway for every harness, runs on Anthropic's own id and is priced at serve's catalog", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
+  t.after(() => fake.close());
+  // OpenRouter's name for claude-haiku-4-5: dotted, as the gateway names it, never the catalog's dashed id.
+  const { api } = await claudeServe(t, fake, { AGENT_MODEL_BASE_URL: `${fake.url}/v1` }, "claude-haiku-4.5");
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed"], { deadlineMs: 120_000 });
+  const asked = fake.messages();
+  assert.ok(asked.length > 0 && asked.every((m) => m.path === "/v1/messages" && m.model === MODEL), `Anthropic's own id, which the gateway takes: ${asked.map((m) => m.model).join(", ")}`);
+  const usage = rows.findLast((r) => r.kind === "usage")?.usage;
+  const expected = asked.reduce((sum, m) => sum + Math.ceil(JSON.stringify(m.body).length / 4) * PRICE.input + 12 * PRICE.output, 0) / 1e6;
+  assert.equal(usage?.usd, Math.round(expected * 1e6) / 1e6, "priced at Anthropic's id in the catalog, never unknown for the dotted name");
+});
+
+test("a capped run on a model named as OpenRouter names it (dotted) is held to its cap: below one request's ceiling, it is refused before anything is sent", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const fake = await fakeAnthropic({ reply: () => ({ text: "Claude answered." }) });
+  t.after(() => fake.close());
+  const { api } = await claudeServe(t, fake, {}, "claude-haiku-4.5");
+  // claude-haiku-4-5's output ceiling at $5 a million is well past a tenth of a cent.
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." }, max_cost_usd: 0.001 });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["failed"], { deadlineMs: 120_000 });
+  const ended = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.deepEqual([ended.status, ended.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(ended));
+  assert.equal(fake.messages().length, 0, "nothing reached the endpoint");
+});
+
+test("a claude-agent run's model proxy reports a refusal in the run's log: one harness line, with no key in it, neither the one sent nor serve's own", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {
+  const { fake, release } = await heldFake(t);
+  const { api, data } = await claudeServe(t, fake);
+  const run = await api("POST", "/agents/claude/runs", { input: { content: "Say what you did." } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const runId = run.body.run_id;
+  await untilRequest(fake);
+  // The session's proxy, as the CLI was told it.
+  const cli = await claudeProcess();
+  assert.ok(cli, "the Claude CLI runs, under this test");
+  const environ = (await readFile(`/proc/${cli}/environ`, "utf8")).split("\0");
+  const base = environ.find((line) => line.startsWith("ANTHROPIC_BASE_URL="))?.slice("ANTHROPIC_BASE_URL=".length);
+  assert.ok(base, "the CLI is told the session's proxy");
+  const refused = await fetch(`${new URL(base).origin}/?key=${CANARY}`, { headers: { "user-agent": PROBE_AGENT, authorization: `Bearer ${CANARY}`, "x-api-key": CANARY } });
+  assert.equal(refused.status, 401, "a caller without the session's key is refused");
+  release();
+  await follow(api, runId, ["completed"], { deadlineMs: 120_000 });
+  const log = await readFile(join(data, "runs", runId, "process.log"), "utf8");
+  const lines = log.split("\n").filter(Boolean).map((line) => { try { return JSON.parse(line); } catch { return { line }; } });
+  // Only this test's own request: another local process may call any loopback port, and is refused (and said) too.
+  const said = lines.filter((l) => l.event === "harness" && /^model proxy \(.+\): refused$/.test(l.message ?? "") && l.userAgent === PROBE_AGENT);
+  assert.deepEqual(said.map((l) => [l.harness, l.status, l.method, l.path]), [["claude-agent", 401, "GET", "/"]], `the refusal, once, in the run's log: ${log}`);
+  for (const secret of [CANARY, KEY]) assert.ok(!log.includes(secret), `${secret} is not in the run's log`);
 });

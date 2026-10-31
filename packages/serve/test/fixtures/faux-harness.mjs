@@ -10,6 +10,8 @@ export function script(spec) {
   // A read of a link out of the workspace, which the test plants while the turn holds; a crash then resumes the turn.
   const link = /Read the link after (\S+)\./.exec(text)?.[1];
   if (link) return [{ call: "write", args: { path: "first.txt", content: "x" }, usd: 0.001 }, ...(existsSync(link) ? [] : [{ hang: true }]), { call: "read", args: { path: "out.txt" }, usd: 0.001 }, { say: "Tried.", usd: 0.001 }];
+  const page = /Fetch (\S+) and say its title\./.exec(text)?.[1];
+  if (page) return [{ call: "fetch_page", args: { url: page }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   if (/Say your thinking\./.test(text)) return [{ say: `Thinking ${spec.thinking}.`, usd: 0.001 }];
   if (/Price unknown\./.test(text)) return [{ say: "Priced unknown.", usd: null }];
   // A chat whose second turn has a request of unknown price.

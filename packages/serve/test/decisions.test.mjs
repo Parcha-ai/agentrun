@@ -16,8 +16,8 @@ import { CANARY } from "./fixtures/faux-jev.mjs";
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_COST"];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-/** The descriptor a run's process is handed the key on: the first one after its stdio. */
-const KEY_FD = "3";
+/** The descriptor a run's process is handed the key on: the first one after its stdio and its secrets pipe. */
+const KEY_FD = "4";
 /** The descriptor `environ` names for the key, without printing the rest of it. */
 const keyFdIn = (environ) => /(?:^|\0)AGENTRUN_SERVE_DECISION_KEY_FD=([^\0]*)/.exec(environ)?.[1];
 /** Whether `pid`'s descriptor `fd` is a Unix socket, as the handed one is (one end of a socket pair). A run's process
@@ -98,7 +98,7 @@ test("the decision key never reaches a run's tools, model or programs: not in it
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
   assert.equal(environ.includes(CANARY), false, "the run's process environment holds no copy of the key");
-  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio");
+  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio and secrets");
   assert.equal(await handedSocket(pid, KEY_FD), false, "and closed it once read");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);

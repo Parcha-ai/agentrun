@@ -1,0 +1,190 @@
+// A box's record is on disk before the box goes on. `ahead` writes it whole and syncs the file and its directory before
+// it returns, with no await (the box's start calls it, then spawns); `started` does the same before it resolves. A record
+// that names no writer is refused: nothing could ever clear it safely.
+import assert from "node:assert/strict";
+import { readlinkSync } from "node:fs";
+import { mkdtemp, open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { join } from "node:path";
+import { test } from "node:test";
+import { BOX_RECORD, boxRecorder } from "../dist/box/record.js";
+import { writeDurable, writeDurableSync } from "../dist/files.js";
+
+const linux = { skip: process.platform !== "linux" && "reads descriptors from /proc" };
+const WRITER = { pid: 4100, startTime: "123456" };
+
+async function scratch(t) {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "agentrun-box-record-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+/** Every sync while `fn` runs, sync or async: the path its descriptor names, and what `path` held at that moment. */
+async function syncs(t, dir, path, fn) {
+  const fs = createRequire(import.meta.url)("node:fs");
+  const probe = await open(join(dir, ".probe"), "w");
+  const FileHandle = Object.getPrototypeOf(probe);
+  await probe.close();
+  const seen = [];
+  const at = (fd) => ({ synced: readlinkSync(`/proc/self/fd/${fd}`), target: (() => { try { return fs.readFileSync(path, "utf8"); } catch { return null; } })() });
+  const realSync = FileHandle.sync;
+  const realFsync = fs.fsyncSync;
+  FileHandle.sync = async function () {
+    seen.push(at(this.fd));
+    return realSync.call(this);
+  };
+  fs.fsyncSync = (fd) => (seen.push(at(fd)), realFsync(fd));
+  syncBuiltinESMExports();
+  const restore = () => {
+    FileHandle.sync = realSync;
+    fs.fsyncSync = realFsync;
+    syncBuiltinESMExports();
+  };
+  t.after(restore);
+  try {
+    await fn();
+  } finally {
+    restore();
+  }
+  return seen;
+}
+
+test("writeDurableSync: synced in its temporary file, renamed into place, its directory synced, all before it returns", linux, async (t) => {
+  const dir = await scratch(t);
+  const path = join(dir, "box.json");
+  const seen = await syncs(t, dir, path, () => writeDurableSync(path, "new\n"));
+  assert.deepEqual(seen, [{ synced: `${path}.tmp`, target: null }, { synced: dir, target: "new\n" }]);
+});
+
+test("writeDurable: the same, before its promise resolves", linux, async (t) => {
+  const dir = await scratch(t);
+  const path = join(dir, "box.json");
+  const seen = await syncs(t, dir, path, () => writeDurable(path, "new\n"));
+  assert.equal(seen.length, 2, JSON.stringify(seen));
+  assert.ok(seen[0].synced.startsWith(`${path}.${process.pid}.`) && seen[0].synced.endsWith(".tmp"), `its own temporary file beside it: ${seen[0].synced}`);
+  assert.deepEqual(seen, [{ synced: seen[0].synced, target: null }, { synced: dir, target: "new\n" }]);
+});
+
+test("writeDurable: two writes of one file at once both land whole, each through its own temporary file, none left", async (t) => {
+  const dir = await scratch(t);
+  const path = join(dir, "box.json");
+  for (let i = 0; i < 50; i++) {
+    const a = `${JSON.stringify({ id: "a", pad: "a".repeat(64 * 1024) })}\n`;
+    const b = `${JSON.stringify({ id: "b", pad: "b".repeat(64 * 1024) })}\n`;
+    const results = await Promise.allSettled([writeDurable(path, a), writeDurable(path, b)]);
+    assert.deepEqual(results.map((r) => r.status), ["fulfilled", "fulfilled"], `both writes land (round ${i}): ${results.map((r) => r.reason?.message ?? "").join(" | ")}`);
+    const text = await readFile(path, "utf8");
+    assert.ok(text === a || text === b, `the file is one write, whole (round ${i})`);
+  }
+  assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), [], "no temporary file is left");
+});
+
+test("ahead is synchronous and durable: the record is on disk, file and directory synced, when it returns, with no await", linux, async (t) => {
+  const dir = await scratch(t);
+  const path = join(dir, BOX_RECORD);
+  const recorder = boxRecorder(dir);
+  let returned;
+  const seen = await syncs(t, dir, path, () => {
+    returned = recorder.ahead({ id: "box-1", cgroup: "/sys/fs/cgroup/agentrun/run-1", writer: WRITER });
+    // No await between ahead and what a start does next (the spawn): the record must already be there.
+    assert.deepEqual(JSON.parse(createRequire(import.meta.url)("node:fs").readFileSync(path, "utf8")), { id: "box-1", cgroup: "/sys/fs/cgroup/agentrun/run-1", writer: WRITER });
+  });
+  assert.equal(returned, undefined, "never a promise");
+  assert.deepEqual(seen.map((s) => s.synced), [`${path}.tmp`, dir]);
+});
+
+test("started replaces the record durably before it resolves", linux, async (t) => {
+  const dir = await scratch(t);
+  const path = join(dir, BOX_RECORD);
+  const recorder = boxRecorder(dir);
+  recorder.ahead({ id: "box-1", writer: WRITER });
+  const done = { id: "box-1", pid: 4242, startTime: "999", pidns: "pid:[4026532000]", writer: WRITER };
+  const seen = await syncs(t, dir, path, () => recorder.started(done));
+  assert.ok(seen[0]?.synced.startsWith(`${path}.${process.pid}.`) && seen[0].synced.endsWith(".tmp"), `its own temporary file beside it: ${seen[0]?.synced}`);
+  assert.deepEqual(seen.map((s) => s.synced), [seen[0].synced, dir]);
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), done);
+});
+
+test("a record that arrives without its writer is refused, named, and nothing is written", async (t) => {
+  const dir = await scratch(t);
+  const recorder = boxRecorder(dir);
+  assert.throws(() => recorder.ahead({ id: "box-1" }), (error) => error.code === "box_record_failed" && /^box_record_failed: /.test(error.message));
+  await assert.rejects(recorder.started({ id: "box-1", pid: 1, writer: { pid: 1, startTime: "" } }), (error) => error.code === "box_record_failed");
+  await assert.rejects(readFile(join(dir, BOX_RECORD)), { code: "ENOENT" });
+});
+
+test("a box record is the server's alone: 0600, written by either form", async (t) => {
+  // Under a permissive umask, so the mode seen is the one the write asks for, not what the umask leaves of it.
+  const umask = process.umask(0o022);
+  t.after(() => process.umask(umask));
+  const dir = await scratch(t);
+  const recorder = boxRecorder(dir);
+  const path = join(dir, BOX_RECORD);
+  recorder.ahead({ id: "box-1", writer: WRITER });
+  assert.equal((await stat(path)).mode & 0o777, 0o600, "ahead");
+  await rm(path);
+  await recorder.started({ id: "box-1", pid: 4242, writer: WRITER });
+  assert.equal((await stat(path)).mode & 0o777, 0o600, "started");
+  writeDurableSync(join(dir, "plain"), "x");
+  await writeDurable(join(dir, "plain-async"), "x");
+  assert.deepEqual([(await stat(join(dir, "plain"))).mode & 0o777, (await stat(join(dir, "plain-async"))).mode & 0o777], [0o600, 0o600], "the default mode of both");
+});
+
+/** writeSync and FileHandle.write replaced while `fn` runs: each call writes what `plan(call, length)` returns of what
+ *  it was asked (0 is a write that makes no progress, as on a full disk). */
+async function shortWrites(t, plan, fn) {
+  const fs = createRequire(import.meta.url)("node:fs");
+  const probe = await open(join(await scratch(t), ".probe"), "w");
+  const FileHandle = Object.getPrototypeOf(probe);
+  await probe.close();
+  const realSync = fs.writeSync;
+  const realWrite = FileHandle.write;
+  let syncCalls = 0;
+  let asyncCalls = 0;
+  fs.writeSync = (fd, buffer, offset, length, ...rest) => {
+    const n = plan(syncCalls++, length);
+    return n === 0 ? 0 : realSync(fd, buffer, offset, n, ...rest);
+  };
+  FileHandle.write = async function (buffer, offset, length, ...rest) {
+    const n = plan(asyncCalls++, length);
+    return n === 0 ? { bytesWritten: 0, buffer } : realWrite.call(this, buffer, offset, n, ...rest);
+  };
+  syncBuiltinESMExports();
+  const restore = () => {
+    fs.writeSync = realSync;
+    FileHandle.write = realWrite;
+    syncBuiltinESMExports();
+  };
+  t.after(restore);
+  try {
+    return await fn();
+  } finally {
+    restore();
+  }
+}
+
+test("a record that cannot be written whole (a short write, then none) is refused, named, with nothing renamed into place", async (t) => {
+  const dir = await scratch(t);
+  const recorder = boxRecorder(dir);
+  const path = join(dir, BOX_RECORD);
+  const halfThenNothing = (call, length) => (call === 0 ? Math.ceil(length / 2) : 0);
+  await shortWrites(t, halfThenNothing, () => assert.throws(() => recorder.ahead({ id: "box-1", writer: WRITER }), (error) => error.code === "box_record_failed" && /^box_record_failed: /.test(error.message)));
+  await assert.rejects(readFile(path), { code: "ENOENT" }, "ahead renamed nothing");
+  await assert.rejects(readFile(`${path}.tmp`), { code: "ENOENT" }, "and left no part behind");
+  await shortWrites(t, halfThenNothing, () => assert.rejects(recorder.started({ id: "box-1", pid: 4242, writer: WRITER }), (error) => error.code === "box_record_failed"));
+  await assert.rejects(readFile(path), { code: "ENOENT" }, "started renamed nothing");
+  assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), [], "and neither left a temporary file behind");
+});
+
+test("a record written in pieces (short writes that keep going) is written whole", async (t) => {
+  const dir = await scratch(t);
+  const recorder = boxRecorder(dir);
+  const path = join(dir, BOX_RECORD);
+  const halves = (call, length) => Math.max(1, Math.ceil(length / 2));
+  const record = { id: "box-1", cgroup: "/sys/fs/cgroup/agentrun/run-1", writer: WRITER };
+  await shortWrites(t, halves, () => recorder.ahead(record));
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), record);
+  const done = { ...record, pid: 4242, startTime: "9", pidns: "pid:[4026532000]" };
+  await shortWrites(t, halves, () => recorder.started(done));
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), done);
+});

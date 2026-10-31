@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents",
+    "note": "no credentials"
+  },
+  "status": 401,
+  "body": {
+    "error": {
+      "code": "unauthenticated",
+      "message": "this route needs Authorization: Bearer <the token in the data directory>",
+      "retryable": false,
+      "request_id": "req_a84a4471aa18f05c"
+    }
+  }
+}

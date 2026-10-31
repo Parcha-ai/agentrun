@@ -1,7 +1,6 @@
 // The pinned Codex binary, through the adapter, with a scripted model that tries every way to run something: a classic
-// model calls Codex's built-ins by name. Nothing may run, write or spawn; the only tool that runs is the host's. A
-// code-mode model is refused (this adapter runs classic function tools only). No network: the provider is a scripted
-// fetch behind the session's proxy.
+// model calls Codex's built-ins by name. Nothing may run, write or spawn; the only tool that runs is the host's. No
+// network: the provider is a scripted fetch behind the session's proxy.
 //
 // Without the binary this skips; with AGENTRUN_CODEX_REQUIRE_BINARY=1 (CI) a missing or different binary fails.
 import assert from 'node:assert/strict';
@@ -83,17 +82,4 @@ test("a classic model's every built-in is refused by Codex itself; only the host
   assert.deepEqual([r.canaries, r.work], [[], []], 'nothing was written');
   assert.deepEqual(r.started.map((e) => e.name), ['submit']);
   for (const body of r.seen) assert.deepEqual(body.tools.map((t) => t.name), ['submit'], "the model is offered the host's tools only");
-});
-
-test("a code-mode model is refused before any request leaves: this adapter runs classic function tools only", { skip, timeout: 120_000 }, async () => {
-  const dir = mkdtempSync(join(ROOT, 'run-'));
-  const seen = [];
-  const fetch = async (_url, init) => { seen.push(JSON.parse(init.body)); throw new Error('no request should leave'); };
-  const codex = codexAdapter({ model: 'gpt-5.6-luna', provider: { origin: 'https://provider.invalid', credential: () => 'provider-secret' }, sessionsDir: join(dir, 'sessions'), fetch });
-  const runNode = createHarnessRunner(codex, { store: memorySessionStore(), timeoutMs: 90_000 });
-  await assert.rejects(
-    runNode({ kind: 'agent', label: 'probe', system: ['Answer.'], user: 'Say ok.', schema: { type: 'object', properties: { answer: { type: 'string' } }, required: ['answer'] }, tools: [] }),
-    /runs tools in code mode, which this adapter does not support yet/,
-  );
-  assert.deepEqual(seen, [], 'nothing reached the provider');
 });

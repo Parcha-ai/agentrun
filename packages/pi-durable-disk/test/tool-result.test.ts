@@ -9,7 +9,7 @@ import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { lifecycleApp, type Counters } from "./_lifecycle.ts";
 
 test("a lifecycle tool's result reaches the model with its text, not empty", { timeout: 30_000 }, async () => {
-  const counters: Counters = { flaky: 0, safe: 0, unsafe: 0, requests: 0, gate: 0 };
+  const counters: Counters = { flaky: 0, safe: 0, unsafe: 0, requests: 0, gate: 0, erroredAt: 0 };
   const toolResults: string[] = [];
   const app = lifecycleApp(counters, { gate: Promise.resolve(), jobs: false, toolResults });
   const harness = await Harness.open(new MemoryStorage(), { models: app.models, registry: app.registry, settings: app.settings }, ctx);

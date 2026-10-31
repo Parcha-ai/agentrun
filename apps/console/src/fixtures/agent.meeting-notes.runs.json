@@ -1,0 +1,187 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/meeting-notes/runs"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "runs": [
+      {
+        "run_id": "01a18400-e68c-78e2-8dfe-5c45ed442cb2",
+        "agent_id": "meeting-notes",
+        "agent_version": 1,
+        "revision": "de808d53a519354cd685e0280867779a8b282f7161ea8f9ac08da85a02a46655",
+        "kind": "agentic",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Summarize the garbled meeting recording from the call with bad audio.",
+        "created_at": "2026-10-28T19:33:34.395Z",
+        "ended_at": "2026-10-28T19:33:36.777Z",
+        "error": {
+          "code": "run_failed",
+          "message": "The model's response was cut off and could not be read (sample failure).",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0.000351,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-dfa2-7cbd-8443-2751c510828c",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the design workshop whiteboard photos.",
+        "created_at": "2026-10-28T19:33:33.479Z",
+        "ended_at": "2026-10-28T19:33:37.276Z",
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-df8e-7a80-bf2a-a38bdc9bbb84",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "input_required",
+        "state": "idle",
+        "title": "Summarize the design workshop notes from the offsite.",
+        "created_at": "2026-10-28T19:33:33.066Z",
+        "ended_at": null,
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-d741-7860-b234-1b65692d0f7b",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "cancelled",
+        "state": "idle",
+        "title": "Summarize the design workshop recording from Tuesday.",
+        "created_at": "2026-10-28T19:33:32.338Z",
+        "ended_at": "2026-10-28T19:33:35.235Z",
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-d1e5-7756-8d33-056d03807248",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "working",
+        "state": "working",
+        "title": "Summarize the design workshop transcript (all four hours of it).",
+        "created_at": "2026-10-28T19:33:32.153Z",
+        "ended_at": null,
+        "error": null,
+        "cost": {
+          "usd": null,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-d1e3-7858-aa6f-94808acad514",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the launch meeting: the waitlist email is due Friday and the usage ch…",
+        "created_at": "2026-10-28T19:33:32.014Z",
+        "ended_at": "2026-10-28T19:33:34.818Z",
+        "error": null,
+        "cost": {
+          "usd": 0.002141,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-cbdf-776f-bab7-20536bb30c38",
+        "agent_id": "meeting-notes",
+        "agent_version": 2,
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the pricing meeting: the free tier stays, the FAQ needs a draft, and …",
+        "created_at": "2026-10-28T19:33:30.035Z",
+        "ended_at": "2026-10-28T19:33:33.243Z",
+        "error": null,
+        "cost": {
+          "usd": 0.002161,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-cbdb-7bca-9dee-ac3d186b5185",
+        "agent_id": "meeting-notes",
+        "agent_version": 1,
+        "revision": "de808d53a519354cd685e0280867779a8b282f7161ea8f9ac08da85a02a46655",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Summarize the weekly product meeting: we agreed to ship the beta on the 3rd and…",
+        "created_at": "2026-10-28T19:33:29.001Z",
+        "ended_at": "2026-10-28T19:33:33.068Z",
+        "error": null,
+        "cost": {
+          "usd": 0.00212,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      }
+    ],
+    "next_cursor": null
+  }
+}

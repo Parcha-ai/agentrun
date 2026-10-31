@@ -1,6 +1,6 @@
 // Copyright 2026 Vercel Inc. Licensed under the Apache License, Version 2.0; see LICENSE in this package.
 // From github.com/vercel-labs/durable-harness, packages/harness-codex/src/harness.ts at ea8aa4060c (UPSTREAM.json records its blob and sha256).
-// Changed by Parcha, 2026-10-27: imports from AgentRun's host layer (a local machine instead of a sandbox VM); the stand-in's guard; message prefixes; comments.
+// Changed by Parcha, imports rewritten for AgentRun; patches: 002-standin-guard, 004-names, 006-comments, 007-code-mode-nested, 008-recovery-note-developer
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { dirname } from 'node:path';
 import { type DriveContext, type EffectRecord, type Harness, type HostTool, type ReplayPolicy, type SessionState, type Submission, Unavailable, UNAVAILABLE_STEP } from './host/kernel.js';
@@ -33,6 +33,7 @@ import {
 } from './host/process.js';
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
+import { codeMode } from './code-mode.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
   callIdOf,
@@ -50,8 +51,6 @@ import {
 
 /**
  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
- * --stdio` (Codex's JSON-RPC protocol for IDEs) **on the session's own
- * machine**, never on the machine that drives the session
  * (docs/workspaces.md §1 decision 2, §5.6). Every drive acquires the
  * session's VM through the sandbox tier (`attachInDrive` with the session
  * factory's acquire, `machine.acquire`), and refuses a machine the factory
@@ -141,7 +140,6 @@ export interface CodexHarnessOptions {
    * §5.5).
    */
   sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
-  /** The provider's model id. Default `openai/gpt-5.4-mini`. */
   model?: string;
   /** Developer instructions for the thread (`developerInstructions`). */
   instructions?: string;
@@ -149,7 +147,6 @@ export interface CodexHarnessOptions {
   baseInstructions?: string;
   /** Reasoning effort per turn. Default Codex's. */
   effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-  /** The provider credential, read per request by the model proxy. Default `gatewayCredential` (the proxy's configured key). */
   credential?: () => Promise<string>;
   /** The Gateway's base URL. Default `gatewayUrl()`. */
   gatewayUrl?: string;
@@ -171,9 +168,6 @@ export interface CodexHarnessOptions {
    */
   machine?: CodexMachine;
   /**
-   * The stand-in's seam: the command that speaks app-server's protocol
-   * instead of the pinned `codex`. Refused outside a test run
-   * (`AGENTRUN_CODEX_STANDIN=1` under a test runner, not in production).
    */
   test?: { command: string; args?: string[] };
 }
@@ -284,7 +278,6 @@ export class RolloutTailError extends Error {
   }
 }
 
-/** The stand-in's guard (`test`): only a test run with AGENTRUN_CODEX_STANDIN=1 may speak app-server's protocol with another command. */
 function testGuard(): void {
   if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
   if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-codex: a stand-in app-server runs only under a test runner');
@@ -388,7 +381,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
 
   return {
     name: options.name ?? 'codex',
-    // Each model request is reported by the model proxy (`ModelSteps.request`).
     modelCalls: 'self',
     async drive(ctx: DriveContext) {
       // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
@@ -625,6 +617,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         }
         mirror();
       };
+      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT });
       /**
        * The hard barrier before a `never` call (§5.6): its `function_call`
        * line in the log, flushed, before its intent. Codex's rollout writer is
@@ -891,7 +884,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
 
       rpc = new AppServer(child, {
         onNotification,
-        onRequest,
+        onRequest: code.request(onRequest),
         onNoise: (line) => log('codex: stdout noise', { line: line.slice(0, 200) }),
       });
       const died = rpc.closed.then((err) => {
@@ -992,6 +985,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         return { status, ...(error ? { error } : {}) };
       };
       const endTurn = async (outcome: TurnOutcome) => {
+        code.turnEnded();
         journal.message({ type: 'turn', ...outcome });
         await guard(journal.flush());
         ledger.turnEnded();
@@ -1066,6 +1060,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         if (resume && summary.dangling.length > 0) {
           // Calls the rollout has no output for get theirs from the log.
           const items = summary.dangling.map((c) => ({ type: 'function_call_output', call_id: c.callId, output: repairOutput(ctx.state(), c) }));
+          await code.recoverItems(items, summary.dangling, lines, note.turn.since);
           await guard(rpc.request('thread/inject_items', { threadId, items }));
           await guard(synced());
         }
@@ -1087,6 +1082,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
           if (owed.length) {
             text += `\n\nMessages that may not have reached you before the interruption:\n${owed.map((s) => quote(s.text ?? '')).join('\n')}`;
           }
+          text = await code.resumeTurn(note, owed);
           const n = transcriptOf(ctx.state()).filter((r) => r.data.type === 'message' && r.data.role === 'user').length;
           journal.message({ type: 'message', role: 'user', text: notes ? `${notes}\n\n${text}` : text, synthetic: 'recovery' } satisfies TranscriptEntry);
           await placeSubmissions(ctx, note.pending);

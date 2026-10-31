@@ -1,0 +1,38 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/runs/01a18400-c634-739d-b555-94046b6f0dbc"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "run_id": "01a18400-c634-739d-b555-94046b6f0dbc",
+    "agent_id": "release-notes",
+    "agent_version": 2,
+    "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+    "kind": "agentic",
+    "sha": null,
+    "status": "failed",
+    "state": "idle",
+    "title": "Write the release notes for 2.5.0 (expect a provider outage) from: #440 audit l…",
+    "created_at": "2026-10-28T19:33:26.784Z",
+    "updated_at": "2026-10-28T21:19:54.733Z",
+    "ended_at": "2026-10-28T19:33:44.244Z",
+    "result": null,
+    "error": {
+      "code": "run_failed",
+      "message": "The model provider returned 503 Service Unavailable (sample failure).",
+      "retryable": false
+    },
+    "cost": {
+      "usd": 0.003664,
+      "basis": "estimate",
+      "charge_state": null,
+      "cap_usd": null
+    },
+    "archived_at": null,
+    "poll_after_ms": 0
+  }
+}
