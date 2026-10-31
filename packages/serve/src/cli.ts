@@ -11,6 +11,7 @@ import { DEFAULT_PORT, type Serve, startServe } from "./server.js";
 
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--faux MODULE] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D]
        agentrun-serve reset-password [--data DIR]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--all]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -34,7 +35,14 @@ end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL the first visit to the page sets the password; with it, the
 setup link this server prints carries a code. Forgot the password: \`agentrun-serve reset-password --data DIR\` where the
-data directory is (inside the container) clears it and signs every browser out, and the next visit sets a new one.`;
+data directory is (inside the container) clears it and signs every browser out, and the next visit sets a new one.
+
+\`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
+~/.codex/sessions, ~/.pi/agent/sessions) into the data directory, once: each project directory an agent, with its
+CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read but not continue. Nothing leaves this
+machine; the values of key-shaped environment variables are cut out of what is written. --dry-run lists what it would
+import; run again, it imports only what it has not. Sessions written in the last 10 minutes wait for the next import;
+--all keeps projects whose directory is gone or temporary.`;
 
 if (process.argv[2] === "reset-password") {
   let dir: string | undefined;
@@ -48,6 +56,11 @@ if (process.argv[2] === "reset-password") {
   resetPassword(target);
   console.log(`The password is cleared and every browser is signed out (${target}). The next visit to the page sets a new one.`);
   process.exit(0);
+}
+
+if (process.argv[2] === "import") {
+  const { importCommand } = await import("./import.js");
+  process.exit(await importCommand(process.argv.slice(3), USAGE));
 }
 
 let values;

@@ -322,10 +322,12 @@ stopit() {
   unlock
   if [ "$claimed" = 0 ]; then stop_wait "$tenths"; return; fi
   if alive "$pid" "$(rd ticks.$n)"; then
-    gkill TERM "$pid"
+    # Without setsid the runner leads no group: the program is what runs under it, and the runner, which waits for it,
+    # stays to show when it has ended.
+    if [ -n "$SETSID" ]; then gkill TERM "$pid"; else kill -s TERM $(descendants "$pid") 2>/dev/null; fi
     began=$(centis)
     limit=$(( tenths * 10 ))
-    while group_live "$pid" && [ $(( $(centis) - began )) -lt "$limit" ]; do
+    while program_live && [ $(( $(centis) - began )) -lt "$limit" ]; do
       sleep $STEP
     done
   fi
@@ -333,11 +335,77 @@ stopit() {
   stop_end
 }
 
+# Whether the program still runs: its group with setsid; without, its runner, which ends only after what it runs.
+program_live() {
+  if [ -n "$SETSID" ]; then group_live "$pid"; else alive "$pid" "$(rd ticks.$n)"; fi
+}
+
+# The ids of the processes under $1, by parent, each signalled with $2 first when given (STOP: none of them starts another
+# before its own children are read).
+descendants() {
+  for c in $(children_of "$1"); do
+    [ -z "$2" ] || kill -s "$2" "$c" 2>/dev/null
+    echo "$c"
+    descendants "$c" "$2"
+  done
+}
+
+# The program killed: its group with setsid; without, its runner and every process under it, each stopped first. Then it
+# returns whether all it killed is gone, within 2 s: a stop that cannot tell never reports the launch stopped.
+end_program() {
+  killed=
+  if [ -n "$SETSID" ]; then
+    if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; killed=group; fi
+  else
+    # What is killed is written down first, each process with its start: a stop that takes this one over finds it there
+    # once the runner is gone, and a process that has since taken one of the ids has another start and is never touched.
+    if alive "$pid" "$(rd ticks.$n)"; then
+      kill -s STOP "$pid" 2>/dev/null
+      list=$(for c in $pid $(descendants "$pid" STOP); do echo "$c $(started "$c")"; done)
+      printf '%s\n' "$list" > "$D/stop.killed.$$" 2>/dev/null && mv "$D/stop.killed.$$" "$D/stop.killed" 2>/dev/null
+      # A record that does not read back (a full disk, a failed mv) would leave a later stop nothing to find: what was just
+      # read is killed all the same, and the stop fails.
+      if [ "$(cat "$D/stop.killed" 2>/dev/null)" != "$list" ]; then
+        rm -f "$D/stop.killed.$$"
+        printf '%s\n' "$list" | while read -r c t; do kill -s KILL "$c" 2>/dev/null; done
+        failed="the program's processes were killed, but the stop could not record what it killed in $D/stop.killed. The stop is not done; a later stop takes it over."
+        return 1
+      fi
+    fi
+    for c in $(recorded); do kill -s KILL "$c" 2>/dev/null; done
+  fi
+  began=$(centis)
+  while [ $(( $(centis) - began )) -lt 200 ]; do
+    left=
+    if [ "$killed" = group ]; then
+      group_live "$pid" && left=" its group $pid"
+    else
+      for c in $(recorded); do left="$left $c"; done
+    fi
+    [ -n "$left" ] || return 0
+    sleep $STEP
+  done
+  failed="the program did not end:$left still there after its kill. The stop is not done; a later stop takes it over."
+  return 1
+}
+
+# The ids in stop.killed that still run with the start written beside them.
+recorded() {
+  [ -r "$D/stop.killed" ] || return 0
+  while read -r c t; do
+    if pid_live "$c" && [ "$(started "$c")" = "$t" ]; then echo "$c"; fi
+  done < "$D/stop.killed"
+}
+
 # The end of a stop: what is left of the program's group killed, the launcher's processes ended, the last state. Then its
 # status, recorded under this launch's generation BEFORE done and stop.done release the name (a launch of the name that waited
 # may wipe $D at once after), and printed from memory, never read again.
 stop_end() {
-  if own_group "$pid" "$(rd ticks.$n)"; then gkill KILL "$pid"; fi
+  if ! end_program; then
+    end_launcher
+    echo "$failed"
+    exit 1
+  fi
   end_launcher
   # Nothing but this stop trims the output now: a trim lock left is a killed watchdog's, never waited out (15 s). What the
   # stop could not end is named in the log, never passed over.
@@ -779,6 +847,13 @@ const GROUP_LIVE = [
 	"  nm=\x24{line#*(}",
 	'  echo "$1 (\x24{nm%) *})"',
 	"} 2>/dev/null",
+	"# The start of process $1 (field 22 of its stat), read from $PROC; empty once it is gone.",
+	"started() {",
+	'  read -r line < "$PROC/$1/stat" || return 0',
+	"  r=\x24{line##*) }",
+	"  set -- $r",
+	'  echo "\x24{20}"',
+	"} 2>/dev/null",
 	"# Whether process $1 is left and not a zombie, read from $PROC like group_live.",
 	"pid_live() {",
 	'  read -r line < "$PROC/$1/stat" || return 1',
@@ -998,6 +1073,9 @@ export const LAUNCHER_SHELL_NAMES: readonly string[] = [
 	"kids",
 	"nm",
 	"unended",
+	"killed",
+	"list",
+	"failed",
 ];
 
 /** The one line that names the kernel's ptrace scope file: a script-level constant, which no environment can change. */

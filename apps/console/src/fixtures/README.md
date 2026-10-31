@@ -12,3 +12,8 @@ runs not yet relaunched) and one 15 seconds later (`run.working.working.*`: the 
 
 `error.definition-stale-etag` is a definition PUT with an `If-Match` that is not the current revision (412);
 `error.definition-invalid-body` is one whose body is not `{definition, skills?, note?}` (422).
+
+`write.*` are the agent writes, recorded the same way on a scratch copy of the seed: create (201), an edit with the
+current `If-Match` (200, new ETag) and one with a stale one (412), the revisions, setting an earlier revision current,
+archive and unarchive, an invalid harness (422 with its `fields`), and a run on a harness the server does not run (409
+`agent_not_runnable`).

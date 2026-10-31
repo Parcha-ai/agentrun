@@ -1,8 +1,13 @@
+import type { Agent, Definition } from "./agentForm";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
+export type FieldIssue = { field: string; reason: string; message: string };
+
 export class ClientError extends Error {
+  /** A 422's issues, by field, as the server names them. */
+  fields?: FieldIssue[];
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
@@ -16,8 +21,12 @@ export type Client = ReturnType<typeof createClient>;
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
  *  every write is same-origin JSON (the server refuses a cookie write from another origin). */
 export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), base = "/v2" }: { fetch?: typeof fetch; base?: string } = {}) {
-  /** `text`: the body as text whatever its type (a run's file is its bytes, never parsed). */
-  async function call<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
+  async function call<T>(method: string, path: string, opts: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<T> {
+    return (await callTagged<T>(method, path, opts)).body;
+  }
+  /** A request and its response's ETag (an agent's current revision, for the next If-Match). `text`: the body as text
+   *  whatever its type (a run's file is its bytes, never parsed). */
+  async function callTagged<T>(method: string, path: string, { body, headers = {}, signal, text = false }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; text?: boolean } = {}): Promise<{ body: T; etag: string | null }> {
     const res = await f(`${base}${path}`, {
       method,
       signal,
@@ -26,19 +35,39 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError } | null)?.error;
-      throw new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[] } } | null)?.error;
+      const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
+      if (e?.fields) err.fields = e.fields;
+      throw err;
     }
-    return !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
+    const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
+    return { body: out, etag: res.headers.get("etag") };
   }
+  const agent = (id: string) => `/agents/${encodeURIComponent(id)}`;
   const run = (id: string) => `/runs/${encodeURIComponent(id)}`;
   return {
     capabilities: () => call<Capabilities>("GET", "/capabilities"),
     listRuns: (limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
-    listAgents: (cursor?: string | null) => call<{ agents: { agent_id: string; definition: { name?: string; harness?: string } }[]; next_cursor: string | null }>("GET", `/agents${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    listAgentRuns: (id: string, limit = 50, cursor?: string | null) => call<{ runs: Run[]; next_cursor: string | null }>("GET", `${agent(id)}/runs?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+    listAgents: ({ archived = false, cursor }: { archived?: boolean; cursor?: string | null } = {}) => {
+      const q = new URLSearchParams();
+      if (archived) q.set("archived", "true");
+      if (cursor) q.set("cursor", cursor);
+      return call<{ agents: Agent[]; next_cursor: string | null }>("GET", `/agents${q.size ? `?${q}` : ""}`);
+    },
+    getAgent: async (id: string) => { const r = await callTagged<Agent>("GET", agent(id)); return { agent: r.body, etag: r.etag }; },
+    createAgent: (body: { definition: Definition; skills?: Record<string, string> }) => call<Agent>("POST", "/agents", { body }),
+    /** Saves a new revision. `etag` is the revision the edit was made on: the server refuses the save (412) when another
+     *  landed first. The answer's ETag is the new revision, for the next edit. */
+    updateDefinition: async (id: string, body: { definition: Partial<Definition>; note?: string; skills?: Record<string, string> }, etag: string | null) => {
+      const r = await callTagged<Agent>("PUT", `${agent(id)}/definition`, { body, headers: etag ? { "if-match": etag } : {} });
+      return { agent: r.body, etag: r.etag };
+    },
+    listRevisions: (id: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; current: boolean; note: string | null; created_at: string; kind: string; definition: Definition }[]; next_cursor: string | null }>("GET", `${agent(id)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    setCurrent: (id: string, revision: string) => call<Agent>("POST", `${agent(id)}/current`, { body: { revision } }),
+    archiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/archive`, { body: {} }),
+    unarchiveAgent: (id: string) => call<Agent>("POST", `${agent(id)}/unarchive`, { body: {} }),
     getRun: (id: string) => call<Run>("GET", run(id)),
-    /** An agent's revisions, newest first, each with its definition (`definition.harness`; none means the default, pi). */
-    listRevisions: (agentId: string, cursor?: string | null) => call<{ revisions: { revision: string; version: number; definition: { harness?: string } }[]; next_cursor: string | null }>("GET", `/agents/${encodeURIComponent(agentId)}/revisions${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     getTimeline: (id: string, { after, waitMs, signal }: { after?: number; waitMs?: number; signal?: AbortSignal } = {}) => {
       const q = new URLSearchParams();
       if (after !== undefined) q.set("after", String(after));
@@ -53,6 +82,19 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
+}
+
+/** Every item of a listing the server pages (`next_cursor`), read to its end (at most `max` pages). */
+export async function allPages<P extends { next_cursor: string | null }, T>(page: (cursor: string | null) => Promise<P>, items: (p: P) => T[], max = 100): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < max; i++) {
+    const p = await page(cursor);
+    out.push(...items(p));
+    if (!p.next_cursor) break;
+    cursor = p.next_cursor;
+  }
+  return out;
 }
 
 /** Follows a run's timeline from its cursor until the server says the timeline is final and has no more rows (or

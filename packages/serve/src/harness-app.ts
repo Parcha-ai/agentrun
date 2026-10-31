@@ -95,7 +95,7 @@ export function adapterRun(
   // The run's cap, or its cancel, refused a request: the turn ends on it, and its refusal is written as pi's is.
   let refused: string | undefined;
   const CANCELLED = "the run was cancelled: the model request was not sent";
-  const guard = (request: { spentUsd: number | null; inFlight: readonly unknown[] }) => {
+  const guard = (request: Parameters<CapGuard["beforeRequest"]>[0]) => {
     const answer = cancelled() ? { refuse: CANCELLED } : cap?.beforeRequest(request);
     if (answer) refused = answer.refuse;
     return answer;

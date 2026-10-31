@@ -1,0 +1,344 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "agents": [
+      {
+        "agent_id": "lead-scorer",
+        "definition": {
+          "id": "lead-scorer",
+          "version": 1,
+          "name": "Lead scorer",
+          "description": "Scores an inbound lead and decides the next step.",
+          "workflow": {
+            "v": 2,
+            "name": "lead-scorer",
+            "schemas": {
+              "Lead": {
+                "type": "object",
+                "required": [
+                  "company",
+                  "note"
+                ],
+                "properties": {
+                  "company": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              },
+              "Facts": {
+                "type": "object",
+                "required": [
+                  "score",
+                  "reason"
+                ],
+                "properties": {
+                  "score": {
+                    "type": "number"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              },
+              "Next": {
+                "type": "object",
+                "required": [
+                  "qualified",
+                  "next_step"
+                ],
+                "properties": {
+                  "qualified": {
+                    "type": "boolean"
+                  },
+                  "next_step": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "input": {
+              "schemaId": "Lead"
+            },
+            "output": {
+              "schemaId": "Next",
+              "path": "next"
+            },
+            "root": {
+              "node": "chain",
+              "steps": [
+                {
+                  "node": "extract",
+                  "label": "score",
+                  "instructions": "Score the lead from 0 to 100 and say why in one sentence.",
+                  "out": "Facts",
+                  "as": "facts",
+                  "tier": "fast"
+                },
+                {
+                  "node": "decide",
+                  "label": "qualify",
+                  "instructions": "Decide whether the lead is qualified, and the next step.",
+                  "out": "Next",
+                  "as": "next"
+                }
+              ]
+            }
+          },
+          "harness": "pi",
+          "skills": [],
+          "tools": []
+        },
+        "kind": "workflow",
+        "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+        "revisions": 1,
+        "source": null,
+        "skills": [],
+        "sign_ins": [],
+        "runs": {
+          "count": 3,
+          "live": 0
+        },
+        "region": "local",
+        "home_etag": "\"6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf\"",
+        "archived_at": null,
+        "created_at": "2026-10-28T19:32:57.774Z",
+        "updated_at": "2026-10-28T19:32:58.060Z"
+      },
+      {
+        "agent_id": "support-triage",
+        "definition": {
+          "id": "support-triage",
+          "version": 2,
+          "name": "Support triage",
+          "description": "Classifies a support ticket and drafts the reply.",
+          "workflow": {
+            "v": 2,
+            "name": "support-triage",
+            "schemas": {
+              "Ticket": {
+                "type": "object",
+                "required": [
+                  "subject",
+                  "body"
+                ],
+                "properties": {
+                  "subject": {
+                    "type": "string"
+                  },
+                  "body": {
+                    "type": "string"
+                  }
+                }
+              },
+              "Triage": {
+                "type": "object",
+                "required": [
+                  "category",
+                  "urgency",
+                  "summary"
+                ],
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "billing",
+                      "bug",
+                      "account",
+                      "question"
+                    ]
+                  },
+                  "urgency": {
+                    "type": "number"
+                  },
+                  "summary": {
+                    "type": "string"
+                  }
+                }
+              },
+              "Reply": {
+                "type": "object",
+                "required": [
+                  "reply"
+                ],
+                "properties": {
+                  "reply": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "input": {
+              "schemaId": "Ticket"
+            },
+            "output": {
+              "schemaId": "Reply",
+              "path": "reply"
+            },
+            "root": {
+              "node": "chain",
+              "steps": [
+                {
+                  "node": "extract",
+                  "label": "classify",
+                  "instructions": "Classify the ticket: its category, its urgency from 1 to 10, and a one-sentence summary.",
+                  "out": "Triage",
+                  "as": "triage",
+                  "tier": "fast"
+                },
+                {
+                  "node": "escalate",
+                  "label": "urgent",
+                  "when": {
+                    "predicate": "gte",
+                    "path": "triage.urgency",
+                    "n": 8
+                  },
+                  "kind": "review",
+                  "stage": "gate",
+                  "summary": "urgency 8 or more goes to the on-call person"
+                },
+                {
+                  "node": "extract",
+                  "label": "draft reply",
+                  "instructions": "Draft a short, kind reply that says what happens next.",
+                  "out": "Reply",
+                  "as": "reply"
+                }
+              ]
+            }
+          },
+          "harness": "pi",
+          "skills": [],
+          "tools": []
+        },
+        "kind": "workflow",
+        "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+        "revisions": 2,
+        "source": null,
+        "skills": [],
+        "sign_ins": [],
+        "runs": {
+          "count": 8,
+          "live": 0
+        },
+        "region": "local",
+        "home_etag": "\"f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac\"",
+        "archived_at": null,
+        "created_at": "2026-10-28T19:32:56.280Z",
+        "updated_at": "2026-10-28T19:32:57.434Z"
+      },
+      {
+        "agent_id": "meeting-notes",
+        "definition": {
+          "id": "meeting-notes",
+          "version": 2,
+          "name": "Meeting notes",
+          "description": "Summarizes a meeting transcript into decisions, action items and open questions.",
+          "instructions": "Summarize the meeting transcript in three sections: Decisions, Action items (with owners), Open questions. No preamble.",
+          "thinking": "low",
+          "harness": "pi",
+          "skills": [],
+          "tools": []
+        },
+        "kind": "agentic",
+        "revision": "a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567",
+        "revisions": 2,
+        "source": null,
+        "skills": [],
+        "sign_ins": [],
+        "runs": {
+          "count": 8,
+          "live": 1
+        },
+        "region": "local",
+        "home_etag": "\"a822d5108d7f9eaaee5ebff45203ae4a4a7f0711429c5e8795739c5c7b887567\"",
+        "archived_at": null,
+        "created_at": "2026-10-28T19:32:55.012Z",
+        "updated_at": "2026-10-28T19:32:55.746Z"
+      },
+      {
+        "agent_id": "release-notes",
+        "definition": {
+          "id": "release-notes",
+          "version": 2,
+          "name": "Release notes writer",
+          "description": "Turns a list of merged changes into release notes people can read.",
+          "instructions": "Write release notes from the merged changes the person lists: highlights first, then a table of changes by area, then fixes and upgrade notes. Draft CHANGELOG.md, fix what you got wrong, and answer with the notes.",
+          "harness": "pi",
+          "skills": [],
+          "tools": [
+            "write",
+            "edit"
+          ]
+        },
+        "kind": "agentic",
+        "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+        "revisions": 2,
+        "source": null,
+        "skills": [],
+        "sign_ins": [],
+        "runs": {
+          "count": 4,
+          "live": 0
+        },
+        "region": "local",
+        "home_etag": "\"6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c\"",
+        "archived_at": null,
+        "created_at": "2026-10-28T19:32:53.728Z",
+        "updated_at": "2026-10-28T19:32:54.620Z"
+      },
+      {
+        "agent_id": "invoice-checker",
+        "definition": {
+          "id": "invoice-checker",
+          "version": 3,
+          "name": "Invoice checker",
+          "description": "Recomputes an invoice's lines and total and reports what is off.",
+          "instructions": "Check the invoice the person pastes with the totals-rubric skill. If the currency is not stated, ask the person before you compute. Write your findings to findings.md, and answer with a table.",
+          "thinking": "high",
+          "harness": "pi",
+          "skills": [
+            "totals-rubric"
+          ],
+          "tools": [
+            "read",
+            "write",
+            "ask_person"
+          ]
+        },
+        "kind": "agentic",
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "revisions": 3,
+        "source": null,
+        "skills": [
+          {
+            "path": "totals-rubric/SKILL.md",
+            "sha256": "25ac8503a84b654516153ef09c4e718eadbfd35b12e80d8b859b1709ab3d48c4",
+            "size_bytes": 267
+          }
+        ],
+        "sign_ins": [],
+        "runs": {
+          "count": 10,
+          "live": 0
+        },
+        "region": "local",
+        "home_etag": "\"3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe\"",
+        "archived_at": null,
+        "created_at": "2026-10-28T19:32:52.220Z",
+        "updated_at": "2026-10-28T19:32:53.408Z"
+      }
+    ],
+    "next_cursor": null
+  }
+}
