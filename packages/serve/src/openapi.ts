@@ -157,6 +157,26 @@ let vendored: Json | undefined;
  *  the addition that made it: `harness/1` is the one a later contract version would take on; `model/1` and `serve/1`
  *  are what this server added before it marked them. */
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  Run: {
+    imported_from: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      required: ["source", "session"],
+      properties: { source: { enum: ["claude-code", "codex", "pi"] }, session: { type: "string", description: "The session's id in its source." } },
+      description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
+      "x-agentrun-serve": "imported/1",
+    },
+  },
+  RunSummary: {
+    imported_from: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      required: ["source", "session"],
+      properties: { source: { enum: ["claude-code", "codex", "pi"] }, session: { type: "string", description: "The session's id in its source." } },
+      description: "Imported history (`agentrun-serve import`): where the run was run, and its session there; else null. An imported run takes no message (`409 not_continuable`, `details.reason` `imported`); a stop or a cancel answers as for an ended run.",
+      "x-agentrun-serve": "imported/1",
+    },
+  },
   RunError: {
     details: {
       type: "object", additionalProperties: false, required: ["reason"],
