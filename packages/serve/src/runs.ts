@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, openSync, rmSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
@@ -20,13 +21,14 @@ import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWho
 import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
+import { DECISION_KEY_FD_ENV, decisionKeysOf, FAUX_JEV_ENV, FAUX_PARALLEL_ENV } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
 import { EFFORT_ENV, FAUX_ENV, withoutFaux } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
-import { handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "./secrets.js";
+import { DECISION_KEYS, handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -47,8 +49,9 @@ const RETRY_CODES = ["OPENING", "PARKING", "RELEASED"];
 const MAX_RELAUNCHES = 3;
 /** How often a run's end that the agent store refused is written again. */
 const SETTLE_RETRY_MS = 30_000;
-/** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`. */
-const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "failed", stopped: "cancelled" };
+/** How a run ended in the store, as its status: the store's `stopped` is v2's `cancelled`, and an escalated workflow
+ *  completed its work and waits for a person (its `review`), which is not a failure. */
+const STATUS_OF: Record<Ended, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // A run's process that exited and was never reaped (a zombie, under a PID 1 that does not reap) is not alive.
@@ -82,6 +85,8 @@ type RunMeta = {
   error?: { code: string; message: string; details?: { reason: string } };
   /** A workflow run's output, once it completed. */
   output?: unknown;
+  /** A workflow run that escalated: what a person is to look at. Its time is the run's saved end, read with it. */
+  review?: SavedReview;
   /** Where the run stood when its turn was stopped: the person's last message, by its timeline row's id (its store
    *  entry's), or the root conversation's place 0 before any. It stays stopped until a message newer than that is shown. */
   stopped_at?: string;
@@ -89,13 +94,22 @@ type RunMeta = {
   stopped_after?: number;
 };
 type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
+/** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
+ *  and when the run ended (`at`, the run's `ended_at`). */
+export type RunReview = { kind: string | null; node: string | null; reason: string; at: string };
+/** A review as serve.json keeps it: `at` is not kept, as it is the run's saved end, which the store stamps. */
+type SavedReview = Omit<RunReview, "at">;
+/** `review` at the run's saved end `endedAt`, so review.at and ended_at are one time. */
+const reviewAt = (review: SavedReview | null, endedAt: string): RunReview | null => (review ? { kind: review.kind, node: review.node, reason: review.reason, at: endedAt } : null);
 
-/** An ended run's error from its row and serve.json: an escalated workflow says so (`escalated`, with its summary), a
- *  failed run keeps its own. */
+/** A failed run's error from its row and serve.json: its own, else the row's summary. */
 const errorOfRow = (row: RunRow, meta: Partial<RunMeta> | null): RunError =>
-  row.state === "escalated"
-    ? { code: "escalated", message: row.summary ?? meta?.error?.message ?? "The workflow escalated.", retryable: false }
-    : { code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false, ...(meta?.error?.details ? { details: meta.error.details } : {}) };
+  ({ code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false, ...(meta?.error?.details ? { details: meta.error.details } : {}) });
+
+/** An ended run's review from its row and serve.json: an escalated one's as its end saved it, else (an end saved before
+ *  reviews were kept) the row's summary; null for every other run. */
+const reviewOfRow = (row: Pick<RunRow, "state" | "summary">, meta: Partial<RunMeta> | null): SavedReview | null =>
+  row.state !== "escalated" ? null : (meta?.review ?? { kind: null, node: null, reason: row.summary ?? "The workflow escalated." });
 
 /** One run as this server holds it. */
 export type Run = {
@@ -139,8 +153,10 @@ export type Run = {
   endedAt?: string;
   outcome?: Status;
   error?: RunError;
-  /** The cost the store recorded when it carried the run back. */
-  costUsd?: number;
+  /** The cost the store recorded when it carried the run back; null when it recorded none (unknown). */
+  costUsd?: number | null;
+  /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
+  decisionCost?: number | null;
   relaunches: number;
   /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
   launching?: boolean;
@@ -198,9 +214,14 @@ const costOf = (rows: readonly TimelineEvent[]): number | null => {
 /** A run's cost for its views: its usage row's, else what the store kept when it carried the run back (0 before any
  *  request). A usage row that says unknown, or says nothing, stays unknown: what the store kept dates from before a
  *  follow-up. */
-export function costView(rows: readonly TimelineEvent[], stored: number | undefined): number | null {
+export function costView(rows: readonly TimelineEvent[], stored: number | null | undefined, decisions?: number | null): number | null {
   const usage = usageOf(rows);
-  if (!usage) return stored ?? 0;
+  // A workflow run's decisions, once its end is read: their cost joins its model nodes', and one unknown makes it unknown.
+  if (decisions !== undefined) {
+    const models = usage ? (usage.usage?.usd ?? null) : 0;
+    return models === null || decisions === null ? null : models + decisions;
+  }
+  if (!usage) return stored === undefined ? 0 : stored;
   return usage.usage?.usd ?? null;
 }
 /** The whole text of the run's newest answer, paid for: an assistant message's, else its newest answer row's. */
@@ -251,12 +272,13 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxParallel?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
-/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own. */
-export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name));
+/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own and the decision
+ *  keys, which go on their own descriptor. */
+export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name) && !DECISION_KEYS.includes(name));
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
@@ -387,6 +409,7 @@ export class Runs {
       ...(typeof stored?.max_cost_usd === "number" ? { max_cost_usd: stored.max_cost_usd } : {}),
       ...(stored?.error ? { error: stored.error } : {}),
       ...(stored && "output" in stored ? { output: stored.output } : {}),
+      ...(isObject(stored?.review) ? { review: stored.review as SavedReview } : {}),
       ...(typeof stored?.stopped_at === "string" ? { stopped_at: stored.stopped_at } : {}),
       ...(typeof stored?.stopped_after === "number" ? { stopped_after: stored.stopped_after } : {}),
     };
@@ -399,7 +422,10 @@ export class Runs {
     if (row.state !== "running") {
       run.outcome = STATUS_OF[row.state];
       run.endedAt = row.endedAt;
-      if (row.costUsd !== undefined) run.costUsd = row.costUsd;
+      // An ended run the store kept no cost for has an unknown cost, never $0.
+      run.costUsd = row.costUsd ?? null;
+      // A workflow run's decisions' cost too: an unknown one keeps the run's unknown after a restart. Unread, it is unknown.
+      if (run.kind === "workflow") await this.readDecisionCost(run).catch(() => void (run.decisionCost = null));
       if (row.importedFrom) run.imported = row.importedFrom;
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
@@ -764,25 +790,45 @@ export class Runs {
       ...childEnv(process.env, this.options.token),
       [SECRETS_FD_ENV]: "3",
       [SECRETS_LEN_ENV]: String(secrets.length),
-      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}) } : {}),
+      ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}), ...(this.options.fauxParallel ? { [FAUX_PARALLEL_ENV]: this.options.fauxParallel } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
     };
     delete env[CAP_ENV];
     if (run.meta.max_cost_usd !== undefined) env[CAP_ENV] = String(run.meta.max_cost_usd);
+    // The decision keys are never in a run's environment, which its tools and its model's provider read (childEnv leaves
+    // out every secret): a workflow run's process gets them once on an inherited pipe, by name, for its decision
+    // providers alone (decisions.ts).
+    delete env[DECISION_KEY_FD_ENV];
+    // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
+    const decisionKeys = run.kind === "workflow" ? decisionKeysOf(withSecrets(process.env)) : {};
+    const handsKey = Object.keys(decisionKeys).length > 0;
     this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
+    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];
+    // The first descriptor after the others: macOS aborts the parent of a spawn with a pipe at 16 or above.
+    const keyFd = stdio.length;
+    if (handsKey) {
+      stdio.push("pipe");
+      env[DECISION_KEY_FD_ENV] = String(keyFd);
+    }
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
       // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
       "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
-    ], { stdio: ["ignore", "ignore", log, "pipe"], env });
+    ], { stdio, env });
     closeSync(log);
     const pipe = child.stdio[3] as import("node:stream").Writable | null;
     pipe?.on("error", () => {});
     pipe?.end(secrets);
+    if (handsKey) {
+      const keyPipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[keyFd];
+      // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
+      keyPipe?.on("error", () => undefined);
+      keyPipe?.end(JSON.stringify(decisionKeys));
+    }
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
@@ -904,16 +950,28 @@ export class Runs {
     const at = { runId: run.id, storePath: this.storeFile(run), revision };
     const { state, summary } = await workflowCarry(at, ending);
     if (state === "completed") run.meta.output = (await readWorkflowRun(at)).output ?? null;
-    else if (state === "escalated") run.error = { code: "escalated", message: summary, retryable: false };
+    else if (state === "escalated") {
+      const { escalation, escalatedAt } = await readWorkflowRun(at);
+      run.meta.review = { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? summary };
+    }
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
+    await this.readDecisionCost(run);
     return { outcome: STATUS_OF[state], state, summary };
+  }
+
+  /** A workflow run's decisions' cost, from their receipts in its released store: a receipt whose cost is unknown leaves
+   *  the run's unknown, never $0. Read at its end and again when a restarted server adopts it as ended. */
+  private async readDecisionCost(run: Run): Promise<void> {
+    const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
+    const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
+    if (receipts.length) run.decisionCost = receipts.every((cost) => typeof cost === "number") ? (receipts as number[]).reduce((a, b) => a + b, 0) : null;
   }
 
   /** Ends the run in the agent store, once: how it ended, its cost and a line for the list. A store held by another
    *  writer is tried again with backoff; past the last try the run stays unsettled, and the next start carries it back. */
   private async carryBack(run: Run, outcome: Status, state?: Ended, summary?: string): Promise<void> {
     const answer = answerOf(run.rows);
-    const cost = costOf(run.rows);
+    const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
     if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
@@ -1197,7 +1255,7 @@ export class Runs {
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
     // An imported run's cost is its source's, for the whole session: its requests may not each have a price.
-    return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
@@ -1210,6 +1268,7 @@ export class Runs {
     const finalAnswer = run.kind === "workflow" ? null : answer ? (run.answerText ?? answer.text ?? answer.summary ?? null) : (row?.summary ?? null);
     // A run its cap stopped keeps the answer it paid for.
     const kept = status === "failed" && run.error?.code === SPEND_CAP_REACHED ? lastAnswer(run) : null;
+    const endedAt = TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null;
     return {
       run_id: run.id,
       agent_id: run.agentId,
@@ -1223,9 +1282,10 @@ export class Runs {
       ...(run.meta.effort ? { effort: run.meta.effort } : {}),
       created_at: run.meta.created_at,
       updated_at: run.updatedAt,
-      ended_at: TERMINAL.has(status) ? (row?.endedAt ?? run.endedAt ?? run.updatedAt) : null,
+      ended_at: endedAt,
       result: status === "completed" ? { output: run.kind === "workflow" ? (run.meta.output ?? null) : null, final_answer: finalAnswer } : kept ? { output: null, final_answer: kept } : null,
       error: status === "failed" ? (run.error ?? { code: "run_failed", message: "The run failed.", retryable: false }) : null,
+      review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
       imported_from: run.imported ?? null,
@@ -1234,8 +1294,8 @@ export class Runs {
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at, imported_from } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, cost, archived_at, imported_from };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1256,6 +1316,7 @@ export class Runs {
       status: STATUS_OF[row.state as Ended], state: "idle" as State, title: typeof meta?.title === "string" ? meta.title : "",
       created_at: typeof meta?.created_at === "string" ? meta.created_at : row.startedAt, ended_at: row.endedAt ?? null,
       error: STATUS_OF[row.state as Ended] === "failed" ? errorOfRow(row, meta) : null,
+      review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
       imported_from: row.importedFrom ?? null,

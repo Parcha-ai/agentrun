@@ -4,7 +4,7 @@
 //     closed table in tools.ts;
 //   - workflow: the revision's workflow, started with startWorkflowRevision of @parcha/pi-durable-agent/workflow on
 //     agentrun-pi's durable workflow task, each model node on the host's model of its tier with the tools it names of the
-//     table's node tools. When the
+//     table's node tools, and its typed questions on Jev or Parallel when the server hands this process the provider's key. When the
 //     workflow ends the app writes the run's final status, with the outcome, and releases the run. The server carries
 //     it back once this process has exited: this process holds the run's store until then.
 // First: the secrets serve hands this process over a pipe, read and the pipe closed before anything else runs.
@@ -17,6 +17,7 @@ import { openStoreReader, type Revision, RUN_STORE_FILE, type RunRow } from "@pa
 import type { AppContext, AppOptions, BeforeResume, DurableRun } from "@parcha/pi-durable-disk";
 import { capBefore, capModels, capOf, spentIn } from "./cap.js";
 import { cancelledIn, markRequests } from "./request-start.js";
+import { decisionProvidersOf } from "./decisions.js";
 import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
@@ -26,7 +27,8 @@ import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflo
 import { isObject, skillNames } from "./validate.js";
 import { readWorkText } from "./workspace.js";
 
-/** The workflow adapters this host gives a run: model nodes, and calls `via: "tool"` to the table's tools. */
+/** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
+ *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
 export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
@@ -127,12 +129,14 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
-  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, nodeRunner, taskScope }, { inspectWorkflow }, { workspaceFiles }, { startWorkflowRevision }] = await Promise.all([
+  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope }, { inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
     import("@earendil-works/chord/context"),
     import("@parcha/agentrun-pi/durable"),
     import("@parcha/agentrun-dsl"),
     import("@parcha/agentrun-dsl/recovery"),
     import("@parcha/pi-durable-agent/workflow"),
+    // The decision providers, holding the decision keys the server handed this process: in no environment a tool reads.
+    decisionProvidersOf(process.env),
   ]);
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
@@ -150,7 +154,18 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   const nodes = nodeRunner({ agent: (node) => nodeAgent(node) as never });
   const workflows = createWorkflowExtension({
     options: () => ({ files: workspaceFiles(where.work) }),
-    run: ({ runtime, context }) => ({ adapters: { runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never }, durableNodes: true }),
+    run: ({ key, runtime, context, driver }) => {
+      // Each typed question's receipt is a row of the run's store before its answer acts, and a resumed run takes an
+      // answered one instead of asking again.
+      const decisions = decisionRecovery({ key, runtime, context });
+      const deps = withRecovery(driver, {
+        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(decisionProviders ? { runJudge: judgeFromProviders(decisionProviders) as never, decisionProviders } : {}),
+        recordDecision: decisions.recordDecision,
+      }, { durableNodes: true });
+      const { recovery } = deps;
+      if (!recovery) throw new Error("the workflow's recovery gave the run no recovery hooks");
+      return { deps: { ...deps, recovery: { ...recovery, decision: decisions.decision } } };
+    },
   });
   registry.install(nodes.extension as unknown as Extension);
   registry.install(workflows.extension as unknown as Extension);

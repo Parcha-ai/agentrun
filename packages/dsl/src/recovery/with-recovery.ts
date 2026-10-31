@@ -63,7 +63,7 @@ export function withRecovery(driver: RecoveryDriver, deps: RecoveryAdapters, opt
       if (decided) return decided.result as Awaited<ReturnType<typeof runJudge>>;
       await driver.seam();
       const decisionId = params.decisionId ?? canonicalHash(["decision-request", params.executionPath, params.kind, params.questions, params.state]);
-      const open = driver.admitDecision(params.executionPath, { decision_id: decisionId, kind: params.kind, label: params.label, model: null,
+      const open = driver.admitDecision(params.executionPath, { decision_id: decisionId, kind: params.kind, label: params.label, model: params.model ?? null,
         request_sha256: canonicalHash({ kind: params.kind, label: params.label, state: params.state, questions: params.questions }) });
       if (open) {
         // An earlier process asked and its answer never reached a receipt: never asked again, booked once at an unknown

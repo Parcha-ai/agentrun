@@ -131,12 +131,15 @@ export async function workflowCarry(run: Pick<WorkflowRunStart, "runId" | "store
   return { state, summary: summary.filter(Boolean).join("; ") || `${state} before any node completed` };
 }
 
+const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
 /** A node's state in a run: the DSL's, and `stopped` for a node an ended run interrupted. */
 export type RunNodeState = NodeState | "stopped";
 
 /** A workflow run as its store shows it: the workflow's graph and each node's state; once the run ended, how it ended,
- *  the node it escalated at (its path in the graph and its label), and the workflow's output when it completed. */
-export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, RunNodeState>; outcome?: RunState; escalatedAt?: { path: string; label: string }; output?: unknown };
+ *  the node it escalated at (its path in the graph and its label), the escalation's kind, label and summary as its
+ *  escalate node wrote them, and the workflow's output when it completed. */
+export type WorkflowRunView = { graph: WorkflowGraph; status: Record<string, RunNodeState>; outcome?: RunState; escalatedAt?: { path: string; label: string }; escalation?: { kind: string | null; label: string | null; summary: string | null }; output?: unknown };
 
 /** A workflow revision's graph, for a page, and, when its parent is a workflow revision too, what changed from it (the
  *  DSL's `graphDiff`). An agentic parent, or none, gives no diff. */
@@ -162,7 +165,7 @@ export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "sto
   // The run's task holds how it ended: its id is on the run's entry, its record in pi-durable's task table. The task is
   // read before the journal, so a task found terminal means the journal read after it is final.
   const task = durableDoc<{ task?: unknown }>(run.storePath, "agentrun.task", run.runId, { immutable })?.task;
-  let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown } } } | undefined;
+  let ended: { status?: string; result?: { status?: string; output?: unknown; escalation?: { executionPath?: unknown; kind?: unknown; label?: unknown; summary?: unknown } } } | undefined;
   if (typeof task === "number") {
     const db = new DatabaseSync(immutable ? `${pathToFileURL(run.storePath).href}?immutable=1` : run.storePath, { readOnly: true, timeout: 5000 });
     try {
@@ -188,6 +191,7 @@ export async function readWorkflowRun(run: Pick<WorkflowRunStart, "runId" | "sto
     graph, status,
     ...(outcome ? { outcome } : {}),
     ...(fired ? { escalatedAt: { path: fired.path, label: fired.label } } : {}),
+    ...(result?.escalation ? { escalation: { kind: text(result.escalation.kind), label: text(result.escalation.label), summary: text(result.escalation.summary) } } : {}),
     ...(result?.status === "complete" ? { output: result.output } : {}),
   };
 }

@@ -127,3 +127,19 @@ test('decisionRecovery: rows commit in the order they are recorded; only an answ
   assert.equal(await other.decision('d'), undefined);
   await harness.close(ctx);
 });
+
+test('decisionRecovery: a row keeps the provider that answered, the sources it cited, the questions it refused and how the request ended, and the replayed receipt has them all again', async () => {
+  const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(root, 'provider-')), 'run.sqlite')), { registry: createRegistry(), models: {} }, ctx);
+  const runtime = { commit: (change, context) => harness.commit(change, context), snapshot: (...args) => harness.snapshot(...args) };
+  const decisions = decisionRecovery({ key: 'run-1', runtime, context: ctx });
+  const evidence = [{ url: 'https://example.org/filing', title: 'A filing', excerpts: ['Example Widgets, Inc.'], scope: 'call' }, { url: 'https://example.org/registry', title: null, excerpts: [], scope: 'urgent' }];
+  const answered = receiptOf('a', { provider: 'parallel', evidence, confidence_source: { urgent: 'provider' } });
+  const refused = receiptOf('b', { provider: 'parallel', status: 'failed', answers: { urgent: { type: 'refusal' } }, rule: null, action: null, refused: ['urgent'], error: 'the provider refused urgent' });
+  await decisions.recordDecision(answered, exchange);
+  await decisions.recordDecision(refused, exchange);
+  const rows = await readDecisions(harness, ctx);
+  assert.deepEqual(rows.map((row) => [row.decision_id, row.status, row.provider, row.evidence, row.refused]), [['a', 'answered', 'parallel', evidence, undefined], ['b', 'failed', 'parallel', undefined, ['urgent']]]);
+  assert.deepEqual(rows[0].confidence_source, { urgent: 'provider' });
+  assert.deepEqual(await decisions.decision('a'), answered, 'the replayed receipt is the one recorded, provider and sources included');
+  await harness.close(ctx);
+});

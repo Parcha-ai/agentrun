@@ -30,9 +30,11 @@ export interface DecisionCapabilities {
   maxQuestions: number | null;
   /** The largest state one request may hold, as UTF-8 JSON bytes, or null for no limit. */
   maxStateBytes: number | null;
+  /** The models a node may pin, by name; absent or null, any name goes to the provider. */
+  models?: readonly string[] | null;
 }
 
-export type DecisionRequest = Pick<JudgeParams, "label" | "kind" | "state" | "questions" | "item" | "executionPath">;
+export type DecisionRequest = Pick<JudgeParams, "label" | "kind" | "state" | "questions" | "item" | "executionPath" | "model">;
 
 export interface DecisionContext {
   /** The decision receipt's id: the same request asked again has the same id. */
@@ -78,8 +80,8 @@ export class DecisionProviderError extends Error {
    *  reached; null when unknown. */
   readonly costUsd?: number | null;
   readonly costBasis?: CostBasis;
-  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis } = {}) {
-    super(message);
+  constructor(readonly code: DecisionProviderErrorCode, message: string, details: { status?: number; attempts?: number; refId?: string; costUsd?: number | null; costBasis?: CostBasis; cause?: unknown } = {}) {
+    super(message, details.cause !== undefined ? { cause: details.cause } : undefined);
     this.name = "DecisionProviderError";
     this.attempts = details.attempts ?? 0;
     if (details.status !== undefined) this.status = details.status;
@@ -107,8 +109,9 @@ export function chargedCost(error: unknown): number | null | undefined {
 }
 
 /** Refuses, as invalid_request, a request beyond what `capabilities` declares: a question type it does not answer, more
- *  questions than it takes, or a larger state. A provider calls it before it sends anything. */
-export function checkCapabilities(capabilities: DecisionCapabilities, request: Pick<DecisionRequest, "questions" | "state">): void {
+ *  questions than it takes, a larger state, or a model it does not serve. A provider calls it before it sends anything. */
+export function checkCapabilities(capabilities: DecisionCapabilities, request: Pick<DecisionRequest, "questions" | "state" | "model">): void {
+  if (request.model !== undefined && capabilities.models && !capabilities.models.includes(request.model)) throw new DecisionProviderError("invalid_request", `The provider does not answer with the model "${request.model}".`);
   const types = Object.values(request.questions).map((question) => question?.type);
   const unknown = types.filter((type) => !capabilities.types.includes(type));
   if (unknown.length) throw new DecisionProviderError("invalid_request", `The provider does not answer ${[...new Set(unknown)].map(String).join(", ")} questions.`);
@@ -124,7 +127,7 @@ export function checkCapabilities(capabilities: DecisionCapabilities, request: P
  *  answers are validated against the questions, and ones that do not match them are invalid_response. */
 export function judgeFromProvider(provider: DecisionProvider, options: { deadlineMs?: number | null } = {}): RunJudge {
   return async (params) => {
-    const request: DecisionRequest = { label: params.label, kind: params.kind, state: params.state, questions: params.questions, ...(params.item ? { item: params.item } : {}), ...(params.executionPath !== undefined ? { executionPath: params.executionPath } : {}) };
+    const request: DecisionRequest = { label: params.label, kind: params.kind, state: params.state, questions: params.questions, ...(params.item ? { item: params.item } : {}), ...(params.executionPath !== undefined ? { executionPath: params.executionPath } : {}), ...(params.model !== undefined ? { model: params.model } : {}) };
     checkCapabilities(provider.capabilities, request);
     const outcome = await provider.decide(request, { decisionId: params.decisionId ?? "", signal: params.signal ?? new AbortController().signal, deadlineMs: options.deadlineMs ?? null });
     const { answers, confidence_source } = completeConfidence(params.questions, (outcome.answers ?? {}) as Record<string, unknown>);
@@ -139,5 +142,35 @@ export function judgeFromProvider(provider: DecisionProvider, options: { deadlin
       evidence: outcome.evidence, provider_request_id: outcome.provider_request_id, confidence_source,
     };
     return result;
+  };
+}
+
+/** The interpreter's runJudge over a host's providers: each request goes to the provider its node names, or to
+ *  `default`, with the node's pinned model, within the shorter of the node's `timeoutMs` and the provider's own
+ *  `deadlineMs`: a node only ever shortens it. The node's bound is kept here: when it passes, the call is cut, and a cut
+ *  call may already have been sent and billed, so it is `outcome_unknown` (the decision escalates as interrupted), never
+ *  asked again. The result names the provider that answered. */
+export function judgeFromProviders(options: { providers: Readonly<Record<string, DecisionProvider>>; default: string; deadlineMs?: number | null }): RunJudge {
+  return async (params) => {
+    const id = params.provider ?? options.default;
+    const provider = Object.hasOwn(options.providers, id) ? options.providers[id] : undefined;
+    if (!provider) throw new DecisionProviderError("configuration", `No decision provider "${id}" on this host.`);
+    const own = options.deadlineMs ?? null;
+    const node = params.timeoutMs ?? null;
+    const shorter = node !== null && (own === null || node < own);
+    const deadlineMs = shorter ? node : own;
+    const cut = new AbortController();
+    const timer = shorter ? setTimeout(() => cut.abort(new DOMException("The decision node's timeoutMs passed", "TimeoutError")), node) : undefined;
+    const signal = params.signal ? AbortSignal.any([params.signal, cut.signal]) : cut.signal;
+    try {
+      const result = await judgeFromProvider(provider, { deadlineMs })({ ...params, signal });
+      return { ...result, provider: id };
+    } catch (error) {
+      if (cut.signal.aborted && error instanceof DecisionProviderError && (error.code === "aborted" || error.code === "timeout")) {
+        throw new DecisionProviderError("outcome_unknown", `${id}: cut by the node's timeoutMs (${node} ms) after it may have been sent`, {
+          attempts: error.attempts, ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}), ...(error.costBasis !== undefined ? { costBasis: error.costBasis } : {}), cause: error });
+      }
+      throw error;
+    } finally { if (timer !== undefined) clearTimeout(timer); }
   };
 }

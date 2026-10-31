@@ -19,7 +19,7 @@ export type {
   LlmNode, JudgeNode, PickNode, SiftNode, RouteNode, RouteByJudgmentNode, RouteByValueNode, WorkflowInvocation,
   ArtifactNode, ArtifactState, CallNode, CodeNode, CallRetryClass, EffectFailureCode, CallPredicate, PollClause,
   ModelTier, AgentContext, WorkflowEffort, WorkflowThinking, VerifyClause,
-  AskPredicate, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
+  AskPredicate, DecisionEvidenceMode, MechanicalPredicate, Predicate, ValidationCode, ValidationIssue, ValidateWorkflowOptions,
 } from "./workflow.js";
 export { dryRunWorkflow, synthesizeInstance } from "./dry-run.js";
 export type { DryRunOptions, DryRunResult } from "./dry-run.js";
@@ -34,7 +34,7 @@ export type {
   CompiledQuestions, AnswersSidecar, ConfidenceSource,
 } from "./system-one.js";
 
-export { judgeFromProvider, checkCapabilities, DecisionProviderError } from "./decision-provider.js";
+export { judgeFromProvider, judgeFromProviders, checkCapabilities, DecisionProviderError } from "./decision-provider.js";
 export type {
   DecisionProvider, DecisionCapabilities, DecisionInput, DecisionRequest, DecisionContext, DecisionEvidence, DecisionOutcome,
   ProviderAnswer, CostBasis, DecisionProviderErrorCode,
