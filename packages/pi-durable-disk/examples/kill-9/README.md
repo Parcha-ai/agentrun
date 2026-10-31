@@ -52,8 +52,9 @@ On a failure it writes `not ok: ...` to stderr and exits 1.
   `plan.txt`, write `notes.txt`, write `../escaped.txt`, run the long job. A process that opens the run later counts the
   same results and goes on from the same place. `ArchilCodingTools` gives it pi's `read`, `write`, `edit` and `bash`, run
   in `work/`.
-- **The long job** is `echo $$ > job.pid; echo started >> progress.log; sleep 120; echo finished >> progress.log`. The first
-  line of `progress.log` shows the command began; a second `started`, or a `finished`, would show it ran again or ran on.
+- **The long job** is `echo $$ > job.pid; sleep 120 & echo started >> progress.log; wait; echo finished >> progress.log`. It
+  starts its `sleep` before it logs `started`, so all of its processes exist before the supervisor acts on that line. The
+  first line of `progress.log` shows the command began; a second `started`, or a `finished`, would show it ran again or ran on.
 - **The kill.** The supervisor waits for `started` in `progress.log` and for the package's record of the command (a file
   in the run's `commands/` directory), then sends `SIGKILL` to the instance's process and to nothing else. pi starts
   each command as the leader of its own process group, so the command outlives the kill; the example prints that it is

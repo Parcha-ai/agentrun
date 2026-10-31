@@ -67,25 +67,25 @@ test('a Retry-After that fits, under a backoff that does not, gives up at once: 
 
 test('a give-up reports 429 only when no earlier attempt may have been billed: after a 503 or a lost answer, it names that one', async () => {
   const mixed = scripted([() => response({}, 503), () => response({}, 429), () => response({}, 429)]);
-  await assert.rejects(createJevRunner({ ...settings, maxAttempts: 3, fetch: mixed.fetch })(params), error => {
+  await assert.rejects(createJevRunner({ retryAfterSend: true, ...settings, maxAttempts: 3, fetch: mixed.fetch })(params), error => {
     assert.ok(error instanceof JevError);
     assert.deepEqual([error.code, error.status, error.attempts], ['http', 503, 3], 'a 503 may have been billed: the cost stays unknown');
     return true;
   });
   let calls = 0;
   const lost = async () => { calls += 1; if (calls === 1) throw new TypeError('socket hang up'); return response({}, 429); };
-  await assert.rejects(createJevRunner({ ...settings, maxAttempts: 2, fetch: lost })(params), error => {
+  await assert.rejects(createJevRunner({ retryAfterSend: true, ...settings, maxAttempts: 2, fetch: lost })(params), error => {
     assert.ok(error instanceof JevError);
     assert.deepEqual([error.code, error.status, error.attempts], ['connection', undefined, 2], 'a lost answer may have been billed');
     return true;
   });
   const only = scripted([() => response({}, 429)]);
-  await assert.rejects(createJevRunner({ ...settings, maxAttempts: 2, fetch: only.fetch })(params), error => error instanceof JevError && error.code === 'http' && error.status === 429, 'every attempt refused: 429');
+  await assert.rejects(createJevRunner({ retryAfterSend: true, ...settings, maxAttempts: 2, fetch: only.fetch })(params), error => error instanceof JevError && error.code === 'http' && error.status === 429, 'every attempt refused: 429');
 });
 
 test('a 503 with Retry-After as an HTTP date waits until that date', async () => {
   const t = scripted([() => response({}, 503, { 'retry-after': new Date(Date.now() + 2000).toUTCString() }), () => response({ answers })]);
-  const result = await createJevRunner({ ...settings, fetch: t.fetch })(params);
+  const result = await createJevRunner({ retryAfterSend: true, ...settings, fetch: t.fetch })(params);
   assert.deepEqual(result.answers, answers);
   assert.ok(gaps(t.calls)[0] >= 900, `waited ${gaps(t.calls)[0]} ms for a date at least 1000 ms ahead`);
 });
@@ -94,7 +94,7 @@ test('an unusable Retry-After, or one on 408 and other 5xx, keeps the backoff', 
   for (const [status, value] of [[429, ''], [429, 'soon'], [503, '1.5'], [500, '120'], [502, '120'], [408, '120']]) {
     const t = scripted([() => response({}, status, { 'retry-after': value }), () => response({ answers })]);
     const started = Date.now();
-    const result = await createJevRunner({ ...settings, timeoutMs: 2000, fetch: t.fetch })(params);
+    const result = await createJevRunner({ retryAfterSend: true, ...settings, timeoutMs: 2000, fetch: t.fetch })(params);
     assert.deepEqual(result.answers, answers);
     assert.equal(t.calls.length, 2, `${status} with Retry-After ${JSON.stringify(value)} retries`);
     assert.ok(Date.now() - started < 500, `${status} with Retry-After ${JSON.stringify(value)} waits only the backoff`);

@@ -1,0 +1,32 @@
+Patch: 009-recovery-system-note
+Reason: a harness carries the recovery note outside the user's turn (a system prompt for Claude, a developer item for Codex) and keeps the user's own words in the user turn; recoverySystemNote is the note from the harness, about the turn before, with no quoted prompt and no pending message, and recoveryUserTurn is the lost prompts then the pending texts, or a bare "Continue."; recoveryNote's own wording is unchanged
+Upstream: ours
+Pins: recoverySystemNote carries no user prompt text and starts with the harness prefix
+Pins: recoveryUserTurn gives a bare nudge with nothing lost, and the prompts then pending otherwise
+---
+diff --git a/packages/harness-process/src/recovery.ts b/packages/harness-process/src/recovery.ts
+index 3c1ea6a..5f35fa2 100644
+--- a/packages/harness-process/src/recovery.ts
++++ b/packages/harness-process/src/recovery.ts
+@@ -83,6 +83,21 @@ export function recoveryNote(state: SessionState, options: RecoveryOptions = {})
+   return { text: lines.join('\n'), calls, pending, turn };
+ }
+ 
++/**
++ * The note as a harness carries it outside the user's turn (a system prompt, a developer item): from the harness, about the
++ * turn before, with no quoted prompt and no pending message. `undefined` when no turn is open.
++ */
++export function recoverySystemNote(state: SessionState, options: Pick<RecoveryOptions, 'clipChars'> = {}): string | undefined {
++  const note = recoveryNote(state, { ...options, pending: [] });
++  return note && `The harness, not the user, adds this about the turn before this one:\n${note.text}`;
++}
++
++/** The user's turn that resumes a cut-off turn: only the user's words (the prompts the session never got, then the messages sent since), or a bare nudge. */
++export function recoveryUserTurn(lost: string[], pending: string[]): string {
++  const words = [...lost, ...pending].filter((t) => t !== '');
++  return words.length ? words.join('\n\n') : 'Continue.';
++}
++
+ function recoveryCall(e: EffectRecord, max: number): RecoveryCall {
+   const base = {
+     callId: e.key.startsWith('tool:') ? e.key.slice(5) : e.key,

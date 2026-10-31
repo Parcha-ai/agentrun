@@ -4,8 +4,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, readFile, readlink, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { durableDecisions } from "@parcha/agentrun-pi/durable";
 import { startServe } from "../dist/index.js";
@@ -16,14 +17,14 @@ import { schemaProblems } from "./schema-support.mjs";
 import { CANARY } from "./fixtures/faux-jev.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_COST"];
 const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 /** Keys that are not the canary, so a request sent with one is not authorized: held in names, as no key literal sits beside a key variable. */
 const OTHER_ROUTER_KEY = "openrouter-key-not-jevs";
 const OTHER_GATEWAY_KEY = "gateway-key-not-jevs";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-/** The descriptor a run's process is handed the key on: the first one after its stdio. */
-const KEY_FD = "3";
+/** The descriptor a run's process is handed the key on: the first one after its stdio and its secrets pipe. */
+const KEY_FD = "4";
 /** The descriptor `environ` names for the key, without printing the rest of it. */
 const keyFdIn = (environ) => /(?:^|\0)AGENTRUN_SERVE_DECISION_KEY_FD=([^\0]*)/.exec(environ)?.[1];
 /** Whether `pid`'s descriptor `fd` is a Unix socket, as the handed one is (one end of a socket pair). A run's process
@@ -104,7 +105,7 @@ test("the decision key never reaches a run's tools, model or programs: not in it
   const pid = await processOf(data, runId);
   const environ = await readFile(`/proc/${pid}/environ`, "utf8");
   assert.equal(environ.includes(CANARY), false, "the run's process environment holds no copy of the key");
-  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio");
+  assert.equal(keyFdIn(environ), KEY_FD, "it was handed the key on the first descriptor after its stdio and secrets");
   assert.equal(await handedSocket(pid, KEY_FD), false, "and closed it once read");
   await writeFile(gate, "");
   const { last } = await follow(api, runId, ["completed", "failed"]);
@@ -303,7 +304,8 @@ const answer = judge && await judge({ label: "coi", kind: "judge", state: { doc:
 process.stdout.write(JSON.stringify({ judge: Boolean(judge), noul: answer?.answers?.is_coi?.noul ?? null }));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     env: { HOME: process.env.HOME, [FAUX_ENV]: FAUX, [FAUX_JEV_ENV]: FAUX_JEV, AGENTRUN_TEST_FAUX_JEV_CALLS: calls, ...env, ...(handed ? { [DECISION_KEY_FD_ENV]: KEY_FD } : {}) },
-    stdio: ["ignore", "pipe", "pipe", ...(handed ? ["pipe"] : [])],
+    // As a run's process has them: the secrets pipe on 3 (none here), the key on the next.
+    stdio: ["ignore", "pipe", "pipe", "ignore", ...(handed ? ["pipe"] : [])],
   });
   // What the server writes there: the route, a newline, the key.
   if (handed) child.stdio[Number(KEY_FD)].end(`${handed.route}\n${handed.key}`);
@@ -380,3 +382,110 @@ test("a workflow that escalates ends completed and waits for review: no error, n
   assert.equal((await api("GET", `/runs/${plain}`)).body.review, null);
 });
 
+
+test("a workflow whose decision cost is unknown and whose model request is priced reads its cost unknown, before and after the server restarts", async (t) => {
+  await withCanary(t);
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  const runId = await startFlow(api, [judge, probe()]);
+  const { last } = await follow(api, runId, ["completed", "failed"]);
+  const before = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(last.status, "completed", JSON.stringify(before.error));
+  assert.equal(durableDecisions(join(data, "runs", runId, "store", "run.sqlite"))[0].cost_usd, null, "Jev reports no cost: the decision's is unknown");
+  const usage = (await api("GET", `/runs/${runId}/timeline?limit=500`)).body.rows.findLast((row) => row.kind === "usage");
+  assert.ok(usage?.usage?.usd > 0, `the model node's request is priced: ${JSON.stringify(usage?.usage)}`);
+  assert.equal(before.cost.usd, null, "the decision's unknown cost is the run's");
+  await closeFirst();
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const after = (await client(next.baseUrl, next.token)("GET", `/runs/${runId}`)).body;
+  assert.equal(after.status, "completed");
+  assert.equal(after.cost.usd, null, "and still after a restart: never the model's cost alone");
+});
+
+test("the missing-key 409's details, decisions included, meet what the served document gives agent_not_runnable", async (t) => {
+  withEnv(t, {}, KEYS);
+  const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
+  assert.equal((await api("POST", "/agents", flowAgent("coi", flow([judge, probe()])))).status, 201);
+  const refused = await api("POST", "/agents/coi/runs", { input: { question: "x" } });
+  assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
+  assert.deepEqual(refused.body.error.details.decisions, { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"] } });
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/ErrorBody" }, refused.body.error), [], "the error meets the contract's ErrorBody");
+  // The contract's details take any field; what agent_not_runnable's hold here is the server's own shape.
+  const shape = doc.components.schemas.ErrorBody.properties.details["x-agentrun-serve-details"].agent_not_runnable;
+  const blocked = shape.oneOf.find((part) => part.required.includes("unbound"));
+  assert.deepEqual(schemaProblems(doc, blocked, refused.body.error.details), [], "field by field, against the blocked revision's details");
+  const stray = { ...refused.body.error.details, decisions: { jev: { reason: "not_set_up_here", needs: ["TYPESAFE_API_KEY"], extra: 1 } } };
+  assert.deepEqual(schemaProblems(doc, blocked, stray), ["$.decisions.jev.extra: is not a field here"], "a provider's entry takes no other field");
+  assert.deepEqual(schemaProblems(doc, shape, refused.body.error.details), [], JSON.stringify(refused.body.error.details));
+});
+
+test("an ended workflow run whose decisions cannot be read after the server restarts reads its cost unknown, while its readable twin reads the known sum", async (t) => {
+  await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  // Two runs of one workflow, its decision and its model node both priced: one keeps its store, its twin loses its decisions.
+  const kept = await startFlow(api, [judge, probe()]);
+  const started = await api("POST", "/agents/coi/runs", { input: { question: QUESTION } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const twin = started.body.run_id;
+  for (const runId of [kept, twin]) assert.equal((await follow(api, runId, ["completed", "failed"])).last.status, "completed");
+  const known = (await api("GET", `/runs/${kept}`)).body.cost.usd;
+  assert.ok(typeof known === "number" && known > 0.00003, `the run's cost is the decision's and the model's: ${known}`);
+  assert.equal((await api("GET", `/runs/${twin}`)).body.cost.usd, known, "and so is its twin's");
+  await closeFirst();
+  // The twin's decisions unreadable and the rest of its store as it was: each decision document's newest revision is a
+  // delta no reader can apply.
+  const twinStore = join(data, "runs", twin, "store", "run.sqlite");
+  const db = new DatabaseSync(twinStore);
+  try {
+    const { changes } = db.prepare(`INSERT INTO document_revisions (document_id, seq, kind, version, content) SELECT document_id, MAX(seq) + 1, 'delta', MAX(version), '[["unknown"]]' FROM document_revisions WHERE document_id IN (SELECT id FROM documents WHERE kind LIKE '"agentrun.decisions%') GROUP BY document_id`).run();
+    assert.ok(changes > 0, "the run's store holds its decisions");
+  } finally {
+    db.close();
+  }
+  assert.throws(() => durableDecisions(twinStore), "the store's reader cannot read the twin's decisions");
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const again = client(next.baseUrl, next.token);
+  assert.equal((await again("GET", `/runs/${kept}`)).body.cost.usd, known, "the run whose decisions it reads keeps its known cost");
+  const after = (await again("GET", `/runs/${twin}`)).body;
+  assert.equal(after.status, "completed", JSON.stringify(after));
+  assert.equal(after.cost.usd, null, "decisions it cannot read leave the run's cost unknown");
+});
+
+test("an ended workflow run with no store file keeps its known cost after the server restarts: a missing store is one never made", async (t) => {
+  await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_COST = "0.00003";
+  const data = join(await scratch(t), "agents");
+  const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
+  const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  let closing;
+  const closeFirst = () => (closing ??= first.close());
+  t.after(closeFirst);
+  const api = client(first.baseUrl, first.token);
+  const runId = await startFlow(api, [judge, probe()]);
+  assert.equal((await follow(api, runId, ["completed", "failed"])).last.status, "completed");
+  const known = (await api("GET", `/runs/${runId}`)).body.cost.usd;
+  assert.ok(typeof known === "number" && known > 0, `the run's cost is known: ${known}`);
+  await closeFirst();
+  const store = join(data, "runs", runId, "store");
+  for (const name of await readdir(store)) await rm(join(store, name), { force: true });
+  const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
+  t.after(() => next.close());
+  const after = await client(next.baseUrl, next.token)("GET", `/runs/${runId}`);
+  assert.equal(after.status, 200, JSON.stringify(after.body));
+  assert.equal(after.body.cost.usd, known, "the store's own total, as the agent store kept it");
+});

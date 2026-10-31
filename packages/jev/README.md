@@ -115,7 +115,9 @@ Cost: when the response reports `usage.cost` (USD) it is `cost_usd`; otherwise a
 
 The official `@typesafe-ai/sdk` resolves `TYPESAFE_API_KEY` and `TYPESAFE_BASE_URL`. Explicit `apiKey` and `baseURL` options take precedence. An API root ends before `/v1/systemone`. Set `fetch` for a custom transport, or supply a `client` with a `systemOne(request, options)` method. A custom client must honor the request signal and disable its own retries; it owns its credentials and cannot be combined with transport options.
 
-The adapter retries transient HTTP 408, 429, 5xx responses and connection failures with bounded exponential delays. On a 429 or 503 with a `Retry-After` (seconds or an HTTP date), it waits the larger of that and its own delay, and gives up at once, with attempts left, when that wait would not end before the timeout. When the attempts end on a 429 after an earlier 408, 5xx or lost connection, the error reports the first of those failures (its HTTP `status`, or code `connection`), since that attempt may have been billed; an `http` error with status 429 means every attempt was refused. SDK retries are disabled. Validation failures and other HTTP errors do not retry. The deadline and either the runner or per-call signal interrupt both requests and backoff. A call the deadline ends is `timeout`, whether the runner's timer or the SDK's per-attempt timer fired first, and is not retried. Cancellation bounds when the adapter returns; an uncooperative custom client can still continue its own work.
+A Jev request is paid once it is sent, so the adapter never sends it again unasked. It retries, with bounded exponential delays, only a request that provably never reached Jev (no DNS answer, no connection, no TLS handshake) and a 429 with a `Retry-After` (seconds or an HTTP date). It waits the larger of that and its own delay, and gives up at once, with attempts left, when that wait would not end before the timeout. A 429 without `Retry-After` is an `http` error at once. A 408, a 5xx or a connection lost after sending is sent once and fails with code `outcome_unknown` (and the HTTP `status` when there is one): it may have been answered and billed, and its cost is unknown.
+
+`retryAfterSend: true` restores the retries of earlier versions, which can re-send a paid request. With it, the adapter also retries a 408, any 429, a 5xx and a lost connection; on a 503 with `Retry-After` it waits as above. When the attempts end on a 429 after an earlier 408, 5xx or lost connection, the error reports the first of those failures (its HTTP `status`, or code `connection`), since that attempt may have been billed; an `http` error with status 429 means every attempt was refused. SDK retries are disabled. Validation failures and other HTTP errors do not retry. The deadline and either the runner or per-call signal interrupt both requests and backoff. A call the deadline ends is `timeout`, whether the runner's timer or the SDK's per-attempt timer fired first, and is not retried. Cancellation bounds when the adapter returns; an uncooperative custom client can still continue its own work.
 
 Request state has no local byte cap by default. Set `maxStateBytes` to a positive safe integer to reject serialized UTF-8 JSON state exceeding that host-owned limit before transport; omission or `null` disables this guard. This is a byte guard, not a token estimate. [Provider model context limits](https://docs.typesafe.ai/models.md) still apply. The adapter never truncates or splits state or questions.
 
@@ -160,6 +162,19 @@ const { answers, usage, cost_usd } = await judge({
 - Images and Box go to TypeSafe's own API only. The OpenRouter path is not verified for them, so a request that carries either is refused with `provider: "openrouter"`.
 - Request bodies are sent uncompressed; the SDK's default compresses them with zstd.
 - Box is a preview: Jev's page says its request format, answers and limits can change between releases.
+
+## As a DecisionProvider
+
+`jevProvider(options)` is Jev behind the DSL's provider seam, for a host that runs every decision model the same way. It takes `createJevRunner`'s options, and `judgeFromProvider(jevProvider())` is a `runJudge`:
+
+```ts
+import { judgeFromProvider, runWorkflow } from '@parcha/agentrun-dsl';
+import { jevProvider } from '@parcha/agentrun-jev';
+
+const result = await runWorkflow(workflow, input, { runJudge: judgeFromProvider(jevProvider()) });
+```
+
+It sends each decision once, since a paid request is never re-sent unasked: it runs `createJevRunner` with `maxAttempts: 1`, whatever `maxAttempts` you pass. A 408, a 5xx or a connection error (the SDK cannot tell one before sending from one after) is `outcome_unknown` at an unknown cost, and the run escalates the decision as interrupted. It declares noul, choice and score questions from text or JSON (a box question needs an image, which the seam does not carry yet), no evidence, and the key it reads by name (`TYPESAFE_API_KEY`, or `OPENROUTER_API_KEY` with `provider: "openrouter"`). Its other errors are `DecisionProviderError`s with Jev's message: an HTTP 401 or 403 is `auth`, a 429 `rate_limited`, and a 400 or 422 `invalid_request`. A deadline that ends the request in flight (the host's, or the runner's own `timeoutMs`) is `outcome_unknown` too, since it may have been answered; only the host's own cancel is `aborted`. A cost is booked `reported` with no `pricing` set, and `estimate` with one. It passes the conformance suite in `@parcha/agentrun-dsl/testing` (`test/decision-provider.test.mjs`).
 
 ## Testing your own host
 

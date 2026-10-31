@@ -3,6 +3,7 @@
 // host on any runtime can use it.
 export type { RecoveryBinding, RecoveryEffect, RecoveryIntent, RecoveryItem, RecoveryJournal, RecoveryNote, RecoveryParts, RecoveryStore } from "./store.js";
 export { openRecovery, recoveryBinding, recoveryBound, routeTaken, workspaceFiles, type RecoveryEffectParams, type RecoveryFiles, type RecoveryOptions, type RecoveryStop } from "./driver.js";
+export { DECISION_REFUSED } from "../decision-receipts.js";
 export { withRecovery, DECISION_INTERRUPTED, type RecoveryAdapters, type RecoveryDriver, type RecoveryNodeParams, type RecoveryStep, type WithRecoveryOptions } from "./with-recovery.js";
 export { memoryStore } from "./memory-store.js";
 export { fileStore } from "./file-store.js";

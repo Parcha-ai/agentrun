@@ -1,0 +1,159 @@
+Patch: 006-comments
+Reason: comments described the platform and the products upstream ran on, which this package does not carry; they describe this one
+Upstream: ours
+Pins: comments only
+---
+diff --git a/packages/harness-codex/src/binary.ts b/packages/harness-codex/src/binary.ts
+index d0f3596..d129cab 100644
+--- a/packages/harness-codex/src/binary.ts
++++ b/packages/harness-codex/src/binary.ts
+@@ -5,7 +5,7 @@ import { env } from 'node:process';
+ 
+ /**
+  * Where this machine's `codex` binary is, for the stand-in VM's tests and the
+- * live tests on a laptop (`harness-world-codex/binary`, never the package's
++ * live tests on a laptop (`@parcha/agentrun-codex's binary.ts`, never the package's
+  * index: in a session, Codex is the pinned build in the sandbox's base image,
+  * `CODEX_CLI`, and no Function looks a binary up). `@openai/codex` is a small
+  * launcher plus one optional package per platform (`@openai/codex-<platform>`,
+@@ -29,7 +29,8 @@ export function codexTarget(platform = process.platform, arch = process.arch): {
+ }
+ 
+ /**
+- * The binary to run, or `undefined` if none is installed:
++ * The binary to run, and its platform package's version when it came from one,
++ * or `undefined` if none is installed:
+  *
+  * 1. `CODEX_BIN`;
+  * 2. the platform package next to the `@openai/codex` this package depends on;
+diff --git a/packages/harness-codex/src/config.ts b/packages/harness-codex/src/config.ts
+index 1a5fef0..6d87a7f 100644
+--- a/packages/harness-codex/src/config.ts
++++ b/packages/harness-codex/src/config.ts
+@@ -1,16 +1,19 @@
+ /**
+- * The `config.toml` a session's `CODEX_HOME` gets: the model and its AI
+- * Gateway provider, and Codex's built-in tools and side features turned off.
++ * The `config.toml` a session's `CODEX_HOME` gets: the model and its
++ * provider (the session's model proxy), and Codex's built-in tools and side
++ * features turned off.
+  */
+ 
+ export type TomlValue = string | number | boolean | TomlValue[] | { [key: string]: TomlValue };
+ 
+ /**
+- * Codex features turned off (`codex features list`). With these off, the
+- * model is offered only the harness's dynamic tools and `request_user_input`
+- * (which Codex itself answers "unavailable in Default mode"): no shell, no `apply_patch`,
+- * no images, no web, no sub-agents. The rest are side features that would
+- * download plugins, call chatgpt.com or start a daemon.
++ * Codex features turned off (`codex features list`). With these off, a
++ * classic model is offered only the harness's dynamic tools and
++ * `request_user_input` (which Codex itself answers "unavailable in Default
++ * mode"): no shell, no `apply_patch`, no images, no web, no sub-agents. A
++ * code-mode model (luna) is offered code mode's `exec` and `wait`; see
++ * `code_mode_host`. The rest are side features that would download plugins,
++ * call chatgpt.com or start a daemon.
+  */
+ export const BUILTINS_OFF: Record<string, boolean> = {
+   shell_tool: false,
+diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
+index 8c1b93b..b389e23 100644
+--- a/packages/harness-codex/src/harness.ts
++++ b/packages/harness-codex/src/harness.ts
+@@ -47,8 +47,6 @@ import {
+ 
+ /**
+  * Codex on harness-world: a kernel `Harness` that drives `codex app-server
+- * --stdio` (Codex's JSON-RPC protocol for IDEs) **in the session's Vercel
+- * Sandbox VM**, never on the machine that drives the session
+  * (docs/workspaces.md §1 decision 2, §5.6). Every drive acquires the
+  * session's VM through the sandbox tier (`attachInDrive` with the session
+  * factory's acquire, `machine.acquire`), and refuses a machine the factory
+@@ -138,7 +136,6 @@ export interface CodexHarnessOptions {
+    * §5.5).
+    */
+   sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access';
+-  /** An AI Gateway model id. Default `openai/gpt-5.4-mini`. */
+   model?: string;
+   /** Developer instructions for the thread (`developerInstructions`). */
+   instructions?: string;
+@@ -146,7 +143,6 @@ export interface CodexHarnessOptions {
+   baseInstructions?: string;
+   /** Reasoning effort per turn. Default Codex's. */
+   effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+-  /** The Gateway credential, read per request in the Function. Default `gatewayCredential` (AI_GATEWAY_API_KEY, else the Vercel OIDC token). */
+   credential?: () => Promise<string>;
+   /** The Gateway's base URL. Default `gatewayUrl()`. */
+   gatewayUrl?: string;
+@@ -168,10 +164,6 @@ export interface CodexHarnessOptions {
+    */
+   machine?: CodexMachine;
+   /**
+-   * The stand-in's seam (docs/workspaces.md §5.8): the command that speaks
+-   * app-server's protocol instead of the image's `codex`. Refused outside a
+-   * test run (`DH_TEST_LOCAL_SANDBOX=1` under a test runner, not on Vercel,
+-   * not in production).
+    */
+   test?: { command: string; args?: string[] };
+ }
+@@ -282,7 +274,6 @@ export class RolloutTailError extends Error {
+   }
+ }
+ 
+-/** The stand-in's guard (`test`), the same as harness-world-sandbox's. */
+ function testGuard(): void {
+   if (process.env.AGENTRUN_CODEX_STANDIN !== '1') throw new TypeError('agentrun-codex: a stand-in app-server needs AGENTRUN_CODEX_STANDIN=1');
+   if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') throw new TypeError('agentrun-codex: a stand-in app-server runs only under a test runner');
+@@ -386,7 +377,6 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+ 
+   return {
+     name: options.name ?? 'codex',
+-    // Each model request reaches Agent Runs from the Gateway proxy (`ModelSteps.request`).
+     modelCalls: 'self',
+     async drive(ctx: DriveContext) {
+       // Nothing to do (an idle wake, a chaos arming): no VM. A model step a
+@@ -432,7 +422,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+       });
+     }
+     // The handler asks for the credential per request, in this drive's async
+-    // context: on Vercel the OIDC token is read from the invocation's.
++    // context.
+     const credential = options.credential ?? gatewayCredential;
+     const inDrive = AsyncLocalStorage.snapshot();
+     // Every model request, through the handler: the drive's model steps, written around a "Crash during: model" drill.
+diff --git a/packages/harness-codex/src/rollout.ts b/packages/harness-codex/src/rollout.ts
+index e5cf871..6958a36 100644
+--- a/packages/harness-codex/src/rollout.ts
++++ b/packages/harness-codex/src/rollout.ts
+@@ -12,7 +12,7 @@
+  * `CODEX_HOME`, it is enough to resume the thread (`thread/resume` by id).
+  *
+  * The harness mirrors it into the session's native journal
+- * (harness-world-process), one record per line, on the stream
++ * (the process layer), one record per line, on the stream
+  * `rollout:<threadId>`; the `codex.thread` stream records which thread is
+  * the session's and where its file goes. Restoring is writing those lines
+  * back, byte for byte, into a wiped `CODEX_HOME`.
+diff --git a/packages/harness-codex/test/fake-app-server.mjs b/packages/harness-codex/test/fake-app-server.mjs
+index 832051d..ab58519 100644
+--- a/packages/harness-codex/test/fake-app-server.mjs
++++ b/packages/harness-codex/test/fake-app-server.mjs
+@@ -20,7 +20,7 @@
+  *   and exits (its VM, or Codex's own shutdown, would take it).
+  *
+  * Its "model" is a script: `call <tool> <json args>` calls the tool and
+- * reports the result; `shell <command>` runs a built-in command the way
++ * reports the result (`twice` asks for the same call twice at once); `shell <command>` runs a built-in command the way
+  * Codex does (an `exec_command` call in the rollout, `item/started` for a
+  * `commandExecution`, an approval request that blocks, then a login shell,
+  * `item/completed` with its output);
+@@ -32,7 +32,7 @@
+  * appends every method it receives to a file. With `FAKE_CODEX_MODEL=remote`
+  * what it says is a model request, as Codex's is: a POST to the provider's
+  * `base_url` + `/responses` from `config.toml` (the drive's gateway proxy, in
+- * front of harness-world-process's `fakeModel()`), with the provider's
++ * front of a scripted model), with the provider's
+  * `env_key` as its bearer key, streamed back piece by piece.
+  *
+  * For the sandbox tier's tests (docs/workspaces.md §11.4 A6) it also plays

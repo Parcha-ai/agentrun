@@ -3,6 +3,7 @@
 // so a later process resumes from them: a request already made is not made again, and a call a crash cut off is
 // answered interrupted, never run again.
 import { SessionFenced } from "./errors.js";
+import { abortedOutcome, SessionHalt } from "./kernel/halt.js";
 import type { AdapterSession, AgentAdapter, HostTool, JsonValue, SessionRecord, SessionSpec, SessionState, SessionStore, TurnStatus } from "./types.js";
 
 export { SCHEMA_CHECK_CASES, type SchemaCheckCase } from "./schema-check-cases.js";
@@ -42,6 +43,8 @@ export type FauxAction =
   | { fail: string }
   /** The process stops here: nothing resolves until the session's signal aborts. */
   | { hang: true }
+  /** The harness halts the drive with this reason (a spend cap, a mirror it cannot keep): the turn ends failed, naming it. */
+  | { halt: string }
   /** A paid request leaves (its beforeRequest passes) and the process dies before it answers: nothing more resolves. */
   | { cut: true };
 
@@ -100,6 +103,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         if (!results.has(callId)) await append(FAUX_RECORDS.result, { callId, interrupted: true });
       }
       const tools = new Map<string, HostTool>(spec.tools.map((tool) => [tool.name, tool]));
+      /** What the session has been sent, as a model would be prompted with it. */
+      const prompt = records.filter((r) => r.kind === FAUX_RECORDS.user).map((r) => (r.data as { text: string }).text);
       let ending: { promise: Promise<{ status: TurnStatus; error?: string }>; resolve: (end: { status: TurnStatus; error?: string }) => void } | undefined;
       let turnSignal: AbortController | undefined;
 
@@ -121,7 +126,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             const action = script[cursor];
             if (!action) return await end("completed");
             if ("hang" in action) return await hang(signal);
-            await io.models.beforeRequest({ model: "faux" });
+            if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
+            // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
+            await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             stats.requests += 1;
             const index = cursor++;
@@ -144,7 +151,12 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             }
           }
         } catch (error) {
-          if (signal.aborted) return void ending?.resolve({ status: "interrupted" });
+          // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.
+          if (signal.aborted) {
+            const outcome = abortedOutcome(signal, io.signal);
+            if (outcome.status === "interrupted") return void ending?.resolve(outcome);
+            return await end("failed", outcome.error);
+          }
           return await end("failed", (error as Error).message);
         }
       };
@@ -158,13 +170,14 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         state,
         async send(text) {
           await append(FAUX_RECORDS.user, { text });
+          prompt.push(text);
           await append(FAUX_RECORDS.turn, { n: turnsStarted + 1 });
           begin();
         },
         async recover() { begin(); },
         turnEnd: () => ending ? ending.promise : Promise.resolve({ status: "completed" }),
-        async interrupt() { turnSignal?.abort(new Error("interrupted")); },
-        async close() { turnSignal?.abort(new Error("closed")); stats.closed.push(spec.key); },
+        async interrupt() { turnSignal?.abort(new SessionHalt("interrupted")); },
+        async close() { turnSignal?.abort(new SessionHalt("closed")); stats.closed.push(spec.key); },
       };
       return session;
     },

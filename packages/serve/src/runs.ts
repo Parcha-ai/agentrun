@@ -5,7 +5,7 @@
 // again on its directory, and resumes from its store.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, existsSync, openSync, rmSync } from "node:fs";
 import { open as openFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
@@ -13,19 +13,22 @@ import { fileURLToPath } from "node:url";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { AgentHomeError, type Revision, type RevisionKind, type RunRow, type RunState } from "@parcha/pi-durable-agent";
-import { registerLabel, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { registerLabel, registerTurnEnding, timelineOf, timelineReducer, type TimelineEvent } from "@parcha/pi-durable-agent/timeline";
+import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
-import { readJson, RUN_CANCELLED, RUN_META, writeWhole } from "./files.js";
+import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { DECISION_KEY_FD_ENV, FAUX_JEV_ENV, handedJev, JEV_KEY_ENV, jevKey } from "./decisions.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, withoutFaux } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
+import { handover, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets, withSecrets } from "./secrets.js";
 
 export type Status = "queued" | "working" | "input_required" | "completed" | "failed" | "cancelled";
 export type State = "working" | "waiting" | "idle";
@@ -79,7 +82,7 @@ type RunMeta = {
   input?: Json;
   effort?: string;
   max_cost_usd?: number;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; details?: { reason: string } };
   /** A workflow run's output, once it completed. */
   output?: unknown;
   /** A workflow run that escalated: what a person is to look at. Its time is the run's saved end, read with it. */
@@ -90,7 +93,7 @@ type RunMeta = {
   /** A run stopped by an older server: how many messages the person had sent then. Read only when `stopped_at` is not. */
   stopped_after?: number;
 };
-type RunError = { code: string; message: string; retryable: boolean };
+type RunError = { code: string; message: string; retryable: boolean; details?: { reason: string } };
 /** Why an escalated workflow run waits for a person: the escalation's kind, the escalate node's label, its summary,
  *  and when the run ended (`at`, the run's `ended_at`). */
 export type RunReview = { kind: string | null; node: string | null; reason: string; at: string };
@@ -101,7 +104,7 @@ const reviewAt = (review: SavedReview | null, endedAt: string): RunReview | null
 
 /** A failed run's error from its row and serve.json: its own, else the row's summary. */
 const errorOfRow = (row: RunRow, meta: Partial<RunMeta> | null): RunError =>
-  ({ code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false });
+  ({ code: meta?.error?.code ?? "run_failed", message: meta?.error?.message ?? row.summary ?? "The run failed.", retryable: false, ...(meta?.error?.details ? { details: meta.error.details } : {}) });
 
 /** An ended run's review from its row and serve.json: an escalated one's as its end saved it, else (an end saved before
  *  reviews were kept) the row's summary; null for every other run. */
@@ -116,6 +119,9 @@ export type Run = {
   revision: string;
   /** The harness its revision names, read at its first message. */
   harness?: string;
+  /** Imported history (`agentrun-serve import`): the source it was run in, and its id there. It takes no message, and a
+   *  stop or a cancel moves nothing. */
+  imported?: { source: string; session: string };
   /** The revision's number among its agent's. */
   version: number;
   dir: string;
@@ -152,6 +158,8 @@ export type Run = {
   /** A workflow run's decisions' cost, from its receipts once its end is read: null when one is unknown. */
   decisionCost?: number | null;
   relaunches: number;
+  /** Its newest launch has not reported back: its mark (RUN_LAUNCHING) is on disk. */
+  launching?: boolean;
   settled: boolean;
   settling?: Promise<void>;
   /** The newest write of its serve.json: one at a time, in order. */
@@ -163,6 +171,8 @@ export type Run = {
 
 const ASKED = "Asked you: ";
 registerLabel(ASK_TOOL, (args) => `${ASKED}${typeof args.question === "string" ? args.question : ""}`);
+// ask_person ends its turn (tools.ts): the person's reply is their next message, never a steer.
+registerTurnEnding(ASK_TOOL);
 
 /** The waiting row after each answered `ask_person` call, which the timeline module does not know. The question comes
  *  from the call's row, whose label this module registers. */
@@ -262,13 +272,19 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxJev?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
-/** The server's own variables, which a run's process never gets: the API token, by name or by value. Model keys, the
- *  AGENT_MODEL variables and the rest of the environment pass; the door token goes by file. */
+/** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
+/** The secrets a run's process is handed over its pipe (secrets.ts): every one but the server's own. */
+export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name));
+/** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
+const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
+/** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
+ *  variables and the rest pass, and the door token goes by file. A test hook's name passes never (withoutFaux): the run
+ *  gets one only from startServe's options. */
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(env).filter(([name, value]) => !SERVER_ONLY.has(name) && value !== token));
+  Object.fromEntries(Object.entries(withoutSecrets(withoutFaux(env))).filter(([, value]) => value !== token));
 
 /** One line of the run process's log in words: pi-durable-disk writes JSON lines (`{at, event, message, ...}`). */
 function inWords(line: string): string {
@@ -283,15 +299,53 @@ function inWords(line: string): string {
   return [text("event"), text("message") ?? text("error")].filter(Boolean).join(": ") || "the run's process left no message";
 }
 
+/** The line of the run process's log a failure's message is made of: its last, past any harness's own lines (a proxy's
+ *  refusal just before a crash says nothing of why the process went). */
+export function failureLine(log: string): string {
+  const lines = log.trim().split("\n");
+  return ownLine(lines) ?? lines.at(-1) ?? "";
+}
+
+/** The last of `lines` that is not a harness's own line, if any. */
+function ownLine(lines: readonly string[]): string | undefined {
+  return lines.findLast((line) => {
+    if (line.trim() === "") return false;
+    try {
+      return (JSON.parse(line) as { event?: unknown } | null)?.event !== HARNESS_LOG_EVENT;
+    } catch {
+      return true;
+    }
+  });
+}
+
+/** How far back from its end a failure's message is looked for in the run's log, in steps of LOG_STEP. */
+const LOG_STEP = 4096;
+const LOG_REACH = 1 << 20;
+
 /** The last line of the run process's log, in words, for a failure's message. */
-async function lastLogLine(run: Run): Promise<string> {
+export async function lastLogLine(run: Pick<Run, "dir">): Promise<string> {
   const file = await openFile(join(run.dir, PROCESS_LOG)).catch(() => null);
   if (!file) return "";
   try {
+    // Backward until a whole line is the process's own: harness lines after it may run past any one read, and a read
+    // that starts inside a line has only its tail, which is no line at all. Each step looks only at the lines it
+    // completes; what was read is joined once, and failureLine, the one rule, picks the line from it.
     const { size } = await file.stat();
-    const length = Math.min(size, 4096);
-    const { buffer } = await file.read(Buffer.alloc(length), 0, length, size - length);
-    return clip(inWords(buffer.toString("utf8").trim().split("\n").at(-1) ?? ""), 300);
+    const chunks: Buffer[] = [];
+    let start = size;
+    // The oldest line read so far, torn at the read's start unless that is the file's start.
+    let head = Buffer.alloc(0);
+    while (start > 0 && size - start < LOG_REACH) {
+      const from = Math.max(0, start - LOG_STEP);
+      const { buffer } = await file.read(Buffer.alloc(start - from), 0, start - from, from);
+      start = from;
+      chunks.unshift(buffer);
+      const newline = buffer.indexOf(0x0a);
+      const completed = start === 0 ? Buffer.concat([buffer, head]) : newline < 0 ? Buffer.alloc(0) : Buffer.concat([buffer.subarray(newline + 1), head]);
+      head = start === 0 ? Buffer.alloc(0) : newline < 0 ? Buffer.concat([buffer, head]) : buffer.subarray(0, newline);
+      if (ownLine(completed.toString("utf8").split("\n")) !== undefined) break;
+    }
+    return clip(inWords(failureLine(Buffer.concat(chunks).subarray(head.length).toString("utf8"))), 300);
   } finally {
     await file.close();
   }
@@ -308,6 +362,8 @@ export class Runs {
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
   private starting = 0;
+  /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
+  private swept?: Promise<void>;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -315,6 +371,11 @@ export class Runs {
   }
 
   // ---- reading --------------------------------------------------------------------------------------------------------
+
+  /** Run `id` when this process holds it, never read from disk. */
+  held(id: string): Run | undefined {
+    return this.runs.get(id);
+  }
 
   /** Run `id`, read from the agent store the first time this process sees it. */
   async get(id: string): Promise<Run | null> {
@@ -353,6 +414,7 @@ export class Runs {
     };
     const run = this.blank(row, dir, meta, (await this.options.agents.revisions(row.agent)).find((r) => r.id === row.revision)?.version ?? 0);
     this.runs.set(row.id, run);
+    run.launching = existsSync(join(dir, RUN_LAUNCHING));
     const record = await this.record(run);
     // Only a store no live instance holds is opened: released, or left by an instance whose lease lapsed.
     if (row.state !== "running" || !this.doorOf(record)) await this.storeWhenFree(run);
@@ -361,6 +423,9 @@ export class Runs {
       run.endedAt = row.endedAt;
       // An ended run the store kept no cost for has an unknown cost, never $0.
       run.costUsd = row.costUsd ?? null;
+      // A workflow run's decisions' cost too: an unknown one keeps the run's unknown after a restart. Unread, it is unknown.
+      if (run.kind === "workflow") await this.readDecisionCost(run).catch(() => void (run.decisionCost = null));
+      if (row.importedFrom) run.imported = row.importedFrom;
       if (run.outcome === "failed") run.error = errorOfRow(row, meta);
       run.settled = true;
     } else if (record && this.doorOf(record)) {
@@ -488,6 +553,7 @@ export class Runs {
     const pid = holderPid(record);
     if (!pid) return;
     run.orphan = pid;
+    this.reportedBack(run);
     this.connect(run);
     let releasedAt: number | undefined;
     let unreadable = 0;
@@ -516,9 +582,52 @@ export class Runs {
 
   /** At start: every run the store says is running is read, supervised when its process lives, carried back when it
    *  already ended, and opened again when its process went before it ended. */
-  async recover(): Promise<void> {
+  /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
+   *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
+  private sweepOnce(): Promise<void> {
+    const box = this.options.box;
+    if (!box) return Promise.resolve();
+    this.swept ??= (async () => {
+      const rows = await this.options.agents.request(() => this.store.listRuns());
+      const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
+      for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
+    })().catch((error: unknown) => {
+      // A sweep that failed is not kept: the next start, open or relaunch sweeps again, so one transient error never
+      // holds every run back until the server restarts. Nothing of this server's runs has started a box before it.
+      this.swept = undefined;
+      throw error;
+    });
+    return this.swept;
+  }
+
+  /** The run's box let go (archive, or its process gone after an archive): reaped by the box's own count. */
+  private async teardown(run: Run): Promise<void> {
+    const box = this.options.box;
+    if (!box || this.live(run)) return;
+    // Never in the way of the run's own end or an archive already saved: a box that could not be let go (its cgroup not
+    // removed, its record not marked) is said, and its unmarked record is tried again by the next start's sweep.
+    try {
+      if ((await settleBox(box.host, box.quarantine, run.id, run.dir)) === "quarantined") warn(run.id, "its box could not be emptied; it is quarantined, and tried again at each start");
+    } catch (error) {
+      warn(run.id, `its box was not let go (${(error as Error).message}); the next start tries again`);
+    }
+  }
+
+  /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
+   *  now when its process is gone, else when it exits. */
+  async archived(): Promise<void> {
+    if (!this.options.box) return;
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
-      if (row.state !== "running") continue;
+      if (!row.archivedAt) continue;
+      const run = await this.get(row.id);
+      if (run) await this.teardown(run);
+    }
+  }
+
+  async recover(): Promise<void> {
+    await this.sweepOnce();
+    for (const row of await this.options.agents.request(() => this.store.listRuns())) {
+      if (row.state !== "running" || row.importedFrom) continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
       if (run && !this.live(run) && !run.outcome) await this.settle(run, null, false);
     }
@@ -545,6 +654,7 @@ export class Runs {
     void (async () => {
       while (!abort.signal.aborted) {
         const door = this.doorOf(await this.record(run));
+        if (door) this.reportedBack(run);
         if (door && run.kind === "workflow") {
           if (!run.working && !run.outcome) {
             run.working = true;
@@ -602,6 +712,8 @@ export class Runs {
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
   private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
     const deadline = Date.now() + timeoutMs;
+    // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
+    await this.sweepOnce();
     for (let launched = false; ; await sleep(100)) {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
@@ -625,6 +737,15 @@ export class Runs {
       }
       if (Date.now() > deadline) throw new ApiError("unavailable", "the run did not come up in time", { retry_after_ms: 1000 }, { "retry-after": "1" });
     }
+  }
+
+  /** The refusal of a message to an imported run: it was run elsewhere, and is kept as history. */
+  private importedRefusal(run: Run): ApiError {
+    const source = run.imported?.source;
+    return new ApiError("not_continuable", `This run was imported from ${source}: it is history, not run here, so it takes no message. Start a new run of the agent.`, {
+      details: { reason: "imported", imported_from: source },
+      next_action: { type: "request", method: "POST", path: `/agents/${run.agentId}/runs`, caller_supplies: ["input", "Idempotency-Key"] },
+    });
   }
 
   private finished(run: Run): ApiError {
@@ -662,8 +783,12 @@ export class Runs {
 
   private launch(run: Run): void {
     if (run.child || this.closing || run.cancel || run.outcome || run.finishing) return;
+    // Its secrets go over fd 3, written whole and closed as it starts; it reads them first (secrets.ts).
+    const secrets = handover(RUN_SECRETS);
     const env: NodeJS.ProcessEnv = {
       ...childEnv(process.env, this.options.token),
+      [SECRETS_FD_ENV]: "3",
+      [SECRETS_LEN_ENV]: String(secrets.length),
       ...(this.options.faux ? { [FAUX_ENV]: this.options.faux, ...(this.options.fauxBrowser ? { [FAUX_BROWSER_ENV]: this.options.fauxBrowser } : {}), ...(this.options.fauxWeb ? { [FAUX_WEB_ENV]: this.options.fauxWeb } : {}), ...(this.options.fauxJev ? { [FAUX_JEV_ENV]: this.options.fauxJev } : {}) } : {}),
       ...(this.options.fauxHarness ? { [FAUX_HARNESS_ENV]: this.options.fauxHarness } : {}),
       ...(run.meta.effort ? { [EFFORT_ENV]: run.meta.effort } : {}),
@@ -674,10 +799,12 @@ export class Runs {
     // process gets the decision key once on an inherited pipe, for its judge's runner alone (decisions.ts).
     delete env[JEV_KEY_ENV];
     delete env[DECISION_KEY_FD_ENV];
-    const decision = run.kind === "workflow" ? jevKey(process.env) : undefined;
+    // Chosen from the secrets this server holds: out of its environment once its launcher hands them over (secrets.ts).
+    const decision = run.kind === "workflow" ? jevKey(withSecrets(process.env)) : undefined;
     const handsKey = decision !== undefined;
+    this.markLaunching(run);
     const log = openSync(join(run.dir, PROCESS_LOG), "a", 0o600);
-    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log];
+    const stdio: ("ignore" | "pipe" | number)[] = ["ignore", "ignore", log, "pipe"];
     // The first descriptor after the others: macOS aborts the parent of a spawn with a pipe at 16 or above.
     const keyFd = stdio.length;
     if (handsKey) {
@@ -687,23 +814,52 @@ export class Runs {
     // A workflow run resumes from its journal when it opens again, so SIGTERM lets it go at once, undrained.
     const drain = run.kind === "workflow" ? "0s" : (this.options.drainTimeout ?? DRAIN);
     const child = spawn(process.execPath, [
-      "--no-warnings=ExperimentalWarning", this.cli, "run", "--dir", run.dir, "--app", this.app,
+      // secrets.ts first, as a preload: the pipe is read and closed before pi-durable-disk's CLI loads or starts anything.
+      "--no-warnings=ExperimentalWarning", "--import", SECRETS_MODULE, this.cli, "run", "--dir", run.dir, "--app", this.app,
       "--serve", "0", "--serve-host", "127.0.0.1", "--serve-token-file", this.options.doorTokenFile, "--drain-timeout", drain,
     ], { stdio, env });
     closeSync(log);
+    const pipe = child.stdio[3] as import("node:stream").Writable | null;
+    pipe?.on("error", () => {});
+    pipe?.end(secrets);
     if (handsKey) {
-      const pipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[keyFd];
+      const keyPipe = (child.stdio as unknown as readonly (Writable | null | undefined)[])[keyFd];
       // A process that dies before it reads the key closes the pipe: that is its exit to settle, not an error here.
-      pipe?.on("error", () => undefined);
-      pipe?.end(handedJev(decision));
+      keyPipe?.on("error", () => undefined);
+      keyPipe?.end(handedJev(decision));
     }
     run.child = child;
     child.once("exit", (code) => {
       if (run.child === child) run.child = undefined;
+      this.reportedBack(run);
       void this.settle(run, code, true);
     });
-    child.once("error", () => void (run.child === child && (run.child = undefined)));
+    child.once("error", () => {
+      if (run.child === child) run.child = undefined;
+      this.reportedBack(run);
+    });
     this.connect(run);
+  }
+
+  /** Writes the run's launch mark before its process is spawned: a spawn that takes the server down leaves it, and the
+   *  next start fails the run rather than launch it again and go down with it. The file exists once the call returns,
+   *  which a server's death does not undo; no fsync, which would hold the event loop on the disk at every launch. */
+  private markLaunching(run: Run): void {
+    closeSync(openSync(join(run.dir, RUN_LAUNCHING), "w", 0o600));
+    run.launching = true;
+  }
+
+  /** The run's newest launch came through with the server up: its process serves, or exited while it was watched. Its
+   *  callers are event handlers, so a mark that cannot be removed is logged, never thrown: a throw there stops the
+   *  server and every run on it. The mark left behind fails the run at the next start, which never launches it again. */
+  private reportedBack(run: Run): void {
+    if (!run.launching) return;
+    run.launching = false;
+    try {
+      rmSync(join(run.dir, RUN_LAUNCHING), { force: true });
+    } catch (error) {
+      this.options.log?.("launch_mark_kept", { run: run.id, code: (error as NodeJS.ErrnoException).code ?? "unknown" });
+    }
   }
 
   /** Opens the run again on its directory after its process went before the run ended: it resumes from its store. An
@@ -749,11 +905,20 @@ export class Runs {
     // A process that is gone serves no door, whatever its last heartbeat says.
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
     if (released || gone) await this.storeWhenFree(run);
+    // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
+    // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
+    // go: a settle with the process not gone means another live holder of the run, whose box is its own. That holder is
+    // one this server neither started nor adopted (adoptProcess watches only the holder it adopts), so its later exit
+    // settles nothing here: its box stays held, fail-closed, until the next start's sweep or another archive lets it go.
+    if (gone && (await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined))?.archivedAt) await this.teardown(run);
     let ended: { outcome: Status; state?: Ended; summary?: string } | undefined;
     // A workflow run carries back how its workflow ended, through workflowCarry; cancelled before that, it stopped.
     if (run.cancel) ended = run.kind === "workflow" ? await this.workflowEnd(run, workflowEnding(record) ?? { status: "stopped" }) : { outcome: "cancelled" };
     else if (run.finishing) ended = { outcome: run.finishing };
-    else if (exited && !released && code !== null && code !== 0) {
+    else if (run.launching && gone) {
+      run.error = { code: "run_failed", message: "The server went down while it started the run's process, which never came up; it is not started again, since starting it may be what took the server down.", retryable: false, details: { reason: LAUNCH_LOST } };
+      ended = { outcome: "failed" };
+    } else if (exited && !released && code !== null && code !== 0) {
       run.error = { code: "run_failed", message: `The run's process exited (${code}) without releasing the run: ${await lastLogLine(run)}`, retryable: false };
       ended = { outcome: "failed" };
     } else if (!gone && this.doorOf(record)) ended = undefined;
@@ -789,11 +954,16 @@ export class Runs {
       run.meta.review = { kind: escalation?.kind ?? null, node: escalation?.label ?? escalatedAt?.label ?? null, reason: escalation?.summary ?? summary };
     }
     else if (state === "failed") run.error = { code: "run_failed", message: `The workflow failed: ${summary}.`, retryable: false };
-    // Its decisions' receipts carry their cost: a receipt whose cost is unknown leaves the run's unknown, never $0.
+    await this.readDecisionCost(run);
+    return { outcome: STATUS_OF[state], state, summary };
+  }
+
+  /** A workflow run's decisions' cost, from their receipts in its released store: a receipt whose cost is unknown leaves
+   *  the run's unknown, never $0. Read at its end and again when a restarted server adopts it as ended. */
+  private async readDecisionCost(run: Run): Promise<void> {
     const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
     const receipts = durableDecisions(this.storeFile(run)).map((row) => row.cost_usd);
     if (receipts.length) run.decisionCost = receipts.every((cost) => typeof cost === "number") ? (receipts as number[]).reduce((a, b) => a + b, 0) : null;
-    return { outcome: STATUS_OF[state], state, summary };
   }
 
   /** Ends the run in the agent store, once: how it ended, its cost and a line for the list. A store held by another
@@ -802,7 +972,7 @@ export class Runs {
     const answer = answerOf(run.rows);
     const cost = run.decisionCost === undefined ? costOf(run.rows) : costView(run.rows, undefined, run.decisionCost);
     const line = summary ?? (outcome === "completed" ? (run.answerText ?? answer?.text ?? answer?.summary) : outcome === "cancelled" ? "cancelled" : run.error?.message);
-    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message };
+    if (run.error) run.meta.error = { code: run.error.code, message: run.error.message, ...(run.error.details ? { details: run.error.details } : {}) };
     const ending = { state: state ?? (outcome === "cancelled" ? "stopped" : outcome === "completed" ? "completed" : "failed"), ...(cost === null ? {} : { costUsd: cost }), ...(line ? { summary: line } : {}) } as const;
     const persist = async () => {
       await this.saveMeta(run);
@@ -896,6 +1066,7 @@ export class Runs {
   }
 
   async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+    await this.sweepOnce();
     await this.takePlace();
     try {
       // Read again: the place may have been waited for, and the agent archived meanwhile.
@@ -949,6 +1120,7 @@ export class Runs {
 
   /** One message to an agentic run, its mode chosen by the run's state (the contract's table). */
   async message(run: Run, content: string): Promise<{ mode: "steer" | "answer" | "follow_up"; messageId: string }> {
+    if (run.imported) throw this.importedRefusal(run);
     // A run that reads finished before its end is written (its process still closing, or its carry back waiting on the
     // store) is answered once the end is in: then it is completed and opens again, or it is failed or cancelled.
     if (run.finishing && !run.outcome) await this.endWritten(run);
@@ -983,6 +1155,7 @@ export class Runs {
    *  cap, taking a place under the server's. Launched here, with no wait after the place is taken, so no start takes
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
   private async reopen(run: Run): Promise<void> {
+    await this.sweepOnce();
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
@@ -1014,6 +1187,8 @@ export class Runs {
 
   /** Abort the turn that is running; the run stays open, `input_required` and idle. A workflow run has no turn to stop. */
   async stop(run: Run): Promise<boolean> {
+    // The contract's stop has no refusal: an imported run answers as any ended one, stopped false, and nothing moves.
+    if (run.imported) return false;
     const { status, state } = statusOf(run);
     if (run.kind === "workflow" || !this.live(run) || !(status === "working" && state === "working") || run.submitted > 0) return false;
     // Set before the abort: the turn's end can arrive before the door answers, and must not read as an answer.
@@ -1037,6 +1212,8 @@ export class Runs {
 
   /** Record the cancel and signal the run; it is `cancelled` once its process has exited and it is carried back. */
   async cancel(run: Run): Promise<boolean> {
+    // As stop: already terminal, and no cancel mark is written.
+    if (run.imported) return false;
     if (run.outcome) return false;
     run.cancel = true;
     // First, so no request leaves after the cancel landed, whether or not the process can be reached yet.
@@ -1076,7 +1253,8 @@ export class Runs {
 
   /** A run's cost from its rows, else what the store recorded when it carried the run back. */
   cost(run: Run) {
-    return { usd: costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
+    // An imported run's cost is its source's, for the whole session: its requests may not each have a price.
+    return { usd: run.imported ? (run.costUsd ?? null) : costView(run.rows, run.costUsd, run.decisionCost), basis: "estimate", charge_state: null, cap_usd: run.meta.max_cost_usd ?? null };
   }
 
   /** `Run`, as the contract shows it. */
@@ -1109,13 +1287,14 @@ export class Runs {
       review: endedAt === null ? null : reviewAt(run.meta.review ?? (row ? reviewOfRow(row, run.meta) : null), endedAt),
       cost: this.cost(run),
       archived_at: stored?.archivedAt ?? null,
+      imported_from: run.imported ?? null,
       poll_after_ms: TERMINAL.has(status) && run.settled ? 0 : 1000,
     };
   }
 
   async summary(run: Run) {
-    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at } = await this.view(run);
-    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at };
+    const { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from } = await this.view(run);
+    return { run_id, agent_id, agent_version, revision, kind, sha, status, state, title, created_at, ended_at, error, review, cost, archived_at, imported_from };
   }
 
   /** A run's status for a list: an ended run's from its row, a running one's from the run itself. */
@@ -1139,6 +1318,7 @@ export class Runs {
       review: reviewAt(reviewOfRow(row, meta), row.endedAt ?? new Date(0).toISOString()),
       cost: { usd: row.costUsd ?? null, basis: "estimate", charge_state: null, cap_usd: typeof meta?.max_cost_usd === "number" ? meta.max_cost_usd : null },
       archived_at: row.archivedAt ?? null,
+      imported_from: row.importedFrom ?? null,
     };
   }
 

@@ -119,7 +119,7 @@ test('a reference of exactly 1024 UTF-8 bytes goes out: the limit counts bytes, 
 
 test('the header is sent on every attempt of a retried image request, and the same bytes', async () => {
   const t = transport(() => response({ detail: 'busy' }, 429), ok(boxAnswers));
-  await createJevRunner({ ...boxModel, fetch: t.fetch })({ label: 't', kind: 'judge', state: 'x <photo>', questions: boxQuestions, assets: { '<photo>': asPng(png()) } });
+  await createJevRunner({ retryAfterSend: true, ...boxModel, fetch: t.fetch })({ label: 't', kind: 'judge', state: 'x <photo>', questions: boxQuestions, assets: { '<photo>': asPng(png()) } });
   assert.equal(t.seen.length, 2);
   for (const sent of t.seen) { assert.equal(sent.headers[HEADER.toLowerCase()], 'true'); assert.deepEqual(Object.values(sent.parts)[0], png()); }
 });
