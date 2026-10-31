@@ -1,0 +1,3013 @@
+{
+ "about": "Responses recorded from Parallel's keyless MCP web_decisions tool on 2026-10-28, which takes and returns the shapes of POST /v1/decisions. Citation URLs and titles are replaced with placeholders; answers, usage and decision ids are as recorded.",
+ "responses": [
+  {
+   "name": "coi-01",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.7866839655928423,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.9990204743231764,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "none",
+      "confidence": 0.5918834279039992,
+      "probabilities": {
+       "minor": 0.17906134760637268,
+       "none": 0.7279222852693328,
+       "strong": 0.09301636712429442
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5981,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_bbee02538d54e18d3ec3aa0154c1fe04"
+   }
+  },
+  {
+   "name": "kyb-02",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.991767103145142,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.674767919664878,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "low",
+      "confidence": 0.9478593575070366,
+      "probabilities": {
+       "high": 0.02085758578271293,
+       "low": 0.9652395716713578,
+       "medium": 0.01390284254592924
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5670,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_7698e7dfbf9392c51ac25ec08b68e599"
+   }
+  },
+  {
+   "name": "kyb-03",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.03819372089735515,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.3583765195936211,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "high",
+      "confidence": 0.4125769555878709,
+      "probabilities": {
+       "high": 0.6083846370585806,
+       "low": 0.13414492052412416,
+       "medium": 0.25747044241729533
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 3953,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_edd0264d300bac345974d03ab8cab736"
+   }
+  },
+  {
+   "name": "kyb-04",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.967831606670214,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.5474950253713065,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "medium",
+      "confidence": 0.07611727075498399,
+      "probabilities": {
+       "high": 0.3676143140156132,
+       "low": 0.24830750548106423,
+       "medium": 0.38407818050332265
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 4185,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_33fe4ae52817341ec8e34b435093694a"
+   }
+  },
+  {
+   "name": "kyb-05",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.9965348316140342,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.4872287878352768,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "high",
+      "confidence": 0.7222180526327276,
+      "probabilities": {
+       "high": 0.8148120350884851,
+       "low": 0.06843384915797653,
+       "medium": 0.11675411575353846
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 6075,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_d374e3bb33f52ab71d09f5ba73a51f96"
+   }
+  },
+  {
+   "name": "coi-06",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.8836400990740573,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.9991132586155616,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "none",
+      "confidence": 0.5731551936362834,
+      "probabilities": {
+       "minor": 0.17232064538419664,
+       "none": 0.7154367957575223,
+       "strong": 0.11224255885828112
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5925,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_303e5ceec7c4b00b31faa092a0c9ee1d"
+   }
+  },
+  {
+   "name": "coi-07",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.003345077697133476,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.9957301622992984,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "strong",
+      "confidence": 0.2678434542791928,
+      "probabilities": {
+       "minor": 0.26925605566635197,
+       "none": 0.2188483081475195,
+       "strong": 0.5118956361861285
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5901,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_71aa16753612646c9ffce5be4a842832"
+   }
+  },
+  {
+   "name": "coi-08",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 7.000789386562664e-05,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.02096923274891983,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "strong",
+      "confidence": 0.9967509035842418,
+      "probabilities": {
+       "minor": 0.002035618776889332,
+       "none": 0.00013044550028270462,
+       "strong": 0.997833935722828
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 4733,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_8983e159fff0b489b9475df188ec6811"
+   }
+  },
+  {
+   "name": "coi-09",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.9534866783897216,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.7357054363955794,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "none",
+      "confidence": 0.8116878912433431,
+      "probabilities": {
+       "minor": 0.10878677580663836,
+       "none": 0.8744585941622288,
+       "strong": 0.016754630031132707
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 6007,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_5b486a7eb9a49d45e19f36568670ab4b"
+   }
+  },
+  {
+   "name": "kyb-10",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.9910108424161642,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.7412862772188765,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "low",
+      "confidence": 0.962289287627234,
+      "probabilities": {
+       "high": 0.016035786347562198,
+       "low": 0.9748595250848228,
+       "medium": 0.009104688567615036
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 3855,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_a0e2bf704e056144b80f5385cd699ece"
+   }
+  },
+  {
+   "name": "kyb-11",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.039038560309966455,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.38118222303618093,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "high",
+      "confidence": 0.35966691039458754,
+      "probabilities": {
+       "high": 0.5731112735963917,
+       "low": 0.13975219047808626,
+       "medium": 0.2871365359255221
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 3953,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_d1010dc5cb4eafe5f7af0d4bd8b14b1a"
+   }
+  },
+  {
+   "name": "kyb-12",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.9880196250479396,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.6208198672212811,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "medium",
+      "confidence": 0.19401949813471564,
+      "probabilities": {
+       "high": 0.3723015017879214,
+       "low": 0.16501883278893498,
+       "medium": 0.46267966542314376
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 3695,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_bbedab3c5de1b1b484bfac91bd4f17ad"
+   }
+  },
+  {
+   "name": "kyb-13",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.99655676396185,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.45509974723047575,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "high",
+      "confidence": 0.7986698201674411,
+      "probabilities": {
+       "high": 0.8657798801116275,
+       "low": 0.06454496046072955,
+       "medium": 0.06967515942764294
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5643,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_a1fba1a89f5e25f381d08c55c6a96b53"
+   }
+  },
+  {
+   "name": "coi-14",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.8743209770560224,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.9989569370197388,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "none",
+      "confidence": 0.5386015423333756,
+      "probabilities": {
+       "minor": 0.19409025938817853,
+       "none": 0.6924010282222505,
+       "strong": 0.113508712389571
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5745,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_e59d722a5391aa51b93dd8a387996919"
+   }
+  },
+  {
+   "name": "coi-15",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.00242893402264598,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.9976112480308524,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "strong",
+      "confidence": 0.25316516615650164,
+      "probabilities": {
+       "minor": 0.26528270358648026,
+       "none": 0.2326071856425187,
+       "strong": 0.5021101107710011
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5721,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_98d4c379165098f0834efd38dbcdd75b"
+   }
+  },
+  {
+   "name": "coi-16",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 4.9189217228332205e-05,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.024334763492248702,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "strong",
+      "confidence": 0.9978796408630616,
+      "probabilities": {
+       "minor": 0.0012963332617875738,
+       "none": 0.00011723949617145372,
+       "strong": 0.998586427242041
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 4325,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_c4c525d218d6edf715fd9a19b45605d3"
+   }
+  },
+  {
+   "name": "coi-17",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.960107674347208,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.6238630648503491,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "none",
+      "confidence": 0.810400295004578,
+      "probabilities": {
+       "minor": 0.11114474018097836,
+       "none": 0.8736001966697187,
+       "strong": 0.015255063149302904
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 6077,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_7726d2f366651b847260ce5d87ab704f"
+   }
+  },
+  {
+   "name": "kyb-18",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.9879336761142612,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.7479149064446158,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "low",
+      "confidence": 0.9285857755475124,
+      "probabilities": {
+       "high": 0.0350899735123242,
+       "low": 0.9523905170316748,
+       "medium": 0.012519509456000805
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5480,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_cdf3b28e403834a55903c89328dc84d4"
+   }
+  },
+  {
+   "name": "kyb-19",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.04319560030308459,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.4363701086632373,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "high",
+      "confidence": 0.47169733899830474,
+      "probabilities": {
+       "high": 0.6477982259988698,
+       "low": 0.10264378007202166,
+       "medium": 0.2495579939291086
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 3145,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_75fc1f2db5b427d6cc6c9999f624d5e2"
+   }
+  },
+  {
+   "name": "kyb-20",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.9554569644336236,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.5545463233480858,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "medium",
+      "confidence": 0.17470714244092966,
+      "probabilities": {
+       "high": 0.3346984243616945,
+       "low": 0.21549681401101897,
+       "medium": 0.4498047616272864
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 3618,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_e735968f8e7ce4c2730e6cace15c642a"
+   }
+  },
+  {
+   "name": "kyb-21",
+   "questions": {
+    "ein_format_valid": {
+     "type": "noul",
+     "instructions": "state.ein is a validly formatted US EIN: two digits, a hyphen, seven digits, and a two-digit prefix the IRS assigns (00, 07, 08, 09, 17, 18, 19, 28, 29, 49, 69, 70, 78, 79 and 89 are never assigned).",
+     "criteria": {
+      "true": "the format and prefix are valid",
+      "false": "wrong format or an unassigned prefix"
+     }
+    },
+    "address_consistent": {
+     "type": "noul",
+     "instructions": "The street, city, state and ZIP in state.address agree with each other (the ZIP belongs to that city and state).",
+     "criteria": {
+      "true": "city, state and ZIP agree",
+      "false": "the ZIP belongs to another city or state, or the address is incomplete"
+     }
+    },
+    "risk": {
+     "type": "choice",
+     "instructions": "Overall onboarding risk for this business record, from its internal consistency and what public web evidence says about the name at that address.",
+     "criteria": {
+      "low": "consistent fields and a business publicly associated with this name and address",
+      "medium": "minor inconsistencies or little public footprint",
+      "high": "contradictory fields, an invalid identifier, or an address that is a registered-agent or mail-drop location used as the place of business"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "address_consistent": {
+      "noul": 0.995220406576622,
+      "type": "noul"
+     },
+     "ein_format_valid": {
+      "noul": 0.44813685889547034,
+      "type": "noul"
+     },
+     "risk": {
+      "choice": "high",
+      "confidence": 0.8074957660775736,
+      "probabilities": {
+       "high": 0.8716638440517157,
+       "low": 0.05923826799743111,
+       "medium": 0.0690978879508533
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5545,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_e0c67123c05faf9ac079d8dc93a34b0d"
+   }
+  },
+  {
+   "name": "coi-22",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.8475928855784065,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.9985548541138204,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "none",
+      "confidence": 0.5605976076363279,
+      "probabilities": {
+       "minor": 0.1950094867760685,
+       "none": 0.707065071757552,
+       "strong": 0.09792544146637958
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 6055,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_f7d73780635e1577c8c9b2032372ee82"
+   }
+  },
+  {
+   "name": "coi-23",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.002874351892185304,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.9969773596864208,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "strong",
+      "confidence": 0.2825511543714092,
+      "probabilities": {
+       "minor": 0.26732764189019853,
+       "none": 0.21097158852886197,
+       "strong": 0.5217007695809395
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5721,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_36af7dcd8e733d665ed7447a758d7b5f"
+   }
+  },
+  {
+   "name": "coi-24",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 6.199643610906715e-05,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.030879748895844123,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "strong",
+      "confidence": 0.9956656212418742,
+      "probabilities": {
+       "minor": 0.002735427237437423,
+       "none": 0.00015415860131299467,
+       "strong": 0.9971104141612496
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 4356,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_d0dfb06d7177622f3bde80f80298fe36"
+   }
+  },
+  {
+   "name": "coi-25",
+   "questions": {
+    "document_legitimate": {
+     "type": "noul",
+     "instructions": "state.document is a plausible, internally consistent Delaware certificate of incorporation: the statutory articles a Delaware stock corporation files (name, registered office and agent in Delaware, purpose, authorized stock, incorporator), with names, places, dates and share counts that agree with each other and with Delaware law.",
+     "criteria": {
+      "true": "a genuine-looking Delaware filing with no internal contradictions",
+      "false": "it contradicts itself, names a non-Delaware authority or office, has impossible dates or numbers, or is not a real filing type"
+     }
+    },
+    "forgery_signals": {
+     "type": "choice",
+     "instructions": "How strong are the signs that state.document was altered or fabricated?",
+     "criteria": {
+      "none": "no sign of alteration: consistent and well-formed",
+      "minor": "small oddities a real filing could have (typos, unusual wording)",
+      "strong": "clear contradictions, impossible facts, or an issuing authority that does not exist"
+     }
+    },
+    "entity_exists": {
+     "type": "noul",
+     "instructions": "A corporation with exactly the name in state.company_name is, or was, incorporated in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting).",
+     "criteria": {
+      "true": "public evidence that this exact entity is a Delaware corporation",
+      "false": "no public evidence the entity exists, or it is incorporated elsewhere"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "document_legitimate": {
+      "noul": 0.9545350194338188,
+      "type": "noul"
+     },
+     "entity_exists": {
+      "noul": 0.40856432400071263,
+      "type": "noul"
+     },
+     "forgery_signals": {
+      "choice": "none",
+      "confidence": 0.7935105358197987,
+      "probabilities": {
+       "minor": 0.12046321672287592,
+       "none": 0.8623403572131991,
+       "strong": 0.01719642606392485
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 5952,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_ed2f02ea1528d20d6a84bc1e747ca8e8"
+   }
+  },
+  {
+   "name": "exist-26",
+   "questions": {
+    "entity_registration": {
+     "type": "choice",
+     "instructions": "Is a corporation with exactly the name in state.company_name registered in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting)?",
+     "criteria": {
+      "registered": "public evidence names this exact entity as a Delaware corporation",
+      "registered_elsewhere": "public evidence shows this exact entity incorporated in another jurisdiction",
+      "insufficient_evidence": "no public source mentions this exact entity"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "entity_registration": {
+      "choice": "insufficient_evidence",
+      "confidence": 0.7627914553336733,
+      "probabilities": {
+       "insufficient_evidence": 0.8418609702224489,
+       "registered": 0.13541425725643907,
+       "registered_elsewhere": 0.022724772521112033
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 3016,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_ad738c9bc79e885f1342a8cd8fb0ee53"
+   }
+  },
+  {
+   "name": "exist-27",
+   "questions": {
+    "entity_registration": {
+     "type": "choice",
+     "instructions": "Is a corporation with exactly the name in state.company_name registered in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting)?",
+     "criteria": {
+      "registered": "public evidence names this exact entity as a Delaware corporation",
+      "registered_elsewhere": "public evidence shows this exact entity incorporated in another jurisdiction",
+      "insufficient_evidence": "no public source mentions this exact entity"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "entity_registration": {
+      "choice": "registered",
+      "confidence": 0.9984966655954656,
+      "probabilities": {
+       "insufficient_evidence": 0.0002476057665900898,
+       "registered": 0.9989977770636438,
+       "registered_elsewhere": 0.0007546171697660681
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 4457,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_86a68ee65f294d57698547bfe58b50fa"
+   }
+  },
+  {
+   "name": "exist-28",
+   "questions": {
+    "entity_registration": {
+     "type": "choice",
+     "instructions": "Is a corporation with exactly the name in state.company_name registered in Delaware, according to public web evidence (a registry, SEC filings, or reputable reporting)?",
+     "criteria": {
+      "registered": "public evidence names this exact entity as a Delaware corporation",
+      "registered_elsewhere": "public evidence shows this exact entity incorporated in another jurisdiction",
+      "insufficient_evidence": "no public source mentions this exact entity"
+     }
+    }
+   },
+   "response": {
+    "mode": "fast",
+    "answers": {
+     "entity_registration": {
+      "choice": "insufficient_evidence",
+      "confidence": 0.8320928298133501,
+      "probabilities": {
+       "insufficient_evidence": 0.8880618865422334,
+       "registered": 0.10390602554031164,
+       "registered_elsewhere": 0.008032087917454855
+      },
+      "type": "choice"
+     }
+    },
+    "citations": [
+     {
+      "url": "https://example.org/source-1",
+      "title": "Source 1",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-2",
+      "title": "Source 2",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-3",
+      "title": "Source 3",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-4",
+      "title": "Source 4",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-5",
+      "title": "Source 5",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-6",
+      "title": "Source 6",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-7",
+      "title": "Source 7",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-8",
+      "title": "Source 8",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-9",
+      "title": "Source 9",
+      "excerpts": []
+     },
+     {
+      "url": "https://example.org/source-10",
+      "title": "Source 10",
+      "excerpts": []
+     }
+    ],
+    "usage": {
+     "input_tokens": 2397,
+     "output_tokens": 0
+    },
+    "decision_id": "decisions_7e77909c74d78338cfcdd3cfe5f7af9e"
+   }
+  }
+ ]
+}

@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced } from "./errors.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
+import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 /** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
  *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
@@ -31,10 +31,13 @@ export type BeforeRequest = (request: {
   turn: number; maxTurns: number | null;
   /** The node's `budget_usd`, if it set one, and what its session has spent so far (null when a price was unknown). */
   budgetUsd?: number; spentUsd: number | null;
-  /** This session's paid requests admitted and not yet answered (in this process), oldest first: a budget holds each
-   *  one's worst case until it answers, since `spentUsd` counts answered requests only. Requests are admitted one at a
-   *  time, so each check sees every request admitted before it. */
-  inFlight: readonly { turn: number; model: string }[];
+  /** The most input tokens this request can be billed for (the body's UTF-8 bytes plus what the provider adds, as the
+   *  model proxy measured it), undefined when it was not measured: a budget treats that input as unknown, never 0. */
+  inputTokensMax?: number;
+  /** This session's paid requests admitted and not yet answered (in this process), oldest first, each with its own
+   *  `inputTokensMax`: a budget holds each one's worst case until it answers, since `spentUsd` counts answered requests
+   *  only. Requests are admitted one at a time, so each check sees every request admitted before it. */
+  inFlight: readonly { turn: number; model: string; inputTokensMax?: number }[];
 }) => void | { refuse: string } | Promise<void | { refuse: string }>;
 
 export interface HarnessRunnerOptions {
@@ -147,7 +150,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     if (typeof data.turn === "number" && data.providerIds) responses.set(data.turn, data.providerIds);
   }
   // This process's requests in flight, oldest first: the turn each was admitted as, and its model.
-  const open: { turn: number; model: string }[] = [];
+  const open: { turn: number; model: string; inputTokensMax?: number }[] = [];
   // Response ids whose own write was refused, marked `late`: the booking's next write of its own (the next runner.request,
   // or a runner.turn) carries them first, so a request this process cuts by dying after that still keeps its ids. One a
   // runner.turn writes with the ids is dropped, never written twice. A process that dies before writing for its booking
@@ -170,13 +173,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
   let failed: Error | undefined;
   const end = (reason: "turn_limit" | "refused" | "model_error", message?: string): Error =>
     options.stop ? options.stop(reason, message) : new HarnessRunError(reason, turns, 0, { maxTurns: limit, ...(message === undefined ? {} : { message }) });
-  const admit = async (model: string): Promise<ModelTicket> => {
+  const admit = async (model: string, inputTokensMax: number | undefined): Promise<ModelTicket> => {
     const stopped = options.stopped?.() ?? failed;
     if (stopped) throw stopped;
     const pausing = options.draining?.();
     if (pausing) throw pausing;
     if (limit !== null && turns >= limit) throw end("turn_limit");
-    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })) });
+    const verdict = await options.beforeRequest?.({ ...node, model, turn: turns + 1, maxTurns: limit, ...(options.budgetUsd === undefined ? {} : { budgetUsd: options.budgetUsd }), spentUsd, inFlight: open.map((f) => ({ ...f })), inputTokensMax });
     if (verdict && "refuse" in verdict) throw end("refused", verdict.refuse);
     // A stop or a pause that came while the host was checking: nothing was written for this request, so it is refused, not
     // sent. After the write below it is committed (refusing it then would leave a recorded request that was never sent).
@@ -197,13 +200,13 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       await write([{ kind: RUNNER_RECORDS.turn, data: { turn, usd: 0, unsent: true } }]).catch(() => undefined);
       throw stoppedNow;
     }
-    open.push({ turn, model });
+    open.push({ turn, model, inputTokensMax });
     emit({ type: "request_start", turn, model });
     return { turn };
   };
   const models: ModelPort = {
-    beforeRequest: ({ model }: { model: string }) => {
-      const admitted = admitting.then(() => admit(model));
+    beforeRequest: ({ model, inputTokensMax }: ModelRequest) => {
+      const admitted = admitting.then(() => admit(model, inputTokensMax));
       admitting = admitted.catch(() => {});
       return admitted;
     },

@@ -1,4 +1,5 @@
 // The small JSON files the server reads and writes beside the agent store.
+import { randomBytes } from "node:crypto";
 import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -9,12 +10,21 @@ export const RUN_META = "serve.json";
 /** A cancelled run's mark in its directory, written before its process is told: the run's process sends no model
  *  request once it is there, however the cancel and the process's start interleave. */
 export const RUN_CANCELLED = "cancelled";
+/** A run's launch mark in its directory, written before its process is spawned and removed once that process serves
+ *  or exits: found at a start, the server went down while it launched the run. */
+export const RUN_LAUNCHING = "launching";
+/** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
+export const LAUNCH_LOST = "server_lost_at_launch";
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>
   readFile(path, "utf8")
     .then((text) => JSON.parse(text) as Json)
     .catch(() => null);
+
+/** A temporary file beside `path`, this write's own: two writes of one file at once never share one, so neither renames
+ *  the other's away nor writes into the file the other renamed. */
+export const tempOf = (path: string): string => `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
 
 /** Writes `text` to `path` whole: through a temporary file and a rename, so a reader never sees half of it. */
 export async function writeWhole(path: string, text: string, mode = 0o600): Promise<void> {
@@ -26,7 +36,8 @@ export async function writeWhole(path: string, text: string, mode = 0o600): Prom
 /** Writes `text` to `path` whole and durably: the temporary file is synced before the rename, and the directory after it,
  *  so once this resolves a crash, even of the machine, leaves the new text in place, never the old or none. */
 export async function writeDurable(path: string, text: string, mode = 0o600): Promise<void> {
-  const temp = `${path}.tmp`;
+  // Its own temporary file: a box's record can be let go by two settlements at once (a run's archive and its agent's).
+  const temp = tempOf(path);
   const bytes = Buffer.from(text);
   const file = await open(temp, "w", mode);
   try {
