@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { APIConnectionError, APIError, APITimeoutError, Image, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { Fetch, RequestOptions, SystemOneRequest } from "@typesafe-ai/sdk";
-import { validateAnswers, SystemOneError, isSystemOneResponseReason } from "@parcha/agentrun-dsl";
-import type { WorkflowDeps, SystemOneResponseReason } from "@parcha/agentrun-dsl";
+import { validateAnswers, SystemOneError, isSystemOneResponseReason, checkCapabilities, DecisionProviderError } from "@parcha/agentrun-dsl";
+import type { WorkflowDeps, SystemOneResponseReason, DecisionProvider, DecisionProviderErrorCode } from "@parcha/agentrun-dsl";
 
 /** Injectable client boundary. Custom clients must honor signal and disable their own retries. */
 export interface JevClient {
@@ -381,4 +381,53 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
       clearTimeout(timer);
     }
   };
+}
+
+/** Jev as a DecisionProvider: `createJevRunner(options)` behind the DSL's provider seam, for a host that runs every
+ *  decision model through `judgeFromProvider`. A paid request is never sent twice: it runs with `maxAttempts: 1`, and a
+ *  408, a 5xx or a connection error (the SDK cannot tell one before sending from one after) is `outcome_unknown`, at an
+ *  unknown cost, and so is the cost of an `invalid_response` (a 200 that breaks the response rules was still answered); so is a deadline that ends the request in flight (the host's, or the runner's own `timeoutMs`). Only the
+ *  host's own cancel is `aborted`. Its other errors become DecisionProviderErrors with the same message. The cost basis is "reported" for a cost with no configured price, and "estimate" when
+ *  `pricing` is set, since the runner then reports either one as the cost. */
+export function jevProvider(options: JevOptions = {}): DecisionProvider {
+  const judge = createJevRunner({ ...options, maxAttempts: 1 });
+  const provider = options.provider ?? "typesafe";
+  const capabilities: DecisionProvider["capabilities"] = {
+    // No box question and no image input: a DecisionRequest carries no image, so the seam cannot send one.
+    types: ["noul", "choice", "score"], inputs: ["text", "json"], evidence: "none", probability: "model", grounding: false,
+    replay: "never", maxQuestions: null, maxStateBytes: options.maxStateBytes ?? null,
+  };
+  return {
+    id: "jev", needs: [keyVariable[provider] ?? keyVariable.typesafe], capabilities,
+    async decide(request, ctx) {
+      checkCapabilities(capabilities, request);
+      const deadline = ctx.deadlineMs === null ? undefined : AbortSignal.timeout(ctx.deadlineMs);
+      const signal = deadline ? AbortSignal.any([ctx.signal, deadline]) : ctx.signal;
+      try {
+        const result = await judge({ ...request, signal, decisionId: ctx.decisionId });
+        return {
+          answers: result.answers, evidence: [], model: result.model ?? null, usage: result.usage ?? null, cost_usd: result.cost_usd ?? null,
+          cost_basis: typeof result.cost_usd !== "number" ? "unknown" : options.pricing ? "estimate" : "reported", provider_request_id: null,
+        };
+      } catch (error) {
+        if (!(error instanceof JevError)) throw new DecisionProviderError("http", "Jev request failed.");
+        const timedOut = Boolean(deadline?.aborted) && !ctx.signal.aborted;
+        const code = jevErrorCode(error, timedOut, ctx.signal.aborted);
+        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" || code === "invalid_response" ? { costUsd: null, costBasis: "unknown" as const } : {}) });
+      }
+    },
+  };
+}
+
+function jevErrorCode(error: JevError, timedOut: boolean, cancelled: boolean): DecisionProviderErrorCode {
+  // The one request is in flight when a deadline ends it (the host's, or the runner's own timeout): it may have been answered.
+  if (error.code === "aborted") return timedOut ? "outcome_unknown" : "aborted";
+  if (error.code === "timeout") return cancelled ? "aborted" : "outcome_unknown";
+  if (error.code === "connection") return "outcome_unknown";
+  if (error.code !== "http") return error.code;
+  if (error.status === 408 || (error.status !== undefined && error.status >= 500)) return "outcome_unknown";
+  if (error.status === 401 || error.status === 403) return "auth";
+  if (error.status === 429) return "rate_limited";
+  if (error.status === 400 || error.status === 422) return "invalid_request";
+  return "http";
 }
