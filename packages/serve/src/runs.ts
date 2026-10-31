@@ -17,6 +17,7 @@ import { HARNESS_LOG_EVENT } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, steersMidTurn } from "./harness.js";
 import { type AgentEntry, type Agents, storeBusy, storeError, whenFree } from "./agents.js";
 import { LAUNCH_LOST, readJson, RUN_CANCELLED, RUN_LAUNCHING, RUN_META, writeWhole } from "./files.js";
+import { type BoxHost, type Quarantine, settleBox, sweepBoxes } from "./box/sweep.js";
 import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
@@ -247,7 +248,7 @@ export type CarryBackRetry = { delaysMs?: readonly number[]; onBusy?: (runId: st
 /** `maxRuns`: the most runs with a live process at once; `settleRetryMs`: how often a carry back the store refused is
  *  tried again; `readyTimeoutMs`: how long a request to a run waits for its door (a run's first message, sent by its
  *  start, always waits READY_TIMEOUT_MS); `log` takes a run's start and end (print.ts). */
-export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
+export type RunsOptions = { agents: Agents; token: string; doorTokenFile: string; doorToken: string; faux?: string; fauxBrowser?: string; fauxWeb?: string; fauxHarness?: string; drainTimeout?: string; carryBackRetry?: CarryBackRetry; maxRuns?: number; box?: { host: BoxHost; quarantine: Quarantine }; settleRetryMs?: number; readyTimeoutMs?: number; log?: (event: string, fields: Record<string, string | number>) => void };
 
 /** The server's own secrets, which a run's process never gets: the API token, by name or by value. */
 const SERVER_ONLY = new Set(["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"]);
@@ -337,6 +338,8 @@ export class Runs {
   private closed = false;
   /** Runs past the cap's check whose process is not started yet. */
   private starting = 0;
+  /** The start sweep of the boxes runs left: once, before any run opens a box (sweepOnce). */
+  private swept?: Promise<void>;
   constructor(private readonly options: RunsOptions) {}
 
   private get store() {
@@ -550,7 +553,50 @@ export class Runs {
 
   /** At start: every run the store says is running is read, supervised when its process lives, carried back when it
    *  already ended, and opened again when its process went before it ended. */
+  /** Every run's box let go that nothing owns, and every run cgroup no record names: once, before any run of this server
+   *  starts, opens again or relaunches, so a box or cgroup being made is never swept away. */
+  private sweepOnce(): Promise<void> {
+    const box = this.options.box;
+    if (!box) return Promise.resolve();
+    this.swept ??= (async () => {
+      const rows = await this.options.agents.request(() => this.store.listRuns());
+      const settled = await sweepBoxes(box.host, box.quarantine, rows.map((row) => ({ id: row.id, dir: join(this.options.agents.dir, "runs", row.id) })));
+      for (const [id, how] of Object.entries(settled)) if (how === "quarantined") warn(id, "its box could not be emptied; it is quarantined, and tried again at each start");
+    })().catch((error: unknown) => {
+      // A sweep that failed is not kept: the next start, open or relaunch sweeps again, so one transient error never
+      // holds every run back until the server restarts. Nothing of this server's runs has started a box before it.
+      this.swept = undefined;
+      throw error;
+    });
+    return this.swept;
+  }
+
+  /** The run's box let go (archive, or its process gone after an archive): reaped by the box's own count. */
+  private async teardown(run: Run): Promise<void> {
+    const box = this.options.box;
+    if (!box || this.live(run)) return;
+    // Never in the way of the run's own end or an archive already saved: a box that could not be let go (its cgroup not
+    // removed, its record not marked) is said, and its unmarked record is tried again by the next start's sweep.
+    try {
+      if ((await settleBox(box.host, box.quarantine, run.id, run.dir)) === "quarantined") warn(run.id, "its box could not be emptied; it is quarantined, and tried again at each start");
+    } catch (error) {
+      warn(run.id, `its box was not let go (${(error as Error).message}); the next start tries again`);
+    }
+  }
+
+  /** After an archive (a run's, or an agent's, which archives its runs): the box of every run now archived is let go,
+   *  now when its process is gone, else when it exits. */
+  async archived(): Promise<void> {
+    if (!this.options.box) return;
+    for (const row of await this.options.agents.request(() => this.store.listRuns())) {
+      if (!row.archivedAt) continue;
+      const run = await this.get(row.id);
+      if (run) await this.teardown(run);
+    }
+  }
+
   async recover(): Promise<void> {
+    await this.sweepOnce();
     for (const row of await this.options.agents.request(() => this.store.listRuns())) {
       if (row.state !== "running") continue;
       const run = await this.adopt(row).catch((error: Error) => (warn(row.id, `not recovered: ${error.message}; the next start tries again`), null));
@@ -637,6 +683,8 @@ export class Runs {
   /** The door of a run that is not finished, starting or waking its process when it is not live. */
   private async ensureLive(run: Run, timeoutMs = this.options.readyTimeoutMs ?? READY_TIMEOUT_MS): Promise<string> {
     const deadline = Date.now() + timeoutMs;
+    // A run brought up by a request (a message before the start's recovery reached it) waits for the sweep as well.
+    await this.sweepOnce();
     for (let launched = false; ; await sleep(100)) {
       const record = await this.record(run);
       // Checked after the read: a settle may end the run while it is read, and nothing starts a run that ended.
@@ -799,6 +847,12 @@ export class Runs {
     // A process that is gone serves no door, whatever its last heartbeat says.
     const gone = !this.live(run) && !(pid !== undefined && pid !== process.pid && alive(pid) && this.doorOf(record));
     if (released || gone) await this.storeWhenFree(run);
+    // Its process gone: an archived run's box is let go now, whatever comes next (an outcome, a wait for the person, a
+    // relaunch), since nothing else would until the next start or archive. This is every archived end that can let a box
+    // go: a settle with the process not gone means another live holder of the run, whose box is its own. That holder is
+    // one this server neither started nor adopted (adoptProcess watches only the holder it adopts), so its later exit
+    // settles nothing here: its box stays held, fail-closed, until the next start's sweep or another archive lets it go.
+    if (gone && (await this.options.agents.request(() => this.store.readRun(run.id)).catch(() => undefined))?.archivedAt) await this.teardown(run);
     let ended: { outcome: Status; state?: Ended; summary?: string } | undefined;
     // A workflow run carries back how its workflow ended, through workflowCarry; cancelled before that, it stopped.
     if (run.cancel) ended = run.kind === "workflow" ? await this.workflowEnd(run, workflowEnding(record) ?? { status: "stopped" }) : { outcome: "cancelled" };
@@ -942,6 +996,7 @@ export class Runs {
   }
 
   async create(entry: AgentEntry, revision: Revision, version: number, options: { input: Json; title: string; effort?: string; maxCostUsd?: number }): Promise<Run> {
+    await this.sweepOnce();
     await this.takePlace();
     try {
       // Read again: the place may have been waited for, and the agent archived meanwhile.
@@ -1029,6 +1084,7 @@ export class Runs {
    *  cap, taking a place under the server's. Launched here, with no wait after the place is taken, so no start takes
    *  it meanwhile. An archived run, or a run of an archived agent, stays closed. */
   private async reopen(run: Run): Promise<void> {
+    await this.sweepOnce();
     const row = this.store.readRun(run.id);
     if (row?.archivedAt) throw new ApiError("not_continuable", "This run is archived: unarchive it to continue it.");
     // Its end could not be written yet (persistLater tries again): it opens once the store has it.
