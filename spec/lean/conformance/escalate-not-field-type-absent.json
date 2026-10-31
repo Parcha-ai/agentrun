@@ -1,0 +1,79 @@
+{
+  "description": "An answer with no score leaves the guarded path absent: not field_type number fires, so a missing answer fails closed.",
+  "workflow": {
+    "v": 2,
+    "name": "not-number-absent",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "read",
+          "code": "s => ({ answer: s.raw })"
+        },
+        {
+          "node": "escalate",
+          "label": "gate",
+          "when": {
+            "predicate": "not",
+            "of": {
+              "predicate": "field_type",
+              "path": "answer.score",
+              "type": "number"
+            }
+          },
+          "kind": "review",
+          "stage": "gate",
+          "summary": "Score: {answer.score}"
+        },
+        {
+          "node": "code",
+          "label": "accept",
+          "code": "s => ({ accepted: s.answer.score })"
+        }
+      ]
+    }
+  },
+  "input": {
+    "raw": {}
+  },
+  "script": {
+    "code": {
+      "/root/steps/0": {
+        "return": {
+          "answer": {}
+        }
+      }
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "escalated",
+    "state": {
+      "raw": {},
+      "answer": {}
+    },
+    "escalation": {
+      "kind": "review",
+      "stage": "gate",
+      "label": "gate"
+    },
+    "events": {
+      "/root/steps/0": [
+        "node.start:read",
+        "node.end:read:ok"
+      ],
+      "/root/steps/1": [
+        "escalate.evaluated:gate:true"
+      ]
+    }
+  }
+}

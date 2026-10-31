@@ -34,19 +34,24 @@ Server.prototype.listen = function (...args) {
   return listen.apply(this, args);
 };
 
-/** The refusals the CLI drew: those under its own user-agent, or under none. Another local process can find the
- *  proxy's port (a port scanner, an editor's port forwarder) and call it without the key; its refusal is the proxy
- *  doing its job, so it is shown as a diagnostic, never dropped, and fails nothing. */
-function cliRefusals(t, logged) {
+/** The one refusal known not to be the CLI's: a machine's port prober (a Go program) that sends a keyless GET / to each
+ *  new loopback port, named exactly by its user-agent, its method and path, and the key it lacked. */
+const PROBER = (l) => l.userAgent === 'Go-http-client/1.1' && l.method === 'GET' && l.path === '/' && l.status === 401 && /key is required/.test(l.reason ?? '');
+
+/** The refusals that count: every one but the known prober's, which is the proxy doing its job and is shown as a
+ *  diagnostic, never dropped. Anything else counts, under any user-agent or none, so a CLI that calls under a new
+ *  user-agent is still caught. */
+function countedRefusals(t, logged) {
   const refused = logged.filter((l) => /refused/.test(l.message));
-  for (const l of refused) if (l.userAgent && !CLI_AGENT.test(l.userAgent)) t.diagnostic(`the proxy refused another client: ${JSON.stringify(l)}`);
-  return refused.filter((l) => !l.userAgent || CLI_AGENT.test(l.userAgent));
+  for (const l of refused) if (PROBER(l)) t.diagnostic(`the proxy refused the machine's port prober: ${JSON.stringify(l)}`);
+  return refused.filter((l) => !PROBER(l));
 }
 
-/** A keyless GET / to a server's own address, as another local process that found its port would send: its status. */
-function probe({ address, port }, userAgent) {
+/** A keyless call (GET / unless given) to a server's own address, as another local process that found its port would
+ *  send: its status. */
+function probe({ address, port }, userAgent, method = 'GET', path = '/') {
   return new Promise((resolve, reject) => {
-    const req = request({ host: address, port, method: 'GET', path: '/', headers: { 'user-agent': userAgent, connection: 'close' } }, (res) => {
+    const req = request({ host: address, port, method, path, headers: { 'user-agent': userAgent, connection: 'close', ...(method === 'POST' ? { 'content-type': 'application/json' } : {}) } }, (res) => {
       res.resume();
       res.on('end', () => resolve(res.statusCode));
     });
@@ -131,7 +136,18 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
   // The model thinks before each call, as a thinking model answers, so the CLI sends its thinking back.
   const plan = [...attacks.map(([name, input]) => ({ tool: { name, input } })), { tool: { name: 'mcp__hands__lookup', input: { q: 'x' } } }, { tool: { name: 'mcp__hands__submit', input: { value: { answer: 'ok' } } } }].map((r, i) => ({ ...r, thinking: `step ${i}`, ...(i % 2 ? { redacted: 'cmVkYWN0ZWQ=' } : {}) }));
   let main = 0;
-  const provider = await fakeAnthropic({ reply: (r) => (r.model === MODEL ? plan[main++] ?? { text: 'done' } : { text: 'ok' }) });
+  // While the first main-model reply is held, another local process finds the session proxy's port and calls it with no
+  // key (as a port prober on a shared machine does): refused, and no failure of the CLI's.
+  const servers = new Set(received.keys());
+  let providerPort;
+  const proxyServer = () => [...received].find(([s, seen]) => !servers.has(s) && s.address()?.port !== providerPort && seen.some((r) => r.bearer));
+  const probed = [];
+  const provider = await fakeAnthropic({ reply: async (r) => {
+    if (r.model !== MODEL) return { text: 'ok' };
+    if (main === 0) probed.push(await probe(proxyServer()[0].address(), 'Go-http-client/1.1'));
+    return plan[main++] ?? { text: 'done' };
+  } });
+  providerPort = Number(new URL(provider.url).port);
   t.after(() => provider.close());
 
   const logged = [];
@@ -177,7 +193,9 @@ test("the CLI's every built-in, the web, a sub-agent and another MCP server are 
     assert.ok(table.has(`${r.method} ${r.path}`), `${r.method} ${r.path} is not in the table`);
     assert.ok(r.query === '' || CLAUDE_MESSAGES_ROUTES.find((x) => x.path === r.path)?.query?.includes(r.query), `query ${r.query} on ${r.path}`);
   }
-  assert.deepEqual(logged.filter((l) => /refused/.test(l.message)), [], 'the proxy refused nothing the CLI asked');
+  assert.deepEqual(countedRefusals(t, logged), [], 'the proxy refused nothing the CLI asked');
+  assert.deepEqual(probed, [401], "the other client's keyless call is refused");
+  assert.ok(logged.some((l) => /refused/.test(l.message) && l.userAgent === 'Go-http-client/1.1'), "and named in the log by its user-agent");
   // Even with its built-ins on, a session could not reach a tool of this CLI's that the allowlist does not name.
   assert.deepEqual(asked.tools, []);
   for (const tool of PINNED_CLI_TOOLS.filter((t) => !CLAUDE_BUILTINS.includes(t))) assert.ok(asked.disallowedTools.includes(tool), `${tool} is not off by name`);
@@ -240,7 +258,7 @@ async function oneNode(t, model, extra = {}, { during, cliRefused = [] } = {}) {
   const forwarded = provider.requests.filter((r) => r.authorized);
   const main = forwarded.filter((r) => r.path === '/v1/messages' && r.model === model);
   assert.ok(main.length >= 1, `${model}: no main-model request`);
-  const cli = cliRefusals(t, logged).map(({ status, method, path, userAgent }) => ({ status, method, path, userAgent }));
+  const cli = countedRefusals(t, logged).map(({ status, method, path, userAgent }) => ({ status, method, path, userAgent }));
   assert.deepEqual(cli, cliRefused, `${model}: the proxy refused the CLI nothing`);
   assert.deepEqual(logged.filter((l) => /thinking\.disabled/.test(l.message)), [], `${model}: the proxy saw no request without thinking`);
   // What tells the CLI's refusals from another client's: every call it made with the session's key carried its agent.
@@ -277,13 +295,22 @@ test("on each current model, a node that names no level thinks at medium on the 
 // A local process that finds the session proxy's port (a port scanner, an editor's port forwarder) and calls it with no
 // key is refused, as it must be. While the first reply is held, such a call (a Go client's GET /) is made, and so is the
 // same call under the CLI's user-agent: the first is shown and fails nothing, the second is the CLI's and still counts.
-test("another local client's keyless call to the session proxy is refused and named by its user-agent, and fails no check of the CLI's; one under the CLI's user-agent still does", { skip, timeout: 120_000 }, async (t) => {
+test("the machine's port prober's keyless call to the session proxy is refused and named by its user-agent, and fails no check of the CLI's; one under the CLI's user-agent, or under any other, still does", { skip, timeout: 120_000 }, async (t) => {
   const statuses = [];
   const { logged } = await oneNode(t, 'claude-sonnet-5-5', {}, {
-    during: async (address) => { for (const agent of ['Go-http-client/1.1', 'claude-cli/0.0.0 (probe)']) statuses.push(await probe(address, agent)); },
-    cliRefused: [{ status: 401, method: 'GET', path: '/', userAgent: 'claude-cli/0.0.0 (probe)' }],
+    // The prober, the CLI's own user-agent, and one the CLI might call under one day: only the prober's fails nothing.
+    // Nor does the prober's user-agent excuse a call of another shape: a keyless call to a real route counts.
+    during: async (address) => {
+      for (const agent of ['Go-http-client/1.1', 'claude-cli/0.0.0 (probe)', 'claude-code/9.9.9']) statuses.push(await probe(address, agent));
+      statuses.push(await probe(address, 'Go-http-client/1.1', 'POST', '/v1/messages'));
+    },
+    cliRefused: [
+      { status: 401, method: 'GET', path: '/', userAgent: 'claude-cli/0.0.0 (probe)' },
+      { status: 401, method: 'GET', path: '/', userAgent: 'claude-code/9.9.9' },
+      { status: 401, method: 'POST', path: '/v1/messages', userAgent: 'Go-http-client/1.1' },
+    ],
   });
-  assert.deepEqual(statuses, [401, 401], 'both are refused: neither carries the key');
+  assert.deepEqual(statuses, [401, 401, 401, 401], 'all are refused: none carries the key');
   // The other client's refusal is reported, by its user-agent, not dropped.
   assert.ok(logged.some((l) => /refused/.test(l.message) && l.status === 401 && l.path === '/' && l.userAgent === 'Go-http-client/1.1'), "the other client's refusal is in the log, named");
 });

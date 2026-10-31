@@ -27,10 +27,11 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "agentrun-serve": "./dist/cli.js"
+    "agentrun-serve": "./launcher/agentrun-serve"
   },
   "files": [
     "dist",
+    "launcher",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

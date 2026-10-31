@@ -1,8 +1,8 @@
 // A run on a local directory whose agent starts one long command, so a test can SIGKILL the instance with the command
 // running: `node local-command.ts <root>` prints `ready <pid>` once the command runs and its group is recorded under
 // <root>/commands (a command started in the last walk's interval before a kill is the one the record can miss). The pid
-// is a child the command started in the background, in its group: the command itself dies with the instance (setpriv's
-// death signal), its children do not, and the next open's reap of the group is what ends them.
+// is a child the command started in the background, in its group: neither the command nor its children die with the
+// instance (a recorded command starts without setpriv's death signal), and the next open's reap of the group ends them.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { localRun } from "../../src/local-run.ts";

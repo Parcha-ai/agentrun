@@ -85,7 +85,8 @@ export type QuestionReceipts = { invocation: string; request_bytes: number; late
  *  is set in the commit that decides and cleared by the save after the host has written what it keeps of the
  *  answer: a resume that finds it set writes them, so a crash between the two never leaves the spend without
  *  its receipts. A host that keeps nothing commits null. */
-export type RouteDecision = { label: string; branch: string; choice: string; unsure: boolean; request_sha256: string | null; result: Record<string, unknown>; receipts: QuestionReceipts | null };
+/** `choice` is null and `refused` true for a refused answer, which took the route's unsure branch. */
+export type RouteDecision = { label: string; branch: string; choice: string | null; unsure: boolean; refused?: true; request_sha256: string | null; result: Record<string, unknown>; receipts: QuestionReceipts | null };
 
 /** A decision's request to the host's judge, as the kernel books a paid request: written and committed before the judge
  *  is asked (`requested`), with one outcome after. `answered` and `failed` are written by the process that asked;
@@ -150,6 +151,10 @@ export type FrozenSnapshot = {
   unknownResponses?: Record<string, unknown>;
   /** Spend by question nodes, which have no session of their own: metered per answer, carried with the frames. */
   questionSpendUsd?: number;
+  /** How many question answers came back with no price, so their cost is not in `questionSpendUsd`. A run
+   *  with any makes its spend read as incomplete, never as a bare total that omits them: an unknown cost is
+   *  never zero. Carried with the frames and committed in the same save as the spend it stands beside. */
+  unpricedQuestionCount?: number;
   /** The durable form of the escalation that ended the run; set once, reused on resume. */
   escalation?: EscalationRow;
 };
@@ -227,7 +232,10 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
     && routes && routes.every(([route, decision]) => {
       const at = fields(decision);
       const receipts = fields(at?.receipts);
-      return Boolean(at && resolves(route) && typeof at.label === "string" && typeof at.branch === "string" && ((typeof at.choice === "string" && typeof at.unsure === "boolean") || (at.choice === undefined && at.unsure === undefined)) && record(at.result) && (at.request_sha256 === null || typeof at.request_sha256 === "string")
+      return Boolean(at && resolves(route) && typeof at.label === "string" && typeof at.branch === "string"
+        // A refused route took its unsure branch and chose none: a named branch, a null choice, never "" for either.
+        && (at.refused === undefined ? (typeof at.choice === "string" && typeof at.unsure === "boolean") || (at.choice === undefined && at.unsure === undefined) : at.refused === true && at.branch !== "" && at.choice === null && at.unsure === true)
+        && record(at.result) && (at.request_sha256 === null || typeof at.request_sha256 === "string")
         && (at.receipts === null || (receipts && typeof receipts.invocation === "string" && nonNegativeInt(receipts.request_bytes) && Number.isFinite(receipts.latency_ms))));
     })
     && inputs && inputs.every(([path, digest]) => resolves(path) && !done.has(path) && typeof digest === "string" && SHA256.test(digest))
@@ -245,6 +253,7 @@ function validFrame(value: unknown, resolves: (path: string) => boolean): boolea
 export function validateFrozenSnapshot(saved: any, shape: FrozenShape): void {
   if (!record(saved) || saved.schema !== FROZEN_SNAPSHOT_SCHEMA || !Number.isFinite(saved.startedAt)
     || (saved.questionSpendUsd !== undefined && !(Number.isFinite(saved.questionSpendUsd) && saved.questionSpendUsd >= 0))
+    || (saved.unpricedQuestionCount !== undefined && !nonNegativeInt(saved.unpricedQuestionCount))
     || !["running", "paused", "cancelled"].includes(saved.status)
     || !record(saved.clocks) || !Object.values(saved.clocks).every(Number.isFinite)
     || !record(saved.files) || !Object.values(saved.files).every(value => typeof value === "string" && SHA256.test(value))

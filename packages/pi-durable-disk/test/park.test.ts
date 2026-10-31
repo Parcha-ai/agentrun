@@ -75,9 +75,12 @@ describe("Rivet's lifecycle cases on a claim", () => {
       const conversation = await first.harness.root(ctx, { agent: app.agent });
       const submission = await conversation.submit({ type: "input", content: "flaky" }, ctx);
       const parked = await parking.parked;
+      const parkedAt = Date.now();
       const claim = disk.claims[0]!;
       assert.equal(counters.requests, 1);
-      assert.ok(parked.wakeAt !== null && parked.wakeAt > Date.now(), "the wake is the retry's deadline");
+      // pi sets the retry's deadline when it reads the error: now() + the 1.5 s backoff. So the wake lies between the
+      // error plus the backoff and the park plus the backoff, however long the park itself took.
+      assert.ok(parked.wakeAt !== null && parked.wakeAt >= counters.erroredAt + 1_500 && parked.wakeAt <= parkedAt + 1_500, `the wake is the retry's deadline: ${parked.wakeAt} not in [${counters.erroredAt + 1_500}, ${parkedAt + 1_500}]`);
       const record = runJson(disk);
       assert.equal(record.status, "sleeping");
       assert.equal(Date.parse(record.wakeAt!), parked.wakeAt);

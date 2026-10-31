@@ -1,0 +1,78 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/lead-scorer/runs"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "runs": [
+      {
+        "run_id": "01a18401-0443-72bd-94e2-dae039885e58",
+        "agent_id": "lead-scorer",
+        "agent_version": 1,
+        "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Sample Freight Cooperative",
+        "created_at": "2026-10-28T19:33:42.195Z",
+        "ended_at": "2026-10-28T19:33:45.922Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004338,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18401-01ea-7eed-84d2-1963c61165fe",
+        "agent_id": "lead-scorer",
+        "agent_version": 1,
+        "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Example Tutoring Club",
+        "created_at": "2026-10-28T19:33:41.746Z",
+        "ended_at": "2026-10-28T19:33:45.626Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004257,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18401-01e5-751d-b30d-a49f4281b698",
+        "agent_id": "lead-scorer",
+        "agent_version": 1,
+        "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+        "kind": "workflow",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Acme Outdoor Supply",
+        "created_at": "2026-10-28T19:33:41.636Z",
+        "ended_at": "2026-10-28T19:33:45.460Z",
+        "error": null,
+        "cost": {
+          "usd": 0.004325,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      }
+    ],
+    "next_cursor": null
+  }
+}

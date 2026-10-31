@@ -1,0 +1,134 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/support-triage"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "support-triage",
+    "definition": {
+      "id": "support-triage",
+      "version": 2,
+      "name": "Support triage",
+      "description": "Classifies a support ticket and drafts the reply.",
+      "workflow": {
+        "v": 2,
+        "name": "support-triage",
+        "schemas": {
+          "Ticket": {
+            "type": "object",
+            "required": [
+              "subject",
+              "body"
+            ],
+            "properties": {
+              "subject": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              }
+            }
+          },
+          "Triage": {
+            "type": "object",
+            "required": [
+              "category",
+              "urgency",
+              "summary"
+            ],
+            "properties": {
+              "category": {
+                "type": "string",
+                "enum": [
+                  "billing",
+                  "bug",
+                  "account",
+                  "question"
+                ]
+              },
+              "urgency": {
+                "type": "number"
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          },
+          "Reply": {
+            "type": "object",
+            "required": [
+              "reply"
+            ],
+            "properties": {
+              "reply": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "input": {
+          "schemaId": "Ticket"
+        },
+        "output": {
+          "schemaId": "Reply",
+          "path": "reply"
+        },
+        "root": {
+          "node": "chain",
+          "steps": [
+            {
+              "node": "extract",
+              "label": "classify",
+              "instructions": "Classify the ticket: its category, its urgency from 1 to 10, and a one-sentence summary.",
+              "out": "Triage",
+              "as": "triage",
+              "tier": "fast"
+            },
+            {
+              "node": "escalate",
+              "label": "urgent",
+              "when": {
+                "predicate": "gte",
+                "path": "triage.urgency",
+                "n": 8
+              },
+              "kind": "review",
+              "stage": "gate",
+              "summary": "urgency 8 or more goes to the on-call person"
+            },
+            {
+              "node": "extract",
+              "label": "draft reply",
+              "instructions": "Draft a short, kind reply that says what happens next.",
+              "out": "Reply",
+              "as": "reply"
+            }
+          ]
+        }
+      },
+      "harness": "pi",
+      "skills": [],
+      "tools": []
+    },
+    "kind": "workflow",
+    "revision": "f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac",
+    "revisions": 2,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 8,
+      "live": 1
+    },
+    "region": "local",
+    "home_etag": "\"f876e74c9593ad658a36d165c07e256abeab07c846889c745249dc4de533e0ac\"",
+    "archived_at": null,
+    "created_at": "2026-10-28T19:32:56.280Z",
+    "updated_at": "2026-10-28T19:32:57.434Z"
+  }
+}

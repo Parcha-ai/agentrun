@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/release-notes"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "release-notes",
+    "definition": {
+      "id": "release-notes",
+      "version": 2,
+      "name": "Release notes writer",
+      "description": "Turns a list of merged changes into release notes people can read.",
+      "instructions": "Write release notes from the merged changes the person lists: highlights first, then a table of changes by area, then fixes and upgrade notes. Draft CHANGELOG.md, fix what you got wrong, and answer with the notes.",
+      "harness": "pi",
+      "skills": [],
+      "tools": [
+        "write",
+        "edit"
+      ]
+    },
+    "kind": "agentic",
+    "revision": "6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c",
+    "revisions": 2,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 4,
+      "live": 0
+    },
+    "region": "local",
+    "home_etag": "\"6eda1ce4bcee35203cddc9c1f8c1773ba7452055778a3cd29d367c38da71df3c\"",
+    "archived_at": null,
+    "created_at": "2026-10-28T19:32:53.728Z",
+    "updated_at": "2026-10-28T19:32:54.620Z"
+  }
+}
