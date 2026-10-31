@@ -101,7 +101,7 @@ test("through a gateway a revision's provider/model-id is sent whole (OpenRouter
   assert.deepEqual((await costOf({ AGENT_MODEL: `${bare.provider}/${bare.id}` })).default, vendorCost, `${bare.provider}/${bare.id}`);
 });
 
-test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know is still $0 and never reaches its cap", async (t) => {
+test("max_cost_usd applies to a gateway model the catalog prices: its response passes the cap and the run stops with spend_cap_reached; an id the catalog does not know has no price, so under the cap it is refused before anything is sent", async (t) => {
   const tokens = 1_000_000;
   const endpoint = await responsesEndpoint(t, "42", tokens);
   const names = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_PRICE", "AGENT_MODEL_API_KEY"];
@@ -125,9 +125,20 @@ test("max_cost_usd applies to a gateway model the catalog prices: its response p
   const usage = { input: tokens, output: tokens, cacheRead: 0, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const expected = calculateCost(builtinModels().getModel("openai", "gpt-4o"), usage).total;
   assert.ok(Math.abs(priced.cost.usd - expected) < 1e-9, `the run's cost is openai's list price for its usage: ${priced.cost.usd} vs ${expected}`);
-  const free = await run("free", "agent-model/not-a-catalog-model");
-  assert.deepEqual([free.status, free.error ?? null, free.cost.usd ?? 0], ["completed", null, 0], JSON.stringify(free));
-  // Each run's turns went to the gateway (other processes on the machine may probe a loopback port with a GET).
+  const asked = endpoint.models.length;
+  const unpriced = await run("unpriced", "agent-model/not-a-catalog-model");
+  assert.deepEqual([unpriced.status, unpriced.error?.code, unpriced.cost.usd], ["failed", "spend_cap_reached", 0], JSON.stringify(unpriced));
+  assert.match(unpriced.error?.message ?? "", /no price/, JSON.stringify(unpriced.error));
+  assert.equal(endpoint.models.length, asked, "the gateway was asked nothing for it");
+  // The priced run's turn went to the gateway (other processes on the machine may probe a loopback port with a GET).
   const posts = endpoint.asked.filter((line) => line.startsWith("POST "));
-  assert.ok(posts.length >= 2 && posts.every((line) => line === "POST /responses"), endpoint.asked.join(", "));
+  assert.ok(posts.length >= 1 && posts.every((line) => line === "POST /responses"), endpoint.asked.join(", "));
+});
+
+test("the run's models say which ids serve has no price for: one the catalog does not list and no price names; never one it lists, or one priced by AGENT_MODEL_PRICE", async () => {
+  const unpriced = async (env, tiers = ["default"]) => [...(await runModels({ ...GATEWAY, ...env }, undefined, tiers)).unpriced];
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "not-a-catalog-model" }), ["not-a-catalog-model"], "not listed, no price set");
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_PRICE: "0,0" }), [], "a price set, even $0, is a known price");
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "gpt-6-luna" }), [], "listed in the catalog");
+  assert.deepEqual(await unpriced({ AGENT_MODEL: "not-a-catalog-model", AGENT_MODEL_FAST: "gpt-6-luna" }, ["default", "fast"]), ["not-a-catalog-model"], "per model, not per run");
 });

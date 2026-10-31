@@ -42,7 +42,7 @@ export function failedWith(code: string, message?: RegExp): RunFixture {
 /** The recorded server's `features.messages`. */
 export const messageFeatures = recorded<{ features: { messages: MessageFeatures } }>("capabilities").body.features.messages;
 
-import type { Agent } from "@/lib/agentForm";
+import { type Agent, toolOffers } from "@/lib/agentForm";
 import type { EditorCaps, Revision } from "@/components/AgentEditor";
 
 /** The recorded agents (`agents.list`, and archived), each agent's revisions, and the server's editor capabilities. */
@@ -50,5 +50,5 @@ export const agentsList = () => recorded<{ agents: Agent[] }>("agents.list").bod
 export const archivedAgents = () => recorded<{ agents: Agent[] }>("agents.list.archived").body.agents;
 export const agentFixture = (slug: string) => recorded<Agent>(`agent.${slug}`).body;
 export const revisionsOf = (slug: string) => recorded<{ revisions: Revision[] }>(`agent.${slug}.revisions`).body.revisions;
-const capsBody = recorded<{ harnesses: EditorCaps["harnesses"]; tools: string[]; features: { thinking: string[] }; models: { default?: string } }>("capabilities").body;
-export const editorCaps: EditorCaps = { harnesses: capsBody.harnesses, tools: capsBody.tools, thinking: capsBody.features.thinking, defaultModel: capsBody.models.default };
+const capsBody = recorded<{ harnesses: EditorCaps["harnesses"]; tools: unknown; features: { thinking: string[] }; models: { default?: string } }>("capabilities").body;
+export const editorCaps: EditorCaps = { harnesses: capsBody.harnesses, tools: toolOffers(capsBody.tools), thinking: capsBody.features.thinking, defaultModel: capsBody.models.default };

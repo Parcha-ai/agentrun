@@ -1,0 +1,18 @@
+Patch: 008-recovery-note-developer
+Reason: the harness's note about an interrupted turn was sent as the resumed turn's user message, so the model read the harness's words as the user's; the resumed turn's user input is the user's own words, or a bare nudge, and the note goes to the model as a developer message injected once per interrupted turn by code-mode.ts
+Upstream: ours
+Pins: recovery note: after a resume the harness's note reaches the model once, as a developer message and in no user message, the resumed turn's user input is Continue., and a later turn carries it once, as history
+Pins: recovery note: a crash before the rollout was mirrored (a new thread) still gets the note as a developer message, in no user message
+---
+diff --git a/packages/harness-codex/src/harness.ts b/packages/harness-codex/src/harness.ts
+index ba08512..436c2a9 100644
+--- a/packages/harness-codex/src/harness.ts
++++ b/packages/harness-codex/src/harness.ts
+@@ -1079,6 +1079,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
+           if (owed.length) {
+             text += `\n\nMessages that may not have reached you before the interruption:\n${owed.map((s) => quote(s.text ?? '')).join('\n')}`;
+           }
++          text = await code.resumeTurn(note, owed);
+           const n = transcriptOf(ctx.state()).filter((r) => r.data.type === 'message' && r.data.role === 'user').length;
+           journal.message({ type: 'message', role: 'user', text: notes ? `${notes}\n\n${text}` : text, synthetic: 'recovery' } satisfies TranscriptEntry);
+           await placeSubmissions(ctx, note.pending);

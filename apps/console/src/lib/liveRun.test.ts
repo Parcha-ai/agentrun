@@ -23,13 +23,28 @@ describe("messageOffer", () => {
 });
 
 describe("readHarness", () => {
-  it("is the agent's harness when its read succeeds (none named is the default, pi)", async () => {
-    expect(await readHarness({ agentHarness: async () => "codex" }, "a1")).toEqual({ state: "read", id: "codex" });
-    expect(await readHarness({ agentHarness: async () => undefined }, "a1")).toEqual({ state: "read", id: undefined });
+  type Row = { revision: string; definition: { harness?: string } };
+  const pages = (...p: Row[][]) => ({
+    listRevisions: async (_agent: string, cursor?: string | null) => {
+      const at = cursor ? Number(cursor) : 0;
+      return { revisions: p[at]!, next_cursor: at + 1 < p.length ? String(at + 1) : null };
+    },
   });
-  it("is failed when the agent cannot be read, so no steer is offered", async () => {
-    const failed = await readHarness({ agentHarness: async () => { throw new Error("503"); } }, "a1");
+  const run = (revision: string) => ({ agent_id: "a1", revision });
+
+  it("is the harness of the revision the run started from, not the agent's current one", async () => {
+    // Newest first: the agent moved to codex after a pi run started; that run keeps pi's timing.
+    const v2 = pages([{ revision: "r2", definition: { harness: "codex" } }], [{ revision: "r1", definition: { harness: "pi" } }]);
+    expect(await readHarness(v2, run("r1"))).toEqual({ state: "read", id: "pi" });
+    expect(await readHarness(v2, run("r2"))).toEqual({ state: "read", id: "codex" });
+  });
+  it("none named on that revision is the default, pi", async () => {
+    expect(await readHarness(pages([{ revision: "r1", definition: {} }]), run("r1"))).toEqual({ state: "read", id: undefined });
+  });
+  it("is failed when the revisions cannot be read, or none is the run's, so no steer is offered", async () => {
+    const failed = await readHarness({ listRevisions: async () => { throw new Error("503"); } }, run("r1"));
     expect(failed).toEqual({ state: "failed" });
     expect(mode(messageOffer(failed, caps))).not.toBe("steer");
+    expect(await readHarness(pages([{ revision: "r2", definition: { harness: "pi" } }]), run("r1"))).toEqual({ state: "failed" });
   });
 });

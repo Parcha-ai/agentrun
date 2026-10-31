@@ -2,12 +2,12 @@ import { Archive, ArrowLeft, ArrowRight, Check, FileText, History, Settings, Tri
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
-import { type Agent, type AgentFields, harnessOptions, type SaveProblem } from "@/lib/agentForm";
+import { type Agent, type AgentFields, harnessOptions, type SaveProblem, type ToolOffer } from "@/lib/agentForm";
 import { markdown, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string };
-export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: string[]; thinking: string[]; defaultModel?: string };
+export type EditorCaps = { harnesses: { id: string; available: boolean; reason?: string }[]; tools: ToolOffer[]; thinking: string[]; defaultModel?: string };
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
   agent: Agent | null;
@@ -129,11 +129,13 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               <Field label="Tools" note="The tools this server offers. The agent can call the ones you pick." error={fieldError("tools")}>
                 <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {caps.tools.map((t) => {
-                    const on = f.tools?.includes(t) ?? false;
+                    const on = f.tools?.includes(t.name) ?? false;
+                    // A tool the server can't run now (a setting it lacks) can't be newly picked; its lack is said.
+                    const lacks = !t.available && !on;
                     return (
-                      <li key={t}><label className={cn("flex cursor-pointer items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground")}>
-                        <input type="checkbox" checked={on} onChange={() => set({ tools: on ? f.tools!.filter((x) => x !== t) : [...(f.tools ?? []), t] })} className="accent-[hsl(var(--primary))]" />
-                        {t}
+                      <li key={t.name}><label title={lacks ? `Needs ${(t.missing ?? []).join(", ")}` : undefined} className={cn("flex items-center gap-3 border px-3 py-2.5 font-mono text-[13px]", on && "border-foreground", lacks ? "cursor-not-allowed opacity-60" : "cursor-pointer")}>
+                        <input type="checkbox" value={t.name} checked={on} disabled={lacks} onChange={() => set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] })} className="accent-[hsl(var(--primary))]" />
+                        {t.name}
                       </label></li>
                     );
                   })}
