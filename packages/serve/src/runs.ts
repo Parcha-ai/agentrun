@@ -21,7 +21,7 @@ import { FAUX_WEB_ENV } from "./fetch-page.js";
 import { ASK_TOOL, FAUX_BROWSER_ENV } from "./tools.js";
 import { ApiError } from "./errors.js";
 import { CAP_ENV, SPEND_CAP_REACHED } from "./cap.js";
-import { EFFORT_ENV, FAUX_ENV } from "./model.js";
+import { EFFORT_ENV, FAUX_ENV, withoutFaux } from "./model.js";
 import { durationMs } from "./print.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
 import { isObject, type Json } from "./validate.js";
@@ -256,9 +256,10 @@ export const RUN_SECRETS = SECRET_NAMES.filter((name) => !SERVER_ONLY.has(name))
 /** The module a run's process preloads (`--import`) to read its pipe before anything else; app.ts gets the same instance. */
 const SECRETS_MODULE = new URL("./secrets.js", import.meta.url).href;
 /** A run's process's environment: no secret in it (they go over its pipe), nor the token by value; the AGENT_MODEL
- *  variables and the rest pass, and the door token goes by file. */
+ *  variables and the rest pass, and the door token goes by file. A test hook's name passes never (withoutFaux): the run
+ *  gets one only from startServe's options. */
 export const childEnv = (env: NodeJS.ProcessEnv, token: string): NodeJS.ProcessEnv =>
-  Object.fromEntries(Object.entries(withoutSecrets(env)).filter(([, value]) => value !== token));
+  Object.fromEntries(Object.entries(withoutSecrets(withoutFaux(env))).filter(([, value]) => value !== token));
 
 /** One line of the run process's log in words: pi-durable-disk writes JSON lines (`{at, event, message, ...}`). */
 function inWords(line: string): string {
