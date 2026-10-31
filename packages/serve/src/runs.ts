@@ -491,7 +491,8 @@ export class Runs {
     }
     if (run.kind === "workflow") {
       const { durableDecisions } = await import("@parcha/agentrun-pi/durable");
-      run.decisions = durableDecisions(file);
+      // Decisions it cannot read add no rows: the run's cost read says unknown (readDecisionCost).
+      try { run.decisions = durableDecisions(file); } catch { run.decisions = undefined; }
     }
     run.working = false;
     noteAnswer(run, entries);

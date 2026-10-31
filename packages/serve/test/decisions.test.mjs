@@ -20,7 +20,7 @@ import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
 
 const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
-const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_HANG", "AGENTRUN_TEST_FAUX_JEV_COST", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS"];
+const KEYS = ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "AGENTRUN_TEST_FAUX_JEV_CALLS", "AGENTRUN_TEST_FAUX_JEV_STATUS", "AGENTRUN_TEST_FAUX_JEV_HANG", "AGENTRUN_TEST_FAUX_JEV_COST", "PARALLEL_API_KEY", "AGENTRUN_TEST_FAUX_PARALLEL_CALLS", "AGENTRUN_TEST_FAUX_JEV_NO_USAGE"];
 const OPENROUTER_GATEWAY = "https://openrouter.ai/api/v1";
 /** Keys that are not the canary, so a request sent with one is not authorized: held in names, as no key literal sits beside a key variable. */
 const OTHER_ROUTER_KEY = "openrouter-key-not-jevs";
@@ -485,6 +485,7 @@ test("a workflow that escalates ends completed and waits for review: no error, n
 
 test("a workflow whose decision cost is unknown and whose model request is priced reads its cost unknown, before and after the server restarts", async (t) => {
   await withCanary(t);
+  process.env.AGENTRUN_TEST_FAUX_JEV_NO_USAGE = "1";
   const data = join(await scratch(t), "agents");
   const priced = new URL("./fixtures/faux-priced.mjs", import.meta.url).pathname;
   const first = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
@@ -496,9 +497,11 @@ test("a workflow whose decision cost is unknown and whose model request is price
   const { last } = await follow(api, runId, ["completed", "failed"]);
   const before = (await api("GET", `/runs/${runId}`)).body;
   assert.equal(last.status, "completed", JSON.stringify(before.error));
-  assert.equal(durableDecisions(join(data, "runs", runId, "store", "run.sqlite"))[0].cost_usd, null, "Jev reports no cost: the decision's is unknown");
-  const usage = (await api("GET", `/runs/${runId}/timeline?limit=500`)).body.rows.findLast((row) => row.kind === "usage");
-  assert.ok(usage?.usage?.usd > 0, `the model node's request is priced: ${JSON.stringify(usage?.usage)}`);
+  assert.equal(durableDecisions(join(data, "runs", runId, "store", "run.sqlite"))[0].cost_usd, null, "Jev counts no tokens: the decision's cost is unknown");
+  const rows = (await api("GET", `/runs/${runId}/timeline?limit=500`)).body.rows;
+  assert.deepEqual(rows.filter((row) => row.kind === "decision").map((row) => row.usage), [{ usd: null, requests: 1 }], "the decision's own cost is unknown");
+  const usage = rows.findLast((row) => row.kind === "usage");
+  assert.deepEqual([usage?.usage?.usd, usage?.usage?.requests], [null, 2], "the usage row folds the decision in: its unknown cost makes the total unknown, never the priced model's alone");
   assert.equal(before.cost.usd, null, "the decision's unknown cost is the run's");
   await closeFirst();
   const next = await startServe({ data, port: 0, faux: priced, fauxJev: FAUX_JEV, drainTimeout: "5s" });
@@ -570,6 +573,7 @@ test("an ended workflow run with no store file keeps its known cost after the se
   const after = await client(next.baseUrl, next.token)("GET", `/runs/${runId}`);
   assert.equal(after.status, 200, JSON.stringify(after.body));
   assert.equal(after.body.cost.usd, known, "the store's own total, as the agent store kept it");
+});
 
 /** The run's served timeline, every row. */
 async function timeline(api, runId) {

@@ -33,5 +33,7 @@ export default async function fakeJev(url, init = {}) {
   }));
   // AGENTRUN_TEST_FAUX_JEV_COST: a cost the provider reports for each call, in USD (live Jev reports about $0.00003).
   const cost = process.env.AGENTRUN_TEST_FAUX_JEV_COST ? { cost: Number(process.env.AGENTRUN_TEST_FAUX_JEV_COST) } : {};
-  return new Response(JSON.stringify({ model: "jev-1.14.0", answers, usage: { input_tokens: 120, output_tokens: 0, ...cost } }), { status: 200, headers: { "content-type": "application/json", "x-typesafe-request-id": "req-faux-1" } });
+  // AGENTRUN_TEST_FAUX_JEV_NO_USAGE: the answer counts no tokens, so its cost is unknown even at a published price.
+  const usage = process.env.AGENTRUN_TEST_FAUX_JEV_NO_USAGE ? {} : { usage: { input_tokens: 120, output_tokens: 0, ...cost } };
+  return new Response(JSON.stringify({ model: "jev-1.14.0", answers, ...usage }), { status: 200, headers: { "content-type": "application/json", "x-typesafe-request-id": "req-faux-1" } });
 }
