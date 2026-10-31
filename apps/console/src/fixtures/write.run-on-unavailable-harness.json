@@ -1,0 +1,27 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/v2/agents/01a18490-3029-7897-b5b5-487227b6adc7/runs",
+    "body": {
+      "input": {
+        "content": "Check the 2.4.1 entry."
+      }
+    }
+  },
+  "status": 409,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "error": {
+      "code": "agent_not_runnable",
+      "message": "This server does not run codex yet.",
+      "retryable": false,
+      "request_id": "req_afeb67071d4cb37e",
+      "details": {
+        "unbound": [],
+        "harness": "codex"
+      }
+    }
+  }
+}

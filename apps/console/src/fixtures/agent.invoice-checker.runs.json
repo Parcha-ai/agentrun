@@ -1,0 +1,208 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/invoice-checker/runs"
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": {
+    "runs": [
+      {
+        "run_id": "01a18400-89d9-76d5-9e3d-4213ee493a7d",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "failed",
+        "state": "idle",
+        "title": "Check invoice INV-1049 from the hosting vendor: hosting 440.00, 6 support hours…",
+        "created_at": "2026-10-28T19:33:22.579Z",
+        "ended_at": "2026-10-28T19:33:26.803Z",
+        "error": {
+          "code": "spend_cap_reached",
+          "message": "the next model request was not sent. It could cost up to $0.247957, and with $0.000000 spent the run would pass its cap of $0.000001: the run is out of budget.",
+          "retryable": false
+        },
+        "cost": {
+          "usd": 0,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": 0.000001
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-87cc-7679-a63f-6e94f0c04778",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1048 from the hosting vendor: hosting 440.00, total 440.00.",
+        "created_at": "2026-10-28T19:33:21.091Z",
+        "ended_at": "2026-10-28T19:33:29.324Z",
+        "error": null,
+        "cost": {
+          "usd": 0.00884,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-8399-7f9c-9a53-70c59dd75c58",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1047 (the currency is missing): licenses 12 at 30.00, total 3…",
+        "created_at": "2026-10-28T19:33:20.486Z",
+        "ended_at": "2026-10-28T19:33:29.008Z",
+        "error": null,
+        "cost": {
+          "usd": 0.010088,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-7f56-797d-bbae-fb855c2c9d2d",
+        "agent_id": "invoice-checker",
+        "agent_version": 3,
+        "revision": "3baec5f9ccfde674b8d441f005c57fa7a365964d40af44e003ae840a7032a8fe",
+        "kind": "agentic",
+        "sha": null,
+        "status": "input_required",
+        "state": "waiting",
+        "title": "Check invoice INV-1046 (the currency is missing): consulting 2,400.00, travel 3…",
+        "created_at": "2026-10-28T19:33:09.695Z",
+        "ended_at": null,
+        "error": null,
+        "cost": {
+          "usd": 0.004043,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5ebe-7302-898c-19883f13e572",
+        "agent_id": "invoice-checker",
+        "agent_version": 2,
+        "revision": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1044 from the design studio: 3 days at 650.00, total 1,950.00.",
+        "created_at": "2026-10-28T19:33:05.364Z",
+        "ended_at": "2026-10-28T19:33:22.981Z",
+        "error": null,
+        "cost": {
+          "usd": 0.00802,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5ebf-7ad7-af75-2e0fb3b41961",
+        "agent_id": "invoice-checker",
+        "agent_version": 2,
+        "revision": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1045 from the cleaning service: 4 visits at 95.00, supplies 3…",
+        "created_at": "2026-10-28T19:33:05.015Z",
+        "ended_at": "2026-10-28T19:33:22.609Z",
+        "error": null,
+        "cost": {
+          "usd": 0.008048,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5ebc-7f67-abfb-192c6264ecde",
+        "agent_id": "invoice-checker",
+        "agent_version": 2,
+        "revision": "77b2826aaa7d3ed57fcfb683880c79094c56df20645b95d27d8b62a4f3fd2c6a",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1043 from the hosting vendor: hosting 420.00, 10 support hour…",
+        "created_at": "2026-10-28T19:33:04.695Z",
+        "ended_at": "2026-10-28T19:33:23.383Z",
+        "error": null,
+        "cost": {
+          "usd": 0.008062,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5eb8-7ffa-8cb1-6e28d6473434",
+        "agent_id": "invoice-checker",
+        "agent_version": 1,
+        "revision": "1c9bdb3393edc2277443bbd496b36658c0ed186864b9b37040fb2e0645ee73da",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1042: hosting 420.00, total 420.00.",
+        "created_at": "2026-10-28T19:33:02.956Z",
+        "ended_at": "2026-10-28T19:33:21.569Z",
+        "error": null,
+        "cost": {
+          "usd": 0.007329,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      },
+      {
+        "run_id": "01a18400-5eb3-75d3-ac8a-6221af97f975",
+        "agent_id": "invoice-checker",
+        "agent_version": 1,
+        "revision": "1c9bdb3393edc2277443bbd496b36658c0ed186864b9b37040fb2e0645ee73da",
+        "kind": "agentic",
+        "sha": null,
+        "status": "completed",
+        "state": "idle",
+        "title": "Check invoice INV-1041 from the hosting vendor: hosting 420.00, 12 support hour…",
+        "created_at": "2026-10-28T19:33:01.877Z",
+        "ended_at": "2026-10-28T19:33:09.712Z",
+        "error": null,
+        "cost": {
+          "usd": 0.007459,
+          "basis": "estimate",
+          "charge_state": null,
+          "cap_usd": null
+        },
+        "archived_at": null
+      }
+    ],
+    "next_cursor": null
+  }
+}

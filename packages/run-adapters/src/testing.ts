@@ -103,6 +103,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         if (!results.has(callId)) await append(FAUX_RECORDS.result, { callId, interrupted: true });
       }
       const tools = new Map<string, HostTool>(spec.tools.map((tool) => [tool.name, tool]));
+      /** What the session has been sent, as a model would be prompted with it. */
+      const prompt = records.filter((r) => r.kind === FAUX_RECORDS.user).map((r) => (r.data as { text: string }).text);
       let ending: { promise: Promise<{ status: TurnStatus; error?: string }>; resolve: (end: { status: TurnStatus; error?: string }) => void } | undefined;
       let turnSignal: AbortController | undefined;
 
@@ -125,7 +127,8 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
             if (!action) return await end("completed");
             if ("hang" in action) return await hang(signal);
             if ("halt" in action) { turnSignal!.abort(new Error(action.halt)); return await hang(signal); }
-            await io.models.beforeRequest({ model: "faux" });
+            // Measured as a real adapter's proxy measures its body: the prompt's UTF-8 bytes, with nothing a provider adds.
+            await io.models.beforeRequest({ model: "faux", inputTokensMax: Buffer.byteLength(JSON.stringify({ system: spec.system, user: prompt }), "utf8") });
             if ("cut" in action) { stats.requests += 1; return await hang(signal); }
             stats.requests += 1;
             const index = cursor++;
@@ -167,6 +170,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         state,
         async send(text) {
           await append(FAUX_RECORDS.user, { text });
+          prompt.push(text);
           await append(FAUX_RECORDS.turn, { n: turnsStarted + 1 });
           begin();
         },

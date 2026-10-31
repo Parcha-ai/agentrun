@@ -69,6 +69,9 @@ export interface ProviderPolicy {
    *  smaller one for a client's background calls). The runner is asked about, and the price taken for, that model.
    *  Absent, or undefined for a body: the session's model. */
   modelOf?(body: Record<string, unknown>): string | undefined;
+  /** The input tokens the provider bills for the body `apply` returned that the body does not carry: a prompt it adds
+   *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Absent: none. */
+  serverInputOverhead?(body: Record<string, unknown>): number;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -86,8 +89,9 @@ export interface ModelUsageReport extends ProxyUsage {
 
 export interface ModelProxyHooks {
   /** Before a paid request leaves; a throw refuses it. What it returns (a ticket) is handed back to this request's
-   *  `afterRequest`, since requests may be in flight together. */
-  beforeRequest(request: { model: string }): Promise<unknown>;
+   *  `afterRequest`, since requests may be in flight together. `inputTokensMax` is the most input tokens it can be
+   *  billed for (see `inputTokensMaxOf`), undefined when that could not be measured. */
+  beforeRequest(request: { model: string; inputTokensMax?: number }): Promise<unknown>;
   /** When a request's response has completed, with its usage and the ticket its `beforeRequest` returned. */
   afterRequest(usage: ModelUsageReport, ticket?: unknown): Promise<void>;
   /** When a paid request's response headers arrive, before its body: the ids they give it (`providerIdsOf`), so a
@@ -289,6 +293,25 @@ function baseOf(base: string): string {
 }
 
 /** Start a session's model proxy on the loopback interface, admitting `key`. */
+/**
+ * The most input tokens a request with body `sent` (the body `apply` returned, as it is sent) can be billed for: its UTF-8
+ * byte count, plus the input the policy says the provider adds that the body does not carry. A provider's tokenizer is a
+ * byte-level BPE, whose every token covers at least one byte of what it encodes, so the text the body carries can never
+ * be more tokens than bytes, however dense (CJK, emoji, base64). It is not an average of characters per token, which
+ * undercounts dense text. Undefined, never 0, when the policy's figure cannot be read: the input is then unmeasured.
+ */
+export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, unknown>, sent: string, say: (message: string, detail?: Record<string, unknown>) => void = () => {}): number | undefined {
+  try {
+    // Only a policy with no hook adds nothing. A hook's undefined or null is no figure, never 0: the input is unmeasured.
+    const overhead: unknown = policy.serverInputOverhead ? policy.serverInputOverhead(body) : 0;
+    if (typeof overhead !== "number" || !Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
+    return Buffer.byteLength(sent, "utf8") + overhead;
+  } catch (error) {
+    say(`model proxy (${policy.id}): the policy could not say what the provider adds to the body's input; its input is unmeasured`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+    return undefined;
+  }
+}
+
 export async function startModelProxy(options: ModelProxyOptions, key: string): Promise<ModelProxy> {
   const { policy, hooks, model } = options;
   if (!key) throw new Error("agentrun-adapters: a model proxy needs the session's key");
@@ -366,6 +389,15 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     } catch (error) {
       say(`model proxy (${policy.id}): the policy could not name the request's model; it is booked as the session's`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
     }
+    // The body as it is sent, and the most input tokens it can be billed for, measured before the runner is asked.
+    let sent: string;
+    try {
+      sent = JSON.stringify(body);
+    } catch (error) {
+      say(`model proxy (${policy.id}): the body could not be serialized`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
+      return refuse(res, 500, "the body could not be serialized", req);
+    }
+    const inputTokensMax = inputTokensMaxOf(policy, body, sent, say);
     // The provider's credential and its headers come before the runner is asked: a request that could not be sent is
     // refused without being admitted, so it is never booked and spends no turn.
     let credential = "";
@@ -392,7 +424,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     // This request's own admission, handed back to its booking (requests may be in flight together).
     let ticket: unknown;
     try {
-      if (!route.free) ticket = await hooks.beforeRequest({ model: asked });
+      if (!route.free) ticket = await hooks.beforeRequest({ model: asked, inputTokensMax });
     } catch (error) {
       // Not 429: clients retry that, and the runner already refused this request (a turn cap, the host's budget).
       return refuse(res, refusedStatus, `refused before it was sent: ${String((error as Error)?.message ?? error).slice(0, 300)}`, req);
@@ -425,7 +457,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let reported: number | undefined;
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
-      const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: JSON.stringify(body), signal: controller.signal });
+      const upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
       // its booking.
       try {

@@ -11,7 +11,7 @@
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
 import type { DriveContext, SessionState } from "./host/kernel.js";
 import type { SessionMachine } from "./host/process.js";
-import { openTurn, recoverySystemNote, recoveryUserTurn, toolKey } from "./host/process.js";
+import { openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey } from "./host/process.js";
 import type { RolloutSummary } from "./rollout.js";
 import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, type NestedFact, outputTextOf, recoveryFacts, Scripts, settle, UNWATCHED } from "./scripts.js";
 
@@ -55,14 +55,17 @@ interface Dangling {
 
 type Tie = { callId: string; exec: string | null; since?: number };
 
-/** What the log holds of one nested call: the session's record, and the rollout's completion line. */
-function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string }): NestedFact {
+/** What the log holds of one nested call: the session's record, the rollout's completion line, and what the turn's recovery note
+ *  calls it (`told`, by call id). */
+function factOf(state: SessionState, rolled: ReturnType<typeof completedNested>, tie: { callId: string }, told: ReadonlyMap<string, NestedFact["told"]> = new Map()): NestedFact {
   const e = state.effects.get(toolKey(tie.callId));
+  const status = told.get(tie.callId);
   return {
     callId: tie.callId,
     tool: e ? e.name.replace(/^tool\./, "") : (rolled.get(tie.callId)?.tool ?? "a tool"),
     ...(e ? { store: { status: e.status === "completed" ? "completed" : e.status === "failed" ? "failed" : "started", text: e.status === "failed" ? (e.error?.message ?? "") : outputTextOf(e.output), ...(e.error?.interrupted ? { interrupted: true } : {}) } as NonNullable<NestedFact["store"]> } : {}),
     ...(rolled.has(tie.callId) ? { rollout: rolled.get(tie.callId)! } : {}),
+    ...(status ? { told: status } : {}),
   };
 }
 
@@ -159,7 +162,8 @@ export function codeMode(deps: CodeModeDeps) {
       const rolled = completedNested(lines);
       // Each cut-off exec lists its own calls. A call whose script could not be told when it ran (an answer the proxy did not see to its end)
       // is listed once, apart, in the LAST cut-off exec's output, if it ran in this interrupted turn.
-      const listed = recoveryFacts(execs, ties, since, (tie) => factOf(state, rolled, tie));
+      const told = new Map((recoveryNote(state)?.calls ?? []).map((c) => [c.callId, c.status] as const));
+      const listed = recoveryFacts(execs, ties, since, (tie) => factOf(state, rolled, tie, told));
       dangling.forEach((c, i) => {
         if (c.name !== "exec") return;
         const { own, loose } = listed.get(c.callId)!;

@@ -272,6 +272,7 @@ the sessions it still holds are released at Browserbase.
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw. |
+| `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`; `failed` includes escalated. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` `estimate`, or null beside a null `usd`; `unknown_runs` counts the rest. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
@@ -288,6 +289,12 @@ back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. Today this server runs pi.
+
+`claude-agent` sends its requests to `ANTHROPIC_BASE_URL` (else Anthropic) with Anthropic's own model id, and prices the run
+by it: a revision's `anthropic/<model-id>`, its dots as dashes. A gateway such as OpenRouter names the same models with
+dots (`anthropic/claude-sonnet-5.5`) and takes Anthropic's own id (`claude-sonnet-5-5`), so one name works through it and
+direct. A model with more than one segment after its provider (`anthropic/anthropic/claude-sonnet-5.5`) is refused, naming
+the form to use.
 
 `definition.harness` and `capabilities.harnesses` are this server's, outside the `agentrun.v2/0` contract:
 `GET /v2/openapi.json` marks each `x-agentrun-serve: "harness/1"`, beside the other properties it adds (`model/1`,
