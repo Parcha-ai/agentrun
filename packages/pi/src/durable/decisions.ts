@@ -61,6 +61,11 @@ export type DecisionRow = {
   refused?: string[];
   /** For each choice and score answer, whether its confidence is the provider's own or was derived. */
   confidence_source?: Record<string, string>;
+  /** The images the request carried, by digest (token, reference, SHA-256, type, size), never their bytes. */
+  images?: Array<{ token: string; ref: string; sha256: string | null; mime: string | null; bytes: number | null }>;
+  /** The state the judge saw, or past 64 KB of JSON the first 64 KB of its text, with `state_truncated` saying which. */
+  state?: unknown;
+  state_truncated?: boolean;
   /** The request's spend is on its frozen driver's state, so a cost fold counts it there, not here. */
   driver_spend?: true;
   /** The receipt's id, its place among its node's requests, the digest of the state it was asked with, and the key of
@@ -74,6 +79,8 @@ export type DecisionRow = {
    *  stopped before it answered is still counted. The row settles that admission in the row's own commit: a cost fold
    *  counts an admission no row names, and never one a row names. */
   admission?: string;
+  /** How the cost was reached (reported by the provider, estimated by the host, unknown), when the judge said. */
+  cost_basis?: "reported" | "estimate" | "unknown";
 };
 
 /** The old form: one session document whose `receipts` list is rewritten at every commit. Read, and written only in a store that holds it. */

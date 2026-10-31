@@ -10,6 +10,8 @@ import { ArchilCodingTools, type AppContext } from "@parcha/pi-durable-disk";
 import { FETCH_PAGE_TOOL, fetchOptions, fetchPage, fetchPageTool } from "./fetch-page.js";
 import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
+import { type Complete, LLM_TOOL } from "./llm.js";
+import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
 
@@ -59,6 +61,10 @@ export type ToolHost = {
 /** What a name stands for in the run: the pi tools it offers, and the extensions a conversation selects for them. */
 export type ToolBinding = { tools: readonly ToolRegistration[]; extensions: readonly Extension[] };
 
+/** What a call node's effect gets from the run's process: its signal, environment and work directory, and one
+ *  completion on the run's models (the `llm` tool's). */
+export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete };
+
 export type ToolEntry = {
   /** One line, for capabilities. */
   summary: string;
@@ -70,8 +76,15 @@ export type ToolEntry = {
   bind(host: ToolHost): Promise<ToolBinding>;
   /** What a workflow's `call` node `via: "tool"` naming it runs: its interpolated `args` in, the value its `out` schema
    *  checks out. Absent, no call node may name it. */
-  effect?(args: Record<string, unknown>, run: { signal: AbortSignal; env: NodeJS.ProcessEnv }): Promise<unknown>;
+  effect?(args: Record<string, unknown>, run: EffectRun): Promise<unknown>;
+  /** Only a workflow's call node runs it: no agent and no model node may name it. */
+  callOnly?: true;
 };
+
+const callOnly = (summary: string, effect: NonNullable<ToolEntry["effect"]>): ToolEntry => ({
+  summary, needs: [], nodes: false, callOnly: true, effect,
+  bind: async () => { throw new Error("a call-only tool binds no agent tool"); },
+});
 
 const fileTool = (name: string, summary: string): ToolEntry => ({
   summary,
@@ -170,12 +183,23 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => fetchPage(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
   },
   browser: browserTool,
+  [PDF_PAGES_TOOL]: callOnly(
+    "A workflow call: { path, maxPages?, dpi? } -> { name, pageCount, dpi, pages: [{ page, image }], text }; the document's first pages drawn as PNGs under work/pages/<stem>/<dpi>/ (the dpi lowered so a page's long side is at most 1568 px), from the server's documents (--documents) or the run's work directory.",
+    (args, run) => pdfPages(args, { work: run.work, documents: run.env[DOCUMENTS_ENV], signal: run.signal }),
+  ),
+  [LLM_TOOL]: callOnly(
+    "A workflow call: { prompt, system?, maxTokens?, tier? } -> { text, model, usage, cost_usd }; one completion on the model of the tier (default), no tools and no loop.",
+    (args, run) => {
+      if (!run.complete) throw new Error("llm: this run has no model to complete on");
+      return run.complete(args, run.signal);
+    },
+  ),
 });
 
 /** Every name a revision may name, those a workflow's model node may, and those a workflow's call node may run. */
-export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS);
+export const BOUND_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => !TOOLS[name]!.callOnly);
 export const NODE_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.nodes);
-export const CALL_TOOLS: readonly string[] = BOUND_TOOLS.filter((name) => TOOLS[name]!.effect !== undefined);
+export const CALL_TOOLS: readonly string[] = Object.keys(TOOLS).filter((name) => TOOLS[name]!.effect !== undefined);
 
 /** The tools a workflow names (`nodes` from workflowNodes): on its model nodes (`tools`), and on its `call` nodes
  *  `via: "tool"` (`tool`). */
@@ -216,5 +240,5 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
 export const toolsView = (env: NodeJS.ProcessEnv) =>
   Object.entries(TOOLS).map(([name, entry]) => {
     const missing = missingEnv(entry, env);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, available: missing.length === 0, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS] };
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), available: missing.length === 0, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS] };
   });

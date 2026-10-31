@@ -21,7 +21,8 @@ import { answerPage, isJson, ownerCookie, ownOrigin, signedIn } from "./page.js"
 import { durationMs, logLine } from "./print.js";
 import { type CarryBackRetry, type Run, Runs, STATUSES, type Status } from "./runs.js";
 import { BOX_QUARANTINE, type BoxHost, Quarantine } from "./box/sweep.js";
-import { blockersOf, issueOf, type RevisionShape } from "./runnable.js";
+import { DOCUMENTS_ENV } from "./pdf-pages.js";
+import { blockersOf, CODE_NODES_ENV, issueOf, type RevisionShape } from "./runnable.js";
 import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { statsView } from "./stats.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
@@ -65,6 +66,12 @@ export type ServeOptions = {
   token?: string;
   /** Default 7340; 0 is any free port. */
   port?: number;
+  /** A read-only directory of documents a workflow's `pdf_pages` calls read by file name (`--documents`); default
+   *  AGENTRUN_SERVE_DOCUMENTS. */
+  documents?: string;
+  /** Run workflows' `code` nodes (`--allow-code-nodes`; default AGENTRUN_SERVE_CODE_NODES=1). Off, a workflow with one saves
+   *  with a warning and its run is 409: a code node runs in the run's process through `new Function`, which is no sandbox. */
+  allowCodeNodes?: boolean;
   /** A faux model module (no key, no network): see the README. */
   faux?: string;
   /** With `faux` only: a module whose default export gives the `browser` tool's `{ provider, driver }` (the tests' fake
@@ -271,7 +278,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const log = options.log;
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
-  const env = withSecrets({ ...withoutFaux(process.env), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
+  const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
   if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
@@ -279,7 +286,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const caps = capabilities(env, maxRuns, await harnessOffers(env));
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const documents = options.documents ?? process.env[DOCUMENTS_ENV];
+  if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -383,7 +392,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
     if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { details: { unbound, missing, ...named } });
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
-    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.code), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...named } });
+    throw new ApiError("agent_not_runnable", message, { details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...named } });
   }
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */

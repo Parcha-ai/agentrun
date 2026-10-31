@@ -58,6 +58,8 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--allow-host NAME` | none | Another `Host` name to accept. Repeat it. |
 | `--max-runs N` | `AGENTRUN_MAX_RUNS`, else from memory | The most runs at once ([capacity](#capacity-and-health)). Over it, a new run is `429 rate_limited`. |
+| `--documents DIR` | `AGENTRUN_SERVE_DOCUMENTS` | A read-only directory of documents a workflow's `pdf_pages` calls read by file name, confined to it. |
+| `--allow-code-nodes` | off (`AGENTRUN_SERVE_CODE_NODES=1` turns it on) | Run workflows' `code` nodes. They run in the run's process through the DSL's `new Function` transform, which is no sandbox, so only turn it on for workflows you wrote. Off, a workflow with a code node saves with a `not_set_up_here` warning and its runs are `409 agent_not_runnable` with `details.code: true`. A call `via: "shell"` or `"executor"` is refused either way. |
 | `--drain-timeout D` | `30s` (the image: `6s`) | How long a busy run may finish its turn when the server stops (`8s`, `500ms`, `1m`). A turn cut off resumes at the next start; its model request is sent again. |
 
 `AGENTRUN_TOKEN`, when set, is the token (32 characters or more), and the server prints `$AGENTRUN_TOKEN` in its
@@ -235,7 +237,14 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `fetch_page` | Fetch one web page from a public host: `{url}` in, a Page out, `{ok, url, status, title, text, links, refused?, error?}` | nothing | yes, yes |
 | `browser` | A Browserbase browser on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`) | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | yes, no |
 
+| `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/`, the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
+| `llm` | A workflow call only: `{prompt, system?, maxTokens?, tier?}` in, `{text, model, usage, cost_usd}` out. One completion on the run's model of the tier (`default`), no tools and no loop; `cost_usd` is null when the model has no price, never 0 | a model | no, yes |
+
 There is no `bash`: a run gets no shell (see [Safety](#safety)).
+
+A call tool that fails on its own (an unreadable PDF, a model's refusal) fails its call node; inside a `map` with
+`onItemFailure: "collect"` it fails that item, and the other items go on. A cancel or the node's deadline still
+stops the run.
 
 `fetch_page` reaches public hosts only, through pi-browser's guard (`publicFetch`): each redirect hop is resolved,
 every address it resolves to is checked, and the connection is dialled at the address checked, so a loopback, private,
@@ -316,7 +325,14 @@ typed answers and their probabilities.
 - Parallel Decisions, through `@parcha/agentrun-decisions`, answers a node that says `provider: "parallel"`, with web
   citations as its evidence. Set `PARALLEL_API_KEY`. Each request is booked at Parallel's list price as an estimate,
   and one whose outcome was lost after sending is never sent again: the run escalates it as interrupted.
-- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel", available,
+- OpenRouter's Decisions models answer a node that says `provider: "openrouter"` and names its model in `model`
+  (`liquid/d1`, `perplexity/pplx-decider-v1.2`, `cloudflare/clef`, `typesafe/jev-1.14`). They run on the OpenRouter key
+  Jev's OpenRouter route reads (`OPENROUTER_API_KEY`, else `AGENT_MODEL_API_KEY` with `AGENT_MODEL_BASE_URL` on
+  openrouter.ai), handed to the run's process on the decision descriptor as Jev's is. That key is also the model
+  gateway's, which a run's process holds. Images to them are experimental.
+- A decision node's `images` are files of the run's `work/`, such as the pages `pdf_pages` draws: the run's process
+  reads them and sends them with the request. The receipt keeps each image's SHA-256, never its bytes.
+- `GET /capabilities` lists the providers in `workflows.decisions.providers` (`[{id: "jev" | "parallel" | "openrouter", available,
   reason?, note?}]`), and `runJudge` is among `workflows.adapters` once any of them runs here. On the OpenRouter route,
   jev's `note` names the variable Jev runs on (`OPENROUTER_API_KEY` or `AGENT_MODEL_API_KEY`) and says that it is the
   model gateway's key.

@@ -213,6 +213,6 @@ test("the decision providers' widening to parallel is its own addition, decision
   const { doc } = await served(t);
   const decisions = doc.components.schemas.Capabilities.properties.workflows.properties.decisions;
   assert.equal(decisions["x-agentrun-serve"], "decisions/2", "a client that validates against decisions/1 refuses parallel, so the widening is a new mark");
-  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel"]);
+  assert.deepEqual(decisions.properties.providers.items.properties.id.enum, ["jev", "parallel", "openrouter"]);
   assert.ok(doc.info["x-agentrun-serve"].fields.includes("Capabilities.workflows.decisions"), "info names it among the marked properties");
 });

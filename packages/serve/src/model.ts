@@ -60,6 +60,18 @@ export function nodeTiers(nodes: readonly Record<string, unknown>[]): Tier[] {
   return TIERS.filter((tier) => tiers.has(tier));
 }
 
+/** `tiers` with those a workflow's `llm` calls name (`args.tier`, else default) added: an `llm` call completes on the
+ *  model of its tier, as a model node does. */
+export function llmTiers(nodes: readonly Record<string, unknown>[], tiers: readonly Tier[]): Tier[] {
+  const all = new Set(tiers);
+  for (const node of nodes) {
+    if (node.node !== "call" || node.via !== "tool" || node.tool !== "llm") continue;
+    const tier = (node.args as { tier?: unknown } | undefined)?.tier;
+    all.add((TIERS as readonly unknown[]).includes(tier) ? (tier as Tier) : "default");
+  }
+  return TIERS.filter((tier) => all.has(tier));
+}
+
 export type ModelRef = { provider: string; modelId: string };
 
 /**

@@ -22,7 +22,9 @@ import { readJson, RUN_META } from "./files.js";
 import { adapterFor, claudeModel, type ConfineChild, thinkingFor } from "./adapters.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV } from "./harness.js";
 import { adapterRun } from "./harness-app.js";
-import { type ModelRef, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
+import { completer } from "./llm.js";
+import { imageLoader } from "./pdf-pages.js";
+import { type ModelRef, llmTiers, nodeTiers, runModels, type Tier, thinkingOf, workflowNodes } from "./model.js";
 import { ASK_TOOL, CodingTools, type ToolBinding, type ToolHost, toolOf, workflowTools } from "./tools.js";
 import { isObject, skillNames } from "./validate.js";
 import { readWorkText } from "./workspace.js";
@@ -30,6 +32,9 @@ import { readWorkText } from "./workspace.js";
 /** The workflow adapters this host gives every run: model nodes, and calls `via: "tool"` to the table's tools. Typed
  *  questions (`runJudge`) run too where the host sets a decision provider's key (decisions.ts). */
 export const WORKFLOW_ADAPTERS = ["runNode", "runEffect"] as const;
+
+/** A call node's tool failure, as the value its effect completed with (runEffect below). */
+const TOOL_FAILED = "agentrun_serve_tool_failed";
 
 /** The revision's instructions, then each skill's `<name>/SKILL.md` from the run's workspace, by name. */
 export async function promptOf(instructions: string, skillFiles: Iterable<string>, work: string): Promise<string> {
@@ -66,7 +71,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   // This process's reading of its environment, with its secrets: never a child's (secrets.ts).
   const env = withSecrets(process.env);
   const workflowNodeList = revision.kind === "workflow" ? workflowNodes(revision.body.workflow, (await import("@parcha/agentrun-dsl")).inspectWorkflow(revision.body.workflow)) : [];
-  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model) : await runModels(env, undefined, nodeTiers(workflowNodeList));
+  const chosen = revision.kind === "agentic" && revision.body.harness === "claude-agent" && !env[FAUX_HARNESS_ENV] ? await claudeModels(env, revision.body.model) : revision.kind === "agentic" ? await runModels(env, revision.body.model) : await runModels(env, undefined, llmTiers(workflowNodeList, nodeTiers(workflowNodeList)));
   const { model, byTier } = chosen;
   // Read before the run opens its store: what it spent in earlier processes counts against its cap.
   const cap = capOf(process.env);
@@ -129,7 +134,7 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   }
   const meta = await readJson(join(where.root, RUN_META));
   const input = isObject(meta?.input) ? meta.input : {};
-  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope }, { inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
+  const [{ BACKGROUND_CONTEXT }, { createWorkflowExtension, decisionRecovery, nodeRunner, taskScope }, { EffectFailure, inspectWorkflow, judgeFromProviders }, { withRecovery, workspaceFiles }, { startWorkflowRevision }, decisionProviders] = await Promise.all([
     import("@earendil-works/chord/context"),
     import("@parcha/agentrun-pi/durable"),
     import("@parcha/agentrun-dsl"),
@@ -140,11 +145,31 @@ export default async function app(where: AppContext): Promise<AppOptions> {
   ]);
   const nodeTools = new Map<string, ToolBinding>();
   for (const name of workflowTools(workflowNodeList).nodes) nodeTools.set(name, await bind(name, true));
+  // A decision node's images are files of the run's work directory (pdf_pages draws them there).
+  const loadImage = imageLoader(where.work);
+  // The `llm` tool's one completion: on the run's models (capped and marked as a model node's), its tier's model.
+  const complete = completer(models as never, (tier) => byTier.get((tier as Tier | undefined) ?? "default"), thinkingLevel);
   /** A call node `via: "tool"`: the table's tool by name, its interpolated args in, what its `out` schema checks out. */
   const runEffect = async ({ node, input, signal }: { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal }) => {
     const effect = node.via === "tool" && node.tool ? toolOf(node.tool)?.effect : undefined;
     if (!effect) throw new Error(`call node "${node.label}": agentrun-serve runs no tool ${node.tool ?? `via ${node.via}`}`);
-    return effect(input, { signal, env });
+    try {
+      return await effect(input, { signal, env, work: where.work, complete });
+    } catch (error) {
+      const message = String((error as Error)?.message ?? error);
+      // An abort (a cancel, the node's deadline) stays a throw: the driver keeps its effect unknown. A tool that failed on
+      // its own (an unreadable PDF, a model's refusal) answered: its failure is the effect's outcome, completed, and is
+      // thrown past the driver as the call node's typed failure (`failing`), which a collecting map ends that item on.
+      if (signal.aborted || (error as Error)?.name === "AbortError") throw error;
+      return { [TOOL_FAILED]: `call node "${node.label}": ${node.tool} failed: ${message.slice(0, 500)}` };
+    }
+  };
+  /** `runEffect` past the driver: a tool's failure the driver recorded as its effect's outcome is thrown here, on the
+   *  first run and on a resume that answers it from the receipt alike. */
+  const failing = (run: (params: never) => Promise<unknown>) => async (params: never) => {
+    const value = await run(params);
+    if (isObject(value) && typeof value[TOOL_FAILED] === "string") throw new EffectFailure(value[TOOL_FAILED], null, { code: null });
+    return value;
   };
   /** A model node's agent: its tier's model, the tools it names, and the extensions they come from. */
   const nodeAgent = (node: { tier?: string; tools?: string[] }) => {
@@ -159,12 +184,12 @@ export default async function app(where: AppContext): Promise<AppOptions> {
       // answered one instead of asking again.
       const decisions = decisionRecovery({ key, runtime, context });
       const deps = withRecovery(driver, {
-        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(decisionProviders ? { runJudge: judgeFromProviders(decisionProviders) as never, decisionProviders } : {}),
+        runNode: nodes.on(taskScope(runtime), context).runNode, runEffect: runEffect as never, ...(decisionProviders ? { runJudge: judgeFromProviders({ ...decisionProviders, loadImage }) as never, decisionProviders } : {}),
         recordDecision: decisions.recordDecision,
       }, { durableNodes: true });
       const { recovery } = deps;
       if (!recovery) throw new Error("the workflow's recovery gave the run no recovery hooks");
-      return { deps: { ...deps, recovery: { ...recovery, decision: decisions.decision } } };
+      return { deps: { ...deps, runEffect: deps.runEffect && (failing(deps.runEffect as never) as never), recovery: { ...recovery, decision: decisions.decision } } };
     },
   });
   registry.install(nodes.extension as unknown as Extension);

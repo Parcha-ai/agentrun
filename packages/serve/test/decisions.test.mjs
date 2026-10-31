@@ -263,7 +263,7 @@ test("capabilities lists the decision providers: jev available where its key is 
   const caps = (await off.api("GET", "/capabilities")).body;
   assert.ok(caps.workflows.decisions, "capabilities has workflows.decisions");
   const none = caps.workflows.decisions.providers;
-  assert.deepEqual(none.map((p) => [p.id, p.available]), [["jev", false], ["parallel", false]]);
+  assert.deepEqual(none.map((p) => [p.id, p.available]), [["jev", false], ["parallel", false], ["openrouter", false]]);
   assert.match(none[0].reason, /TYPESAFE_API_KEY/);
   process.env.TYPESAFE_API_KEY = CANARY;
   const on = await serve(t);
@@ -276,6 +276,8 @@ test("capabilities lists the decision providers: jev available where its key is 
   assert.deepEqual([routed.id, routed.available, routed.reason], ["jev", true, undefined]);
   assert.match(routed.note ?? "", /model gateway/, "on the OpenRouter route the Jev key is the gateway's, and capabilities says so");
   assert.match(routed.note ?? "", /TYPESAFE_API_KEY/);
+  const openrouter = (await gateway.api("GET", "/capabilities")).body.workflows.decisions.providers[2];
+  assert.deepEqual([openrouter.id, openrouter.available], ["openrouter", true], "the gateway's key runs OpenRouter's decision models too");
 });
 
 /** A server on the decision variables `vars`, what its capabilities offer of jev, and a judge workflow's run on it: the
@@ -628,7 +630,7 @@ test("capabilities lists parallel: available where PARALLEL_API_KEY is set, why 
   assert.equal(off.adapters.includes("runJudge"), false, "no provider runs here: typed questions do not");
   process.env.PARALLEL_API_KEY = PARALLEL_CANARY;
   const on = (await (await serve(t)).api("GET", "/capabilities")).body.workflows;
-  assert.deepEqual(on.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", true]]);
+  assert.deepEqual(on.decisions.providers.map((p) => [p.id, p.available]), [["jev", false], ["parallel", true], ["openrouter", false]]);
   assert.deepEqual(on.decisions.providers[1], { id: "parallel", available: true });
   assert.ok(on.adapters.includes("runJudge"), "Parallel's key alone runs typed questions");
 });
