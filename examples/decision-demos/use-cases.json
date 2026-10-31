@@ -1,0 +1,42 @@
+{
+  "doc-valid": {
+    "workflow": "doc-valid",
+    "inputs": [
+      "doc-valid",
+      "doc-valid-altered",
+      "doc-valid-borderline"
+    ]
+  },
+  "batch-20": {
+    "workflow": "batch-20",
+    "inputs": [
+      "batch-20",
+      "batch-20-holdout"
+    ]
+  },
+  "kyb": {
+    "workflow": "kyb",
+    "inputs": [
+      "kyb",
+      "kyb-mismatch"
+    ]
+  },
+  "merchant-mcc": {
+    "workflow": "merchant-mcc",
+    "inputs": [
+      "merchant-mcc",
+      "merchant-mcc-restricted",
+      "merchant-mcc-prohibited",
+      "merchant-mcc-live"
+    ]
+  },
+  "jury": {
+    "workflow": "jury",
+    "inputs": [
+      "jury",
+      "jury-split",
+      "jury-event-contract",
+      "jury-fantasy"
+    ]
+  }
+}
