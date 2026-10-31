@@ -22,9 +22,12 @@ import type { RecoveryBinding, RecoveryEffect, RecoveryJournal, RecoveryNote, Re
 
 
 /** The branch a route runs for its answer, as the interpreter takes it: the node's `unsure` branch when
- *  the answer's confidence is below `unsure.gte`, else the choice the answer names. */
-export function routeTaken(node: RouteNode, answers: unknown): { branch: string; choice: string; unsure: boolean } {
-  const answer = (answers as Record<string, { choice?: unknown; confidence?: unknown }> | undefined)?.branch;
+ *  the answer's confidence is below `unsure.gte`, else the choice the answer names. A refused answer chose no branch:
+ *  with an `unsure` branch the route took it (choice null, refused); without one the run escalated, and there is no
+ *  decision (null). */
+export function routeTaken(node: RouteNode, answers: unknown): { branch: string; choice: string | null; unsure: boolean; refused?: true } | null {
+  const answer = (answers as Record<string, { type?: unknown; choice?: unknown; confidence?: unknown }> | undefined)?.branch;
+  if (answer?.type === "refusal") return node.unsure ? { branch: node.unsure.branch, choice: null, unsure: true, refused: true } : null;
   const choice = String(answer?.choice ?? "");
   const unsure = Boolean(node.unsure && typeof answer?.confidence === "number" && answer.confidence < node.unsure.gte);
   return { branch: unsure ? node.unsure!.branch : choice, choice, unsure };
@@ -957,22 +960,31 @@ export async function openRecovery(store: RecoveryStore, workflow: Workflow, opt
       await flush();
     },
     /** A question's metered spend, committed with the driver's state so a resume that skips the
-     *  finished question still reports it; an unpriced answer (`null`) adds nothing. A route's answer is its decision: it commits in the same save, once per route path, and a resume
-     *  inside the branch follows it instead of asking again. */
+     *  finished question still reports it. A priced answer adds to `questionSpendUsd`; an answer with no
+     *  price (`null`, or a cost that is not a non-negative finite number) is counted in
+     *  `unpricedQuestionCount` instead, so the run's spend is read as incomplete and never as a bare total
+     *  that silently omits it: an unknown cost is never zero. A route's answer is its decision: it commits
+     *  in the same save, once per route path, and a resume inside the branch follows it instead of asking
+     *  again; its price, priced or not, is recorded the same way. */
     recordQuestionSpend(usd: number | null, route?: { executionPath: unknown; label: string; result: Record<string, unknown>; receipts: QuestionReceipts | null }) {
       guard();
-      let changed = false;
-      if (usd !== null && Number.isFinite(usd) && usd >= 0) { snapshot.questionSpendUsd = +((snapshot.questionSpendUsd ?? 0) + usd).toFixed(8); changed = true; }
+      // A route's checks run before any state is touched, so a refused call (not a route, or a route already
+      // decided) leaves the snapshot clean: the next save never carries a half-recorded answer forward.
+      let decision: { at: string; row: RouteDecision } | undefined;
       if (route) {
         const { frame, doc } = active();
         const at = placed(route.executionPath, doc);
         const node = nodeAt(doc, at);
         if (node?.node !== "route") throw pathFault(at, "Only a route's answer is a decision");
         if (frame.routes[at]) throw pathFault(at, "A route is decided once");
-        frame.routes[at] = { label: route.label, ...routeTaken(node, route.result.answers), request_sha256: typeof route.result.request_sha256 === "string" ? route.result.request_sha256 : null, result: route.result, receipts: route.receipts };
-        changed = true;
+        // A refused route with no unsure branch took no branch: its answer is spent, and there is no decision.
+        const taken = routeTaken(node, route.result.answers);
+        if (taken) decision = { at, row: { label: route.label, ...taken, request_sha256: typeof route.result.request_sha256 === "string" ? route.result.request_sha256 : null, result: route.result, receipts: route.receipts } };
       }
-      if (changed) save();
+      if (usd !== null && Number.isFinite(usd) && usd >= 0) snapshot.questionSpendUsd = +((snapshot.questionSpendUsd ?? 0) + usd).toFixed(8);
+      else snapshot.unpricedQuestionCount = (snapshot.unpricedQuestionCount ?? 0) + 1;
+      if (decision) active().frame.routes[decision.at] = decision.row;
+      save();
     },
     /** The host has written what it keeps of the route at `executionPath`: its decision no longer carries the
      *  receipts a resume would write. */

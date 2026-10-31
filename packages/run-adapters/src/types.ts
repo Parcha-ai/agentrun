@@ -75,6 +75,9 @@ export interface SessionSpec {
 /** A paid model request, as the session is about to send it. */
 export interface ModelRequest {
   model: string;
+  /** The most input tokens the request can be billed for (the model proxy's `inputTokensMaxOf`: the body's UTF-8 bytes
+   *  plus what the provider adds), undefined when it was not measured. */
+  inputTokensMax?: number;
 }
 
 /** What a paid request cost, once it completed. */

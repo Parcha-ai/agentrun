@@ -1,4 +1,4 @@
-import { MECHANICAL_PREDICATES } from "./vocabulary.js";
+import { MECHANICAL_PREDICATES, type FieldType } from "./vocabulary.js";
 
 export type StopPredicate =
   | { predicate: "no_new_items"; key: string }
@@ -11,7 +11,12 @@ export type StopPredicate =
 export type AcceptPredicate =
   | StopPredicate
   | { predicate: "field_equals"; path: string; value: string | number | boolean }
-  | { predicate: "in"; path: string; values: Array<string | number | boolean> };
+  | { predicate: "in"; path: string; values: Array<string | number | boolean> }
+  | { predicate: "field_type"; path: string; type: FieldType }
+  | NotPredicate;
+
+/** Holds when `of` does not. `of` is mechanical: a judged question never sits inside a negation. */
+export type NotPredicate = { predicate: "not"; of: AcceptPredicate };
 
 
 export const MECHANICAL_PREDICATE_NAMES: ReadonlySet<string> = new Set(MECHANICAL_PREDICATES);
@@ -37,6 +42,20 @@ export function getPath(value: unknown, key: string): unknown {
     }
     return undefined;
   }, value);
+}
+
+/** Whether a value is of a JSON type. A number is a finite one, and an absent value is of no type. */
+function hasType(value: unknown, type: FieldType): boolean {
+  switch (type) {
+    case "number": return typeof value === "number" && Number.isFinite(value);
+    case "string": return typeof value === "string";
+    case "boolean": return typeof value === "boolean";
+    case "array": return Array.isArray(value);
+    case "object": return isRecord(value);
+    case "null": return value === null;
+    default:
+      throw new Error(`agentrun: unsupported field_type type "${String(type)}" — fail closed, never silently false`);
+  }
 }
 
 export function predicateMatches(predicate: StopPredicate | AcceptPredicate, value: unknown): boolean {
@@ -68,6 +87,11 @@ export function predicateMatches(predicate: StopPredicate | AcceptPredicate, val
       if (typeof target !== "number" || !Number.isFinite(target)) return false;
       return predicate.predicate === "gte" ? target >= predicate.n : target < predicate.n;
     }
+    case "field_type":
+      return hasType(getPath(value, predicate.path), predicate.type);
+    case "not":
+      // A judged `of` reaches the default case below and throws: validation refuses it first.
+      return !predicateMatches(predicate.of, value);
     default:
       throw new Error(
         `agentrun: unsupported predicate "${String((predicate as any)?.predicate ?? "")}" — fail closed, never silently false`,
