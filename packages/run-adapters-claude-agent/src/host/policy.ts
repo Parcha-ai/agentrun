@@ -17,7 +17,7 @@
 // passes. A tool of the session's own that is not one of its names (`mcp__hands__<name>`)
 // is dropped, so the model is offered exactly the host's tools. Usage is read from the stream's `message_start` (input
 // and cache tokens) and its last `message_delta` (output).
-import { ProxyRefusal, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
+import { providerInputOverhead, ProxyRefusal, type InputShape, type ProviderPolicy, type ProxyRoute, type ProxyUsage } from "@parcha/agentrun-adapters/host";
 
 /** The prefix of the session's own tools, as the CLI names them (its in-process MCP server, `hands`). */
 export const OWN_TOOL_PREFIX = "mcp__hands__";
@@ -226,6 +226,25 @@ export function anthropicUsage(text: string): ProxyUsage | undefined {
 }
 
 /** The Claude Agent CLI's provider policy for one session. */
+/** The image blocks in `value`, at any depth (a tool's result holds them). */
+function imagesIn(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce((n: number, item) => n + imagesIn(item), 0);
+  if (!isPlain(value)) return 0;
+  return (value.type === "image" ? 1 : 0) + Object.values(value).reduce((n: number, item) => n + imagesIn(item), 0);
+}
+
+/** The input tokens the provider bills for `body` that it does not carry (`providerInputOverhead`, with its sources): the
+ *  tool-use system prompt when it has tools, and for each image the most it can be billed as, beyond its bytes. */
+export function anthropicServerInputOverhead(body: Record<string, unknown>): number {
+  const choice = isPlain(body.tool_choice) ? body.tool_choice.type : undefined;
+  const shape: InputShape = {
+    tools: Array.isArray(body.tools) && body.tools.length > 0,
+    ...(choice === "auto" || choice === "none" || choice === "any" || choice === "tool" ? { toolChoice: choice } : {}),
+    images: imagesIn(body.messages),
+  };
+  return providerInputOverhead("anthropic-messages", shape) as number;
+}
+
 export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy {
   return {
     id: "anthropic",
@@ -244,6 +263,7 @@ export function anthropicPolicy(options: AnthropicPolicyOptions): ProviderPolicy
     apply: (body, route) => applyAnthropic(body, route, options),
     // `apply` let through only the session's model or its small one.
     modelOf: (body) => (typeof body.model === "string" ? body.model : undefined),
+    serverInputOverhead: anthropicServerInputOverhead,
     usageOf: anthropicUsage,
   };
 }
