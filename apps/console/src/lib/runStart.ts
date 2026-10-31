@@ -22,6 +22,33 @@ export function startBody(kind: "agentic" | "workflow", f: StartForm): { ok: tru
   return { ok: true, body };
 }
 
+type Schema = { type?: string | string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema; examples?: unknown[]; default?: unknown; enum?: unknown[]; description?: string };
+
+/** A workflow's input to start from: its input schema's first example (or default), else the schema's shape with empty
+ *  values (an object's required fields, a list empty, a string ""). Null when the workflow names no input schema. */
+export function exampleInput(workflow: unknown): { text: string; from: "example" | "shape"; fields: { name: string; note?: string }[] } | null {
+  const w = workflow as { input?: { schemaId?: string }; schemas?: Record<string, Schema> } | null;
+  const schema = w?.input?.schemaId ? w.schemas?.[w.input.schemaId] : undefined;
+  if (!schema) return null;
+  const fields = Object.entries(schema.properties ?? {}).map(([name, p]) => ({ name, ...(p.description ? { note: p.description } : {}) }));
+  const given = schema.examples?.[0] ?? schema.default;
+  if (given !== undefined) return { text: JSON.stringify(given, null, 2), from: "example", fields };
+  const shape = (s: Schema | undefined, depth = 0): unknown => {
+    if (!s || depth > 4) return null;
+    if (s.examples?.length) return s.examples[0];
+    if (s.default !== undefined) return s.default;
+    if (s.enum?.length) return s.enum[0];
+    const t = Array.isArray(s.type) ? s.type[0] : s.type;
+    if (t === "object" || s.properties) return Object.fromEntries(Object.entries(s.properties ?? {}).filter(([k]) => !s.required || s.required.includes(k)).map(([k, v]) => [k, shape(v, depth + 1)]));
+    if (t === "array") return [];
+    if (t === "string") return "";
+    if (t === "number" || t === "integer") return 0;
+    if (t === "boolean") return false;
+    return null;
+  };
+  return { text: JSON.stringify(shape(schema), null, 2), from: "shape", fields };
+}
+
 // One Idempotency-Key per request, as messages use it too (lib/idempotency.ts).
 import { keeper } from "./idempotency";
 export { keeper };

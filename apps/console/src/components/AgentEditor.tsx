@@ -1,8 +1,10 @@
-import { Archive, ArrowLeft, ArrowRight, Check, FileText, History, Settings, TriangleAlert, Wrench } from "lucide-react";
+import { Archive, ArrowLeft, ArrowRight, Check, FileText, History, Settings, TriangleAlert, Workflow, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { type Agent, type AgentFields, defaultTools, harnessOptions, reachesWeb, type SaveProblem, type ToolOffer, toolsFor } from "@/lib/agentForm";
+import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -23,11 +25,24 @@ export type EditorProps = {
   problem?: SaveProblem | null;
   /** A message about an action outside the form (make current, archive) or after a save. */
   notice?: string | null;
+  /** A workflow agent's JSON to open with instead of the saved one: an unsaved draft. */
+  draft?: string;
+  /** The server's check of a workflow as it is typed (POST /v2/workflows/validate). */
+  validate?: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => Promise<WorkflowCheck>;
 };
-type Step = "context" | "tools" | "settings" | "history";
+type Step = "context" | "workflow" | "tools" | "settings" | "history";
+
+/** A refused save's issues in the workflow: each 422 field under definition.workflow at its path, else the refusal's
+ *  message for a workflow agent. */
+function workflowIssues(problem: SaveProblem | null, workflow: boolean): { path: string; message: string }[] | null {
+  if (problem?.kind !== "invalid") return null;
+  const mine = Object.entries(problem.fields).filter(([f]) => f === "definition.workflow" || f.startsWith("definition.workflow/")).map(([f, message]) => ({ path: f.slice("definition.workflow".length), message }));
+  return mine.length ? mine : workflow ? [{ path: "", message: problem.message }] : null;
+}
 
 const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] = [
   { id: "context", label: "Context", note: "Name, description and instructions", Icon: FileText },
+  { id: "workflow", label: "Workflow", note: "Its graph and its JSON", Icon: Workflow },
   { id: "tools", label: "Tools & skills", note: "What this agent can do", Icon: Wrench },
   { id: "settings", label: "Settings", note: "Harness, thinking and model", Icon: Settings },
   { id: "history", label: "History", note: "Revisions and the current one", Icon: History },
@@ -36,12 +51,12 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
 /** The hosted console's agent builder, over AgentRun Server's agents: a numbered step rail, one step at a time, and a
  *  save that makes a new revision. A save made on a revision that is no longer current is refused (If-Match), and the
  *  editor says so instead of overwriting the other save. */
-export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initial = "context", problem: initialProblem = null, notice }: EditorProps) {
+export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent, onArchive, onReload, onBack, step: initialStep, problem: initialProblem = null, notice, draft, validate }: EditorProps) {
   const creating = !agent;
   const d = agent?.definition;
-  const [step, setStep] = useState<Step>(initial);
+  const [step, setStep] = useState<Step>(initialStep ?? (agent?.kind === "workflow" ? "workflow" : "context"));
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own.
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [] });
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? "", harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools) : d?.tools ?? [], ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
   // On a new agent, picking another harness re-ticks that harness's tools, until a tool is changed by hand.
   const [toolsTouched, setToolsTouched] = useState(false);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
@@ -59,12 +74,18 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const workflow = agent?.kind === "workflow";
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
-  const steps = STEPS.filter((s) => !(creating && s.id === "history"));
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow));
   const at = steps.findIndex((s) => s.id === step);
   const save = async () => {
     if (!onSave) return;
     setSaving(true);
-    const p = await onSave(f, note);
+    // A workflow agent's edit is sent as its parsed JSON; text that does not parse is not sent at all.
+    let fields: AgentFields = { ...f, workflowText: undefined };
+    if (workflow) {
+      try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
+      catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
+    }
+    const p = await onSave(fields, note);
     setSaving(false); setProblem(p); setSaved(!p); if (!p) setNote("");
   };
 
@@ -91,7 +112,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       {problem?.kind === "invalid" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">The server refused the save: {problem.message}</p>}
       {problem?.kind === "other" && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">{problem.message}</p>}
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <ol className="flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:w-[240px] md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4">
+        <ol className={cn("flex shrink-0 gap-1 overflow-x-auto border-b p-3 md:flex-col md:gap-0 md:border-b-0 md:border-r md:p-4", step === "workflow" ? "md:w-[76px]" : "md:w-[240px]")}>
           {steps.map((s, i) => (
             <li key={s.id} className="shrink-0">
               <button type="button" aria-current={step === s.id ? "step" : undefined} onClick={() => setStep(s.id)}
@@ -99,7 +120,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 <span className={cn("inline-flex size-6 shrink-0 items-center justify-center border text-[11px] font-bold", step === s.id ? "border-foreground bg-foreground text-background" : i < at ? "border-border-strong" : "border-border")}>
                   {i < at ? <Check className="size-3" aria-hidden /> : i + 1}
                 </span>
-                <span className="hidden min-w-0 md:block">
+                <span className={cn("hidden min-w-0", step !== "workflow" && "md:block")} title={step === "workflow" ? s.label : undefined}>
                   <span className="caps flex items-center gap-1.5 text-[12px]"><s.Icon className="size-3.5" aria-hidden /> {s.label}</span>
                   <span className="mt-0.5 block text-[11px] text-muted-foreground">{s.note}</span>
                 </span>
@@ -121,8 +142,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 <input value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} className={cn(input, !creating && "text-muted-foreground")} />
               </Field>
               {workflow ? (
-                <Field label="Workflow" note="This agent is a workflow: its nodes are kept as they are. Edit them with the API or the DSL.">
-                  <pre className="max-h-96 overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(d!.workflow, null, 2)}</pre>
+                <Field label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow step: the graph redraws as you type and the server checks it.">
+                  <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
               ) : (
                 <Field label="Instructions" required error={fieldError("instructions")}
@@ -133,6 +154,11 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 </Field>
               )}
             </div>
+          )}
+
+          {step === "workflow" && (
+            <WorkflowEditor text={f.workflowText ?? ""} onText={(t) => set({ workflowText: t })} base={workflow ? d!.workflow : undefined}
+              baseLabel={current ? `rev ${current.version}` : undefined} validate={validate} tools={f.tools} serverIssues={workflowIssues(problem, workflow)} />
           )}
 
           {step === "tools" && (

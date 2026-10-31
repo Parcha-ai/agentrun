@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import type { Agent } from "@/lib/agentForm";
 import { cn } from "@/lib/utils";
+import { workflowShape } from "@/lib/workflowDoc";
 
 export type AgentsListActions = { onOpen?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
 
@@ -56,12 +57,12 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
             {a.kind === "agentic" && <Chip>{a.definition.harness ?? "pi"}</Chip>}
             {archived && <Chip tone="muted">Archived</Chip>}
           </span>
-          <span className="mt-1.5 line-clamp-2 block font-mono text-[12px] leading-relaxed text-muted-foreground">{a.definition.description || "No description."}</span>
+          <span className="mt-1.5 line-clamp-2 block font-mono text-[12px] leading-relaxed text-muted-foreground">{a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}</span>
         </span>
       </button>
       <div className="mt-auto flex items-center gap-2 pt-4">
         <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.revisions} {a.revisions === 1 ? "revision" : "revisions"}</span>
-        {a.runs && <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} runs{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
+        {a.runs && <span className="caps border px-1.5 py-0.5 text-[10px] text-muted-foreground">{a.runs.count} {a.runs.count === 1 ? "run" : "runs"}{a.runs.live ? ` · ${a.runs.live} live` : ""}</span>}
         <span className="flex-1" />
         <Button size="icon" variant="outline" aria-label={`Edit ${a.definition.name}`} onClick={() => actions.onOpen?.(a.agent_id)}><Pencil aria-hidden /></Button>
         <Button size="icon" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden /></Button>
