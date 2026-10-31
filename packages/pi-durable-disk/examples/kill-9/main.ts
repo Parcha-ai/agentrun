@@ -18,12 +18,15 @@ import type { FauxResponseFactory } from "@earendil-works/pi-ai";
 import { createRegistry } from "@earendil-works/pi-durable";
 import type { Conversation, EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 import { ArchilCodingTools, localRun, openDurableRun } from "@parcha/pi-durable-disk";
+import { described, endSurvivors, judge, type Seen } from "./survivors.ts";
 
 const root = join(process.cwd(), "kill-9-run");
 const work = join(root, "work");
 const TASK = "Write the plan and the notes, then run the long job and report how it went.";
-// The long command: it notes its pid, logs that it started, sleeps far longer than this example runs, and would log that it finished.
-const LONG_JOB = "echo $$ > job.pid; echo started >> progress.log; sleep 120; echo finished >> progress.log";
+// The long command: it notes its pid, starts its sleep (far longer than this example runs) and only then logs that it
+// started, waits, and would log that it finished. Every process of it exists before `started` is written, so before the
+// supervisor, which waits for that line, takes the instant the check measures from (see survivors.ts).
+const LONG_JOB = "echo $$ > job.pid; sleep 120 & echo started >> progress.log; wait; echo finished >> progress.log";
 const FINISHED = "The job was cut and never rerun; the plan and the notes are intact.";
 
 const textOf = (content: unknown): string =>
@@ -105,15 +108,66 @@ const eachLine = (child: ChildProcess, onLine: (line: string) => void): void => 
 };
 const closed = (child: ChildProcess) => new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("close", (code, signal) => resolve({ code, signal })));
 const started: ChildProcess[] = [];
-/** Ends every process this example started, and the long command (its pid is in work/job.pid): on success, on failure and when this process is killed. */
+/** Every process, as one look sees it: /proc on Linux (start in clock ticks since boot), ps where there is none (macOS:
+ *  start in seconds since the epoch). */
+const processes = (): Seen[] => {
+  if (process.platform !== "linux") {
+    return execFileSync("ps", ["-A", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], { encoding: "utf8" }).split("\n").flatMap((line) => {
+      const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/.exec(line);
+      return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), group: Number(m[3]), state: m[4]!, start: Math.floor(Date.parse(m[5]!) / 1000), command: m[6]! }] : [];
+    });
+  }
+  return readdirSync("/proc").flatMap((entry) => {
+    const one = /^\d+$/.test(entry) ? fromProc(Number(entry)) : undefined;
+    return one ? [one] : [];
+  });
+};
+/** One process from /proc, or undefined once it has ended (Linux). */
+const fromProc = (pid: number): Seen | undefined => {
+  try {
+    const stat = readFileSync(join("/proc", String(pid), "stat"), "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" "); // after "pid (comm) ": state, ppid, pgrp, ...
+    let command = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+    try {
+      command = readFileSync(join("/proc", String(pid), "cmdline"), "utf8").replace(/\0/g, " ").trim() || command;
+    } catch {
+      // its command line went with it
+    }
+    return { pid, ppid: Number(fields[1]), group: Number(fields[2]), state: fields[0]!, start: Number(fields[19]), command };
+  } catch {
+    return undefined; // the process ended while it was read
+  }
+};
+/** One process as a look just now sees it, or undefined once it has ended. */
+const look = (pid: number): Seen | undefined => (process.platform === "linux" ? fromProc(pid) : processes().find((p) => p.pid === pid));
+/** Now, on the clock of `processes()`'s start: clock ticks since boot (USER_HZ, 100) on Linux, seconds elsewhere. */
+const now = (): number =>
+  process.platform === "linux" ? Math.floor(Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 100) : Math.floor(Date.now() / 1000);
+/** The long command's process group (its leader's pid, in work/job.pid), and the instant just before the next open:
+ *  a process of the group that started by then is the command's (a survivor), one that started after took the number. */
+let leader: number | undefined;
+let before: number | undefined;
+const judged = () => judge(processes(), leader!, before!);
+/** Ends every process this example started, and the long command's: on success, on failure and when this process is killed. */
 const endAll = (): void => {
   for (const child of started) {
     child.kill("SIGKILL");
   }
-  try {
-    process.kill(-Number(readFileSync(join(work, "job.pid"), "utf8")), "SIGKILL");
-  } catch {
-    // no command started, or it is already gone
+  // Once the next open's instant is taken, only the command's own processes (see survivors.ts) are ended, each on its own
+  // (one that ends meanwhile stops none of the others) and only while a fresh look still shows it as judged, never another
+  // group that took the number; before it, the group is ended by its leader's pid, which nothing else holds while the
+  // command runs.
+  const kill = (target: number): void => {
+    try {
+      process.kill(target, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  };
+  if (before !== undefined) {
+    for (const line of endSurvivors(judged().survivors, leader!, look, kill).skipped) console.error(`not signalled: ${line}`);
+  } else if (existsSync(join(work, "job.pid"))) {
+    kill(-Number(readFileSync(join(work, "job.pid"), "utf8")));
   }
 };
 process.on("exit", endAll);
@@ -130,7 +184,7 @@ const firstClosed = closed(first);
 // The long command has started once the file it writes first has a line in it, and the package has recorded it (the instance
 // notes the commands it runs a tenth of a second after they start; a kill before that could miss one).
 const progress = join(work, "progress.log");
-const recorded = () => existsSync(join(root, "commands")) && readdirSync(join(root, "commands")).some((name) => name.endsWith(".json"));
+const recorded = () => existsSync(join(root, "commands")) && readdirSync(join(root, "commands")).some((name) => /^\d+-\d+\.json$/.test(name));
 for (let waited = 0; !(existsSync(progress) && readFileSync(progress, "utf8").includes("started") && recorded()); waited += 25) {
   if (waited > 30_000) fail("the long command never started");
   await new Promise((resolve) => setTimeout(resolve, 25));
@@ -138,31 +192,11 @@ for (let waited = 0; !(existsSync(progress) && readFileSync(progress, "utf8").in
 console.log("the long command is running: SIGKILL to the first process (its command is not touched)");
 first.kill("SIGKILL");
 const cut = await firstClosed;
-const job = Number(readFileSync(join(work, "job.pid"), "utf8"));
-/**
- * Whether the command's process group still has a live member: a zombie waiting for a parent that does not reap (a
- * container's pid 1) is not running. /proc on Linux; ps where there is none (macOS).
- */
-const running = (): boolean => {
-  if (process.platform !== "linux") {
-    return execFileSync("ps", ["-A", "-o", "pgid=,stat="], { encoding: "utf8" }).split("\n").some((line) => {
-      const [group, state] = line.trim().split(/\s+/);
-      return Number(group) === job && state !== undefined && !state.startsWith("Z");
-    });
-  }
-  for (const entry of readdirSync("/proc")) {
-    if (!/^\d+$/.test(entry)) continue;
-    try {
-      const stat = readFileSync(join("/proc", entry, "stat"), "utf8");
-      const [state, , group] = stat.slice(stat.lastIndexOf(")") + 2).split(" "); // after "pid (comm) ": state, ppid, pgrp
-      if (Number(group) === job && state !== "Z") return true;
-    } catch {
-      // the process ended while it was read
-    }
-  }
-  return false;
-};
-console.log(`the first process ended (${cut.signal ?? `exit ${cut.code}`}); its command is ${running() ? "still running: a bare kill -9 does not end it" : "gone"}; a second process opens the same run`);
+leader = Number(readFileSync(join(work, "job.pid"), "utf8"));
+// The command's processes as the kill left them: only for the failure message, beside what the start time decides.
+const captured = processes().filter((p) => p.group === leader && !p.state.startsWith("Z"));
+before = now();
+console.log(`the first process ended (${cut.signal ?? `exit ${cut.code}`}); its command is ${judged().survivors.length > 0 ? "still running: a bare kill -9 does not end it" : "gone"}; a second process opens the same run`);
 
 const lines: string[] = [];
 const second = start();
@@ -188,7 +222,14 @@ const problems = [
   read("plan.txt") !== "1. write the notes\n2. run the long job\n3. report\n" && "plan.txt is not intact",
   read("notes.txt") !== "the notes the job will read\n" && "notes.txt is not intact",
   read("progress.log") !== "started\n" && `progress.log is ${JSON.stringify(read("progress.log"))}: the long command ran again, or finished`,
-  running() && "the cut command was still running after the second open",
+  ((): string | false => {
+    const { survivors, reused } = judged();
+    // Another process that took the group's number after the command's had ended is no survivor: said, never counted.
+    if (reused.length > 0) console.log(`note: a process that started after the second open holds the command's group number: ${reused.map(described).join("; ")}`);
+    if (survivors.length === 0) return false;
+    const strangers = reused.length > 0 ? `; holding its group number since: ${reused.map(described).join("; ")}` : "";
+    return `the cut command was still running after the second open: ${survivors.map(described).join("; ")} (as the kill left it: ${captured.map(described).join("; ")})${strangers}`;
+  })(),
   bash.length !== 1 && `${bash.length} bash results in the store, expected 1`,
   !(bash[0]?.isError && /interrupted/.test(bash[0].text)) && `the cut command did not come back interrupted (${JSON.stringify(bash[0])})`,
   existsSync(join(root, "escaped.txt")) && "a file was written outside work/",

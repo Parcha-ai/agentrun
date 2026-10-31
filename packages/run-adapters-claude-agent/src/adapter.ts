@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, readSkillFileTool, type AdapterSession, type AgentAdapter, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-adapters";
-import { openDrive, pendingSubmissions, Restart, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
+import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-adapters/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-adapters";
 import { recoveryNote, transcriptOf } from "@parcha/agentrun-adapters/process";
 import { hostHeaderProblems, type ModelProxyOptions } from "@parcha/agentrun-adapters/host";
@@ -459,7 +459,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
               const ended = turnsIn(current).slice(before).at(-1)?.data as { status?: TurnStatus; error?: string } | undefined;
               outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
             } catch (error) {
-              if (current.signal.aborted) outcome = { status: "interrupted" };
+              // Stopped by the session or its host: interrupted. Halted by anything else (a spend cap, the mirror, a refused
+              // spawn): failed, naming why.
+              if (current.signal.aborted) outcome = abortedOutcome(current.signal, io.signal);
               // The CLI exited mid-turn: the drive is rebuilt from the log and the turn resumes, a few times.
               else if (error instanceof Restart && attempt < RESTARTS) drive = await open(attempt + 1);
               else outcome = { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
@@ -503,7 +505,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
           calls.draining = true;
           try {
             if (drainMs > 0) await calls.idle(drainMs);
-            drive.halt?.(new Error("interrupted"));
+            drive.halt?.(new SessionHalt("interrupted"));
             await running?.catch(() => {});
           } finally {
             // Calls the halt cut off have no outcome to wait for; the next turn starts clean.
@@ -514,7 +516,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         async close() {
           if (closed) return;
           closed = true;
-          drive.halt?.(new Error("closed"));
+          drive.halt?.(new SessionHalt("closed"));
           await running?.catch(() => {});
         },
       };

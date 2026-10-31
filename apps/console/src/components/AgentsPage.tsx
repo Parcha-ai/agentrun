@@ -40,25 +40,40 @@ export function AgentEditPage({ v2, caps, agentId, go }: { v2: Client; caps: Edi
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  // The revision the form was loaded from: an action that finds another current revision reloads the form with it.
+  const [formRevision, setFormRevision] = useState<string | null>(null);
   const revisionsOf = (id: string) => allPages((cursor) => v2.listRevisions(id, cursor), (p) => p.revisions);
   const load = async () => {
     if (!agentId) return;
     try {
       const [{ agent: a, etag: t }, r] = await Promise.all([v2.getAgent(agentId), revisionsOf(agentId)]);
-      setAgent(a); setEtag(t); setRevisions(r); setVersion((n) => n + 1); setNotice(null);
-    } catch (e) { setLoadError(problemOf(e).message); }
+      setAgent(a); setEtag(t); setRevisions(r); setFormRevision(a.revision); setVersion((n) => n + 1); setNotice(null); setLoadError(null);
+    } catch (e) {
+      // A reload of an agent already on the page keeps the editor, its form and its Reload: the failure is said beside it.
+      if (agent) setNotice(`The agent could not be reloaded: ${problemOf(e).message}`);
+      else setLoadError(problemOf(e).message);
+    }
   };
   useEffect(() => { void load(); }, [agentId]); // eslint-disable-line react-hooks/exhaustive-deps
-  // An action that does not change the definition (archive, make current) keeps the form: it updates the agent in place.
+  // An action (archive, make current): its write and the page's refresh after it fail apart, so a committed write never
+  // reads as failed. The page shows the write's own answer; the refresh brings the ETag and the history. When the refresh
+  // finds another current revision (made current here, or saved in another tab), the form reloads with it, so a later save
+  // never puts the old form's fields over it.
   const act = async (what: string, run: () => Promise<Agent>) => {
+    let done: Agent;
+    try { done = await run(); } catch (e) { setNotice(`${what} did not finish: ${problemOf(e).message}`); return; }
+    setAgent(done);
     try {
-      const a = await run();
-      const t = await v2.getAgent(a.agent_id).then((x) => { setAgent(x.agent); return x.etag; });
-      setEtag(t); setNotice(null);
-      setRevisions(await revisionsOf(a.agent_id).catch(() => revisions));
-    } catch (e) { setNotice(`${what} did not finish: ${problemOf(e).message}`); }
+      const { agent: now, etag: t } = await v2.getAgent(done.agent_id);
+      const r = await revisionsOf(done.agent_id).catch(() => revisions);
+      setAgent(now); setEtag(t); setRevisions(r);
+      if (now.revision !== formRevision) {
+        setFormRevision(now.revision); setVersion((n) => n + 1);
+        setNotice(what === "Make current" ? null : `${what} done. This agent changed since you opened it: the form now shows its current revision.`);
+      } else setNotice(null);
+    } catch (e) { setNotice(`${what} done. The page could not be refreshed: ${problemOf(e).message}. Reload to see the current state.`); }
   };
-  if (agentId && loadError) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{loadError}</p>;
+  if (agentId && loadError && !agent) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">{loadError}</p>;
   if (agentId && !agent) return <p className="p-8 text-center font-mono text-[13px] text-muted-foreground">Loading the agent...</p>;
   return (
     // Keyed on loads only: a save updates the agent in place, so the editor keeps its form and says "Saved".
@@ -77,7 +92,7 @@ export function AgentEditPage({ v2, caps, agentId, go }: { v2: Client; caps: Edi
           saved = await v2.updateDefinition(agent.agent_id, send, etag);
         } catch (e) { return problemOf(e); }
         // The revision is committed: a failed history refresh after it does not make the save look failed.
-        setAgent(saved.agent); setEtag(saved.etag);
+        setAgent(saved.agent); setEtag(saved.etag); setFormRevision(saved.agent.revision);
         revisionsOf(saved.agent.agent_id).then(setRevisions).catch(() => setNotice("Saved. The history could not be refreshed; reload to see it."));
         return null;
       }}
