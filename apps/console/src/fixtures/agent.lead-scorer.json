@@ -1,0 +1,116 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/v2/agents/lead-scorer"
+  },
+  "status": 200,
+  "headers": {
+    "etag": "\"6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf\"",
+    "content-type": "application/json"
+  },
+  "body": {
+    "agent_id": "lead-scorer",
+    "definition": {
+      "id": "lead-scorer",
+      "version": 1,
+      "name": "Lead scorer",
+      "description": "Scores an inbound lead and decides the next step.",
+      "workflow": {
+        "v": 2,
+        "name": "lead-scorer",
+        "schemas": {
+          "Lead": {
+            "type": "object",
+            "required": [
+              "company",
+              "note"
+            ],
+            "properties": {
+              "company": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          },
+          "Facts": {
+            "type": "object",
+            "required": [
+              "score",
+              "reason"
+            ],
+            "properties": {
+              "score": {
+                "type": "number"
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "Next": {
+            "type": "object",
+            "required": [
+              "qualified",
+              "next_step"
+            ],
+            "properties": {
+              "qualified": {
+                "type": "boolean"
+              },
+              "next_step": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "input": {
+          "schemaId": "Lead"
+        },
+        "output": {
+          "schemaId": "Next",
+          "path": "next"
+        },
+        "root": {
+          "node": "chain",
+          "steps": [
+            {
+              "node": "extract",
+              "label": "score",
+              "instructions": "Score the lead from 0 to 100 and say why in one sentence.",
+              "out": "Facts",
+              "as": "facts",
+              "tier": "fast"
+            },
+            {
+              "node": "decide",
+              "label": "qualify",
+              "instructions": "Decide whether the lead is qualified, and the next step.",
+              "out": "Next",
+              "as": "next"
+            }
+          ]
+        }
+      },
+      "harness": "pi",
+      "skills": [],
+      "tools": []
+    },
+    "kind": "workflow",
+    "revision": "6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf",
+    "revisions": 1,
+    "source": null,
+    "skills": [],
+    "sign_ins": [],
+    "runs": {
+      "count": 3,
+      "live": 0
+    },
+    "region": "local",
+    "home_etag": "\"6ee0ea202ad2a266c098abd0945eecaf60fa841eccd15ef8904adcd9fa055daf\"",
+    "archived_at": null,
+    "created_at": "2026-10-28T19:32:57.774Z",
+    "updated_at": "2026-10-28T19:32:58.060Z"
+  }
+}

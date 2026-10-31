@@ -91,7 +91,7 @@ def scalar : Json → P Scalar
   | .bool b => .ok (.bool b)
   | _ => .error "a predicate value must be a string, number or boolean"
 
-def pred (j : Json) : P Pred := do
+partial def pred (j : Json) : P Pred := do
   let name ← str j "predicate"
   let path := splitPath (strD j "path")
   match name with
@@ -105,6 +105,8 @@ def pred (j : Json) : P Pred := do
   | "in" => match get? j "values" with
     | some (.arr xs) => pure (.isIn path (← xs.toList.mapM scalar))
     | _ => throw "in needs values"
+  | "field_type" => pure (.fieldType path (strD j "type"))
+  | "not" => pure (.not (← pred ((get? j "of").getD .null)))
   | "ask" => pure (.ask ((get? j "gte").bind fun | .num n => some (toRat n) | _ => none)
       ((get? j "state").map tmpl))
   | other => throw s!"unknown predicate {other}"

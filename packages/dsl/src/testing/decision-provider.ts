@@ -149,6 +149,7 @@ export function registerDecisionProviderConformance(name: string, kit: DecisionP
     if (maxQuestions !== null) over.push(request(Object.fromEntries(Array.from({ length: maxQuestions + 1 }, (_, i) => [`q${i}`, { type: "noul", instructions: `Question ${i}?` } as SystemOneQuestion]))));
     if (!types.includes("box")) over.push(request({ spot: { type: "box", instructions: "Where is it?" } }));
     if (maxStateBytes !== null) over.push(request(asked(provider).questions, { text: "x".repeat(maxStateBytes + 1) }));
+    if (provider.capabilities.models) over.push({ ...request(asked(provider).questions), model: "a-model-it-does-not-declare" });
     for (const each of over) await assert.rejects(provider.decide(each, ctx()), failsWith("invalid_request"));
     assert.equal(calls(), 0, "nothing was sent");
   });

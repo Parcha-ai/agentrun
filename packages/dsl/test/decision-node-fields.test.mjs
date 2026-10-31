@@ -120,6 +120,27 @@ test('T2c: a judge that asks more questions than one request to its provider may
   assert.deepEqual([ran, parallel.asked.length], [0, 0], 'refused before any node runs, the provider never asked');
 });
 
+test('T2e: a host that names no decision providers refuses, before any node runs, a node that names a provider or sets timeoutMs: its judge could honour neither', async () => {
+  const cases = [
+    ['a node naming a provider', judge({ provider: 'parallel' }), /judge node "check" names the decision provider parallel, and this host names no decision providers/],
+    ['a node setting timeoutMs', judge({ timeoutMs: 200 }), /judge node "check" sets timeoutMs, and this host names no decision providers to bound it with/],
+    ['an ask predicate naming a provider', { node: 'loop', label: 'retry', maxIters: 2, until: { predicate: 'ask', instructions: 'Is it complete?', provider: 'parallel' }, body: { node: 'code', label: 'tick', code: '() => ({})' } }, /loop node "retry" \(ask predicate\) names the decision provider parallel/],
+  ];
+  for (const [what, node, names] of cases) {
+    let ran = 0, asked = 0;
+    const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+    const runJudge = async ({ questions }) => { asked += 1; return { answers: Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul', noul: 0.9 }])) }; };
+    const outcome = await outcomeOf(runWorkflow(doc([first, node]), INPUT, { runJudge, onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+    assert.equal(outcome.status, 'threw', `${what}: the run is refused`);
+    assert.match(outcome.message, names, `${what}: the refusal names the node and the setting`);
+    assert.deepEqual([ran, asked], [0, 0], `${what}: refused before any node runs, the judge never asked`);
+  }
+  const plain = await outcomeOf(runWorkflow(doc([judge({ model: 'jev-1.14.0', evidence: 'if_supported' })]), INPUT, { runJudge: async () => ({ answers: { legit: { type: 'noul', noul: 0.9 } } }) }));
+  assert.equal(plain.status, 'complete', 'a node that names neither runs as it did');
+  const dry = await dsl.dryRunWorkflow(doc([judge({ provider: 'parallel', timeoutMs: 200 })]), { input: INPUT });
+  assert.deepEqual([dry.ok, dry.status], [true, 'passed'], `a dry run still passes both: ${JSON.stringify(dry)}`);
+});
+
 test('T3: each node is asked through its own provider and model, an unnamed one through the default, within the shorter deadline', async () => {
   const jev = provider('jev'), parallel = provider('parallel');
   const workflow = doc([judge({ provider: 'parallel', model: 'base-1', timeoutMs: 500 }, 'Check', 'pinned'), judge({ timeoutMs: 9000 }, 'Check', 'plain')]);
@@ -129,6 +150,26 @@ test('T3: each node is asked through its own provider and model, an unnamed one 
   assert.deepEqual(jev.asked.map(({ request }) => request.label), ['plain'], 'the unnamed node went to the default');
   assert.equal(parallel.asked[0].ctx.deadlineMs, 500, 'a node may shorten the deadline');
   assert.equal(jev.asked[0].ctx.deadlineMs, 2000, 'and never lengthen it past the provider\'s');
+});
+
+test('T3c: a model pin outside the models a provider declares is refused before any node runs, and its judge refuses it before anything is sent, both by name', async () => {
+  const parallel = provider('parallel', { models: ['parallel-fast'] });
+  let ran = 0;
+  const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+  const outcome = await outcomeOf(runWorkflow(doc([first, judge({ provider: 'parallel', model: 'base-1' })]), INPUT, { ...hosted([parallel]), onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+  assert.equal(outcome.status, 'threw', 'the run is refused');
+  assert.match(outcome.message, /judge node "check" pins the model base-1, which the decision provider parallel does not answer with/);
+  assert.deepEqual([ran, parallel.asked.length], [0, 0], 'refused before any node runs, the provider never asked');
+  const ask = { label: 'check', kind: 'judge', state: {}, questions: { legit: { type: 'noul', instructions: 'Is it?' } }, decisionId: 'd', provider: 'parallel' };
+  await assert.rejects(dsl.judgeFromProviders({ providers: { parallel }, default: 'parallel' })({ ...ask, model: 'base-1' }),
+    (error) => error instanceof DecisionProviderError && error.code === 'invalid_request' && error.message.includes('"base-1"'));
+  assert.equal(parallel.asked.length, 0, 'nothing was sent');
+  const declared = await outcomeOf(runWorkflow(doc([judge({ provider: 'parallel', model: 'parallel-fast' })]), INPUT, hosted([parallel])));
+  assert.equal(declared.status, 'complete', 'a declared model is asked');
+  assert.deepEqual(parallel.asked.map(({ request }) => request.model), ['parallel-fast']);
+  const open = provider('jev');
+  const any = await outcomeOf(runWorkflow(doc([judge({ provider: 'jev', model: 'jev-1.14.0' })]), INPUT, hosted([open])));
+  assert.equal(any.status, 'complete', 'a provider that declares no models takes any pin');
 });
 
 test('T3b: a node that names no provider is answered by the default, and its receipt and judge.answered name that provider', async () => {
@@ -261,6 +302,64 @@ test('T8: a dry run passes a node that requires evidence: its synthetic answer c
     const dry = await dsl.dryRunWorkflow(doc([judge({ provider: 'parallel', evidence })]), { input: INPUT });
     assert.deepEqual([dry.ok, dry.status], [true, 'passed'], `${evidence}: ${JSON.stringify(dry)}`);
   }
+});
+
+test('T4c: a sift carries each request\'s evidence into the sidecars of its items, and its judge.answered names the evidence and the provider', async () => {
+  const source = (id) => ({ url: `https://registry.example/filings/${id}`, title: null, excerpts: [], scope: 'call' });
+  // A provider whose request cites one source per item it holds, so an item's sidecar shows which request answered it.
+  const base = provider('parallel');
+  const parallel = { ...base, decide: async (request, ctx) => ({ ...(await base.decide(request, ctx)), evidence: request.state.items.map((named) => source(named.item.id)) }) };
+  const sift = { node: 'sift', label: 'siftThem', itemsPath: 'filings', out: 'Item', as: 'kept', provider: 'parallel', evidence: 'required' };
+  for (const [what, perRequest, sidecars, all] of [
+    ['one request', 8, [[source('a'), source('b')], [source('a'), source('b')]], [source('a'), source('b')]],
+    ['a request per item', 1, [[source('a')], [source('b')]], [source('a'), source('b')]],
+  ]) {
+    const events = [];
+    const outcome = await outcomeOf(runWorkflow(doc([sift]), INPUT, { ...hosted([parallel]), maxQuestionsPerRequest: perRequest, onEvent: (event) => { if (event.type === 'judge.answered') events.push(event); } }));
+    assert.equal(outcome.status, 'complete', `${what}: ${JSON.stringify(outcome).slice(0, 300)}`);
+    assert.deepEqual(outcome.result.state.kept.answers.map((sidecar) => sidecar.evidence), sidecars, `${what}: each item's sidecar holds its request's evidence`);
+    assert.deepEqual(events.map((event) => [event.detail.provider, event.detail.evidence]), [['parallel', all]], `${what}: judge.answered names the provider and every request's evidence`);
+  }
+  // Requests answered by different providers: the first two replay what Jev answered under the old default, the third is
+  // asked of the new one, so the event names no one provider.
+  const cited = (id, by) => ({ url: `https://registry.example/${by}/${id}`, title: null, excerpts: [], scope: 'call' });
+  /** A provider that cites, for each item it is asked about, a source under its own name. */
+  const citing = (id) => { const base = provider(id); return { ...base, decide: async (request, ctx) => ({ ...(await base.decide(request, ctx)), evidence: request.state.items.map((named) => cited(named.item.id, id)) }) }; };
+  const jev = citing('jev'), parallel2 = citing('parallel');
+  const receipts = [];
+  // A host that keeps decision receipts and answers from them: the second run replays the requests the first answered.
+  const kept = { recordDecision: async (receipt) => { receipts.push(receipt); }, recovery: { supportsExecutionPaths: true, resume: async () => undefined, commit: async () => {},
+    pollStartedAt: () => Date.now(), wait: async () => {}, decision: async (id) => receipts.find((receipt) => receipt.id === id && receipt.status === 'answered') } };
+  const unpinned = { node: 'sift', label: 'siftThem', itemsPath: 'filings', out: 'Item', as: 'kept', evidence: 'if_supported' };
+  const first = await outcomeOf(runWorkflow(doc([unpinned]), INPUT, { ...hosted([jev, parallel2], { fallback: 'jev' }), ...kept, maxQuestionsPerRequest: 1 }));
+  assert.equal(first.status, 'complete', JSON.stringify(first).slice(0, 300));
+  const answered = [];
+  const input = { ...INPUT, filings: [...INPUT.filings, { id: 'c' }] };
+  const second = await outcomeOf(runWorkflow(doc([unpinned]), input, { ...hosted([jev, parallel2], { fallback: 'parallel' }), ...kept, maxQuestionsPerRequest: 1,
+    onEvent: (event) => { if (event.type === 'judge.answered') answered.push(event); } }));
+  assert.equal(second.status, 'complete', JSON.stringify(second).slice(0, 300));
+  assert.deepEqual([jev.asked.length, parallel2.asked.length], [2, 1], 'the first two requests replay what Jev answered; the new one goes to the new default');
+  assert.deepEqual(second.result.state.kept.answers.map((sidecar) => sidecar.evidence), [[cited('a', 'jev')], [cited('b', 'jev')], [cited('c', 'parallel')]], 'each item keeps its own request\'s evidence');
+  assert.equal(answered.length, 1);
+  assert.equal(answered[0].detail.provider, undefined, 'no one provider answered the sift, so its event names none');
+  assert.deepEqual(answered[0].detail.evidence, [cited('a', 'jev'), cited('b', 'jev'), cited('c', 'parallel')]);
+});
+
+test('T2d: a provider named by an inherited property is unknown: the run is refused before any node runs, and the judge refuses it, both by name', async () => {
+  const jev = provider('jev');
+  let ran = 0;
+  const first = { node: 'code', label: 'first', code: '() => ({ seen: true })' };
+  const outcome = await outcomeOf(runWorkflow(doc([first, judge({ provider: 'constructor' })]), INPUT, { ...hosted([jev]), onEvent: (event) => { if (event.type === 'node.end' && event.label === 'first') ran += 1; } }));
+  assert.equal(outcome.status, 'threw', 'the run is refused');
+  assert.match(outcome.message, /judge node "check" names the decision provider constructor, which this host does not have/, 'the refusal names the setting');
+  assert.deepEqual([ran, jev.asked.length], [0, 0], 'refused before any node runs');
+  const ask = { label: 'check', kind: 'judge', state: {}, questions: { legit: { type: 'noul', instructions: 'Is it?' } }, decisionId: 'd' };
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const named = (error) => error instanceof DecisionProviderError && error.code === 'configuration' && error.message.includes(`"${name}"`);
+    await assert.rejects(dsl.judgeFromProviders({ providers: { jev }, default: 'jev' })({ ...ask, provider: name }), named, `${name}: the judge refuses it as configuration, by name`);
+    await assert.rejects(dsl.judgeFromProviders({ providers: { jev }, default: name })(ask), named, `${name}: a default named by an inherited property is refused too`);
+  }
+  assert.equal(jev.asked.length, 0);
 });
 
 test('T6: the published schema and the author guide carry the four fields', () => {
