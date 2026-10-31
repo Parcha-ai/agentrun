@@ -131,7 +131,8 @@ export class LocalDisk implements SupervisorControl, CheckControl {
 }
 
 /** What the app's tools and model did, in this process. */
-export type Counters = { flaky: number; safe: number; unsafe: number; requests: number; gate: number };
+/** What the scripted model saw. `erroredAt`: when "flaky" answered its retryable error (Date.now()), 0 before. */
+export type Counters = { flaky: number; safe: number; unsafe: number; requests: number; gate: number; erroredAt: number };
 
 /** Resolves when `signal` aborts. */
 const aborted = (signal: AbortSignal | undefined) =>
@@ -170,7 +171,9 @@ export function lifecycleReply(counters: Counters, toolResults?: string[]): Faux
     }
     const text = textOf(last);
     if (text === "flaky") {
-      return counters.flaky++ === 0 ? fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error: Overloaded" }) : fauxAssistantMessage("recovered");
+      if (counters.flaky++ !== 0) return fauxAssistantMessage("recovered");
+      counters.erroredAt = Date.now();
+      return fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error: Overloaded" });
     }
     if (text === "use both tools") return fauxAssistantMessage([fauxToolCall("safe_tool", {}), fauxToolCall("unsafe_tool", {})], { stopReason: "toolUse" });
     if (text === "gate") return fauxAssistantMessage(fauxToolCall("gate_tool", {}), { stopReason: "toolUse" });
@@ -237,7 +240,7 @@ export function lifecycleApp(counters: Counters, options: LifecycleOptions = {})
   return { models, registry, settings, agent: { model: { provider: model.provider, modelId: model.id } } };
 }
 
-export const newCounters = (): Counters => ({ flaky: 0, safe: 0, unsafe: 0, requests: 0, gate: 0 });
+export const newCounters = (): Counters => ({ flaky: 0, safe: 0, unsafe: 0, requests: 0, gate: 0, erroredAt: 0 });
 
 /** The run's environment, with `cleanup` logged into the claim's log. */
 function loggedEnv(c: Claim): RunEnv {

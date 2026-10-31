@@ -43,8 +43,8 @@ describe("runAs: commands", () => {
       assert.equal(getOrThrow(await env.exec("echo hi", undefined, context)).exitCode, 0);
       assert.equal(getOrThrow(await env.exec(["true"], undefined, context)).exitCode, 0);
       const lines = (await readFile(fake.log, "utf8")).trim().split("\n");
-      assert.match(lines[0], /^--reuid=1500 --regid=1501 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs -- \S*sh -c echo hi$/);
-      assert.equal(lines[1], "--reuid=1500 --regid=1501 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs -- true");
+      assert.match(lines[0], /^--reuid=1500 --regid=1501 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs --pdeathsig KILL -- \S*sh -c echo hi$/);
+      assert.equal(lines[1], "--reuid=1500 --regid=1501 --clear-groups --inh-caps=-all --bounding-set=-all --no-new-privs --pdeathsig KILL -- true");
     });
   });
 
@@ -53,7 +53,7 @@ describe("runAs: commands", () => {
       const fake = await fakeSetpriv(root);
       const env = archilEnv({ root, work }, { runAs: { uid: 7, gid: 8 }, noNewPrivs: false, setprivPath: fake.path })({});
       await env.exec(["true"], undefined, context);
-      assert.equal((await readFile(fake.log, "utf8")).trim(), "--reuid=7 --regid=8 --clear-groups --inh-caps=-all --bounding-set=-all -- true");
+      assert.equal((await readFile(fake.log, "utf8")).trim(), "--reuid=7 --regid=8 --clear-groups --inh-caps=-all --bounding-set=-all --pdeathsig KILL -- true");
       assert.throws(() => archilEnv({ root, work }, { runAs: { uid: 7, gid: 8 }, noNewPrivs: false, setprivPath: "/nonexistent/setpriv" }), (e: unknown) => e instanceof EnvError && e.code === "SETPRIV_UNAVAILABLE");
     });
   });

@@ -30,16 +30,24 @@ export function route(h: string = location.hash): Where {
   return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
 }
 
+/** The setup link's code, taken from the address once per page load and then kept: React may run a state initializer
+ *  twice (StrictMode, in development), and a second read of an address already cleared would lose the code. */
+let capturedSetup: { code: string | null } | undefined;
+function setupCodeOnce(): string | null {
+  if (!capturedSetup) {
+    const { code, rest } = takeSetupCode(location.hash);
+    if (code !== null) history.replaceState(null, "", `${location.pathname}${location.search}${rest}`);
+    capturedSetup = { code };
+  }
+  return capturedSetup.code;
+}
+
 /** The console over the server it is served from, behind its sign-in: agents, runs, and a run followed live. */
 export function App() {
   const v2 = useMemo(() => createClient(), []);
   const [auth, setAuth] = useState<AuthMode | null>(null);
   // The setup code, taken from the address once and removed from it (and from the history entry).
-  const [setupCode] = useState(() => {
-    const { code, rest } = takeSetupCode(location.hash);
-    if (code !== null) history.replaceState(null, "", `${location.pathname}${location.search}${rest}`);
-    return code;
-  });
+  const [setupCode] = useState(setupCodeOnce);
   const readSession = async () => {
     const r = await v2.session();
     // A server without accounts: a protected read tells whether this browser is in already (a token it sends).

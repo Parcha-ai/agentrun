@@ -3,8 +3,9 @@
 // no instructions, a workflow needing what it does not give) refuses the save, 422 by field; one a setting fixes (a
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { WORKFLOW_ADAPTERS } from "./app.js";
+import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
-import { DEFAULT_HARNESS, harnessesOf } from "./harness.js";
+import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
 import { chooseModel, nodeTiers, workflowNodes } from "./model.js";
 import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
 
@@ -29,18 +30,33 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
     if (vars.length) out.push({ field, reason: NOT_SET_UP, message: `This server's environment does not set what the tool needs: the tool ${tool} needs ${vars.join(" and ")}.`, host: true, missing: { tool, vars } });
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
-  const offer = harnessesOf(env).find((h) => h.id === harness);
+  const offer = (await harnessOffers(env)).find((h) => h.id === harness);
   if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? `This server does not run ${harness}.`, host: true, harness });
   if (revision.kind === "agentic") {
     if (!revision.instructions.trim()) out.push({ field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions.", host: false });
     (revision.tools ?? []).forEach((tool, index) => {
       if (!BOUND_TOOLS.includes(tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `agentrun-serve binds the tools ${BOUND_TOOLS.join(", ")}; ${tool} is not one of them.`, host: false, tool });
+      // Another harness gets the host tools only (host-tools.ts: the file tools and fetch_page): any other tool this
+      // host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
+      else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else unset(`definition.tools[${index}]`, tool);
     });
-    const chosen = await chooseModel(env, revision.model);
+    // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
+    // harness every harness takes the run's usual model. A harness that does not run here has said why already.
+    const own = harness === "claude-agent" && !env[FAUX_HARNESS_ENV];
+    if (own && !offer?.available) return out;
+    const chosen = own ? (await import("./adapters.js")).claudeModel(env, revision.model) : await chooseModel(env, revision.model);
     if ("why" in chosen) out.push({ field: "definition.model", reason: chosen.host ? NOT_SET_UP : "not_an_option", message: chosen.why, host: chosen.host });
+    // The harness runs here; whether it runs this revision's model (its own, or the server's default) is checked on it.
+    else if (harness !== DEFAULT_HARNESS && offer?.available) {
+      const { harnessReason } = await import("./adapters.js");
+      const why = await harnessReason(harness, env, { model: chosen.model, models: { getModel: () => undefined } });
+      if (why !== undefined) out.push({ field: revision.model ? "definition.model" : "definition.harness", reason: NOT_SET_UP, message: why, host: true, harness });
+    }
     return out;
   }
+  // A workflow's model nodes run on pi here; on another harness they are not bound yet, and never run on pi instead.
+  if (harness !== DEFAULT_HARNESS) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: `A workflow runs on pi here; on ${harness} its model nodes are not bound yet.`, host: true, harness });
   const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
   const inspection = inspectWorkflow(revision.workflow);
   const { requires } = inspection;

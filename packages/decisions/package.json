@@ -1,0 +1,58 @@
+{
+  "name": "@parcha/agentrun-decisions",
+  "version": "0.1.0-beta.28",
+  "private": true,
+  "description": "Third-party decision models as DecisionProviders for the AgentRun DSL: Parallel Decisions, answering typed questions (yes/no, choice, score) grounded in live web evidence, behind the DSL's runJudge seam.",
+  "keywords": [
+    "agentrun",
+    "decisions",
+    "parallel",
+    "workflow",
+    "judge"
+  ],
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Parcha Labs, Inc.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && (test -f ../dsl/dist/index.d.ts || npm --prefix ../dsl run build) && tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
+  },
+  "dependencies": {
+    "@parcha/agentrun-dsl": "0.1.0-beta.28"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Parcha-ai/agentrun.git",
+    "directory": "packages/decisions"
+  },
+  "bugs": {
+    "url": "https://github.com/Parcha-ai/agentrun/issues"
+  },
+  "homepage": "https://agentrun.ai",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  }
+}
