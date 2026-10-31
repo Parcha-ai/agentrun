@@ -17,11 +17,13 @@ export type PlaygroundProps = {
   onSend?: (agentId: string, body: StartBody, key: string) => Promise<StartResult>;
   onOpenRun?: (runId: string) => void;
   result?: StartResult | null;
+  /** The run the request started, followed live as the run page follows it (its rows, its answer, a follow-up). */
+  live?: (runId: string) => React.ReactNode;
 };
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null }: PlaygroundProps) {
+export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
   useEffect(() => {
@@ -72,7 +74,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
             <span className="flex gap-4 text-[12px]">{(["form", "json"] as const).map((v) => <button key={v} type="button" onClick={() => setView(v)} className={cn("border-b pb-1 capitalize", view === v ? "border-foreground" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
           <div className="min-h-0 flex-1 space-y-6 overflow-auto px-5 py-6 md:px-6">
-            <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: a ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
+            <div><h2 className="text-xl font-semibold">Start a run</h2><p className="mt-1 text-[13px] text-muted-foreground">{agent ? `${agent.definition.name}: ${kind === "agentic" ? "an" : "a"} ${kind} agent.` : "Pick an agent."} The server answers 202 with the run; follow it on its page.</p></div>
             {view === "json" ? (
               <pre className="overflow-auto border bg-card p-4 font-mono text-[12px] leading-[1.7]">{JSON.stringify(body, null, 2)}</pre>
             ) : (
@@ -119,7 +121,14 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           ) : result && (
             <>
               <p className="border-b px-5 py-2.5 font-mono text-[12px] md:px-6"><span className={result.status < 300 ? "text-success-text" : "text-destructive-text"}>{result.status}</span> <span className="text-muted-foreground">{result.ms} ms</span></p>
-              <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-[12px] leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>
+              {result.runId && live ? (
+                // The server answered 202: the run itself, followed until it ends, with the raw answer one click away.
+                <>
+                  <div className="min-h-0 flex-1 overflow-hidden border-b">{live(result.runId)}</div>
+                  <details className="border-b px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-[11px] text-muted-foreground">Response body</summary>
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-[12px] leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
+                </>
+              ) : <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-[12px] leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>}
               {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-[12px] text-primary hover:bg-accent md:px-6">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
             </>
           )}

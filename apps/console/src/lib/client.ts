@@ -81,8 +81,6 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
       return { run: r.body, status: r.status };
     },
-    /** An agent's harness (`definition.harness`; none means the default, pi). */
-    agentHarness: (agentId: string) => call<{ definition: { harness?: string } }>("GET", `/agents/${encodeURIComponent(agentId)}`).then((a) => a.definition.harness),
     getTimeline: (id: string, { after, waitMs, signal }: { after?: number; waitMs?: number; signal?: AbortSignal } = {}) => {
       const q = new URLSearchParams();
       if (after !== undefined) q.set("after", String(after));
