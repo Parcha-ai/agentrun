@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { RunDetail } from "@/components/RunDetail";
 import { RunError } from "@/components/RunError";
+import { type GraphActions, GraphUnavailable, RunGraphView, useRunGraph } from "@/components/RunGraphView";
 import { type Capabilities, type Client, ClientError, follow } from "@/lib/client";
 import { keeper, sendOnce } from "@/lib/idempotency";
 import { type HarnessRead, messageOffer, readHarness } from "@/lib/liveRun";
+import { costOf, usd } from "@/lib/runGraph";
 import { latest } from "@/lib/viewing";
 import type { ApiError, Run, RunFile, TimelineRow } from "@/lib/v2";
+
+// An ended workflow run's record carries its final cost (its graph's totals agree); while it goes, only the graph has it.
+const FINAL_RUN = new Set(["completed", "failed", "cancelled"]);
 
 const asApiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: true });
 
@@ -18,6 +23,8 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   const [error, setError] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState<"stop" | "cancel" | null>(null);
   const [follows, setFollows] = useState(0);
+  // A workflow run's cost as its graph's totals give it: the header shows what the totals bar shows.
+  const [graphCost, setGraphCost] = useState<string | null>(null);
   const status = useRef<string>("");
   // Only the newest read of the run and of its files lands: an older one finishing last never puts back an old state.
   const runReads = useRef(latest()).current;
@@ -70,8 +77,42 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
     <div className="flex h-full min-h-0 flex-col">
       {error && <div className="border-b p-3"><RunError title="The server refused the request" error={error} /></div>}
       <RunDetail key={run.run_id} run={run} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
+        graphView={run.kind === "workflow" ? <LiveGraph v2={v2} runId={runId} onMoved={() => { void refresh(); }} onCost={setGraphCost} /> : undefined}
+        costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) ? graphCost ?? undefined : undefined}
         rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} onMessage={message}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), busy }} />
+    </div>
+  );
+}
+
+/** A workflow run's graph from the live server, read every second while the run goes, with pause and resume. A pause
+ *  or a resume shows as the server answered it until a fresh read of the graph (one made after it) says otherwise: a
+ *  paused run's graph can be slow to read, and the answer's `paused` is exact. */
+function LiveGraph({ v2, runId, onMoved, onCost }: { v2: Client; runId: string; onMoved: () => void; onCost?: (text: string) => void }) {
+  const { data: read, error, readAt, reload } = useRunGraph((signal) => v2.getRunGraph(runId, signal), { key: runId });
+  useEffect(() => {
+    if (!read || !onCost) return;
+    const c = costOf(read);
+    onCost(`${usd(c.usd)}${c.unknown ? ` + ${c.unknown} unknown` : ""}`);
+  }, [read]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [busy, setBusy] = useState<GraphActions["busy"]>(null);
+  const [actError, setActError] = useState<ApiError | null>(null);
+  const [said, setSaid] = useState<{ paused: boolean; status?: string; at: number } | null>(null);
+  const act = async (what: "pause" | "resume") => {
+    setBusy(what);
+    try {
+      const r = (await (what === "pause" ? v2.pauseRun(runId) : v2.resumeRun(runId))) as { paused: boolean; status?: string };
+      setSaid({ paused: r.paused, status: r.status, at: Date.now() });
+      setActError(null);
+    } catch (e) { setActError(asApiError(e)); }
+    setBusy(null); reload(); onMoved();
+  };
+  const data = read && said && readAt < said.at ? { ...read, run: { ...read.run, paused: said.paused, ...(said.status ? { status: said.status } : {}) } } : read;
+  if (!data) return <GraphUnavailable error={error} />;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {actError && <div className="border-b p-3"><RunError title="The server refused the request" error={actError} /></div>}
+      <div className="min-h-0 flex-1"><RunGraphView data={data} lastRead={readAt} fileUrl={(ref) => v2.fileUrl(runId, ref)} actions={{ onPause: () => void act("pause"), onResume: () => void act("resume"), busy }} /></div>
     </div>
   );
 }

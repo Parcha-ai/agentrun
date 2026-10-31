@@ -1,5 +1,6 @@
 import type { Stats } from "./mission";
 import type { Agent, Definition } from "./agentForm";
+import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
 import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
 
@@ -9,12 +10,18 @@ export type FieldIssue = { field: string; reason: string; message: string };
 export class ClientError extends Error {
   /** A 422's issues, by field, as the server names them. */
   fields?: FieldIssue[];
+  /** A retryable refusal's wait before asking again, when the server named one (a busy store). */
+  retryAfterMs?: number;
   constructor(readonly status: number, readonly code: string, message: string, readonly retryable = false, readonly requestId?: string) {
     super(message);
     this.name = "ClientError";
   }
   toApiError(): ApiError { return { code: this.code, message: this.message, retryable: this.retryable, request_id: this.requestId }; }
 }
+
+/** POST /v2/workflows/validate's answer: issues refuse a save, warnings only advise. Paths are JSON Pointers into the
+ *  workflow ("" for the document itself). */
+export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
 export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
 export type Client = ReturnType<typeof createClient>;
@@ -36,9 +43,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (!res.ok) {
-      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[] } } | null)?.error;
+      const e = ((await res.json().catch(() => null)) as { error?: ApiError & { fields?: FieldIssue[]; retry_after_ms?: number } } | null)?.error;
       const err = new ClientError(res.status, e?.code ?? "http_error", e?.message ?? `${method} ${path}: ${res.status}`, e?.retryable ?? false, e?.request_id);
       if (e?.fields) err.fields = e.fields;
+      if (typeof e?.retry_after_ms === "number") err.retryAfterMs = e.retry_after_ms;
       throw err;
     }
     const out = !text && (res.headers.get("content-type") ?? "").includes("json") ? ((await res.json()) as T) : ((await res.text()) as T);
@@ -95,6 +103,15 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** One send, one key: a retry of the same send reuses its key, so the server keeps the first request's identity. */
     sendMessage: (id: string, content: string, idempotencyKey: string) =>
       call<{ mode: string; message_id: string }>("POST", `${run(id)}/messages`, { body: { content }, headers: { "idempotency-key": idempotencyKey } }),
+    /** A workflow run's graph, live: each node's state, its decisions and tool calls, and the totals (contract C4). */
+    getRunGraph: (id: string, signal?: AbortSignal) => call<RunGraph>("GET", `${run(id)}/graph`, { signal }),
+    /** Pauses a workflow run: calls in flight finish, and no new node starts until it resumes. */
+    pauseRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/pause`, { body: {} }),
+    resumeRun: (id: string) => call<{ paused: boolean }>("POST", `${run(id)}/resume`, { body: {} }),
+    /** The server's own check of a workflow (the DSL's validator, no code run, nothing stored). 404 on a server without it. */
+    validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
+    /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
+    fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };

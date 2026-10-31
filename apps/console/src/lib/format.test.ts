@@ -46,6 +46,15 @@ describe("cost where a run is shown", () => {
     expect(html).toContain("Unknown");
     expect(html).not.toMatch(/\$0(\.0+)?(?!\.\d*[1-9])/);
   });
+  it("the run header shows a workflow run's graph cost when it is given, not the run record's", async () => {
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { createElement } = await import("react");
+    const { RunHeader } = await import("../components/RunHeader");
+    const run = { ...(unpriced as unknown as { body: Parameters<typeof RunHeader>[0]["run"] }).body, kind: "workflow" as const, cost: { usd: 0, basis: "estimate" } };
+    const html = renderToStaticMarkup(createElement(RunHeader, { run: run as never, agentName: "Batch", costText: "$0.0188" }));
+    expect(html).toContain("$0.0188");
+    expect(html).not.toContain("est.");
+  });
 });
 
 describe("markdown", () => {
@@ -67,6 +76,15 @@ describe("cost in the runs list", () => {
     const html = renderToStaticMarkup(createElement(RunsList, { runs: [run], agentName: () => "Meeting notes", onOpen: () => {} }));
     expect(html).toContain("Unknown");
     expect(html).not.toMatch(/\$0(\.0+)?(?!\.\d*[1-9])/);
+  });
+  it("the run header shows a workflow run's graph cost when it is given, not the run record's", async () => {
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { createElement } = await import("react");
+    const { RunHeader } = await import("../components/RunHeader");
+    const run = { ...(unpriced as unknown as { body: Parameters<typeof RunHeader>[0]["run"] }).body, kind: "workflow" as const, cost: { usd: 0, basis: "estimate" } };
+    const html = renderToStaticMarkup(createElement(RunHeader, { run: run as never, agentName: "Batch", costText: "$0.0188" }));
+    expect(html).toContain("$0.0188");
+    expect(html).not.toContain("est.");
   });
 });
 
