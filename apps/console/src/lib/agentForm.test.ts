@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBody, editBody, harnessOptions, same, saveError } from "./agentForm";
+import { createBody, defaultTools, editBody, harnessOptions, reachesWeb, same, saveError, toolOffers } from "./agentForm";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -114,5 +114,38 @@ describe("same", () => {
     expect(same({ a: 1, b: { c: 1 } }, { a: 1, b: { c: 2 } })).toBe(false);
     expect(same({ tools: ["read", "write"] }, { tools: ["write", "read"] })).toBe(false);
     expect(same({ a: 1, gone: undefined }, { a: 1 })).toBe(true);
+  });
+});
+
+describe("tools by default (tools on, Miguel's rule), and whether the agent reaches the web", () => {
+  const offers = toolOffers([
+    { name: "read", available: true }, { name: "write", available: true }, { name: "edit", available: true },
+    { name: "fetch_page", available: true }, { name: "ask_person", available: true }, { name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] },
+  ]);
+  it("takes the server's tools as objects, or as names from an older server", () => {
+    expect(toolOffers(["read", "write"])).toEqual([{ name: "read", available: true }, { name: "write", available: true }]);
+    expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"] });
+  });
+  it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
+    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "fetch_page", "ask_person"]);
+  });
+  it("on Claude or Codex, only the tools that harness runs here: the server's own rule until it says per harness", () => {
+    expect(defaultTools("claude-agent", offers)).toEqual(["read", "write", "edit"]);
+    expect(defaultTools("codex", offers)).toEqual(["read", "write", "edit"]);
+  });
+  it("follows the server when it says which harnesses run each tool", () => {
+    const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "fetch_page", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
+    expect(defaultTools("codex", said)).toEqual(["read", "fetch_page"]);
+  });
+  it("reaches the web only with fetch_page", () => {
+    expect(reachesWeb(["read", "fetch_page"])).toBe(true);
+    expect(reachesWeb(["read", "write"])).toBe(false);
+  });
+});
+
+describe("toolOffers, a tool object that doesn't say whether it's available", () => {
+  it("reads it as available: only an explicit false makes a tool unavailable", () => {
+    expect(toolOffers([{ name: "read" }])).toEqual([{ name: "read", available: true }]);
+    expect(toolOffers([{ name: "read", available: false }])).toEqual([{ name: "read", available: false }]);
   });
 });

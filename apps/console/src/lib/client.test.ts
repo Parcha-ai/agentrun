@@ -150,6 +150,22 @@ describe("paging", () => {
   });
 });
 
+describe("the owner's session", () => {
+  it("reads a server without accounts (404 on the session route) as such, instead of throwing", async () => {
+    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
+    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
+  });
+  it("signs in and sets up as same-origin JSON, and signs out", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { signed_in: true }));
+    const v2 = createClient({ fetch: fn });
+    await v2.signIn("pw-1"); await v2.setup("pw-2", "c-1"); await v2.signOut();
+    expect(calls.map((c) => `${c.init?.method} ${c.url} ${c.init?.body}`)).toEqual([
+      'POST /v2/auth/sign-in {"password":"pw-1"}', 'POST /v2/setup {"password":"pw-2","code":"c-1"}', "POST /v2/auth/sign-out {}",
+    ]);
+    expect(calls.every((c) => c.init?.credentials === "same-origin")).toBe(true);
+  });
+});
+
 describe("follow's pace", () => {
   it("waits at least minDelayMs between polls, even when the server says poll_after_ms 0 on unchanged pages", async () => {
     const page = running.body as unknown as TimelinePage;
@@ -178,5 +194,18 @@ describe("allPages and a 422", () => {
     expect(err).toBeInstanceOf(ClientError);
     expect(err.fields).toEqual(invalid.body.error.fields);
     expect(saveError(err)).toEqual({ kind: "invalid", message: invalid.body.error.message, fields: { "definition.harness": invalid.body.error.fields[0].message } });
+  });
+});
+
+describe("the session's errors", () => {
+  it("only a 404 reads as a server without accounts: any other refusal on /auth/session is that refusal", async () => {
+    for (const status of [500, 401, 503]) {
+      const { fn } = fakeFetch(() => json(status, { error: { code: status === 401 ? "unauthenticated" : "internal", message: "refused", retryable: false } }));
+      const err = await createClient({ fetch: fn }).session().catch((e) => e);
+      expect(err).toBeInstanceOf(ClientError);
+      expect(err.status).toBe(status);
+    }
+    const { fn } = fakeFetch(() => json(404, { error: { code: "not_found", message: "no route /v2/auth/session", retryable: false } }));
+    expect(await createClient({ fetch: fn }).session()).toEqual({ status: 404, body: null });
   });
 });
