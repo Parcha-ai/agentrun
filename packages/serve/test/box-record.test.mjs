@@ -3,7 +3,7 @@
 // that names no writer is refused: nothing could ever clear it safely.
 import assert from "node:assert/strict";
 import { readlinkSync } from "node:fs";
-import { mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, readdir, readFile, rm, stat } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -60,7 +60,23 @@ test("writeDurable: the same, before its promise resolves", linux, async (t) => 
   const dir = await scratch(t);
   const path = join(dir, "box.json");
   const seen = await syncs(t, dir, path, () => writeDurable(path, "new\n"));
-  assert.deepEqual(seen, [{ synced: `${path}.tmp`, target: null }, { synced: dir, target: "new\n" }]);
+  assert.equal(seen.length, 2, JSON.stringify(seen));
+  assert.ok(seen[0].synced.startsWith(`${path}.${process.pid}.`) && seen[0].synced.endsWith(".tmp"), `its own temporary file beside it: ${seen[0].synced}`);
+  assert.deepEqual(seen, [{ synced: seen[0].synced, target: null }, { synced: dir, target: "new\n" }]);
+});
+
+test("writeDurable: two writes of one file at once both land whole, each through its own temporary file, none left", async (t) => {
+  const dir = await scratch(t);
+  const path = join(dir, "box.json");
+  for (let i = 0; i < 50; i++) {
+    const a = `${JSON.stringify({ id: "a", pad: "a".repeat(64 * 1024) })}\n`;
+    const b = `${JSON.stringify({ id: "b", pad: "b".repeat(64 * 1024) })}\n`;
+    const results = await Promise.allSettled([writeDurable(path, a), writeDurable(path, b)]);
+    assert.deepEqual(results.map((r) => r.status), ["fulfilled", "fulfilled"], `both writes land (round ${i}): ${results.map((r) => r.reason?.message ?? "").join(" | ")}`);
+    const text = await readFile(path, "utf8");
+    assert.ok(text === a || text === b, `the file is one write, whole (round ${i})`);
+  }
+  assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), [], "no temporary file is left");
 });
 
 test("ahead is synchronous and durable: the record is on disk, file and directory synced, when it returns, with no await", linux, async (t) => {
@@ -84,7 +100,8 @@ test("started replaces the record durably before it resolves", linux, async (t) 
   recorder.ahead({ id: "box-1", writer: WRITER });
   const done = { id: "box-1", pid: 4242, startTime: "999", pidns: "pid:[4026532000]", writer: WRITER };
   const seen = await syncs(t, dir, path, () => recorder.started(done));
-  assert.deepEqual(seen.map((s) => s.synced), [`${path}.tmp`, dir]);
+  assert.ok(seen[0]?.synced.startsWith(`${path}.${process.pid}.`) && seen[0].synced.endsWith(".tmp"), `its own temporary file beside it: ${seen[0]?.synced}`);
+  assert.deepEqual(seen.map((s) => s.synced), [seen[0].synced, dir]);
   assert.deepEqual(JSON.parse(await readFile(path, "utf8")), done);
 });
 
@@ -156,6 +173,7 @@ test("a record that cannot be written whole (a short write, then none) is refuse
   await assert.rejects(readFile(`${path}.tmp`), { code: "ENOENT" }, "and left no part behind");
   await shortWrites(t, halfThenNothing, () => assert.rejects(recorder.started({ id: "box-1", pid: 4242, writer: WRITER }), (error) => error.code === "box_record_failed"));
   await assert.rejects(readFile(path), { code: "ENOENT" }, "started renamed nothing");
+  assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith(".tmp")), [], "and neither left a temporary file behind");
 });
 
 test("a record written in pieces (short writes that keep going) is written whole", async (t) => {

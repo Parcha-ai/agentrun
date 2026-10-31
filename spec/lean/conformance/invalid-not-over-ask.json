@@ -1,0 +1,51 @@
+{
+  "description": "Validation rejects a judged predicate inside not: a yes/no question never hides inside a negation.",
+  "workflow": {
+    "v": 2,
+    "name": "not-over-ask",
+    "schemas": {
+      "Any": {
+        "type": "object"
+      }
+    },
+    "output": {
+      "schemaId": "Any"
+    },
+    "root": {
+      "node": "chain",
+      "steps": [
+        {
+          "node": "code",
+          "label": "read",
+          "code": "s => ({ score: s.raw })"
+        },
+        {
+          "node": "escalate",
+          "label": "gate",
+          "when": {
+            "predicate": "not",
+            "of": {
+              "predicate": "ask",
+              "instructions": "Is the score a number?"
+            }
+          },
+          "kind": "review",
+          "stage": "gate",
+          "summary": "Score: {score}"
+        },
+        {
+          "node": "code",
+          "label": "accept",
+          "code": "s => ({ accepted: s.score })"
+        }
+      ]
+    }
+  },
+  "input": {
+    "raw": 3
+  },
+  "script": {},
+  "expected": {
+    "valid": false
+  }
+}
