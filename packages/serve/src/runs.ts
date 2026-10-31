@@ -344,6 +344,11 @@ export class Runs {
 
   // ---- reading --------------------------------------------------------------------------------------------------------
 
+  /** Run `id` when this process holds it, never read from disk. */
+  held(id: string): Run | undefined {
+    return this.runs.get(id);
+  }
+
   /** Run `id`, read from the agent store the first time this process sees it. */
   async get(id: string): Promise<Run | null> {
     const known = this.runs.get(id);
