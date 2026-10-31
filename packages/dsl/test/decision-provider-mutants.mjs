@@ -4,7 +4,7 @@ import { DecisionProviderError, checkCapabilities } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 
 const KEY = 'canary-key-0123456789';
-const capabilities = { types: ['noul', 'choice', 'score'], inputs: ['text', 'json'], evidence: 'citations', probability: 'model', grounding: false, replay: 'never', maxQuestions: 3, maxStateBytes: 4096 };
+const capabilities = { types: ['noul', 'choice', 'score'], inputs: ['text', 'json'], evidence: 'citations', probability: 'model', grounding: false, replay: 'never', maxQuestions: 3, maxStateBytes: 4096, models: ['scripted'] };
 const fail = (code, message, status) => new DecisionProviderError(code, message, { status });
 const statusCode = (status) => (status === 401 || status === 403 ? 'auth' : status === 422 ? 'invalid_request' : status === 429 ? 'rate_limited' : 'http');
 
@@ -29,7 +29,7 @@ function scripted(replies, breaks = {}) {
   const provider = {
     id: 'scripted', needs: breaks.needsValue ? [KEY] : ['SCRIPTED_API_KEY'], capabilities: breaks.declaresBox ? { ...capabilities, types: [...capabilities.types, 'box'] } : breaks.declaresImageInput ? { ...capabilities, inputs: ['text', 'image'] } : capabilities,
     async decide(request, ctx) {
-      if (!breaks.sendsOverCapacity) checkCapabilities(capabilities, request);
+      if (!breaks.sendsOverCapacity) checkCapabilities(breaks.ignoresModels ? { ...capabilities, models: null } : capabilities, request);
       let reply;
       for (let attempt = 1; ; attempt++) {
         reply = await send(ctx.signal, ctx.deadlineMs ?? 30_000);
@@ -78,6 +78,7 @@ export const MUTANTS = {
   'retries-after-send': { retriesAfterSend: true },
   'declares-box': { declaresBox: true },
   'declares-image-input': { declaresImageInput: true },
+  'ignores-models': { ignoresModels: true },
 };
 
 const mutant = process.env.DECISION_MUTANT;

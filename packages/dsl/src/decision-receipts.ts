@@ -1,6 +1,7 @@
 // Decision receipts: one record per typed-question request, holding what was asked, what came back, the
 // rule that turns those answers into an action (its thresholds included) and the action itself. A receipt
 // alone explains a decision: `rederiveDecision` recomputes the action from it without a model call.
+import type { DecisionEvidence } from "./decision-provider.js";
 import { answerConfidence, answersToValue, type CompiledQuestions, type ConfidenceSource, type SystemOneAnswer, type SystemOneQuestion } from "./system-one.js";
 
 export const DECISION_RECEIPT_VERSION = 1;
@@ -78,6 +79,10 @@ export type DecisionReceipt = {
   /** For each choice and score answer, whether its confidence is the provider's own or was derived from its
    *  probabilities; present when the judge said. */
   confidence_source?: Record<string, ConfidenceSource>;
+  /** The provider that answered, when the host's judge names it or the node pins it. */
+  provider?: string;
+  /** The sources the provider grounded its answers in, unless the node said `evidence: "off"`; absent when it gave none. */
+  evidence?: DecisionEvidence[];
   error?: string;
 };
 

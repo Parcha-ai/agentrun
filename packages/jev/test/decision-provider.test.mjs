@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
-import { judgeFromProvider } from '@parcha/agentrun-dsl';
+import { judgeFromProvider, judgeFromProviders } from '@parcha/agentrun-dsl';
 import { jevProvider } from '../dist/index.js';
 
 const KEY = 'jev-canary-key-0123456789';
@@ -39,6 +39,21 @@ test('a question named __proto__ round-trips through Jev and the seam, and is ac
   const result = await judgeFromProvider(provider)({ label: 'x', kind: 'judge', state: {}, questions });
   assert.ok(Object.hasOwn(result.answers, '__proto__'));
   assert.equal(result.answers.__proto__.noul, 0.8);
+});
+
+test('a node\'s pinned model is the model Jev is sent; unpinned, the provider\'s own; Jev declares no model list, since it takes every pin it is given', async () => {
+  const sent = [];
+  const jev = jevProvider({ apiKey: KEY, baseURL: 'https://fake.invalid/gateway', fetch: async (_url, init) => {
+    sent.push(JSON.parse(init.body).model);
+    return json({ model: sent.at(-1), answers: { holds: { type: 'noul', noul: 0.8 } }, usage: { input_tokens: 1, output_tokens: 1 } });
+  } });
+  const ask = { label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Does it hold?' } }, decisionId: 'd' };
+  const runJudge = judgeFromProviders({ providers: { jev }, default: 'jev' });
+  const pinned = await runJudge({ ...ask, model: 'jev-1.14.0' });
+  await runJudge(ask);
+  assert.deepEqual(sent, ['jev-1.14.0', 'jev-latest'], 'the pin reaches the request body');
+  assert.equal(pinned.model, 'jev-1.14.0');
+  assert.equal(jev.capabilities.models ?? null, null);
 });
 
 test('jevProvider declares what Jev answers, and the key it reads by name', () => {

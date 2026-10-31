@@ -413,7 +413,7 @@ export function jevProvider(options: JevOptions = {}): DecisionProvider {
         if (!(error instanceof JevError)) throw new DecisionProviderError("http", "Jev request failed.");
         const timedOut = Boolean(deadline?.aborted) && !ctx.signal.aborted;
         const code = jevErrorCode(error, timedOut, ctx.signal.aborted);
-        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" || code === "invalid_response" ? { costUsd: null, costBasis: "unknown" as const } : {}) });
+        throw new DecisionProviderError(code, error.message, { ...(error.status !== undefined ? { status: error.status } : {}), attempts: error.attempts, ...(code === "outcome_unknown" || code === "invalid_response" ? { costUsd: null, costBasis: "unknown" as const } : {}), cause: error });
       }
     },
   };

@@ -137,6 +137,19 @@ test("Parallel's limits are checked before anything is sent", async () => {
   assert.equal(seen.length, 0);
 });
 
+test('a model pin Parallel does not serve is refused by name before anything is sent; the model it serves is sent as its mode', async () => {
+  const questions = { holds: { type: 'noul', instructions: 'Does it hold?' } };
+  const { fetch, seen } = fakeFetch([json(wire({ holds: { type: 'noul', noul: 0.7 } }))]);
+  const provider = parallelProvider({ ...settings, fetch });
+  for (const model of ['base-1', 'parallel-base', 'fast']) {
+    await assert.rejects(provider.decide({ label: 'x', kind: 'judge', state: {}, questions, model }, ctx()), (error) => code('invalid_request')(error) && error.message.includes(`"${model}"`), model);
+  }
+  assert.equal(seen.length, 0, 'nothing was sent');
+  const outcome = await provider.decide({ label: 'x', kind: 'judge', state: {}, questions, model: 'parallel-fast' }, ctx());
+  assert.equal(JSON.parse(seen[0].init.body).mode, 'fast');
+  assert.equal(outcome.model, 'parallel-fast');
+});
+
 test('a 422 keeps the reference Parallel gives it and drops the body', async () => {
   const { fetch } = fakeFetch([json({ type: 'error', error: { ref_id: 'ref-42', message: 'state contains private-detail-xyz' } }, 422)]);
   await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx()), (error) => {
@@ -291,5 +304,5 @@ test('parallelProvider declares what Parallel answers, and the key it reads by n
   const { id, needs, capabilities } = parallelProvider({ apiKey: KEY });
   assert.equal(id, 'parallel');
   assert.deepEqual(needs, ['PARALLEL_API_KEY']);
-  assert.deepEqual(capabilities, { types: ['noul', 'choice', 'score'], inputs: ['text', 'json', 'url'], evidence: 'citations', probability: 'model', grounding: true, replay: 'never', maxQuestions: 100, maxStateBytes: 96_000 });
+  assert.deepEqual(capabilities, { types: ['noul', 'choice', 'score'], inputs: ['text', 'json', 'url'], evidence: 'citations', probability: 'model', grounding: true, replay: 'never', maxQuestions: 100, maxStateBytes: 96_000, models: ['parallel-fast'] });
 });

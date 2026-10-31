@@ -31,10 +31,10 @@ This is the complete set. Each kind accepts exactly these fields; any other fiel
 - `escalate`: `label`, `when`, `kind`, `stage`, `summary`
 - `call`: `label`, `via`, `tool`, `args`, `code`, `input`, `command`, `env`, `where`, `out`, `as`, `produces`, `deadline_s`, `retry`, `poll`, `requires`
 - `workflow`: `label`, `workflow`, `input`, `out`, `as`
-- `judge`: `label`, `state`, `out`, `as`, `requires`
-- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`
-- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`
-- `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `valuePath`, `otherwise`, `as`, `requires`
+- `judge`: `label`, `state`, `out`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`
+- `pick`: `label`, `itemsPath`, `describe`, `instructions`, `state`, `allowNone`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`
+- `sift`: `label`, `itemsPath`, `describe`, `state`, `out`, `as`, `keep`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`
+- `route`: `label`, `state`, `instructions`, `branches`, `unsure`, `valuePath`, `otherwise`, `as`, `requires`, `provider`, `model`, `evidence`, `timeoutMs`
 
 Every kind also accepts `metadata`, an object the host owns and the engine never reads; set only the keys the host addendum names.
 
@@ -104,7 +104,7 @@ A predicate is one JSON object that names itself in its `predicate` field beside
 - `no_new_items` {key}: takes `key`, not `path`; holds when that state key is an empty array or falsy
 - `field_type` {path, type}: holds when the value at `path` is of `type`, one of number, string, boolean, array, object, null; a number only when finite, and an absent value is of no type
 - `not` {of}: holds when `of`, one mechanical predicate (never `ask`), does not; `{"predicate": "not", "of": {"predicate": "field_type", "path": "score", "type": "number"}}` holds when score is absent or not a finite number
-- `ask` {instructions, state, criteria, gte}: a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)
+- `ask` {instructions, state, criteria, gte, provider, model, evidence, timeoutMs}: a yes/no question for the host's judge: `instructions` is the question, `state` what it sees (default: the whole state), `criteria` optional {true, false} descriptions; holds when the yes-probability is at least `gte` (in (0.5, 1], default 0.6)
 
 ## Authority
 
