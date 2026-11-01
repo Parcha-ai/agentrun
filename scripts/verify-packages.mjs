@@ -108,10 +108,6 @@ const allowedEndpoints = {
     // The README's example of the address the command prints.
     ['README.md', 'http://127.0.0.1:41297/'],
   ],
-  'run-adapters-codex': [
-    // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
-    ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
-  ],
   serve: [
     // The address agentrun-serve binds by default, which its quick start points a client at.
     ['README.md', 'http://127.0.0.1:7340'],
