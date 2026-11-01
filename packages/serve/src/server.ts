@@ -27,6 +27,7 @@ import { SECRET_NAMES, withSecrets } from "./secrets.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { SEAL_KEY_ENV, sealKeyOf, ToolKeys } from "./tool-keys.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, ID, inputIssues, isObject, type Json, stable } from "./validate.js";
+import { settingsIssues, toolCatalog, ToolSettings, type ToolSettingsMap, withDefaults } from "./tool-plane.js";
 import { openWorkFile, walkWork, WorkRefused } from "./workspace.js";
 import { type ServerLock, takeServerLock } from "./server-lock.js";
 
@@ -91,6 +92,12 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch OpenRouter's decision models send through, in place of
    *  OpenRouter's System One API (`@parcha/agentrun-decisions/testing/faux-system-one` is one). */
   fauxOpenrouter?: string;
+  /** With `faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through, in
+   *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
+  fauxUpstream?: string;
+  /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
+   *  of Exa's MCP endpoint (exa-keyless.ts). */
+  fauxExa?: string;
   /** A module scripting the faux harness (`script(spec)`): every harness but pi runs on it (harness.ts). */
   fauxHarness?: string;
   /** Extra `Host` names to accept besides the loopback ones. */
@@ -181,6 +188,9 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
+  { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
+  { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
+  { method: "GET", pattern: /^\/tool-catalog$/, name: "getToolCatalog" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -197,7 +207,7 @@ export function workflowTitle(name: string, input: Record<string, unknown>): str
   return words.length ? `${name}${/[?!:.]$/.test(name) ? "" : ":"} ${words.join(", ")}` : name;
 }
 
-export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env)) {
+export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), harnesses: HarnessOffer[] = harnessesOf(env), toolSettings: ToolSettingsMap = {}) {
   const models = modelSource(env);
   return {
     backend: "local",
@@ -207,8 +217,9 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
     /** The harnesses a revision may name (`definition.harness`), and whether this server runs each. */
     harnesses,
     models,
-    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing. */
-    tools: toolsView(env),
+    /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
+     *  web tool, what it resolves to on each harness under this server's tool settings. */
+    tools: toolsView(env, toolSettings),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -235,6 +246,9 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
       efforts: [...EFFORTS],
       thinking: [...THINKING_LEVELS],
       browser: "none",
+      /** A tool setting's `permission` (definition.tool_settings, /v2/settings/tools): false until the tool gate lands,
+       *  and a save that names one is refused. */
+      tool_permissions: false,
       sign_ins: false,
       vault: false,
       query: false,
@@ -329,12 +343,15 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const quiet = process.env.AGENTRUN_LOG === "quiet";
   const authFailed = (route: string, reason: string) => log?.(logLine("auth_failed", { route, reason }));
   const env = withSecrets({ ...withoutFaux(process.env), ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.fauxHarness ? { [FAUX_HARNESS_ENV]: resolve(options.fauxHarness) } : {}) });
-  const caps = capabilities(env, maxRuns, await harnessOffers(env));
+  // The server's tool settings, beside the agent store: capabilities say what they resolve to, again after a PUT.
+  const settings = new ToolSettings(data);
+  const offers = await harnessOffers(env);
+  let caps = capabilities(env, maxRuns, offers, settings.get());
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability);
   const agents = new Agents(data);
   const documents = options.documents ?? process.env[DOCUMENTS_ENV];
   if (documents !== undefined && !(await stat(documents).then((info) => info.isDirectory(), () => false))) throw new Error(`the documents directory ${documents} is not a directory`);
-  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}) } : {}), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
+  const runs = new Runs({ agents, token, doorTokenFile, doorToken, ...(documents ? { documents: resolve(documents) } : {}), ...(options.faux ? { faux: resolve(options.faux), ...(options.fauxBrowser ? { fauxBrowser: resolve(options.fauxBrowser) } : {}), ...(options.fauxWeb ? { fauxWeb: resolve(options.fauxWeb) } : {}), ...(options.fauxJev ? { fauxJev: resolve(options.fauxJev) } : {}), ...(options.fauxParallel ? { fauxParallel: resolve(options.fauxParallel) } : {}), ...(options.fauxOpenrouter ? { fauxOpenrouter: resolve(options.fauxOpenrouter) } : {}), ...(options.fauxUpstream ? { fauxUpstream: resolve(options.fauxUpstream) } : {}), ...(options.fauxExa ? { fauxExa: resolve(options.fauxExa) } : {}) } : {}), toolSettings: () => settings.get(), ...(options.fauxHarness ? { fauxHarness: resolve(options.fauxHarness) } : {}), ...(options.drainTimeout ? { drainTimeout: options.drainTimeout } : {}), ...(options.carryBackRetry ? { carryBackRetry: options.carryBackRetry } : {}), maxRuns, ...(options.box ? { box: { host: options.box, quarantine: await Quarantine.open(join(data, BOX_QUARANTINE)) } } : {}), ...(options.settleRetryMs ? { settleRetryMs: options.settleRetryMs } : {}), ...(options.readyTimeoutMs ? { readyTimeoutMs: options.readyTimeoutMs } : {}), ...(log ? { log: (event: string, fields: Record<string, string | number>) => log(logLine(event, fields)) } : {}) });
   const expected = digest(`Bearer ${token}`);
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -426,12 +443,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
-  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow, ...(revision.body.harness ? { harness: revision.body.harness } : {}) });
+  const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : { kind: "workflow", workflow: revision.body.workflow, tools: revision.body.tools, ...(revision.body.harness ? { harness: revision.body.harness } : {}), ...(revision.body.toolSettings ? { toolSettings: revision.body.toolSettings } : {}) });
 
   /** What keeps `revision` from running here, checked before anything starts with the checks a save makes
    *  (runnable.ts): one a save refused, or one a setting of this host fixes that it does not have yet. */
   async function runnable(revision: Revision): Promise<void> {
-    const blockers = await blockersOf(env, shapeOf(revision));
+    const blockers = await blockersOf(env, shapeOf(revision), settings.get());
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -446,7 +463,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
 
   /** A definition being saved: refused (422 by field) when it can never run here; else what this host still lacks. */
   async function saveable(revision: NewRevision): Promise<InputIssue[]> {
-    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow, ...(revision.harness ? { harness: revision.harness } : {}) });
+    const blockers = await blockersOf(env, revision.kind === "agentic" ? revision : { kind: "workflow", workflow: revision.workflow, tools: revision.tools ?? [], ...(revision.harness ? { harness: revision.harness } : {}), ...(revision.toolSettings ? { toolSettings: revision.toolSettings } : {}) }, settings.get());
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     return blockers.map(issueOf);
@@ -851,7 +868,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
         const { issues, warnings } = await workflowIssues(body.workflow, body.tools as string[] | undefined);
         // What a save refuses on this host (a model node's tool, a code node where none runs), and what it lacks yet.
         if (!issues.length) {
-          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never }).catch(() => [])) {
+          for (const blocker of await blockersOf(env, { kind: "workflow", workflow: body.workflow as never, ...(body.tools ? { tools: body.tools as string[] } : {}) }, settings.get()).catch(() => [])) {
             if (blocker.host) warnings.push(blocker.message);
             else issues.push({ path: "", code: "NOT_RUNNABLE_HERE", message: blocker.message });
           }
@@ -881,6 +898,25 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "deleteToolKey":
         toolKeys.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "getToolSettings":
+        return send(res, 200, withDefaults(settings.get()));
+      case "putToolSettings": {
+        // Replaces the settings: a capability the body leaves out takes its default. Runs launched from now on resolve
+        // on them, and capabilities say so at once.
+        const body = await bodyOf(req);
+        const issues = settingsIssues(body);
+        if (issues.length) throw invalid(issues);
+        settings.put(body as ToolSettingsMap);
+        caps = capabilities(env, maxRuns, offers, settings.get());
+        return send(res, 200, withDefaults(settings.get()));
+      }
+      case "getToolCatalog": {
+        // With ?agent: its own settings over the server's, and what each resolves to on its harness and model.
+        const named = url.searchParams.get("agent");
+        const revision = named === null ? undefined : (await needAgent(named)).revision;
+        const agent = named === null ? undefined : { ...(revision?.body.harness ? { harness: revision.body.harness } : {}), ...(revision?.kind === "agentic" && revision.body.model ? { model: revision.body.model } : {}), ...(revision?.body.toolSettings ? { overrides: revision.body.toolSettings as ToolSettingsMap } : {}) };
+        return send(res, 200, toolCatalog(env, settings.get(), agent));
+      }
     }
     throw new ApiError("not_found", `no route ${path}`);
   }

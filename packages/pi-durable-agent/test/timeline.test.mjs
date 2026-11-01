@@ -278,6 +278,20 @@ test("cost: a compaction's summary is a paid request: its cost is summed; one ab
   assert.deepEqual(timelineOf([started, a, compacting], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
 });
 
+test("cost: a tool's own request, marked with its label as a compaction is, is a side request: its cost is summed, and one open when the run settles makes the cost unknown", () => {
+  const started = { kind: REQUEST_STARTED, data: {} };
+  const searching = { kind: REQUEST_STARTED, data: { request: "web_search" } };
+  const a = assistant([{ type: "text", text: "a" }], 0);
+  assert.deepEqual(timelineOf([started, a, searching, { kind: REQUEST_COST, data: { request: "web_search", usd: 0.012 } }]).at(-1).usage, { usd: 0.022, requests: 2 });
+  assert.deepEqual(timelineOf([started, searching, a]).at(-1).usage, { usd: 0.01, requests: 2 }, "a search in flight beside its generation");
+  assert.deepEqual(timelineOf([started, a, searching], { settled: true }).at(-1).usage, { usd: null, requests: 2 }, "open when the run settled");
+  assert.deepEqual(timelineOf([{ kind: REQUEST_STARTED, data: { request: 3 } }, a]).at(-1).usage, { usd: 0.01, requests: 1 }, "a harness's numbered request is a generation's");
+  const priced = (usd) => ({ kind: REQUEST_COST, data: { request: "web_search", usd } });
+  assert.deepEqual(timelineOf([started, a, searching, searching]).at(-1).usage, { usd: 0.01, requests: 3 }, "two searches in flight at once, neither cut");
+  assert.deepEqual(timelineOf([started, a, searching, searching, priced(0.012)]).at(-1).usage, { usd: 0.022, requests: 3 }, "one priced, the other still in flight");
+  assert.deepEqual(timelineOf([started, a, searching, searching, priced(0.012)], { settled: true }).at(-1).usage, { usd: null, requests: 3 }, "settled with one never priced");
+});
+
 test("a request the host refused before it left (a cancelled run) is not a request: its error entry is neither counted nor shown", () => {
   const refused = { kind: REQUEST_REFUSED, data: {} };
   const answer = (stopReason, errorMessage) => ({ kind: "pi.assistant", model: [{ role: "assistant", content: [], stopReason, errorMessage, usage: { input: 0, output: 0, cost: { total: 0 } } }] });

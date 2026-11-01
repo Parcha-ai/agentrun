@@ -38,8 +38,8 @@ function extract(urls, mode) {
   return json({ ...answer, results: urls.map(page), errors: [] });
 }
 
-/** A long excerpt: past the 500 characters a snippet keeps, and past the 600 Parallel is asked for. */
-const LONG_EXCERPT = `${"Widgets are registered in Delaware under file 1234567. ".repeat(14)}The end.`;
+/** A long excerpt: past the 3,000 characters a snippet keeps, and past what Parallel is asked for. */
+const LONG_EXCERPT = `${"Widgets are registered in Delaware under file 1234567. ".repeat(60)}The end.`;
 
 /** Parallel's search answer to `body`, as `mode` says: `max_results` results (10 when it asks none), the first with a
  *  null title, two excerpts (one with a markdown link) and a publish date, the rest one short excerpt and none. */

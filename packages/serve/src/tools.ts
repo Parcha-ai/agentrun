@@ -12,10 +12,11 @@ import { DEFAULT_HARNESS, HARNESSES } from "./harness.js";
 import { REPLAY } from "./host-tools.js";
 import { type Complete, LLM_TOOL } from "./llm.js";
 import { DOCUMENTS_ENV, PDF_PAGES_TOOL, pdfPages } from "./pdf-pages.js";
-import { FAUX_ENV } from "./model.js";
+import { FAUX_ENV, workflowNodes } from "./model.js";
 import { forModel } from "./result.js";
-import { parallelOf, WEB_FETCH_TOOL, webFetch, webFetchTool } from "./web-fetch.js";
-import { WEB_SEARCH_TOOL, webSearch, webSearchTool } from "./web-search.js";
+import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { searchFor, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
+import { isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, resolvesView, type ToolSettingsMap } from "./tool-plane.js";
 import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 export const ASK_TOOL = "ask_person";
@@ -186,7 +187,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     effect: async (args, run) => fetchPage(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
   },
   [WEB_FETCH_TOOL]: {
-    summary: "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched as fetch_page fetches it: fetch_page's Page plus via, \"parallel\" or \"direct\"; a URL fetch_page refuses is refused, never sent to Parallel.",
+    summary: "Read one public web page, fetched as fetch_page fetches it, or through Parallel's extract where Parallel is picked (falling back to that fetch when Parallel answers no page): fetch_page's Page plus via, \"parallel\" or \"direct\"; a URL fetch_page refuses is refused, never sent to Parallel.",
     needs: [],
     nodes: true,
     bind: async (host) => {
@@ -195,11 +196,11 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
       host.install(extension);
       return { tools: [tool], extensions: [extension] };
     },
-    effect: async (args, run) => webFetch(args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), parallel: parallelOf(run.env), signal: run.signal }),
+    effect: async (args, run) => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), signal: run.signal }),
   },
   [WEB_SEARCH_TOOL]: {
-    summary: "Search the web through Parallel's Search API: { query, n? } -> { query, results: [{ url, title, published?, snippet }] }, 1 to 25 results, each snippet at most 500 characters; { error } when Parallel gives no answer.",
-    needs: [PARALLEL_KEY_ENV],
+    summary: "Search the web: the harness's own search, on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Exa's keyless search, or Parallel's Search API where Parallel is picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
+    needs: [],
     nodes: true,
     bind: async (host) => {
       const tool = webSearchTool(host.env) as unknown as ToolRegistration;
@@ -207,7 +208,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
       host.install(extension);
       return { tools: [tool], extensions: [extension] };
     },
-    effect: async (args, run) => webSearch(args, parallelOf(run.env), run.signal),
+    effect: async (args, run) => searchFor(run.env, args, run.signal),
   },
   browser: browserTool,
   [PDF_PAGES_TOOL]: callOnly(
@@ -240,6 +241,15 @@ export function workflowTools(nodes: readonly Record<string, unknown>[]): { node
   return { nodes: [...named], calls: [...calls] };
 }
 
+/** The tools a revision grants its run: an agentic revision's `tools`; a workflow revision's `tools` with those its model
+ *  and call nodes name, which its run binds whether `tools` lists them or not. */
+export async function grantedTools(revision: { kind: string; tools?: readonly string[]; workflow?: unknown }): Promise<string[]> {
+  if (revision.kind !== "workflow") return [...(revision.tools ?? [])];
+  const { inspectWorkflow } = await import("@parcha/agentrun-dsl");
+  const named = workflowTools(workflowNodes(revision.workflow, inspectWorkflow(revision.workflow)));
+  return [...new Set([...(revision.tools ?? []), ...named.nodes, ...named.calls])];
+}
+
 /** The table's entry for `name`, or undefined for a name it does not hold. */
 export const toolOf = (name: string): ToolEntry | undefined => (Object.hasOwn(TOOLS, name) ? TOOLS[name] : undefined);
 
@@ -263,9 +273,15 @@ export function toolRefusal(names: readonly string[], env: NodeJS.ProcessEnv, wh
 }
 
 /** Every tool as capabilities show it: available here, or the variables it is missing (names only), and the harnesses
- *  that run it (another harness than pi runs only the host tools, host-tools.ts). */
-export const toolsView = (env: NodeJS.ProcessEnv) =>
-  Object.entries(TOOLS).map(([name, entry]) => {
-    const missing = missingEnv(entry, env);
-    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), available: missing.length === 0, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS] };
+ *  that run it (another harness than pi runs only the host tools, host-tools.ts). A tool a user picks a provider for
+ *  (tool-plane.ts) says what it resolves to on each harness under the server's `settings`: available where any is not
+ *  unavailable, and missing PARALLEL_API_KEY where Parallel is picked without it. */
+export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}) => {
+  const resolves = resolvesView(env, settings);
+  return Object.entries(TOOLS).map(([name, entry]) => {
+    const plane = (PICKABLE as readonly string[]).includes(name) ? resolves[name as Pickable] : undefined;
+    const missing = plane && Object.values(plane).includes(NO_PARALLEL_KEY) ? [PARALLEL_KEY_ENV] : missingEnv(entry, env);
+    const available = plane ? Object.values(plane).some((resolution) => !isUnavailable(resolution)) : missing.length === 0;
+    return { name, summary: entry.summary, nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), available, ...(missing.length ? { missing } : {}), harnesses: name in REPLAY ? [...HARNESSES] : [DEFAULT_HARNESS], ...(plane ? { resolves: plane } : {}) };
   });
+};

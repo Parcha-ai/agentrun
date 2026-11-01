@@ -8,12 +8,14 @@ import { REPLAY } from "./host-tools.js";
 import type { InputIssue } from "./errors.js";
 import { DEFAULT_HARNESS, FAUX_HARNESS_ENV, harnessOffers } from "./harness.js";
 import { chooseModel, llmTiers, nodeTiers, workflowNodes } from "./model.js";
-import { BOUND_TOOLS, CALL_TOOLS, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
+import { BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, TOOLS, workflowTools } from "./tools.js";
+import { isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap } from "./tool-plane.js";
+import { PARALLEL_KEY_ENV } from "./decisions.js";
 
 /** A revision's body as it is saved or stored. */
 export type RevisionShape =
-  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string }
-  | { kind: "workflow"; workflow: unknown; harness?: string };
+  | { kind: "agentic"; instructions: string; tools?: readonly string[]; model?: string; harness?: string; toolSettings?: ToolSettingsMap }
+  | { kind: "workflow"; workflow: unknown; tools?: readonly string[]; harness?: string; toolSettings?: ToolSettingsMap };
 
 /** One thing that keeps a revision from running here. `host`: a setting of this host could fix it. `tool` (one it does
  *  not bind), `missing` (a bound tool's unset variables), `adapter`, `decision` (a decision provider's unset key), `codeNodes`
@@ -28,8 +30,15 @@ export const NOT_SET_UP = "not_set_up_here";
  *  `new Function` transform, which is no sandbox. Off by default. */
 export const CODE_NODES_ENV = "AGENTRUN_SERVE_CODE_NODES";
 
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape): Promise<Blocker[]> {
+/** What keeps `revision` from running in `env` under the server's tool `settings` (tool-plane.ts). */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
+  /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
+   *  provider in its place. */
+  const unavailable = (field: string, tools: readonly string[], tool: string) => {
+    const resolved = planeFor(env, { tools, harness, ...(revision.kind === "agentic" && revision.model ? { model: revision.model } : {}), ...(revision.toolSettings ? { overrides: revision.toolSettings } : {}) }, settings)[tool as Pickable];
+    if (isUnavailable(resolved)) out.push({ field, reason: NOT_SET_UP, message: `The tool ${tool} does not run here on ${harness}: ${resolved.slice("unavailable: ".length)}.`, host: true, ...(resolved === NO_PARALLEL_KEY ? { missing: { tool, vars: [PARALLEL_KEY_ENV] } } : {}) });
+  };
   /** A bound tool whose variables this host does not set: a warning at save, a 409 at a run. */
   const unset = (field: string, tool: string) => {
     const vars = missingEnv(TOOLS[tool]!, env);
@@ -45,7 +54,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       // Another harness gets the host tools only (host-tools.ts: the file tools, fetch_page, web_fetch and web_search):
       // any other tool this host binds, ask_person among them, is pi's here and refuses the run, never runs without it.
       else if (harness !== DEFAULT_HARNESS && !(tool in REPLAY)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
-      else unset(`definition.tools[${index}]`, tool);
+      else {
+        unset(`definition.tools[${index}]`, tool);
+        unavailable(`definition.tools[${index}]`, revision.tools ?? [], tool);
+      }
     });
     // claude-agent's model is its own (adapters.ts), never routed through the other harnesses' gateway; on the faux
     // harness every harness takes the run's usual model. A harness that does not run here has said why already.
@@ -94,7 +106,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   for (const tool of named.calls) {
     if (!CALL_TOOLS.includes(tool)) out.push({ field: "definition.workflow", reason: "not_an_option", message: `A workflow's call nodes run the tools ${CALL_TOOLS.join(", ")} here; this workflow also calls ${tool}.`, host: false, tool });
   }
-  for (const tool of new Set([...named.nodes.filter((name) => NODE_TOOLS.includes(name)), ...named.calls.filter((name) => CALL_TOOLS.includes(name))])) unset("definition.workflow", tool);
+  const granted = await grantedTools(revision);
+  for (const tool of new Set([...named.nodes.filter((name) => NODE_TOOLS.includes(name)), ...named.calls.filter((name) => CALL_TOOLS.includes(name))])) {
+    unset("definition.workflow", tool);
+    unavailable("definition.workflow", granted, tool);
+  }
   for (const tier of llmTiers(nodes, nodeTiers(nodes))) {
     const chosen = await chooseModel(env, undefined, tier);
     if ("why" in chosen) out.push({ field: "definition.workflow", reason: NOT_SET_UP, message: chosen.why, host: true, tier });

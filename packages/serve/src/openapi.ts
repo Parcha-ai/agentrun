@@ -10,6 +10,7 @@ import { HARNESSES } from "./harness.js";
 import { THINKING_LEVELS } from "./model.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { DEFINITION_FIELDS, NOT_KEPT } from "./validate.js";
+import { NOT_YET, PICKABLE, PROVIDERS } from "./tool-plane.js";
 
 type Json = Record<string, unknown>;
 
@@ -165,6 +166,39 @@ const TOOL_KEYS_VIEW = closed({
   },
 });
 const KEY_ID = { name: "key_id", in: "path", required: true, description: "The tool key: one of GET /settings/tool-keys' ids.", schema: { type: "string" } };
+/** The tool settings map (tool-plane.ts): the server's (/settings/tools) and an agent's own (definition.tool_settings).
+ *  `permission` is reserved for the tool gate: a save that names it is 422 `not_yet`. */
+const TOOL_SETTINGS = {
+  type: "object", additionalProperties: false,
+  properties: Object.fromEntries(PICKABLE.map((name) => [name, {
+    type: "object", additionalProperties: false,
+    properties: { provider: { enum: [...PROVIDERS[name]], description: `Default ${PROVIDERS[name][0]}.` }, permission: { type: "string", description: `Reserved for the tool gate: refused until then (422 not_yet, "${NOT_YET}").` } },
+  }])),
+};
+/** What a capability resolves to on each harness: `native`, `kernel`, `exa-keyless`, `parallel`, or `unavailable: <reason>`. */
+const RESOLUTION = { type: "string", pattern: "^(native|kernel|exa-keyless|parallel|unavailable: .+)$" };
+const RESOLVES = {
+  type: "object", additionalProperties: false, required: [...HARNESSES], properties: Object.fromEntries(HARNESSES.map((harness) => [harness, RESOLUTION])),
+  description: "What the tool resolves to on each harness: native (the harness's own tool, or on pi one request to the model provider's hosted search), kernel (the guarded direct fetch), exa-keyless (Exa's keyless MCP search), parallel, or unavailable: <reason>.",
+};
+/** GET and PUT /settings/tools's answer: each capability's provider, its default where none is set. */
+const TOOL_SETTINGS_ANSWER = closed(Object.fromEntries(PICKABLE.map((name) => [name, closed({ provider: { enum: [...PROVIDERS[name]] } })])));
+/** GET /tool-catalog's answer. */
+const TOOL_CATALOG = closed({
+  tools: {
+    type: "array",
+    items: {
+      type: "object", additionalProperties: false, required: ["name", "providers", "provider", "default_provider", "resolves"],
+      properties: {
+        name: { enum: [...PICKABLE] }, providers: { type: "array", items: { type: "string" }, description: "The providers offered for it, its default first." },
+        provider: { type: "string", description: "The one in force: with ?agent the agent's own, else the server's, else the default." },
+        default_provider: { type: "string", description: "The one that applies at the layer asked about when it sets none: with ?agent the server's (else the built-in default), without it the built-in default." },
+        resolves: RESOLVES,
+        resolved: { ...RESOLUTION, description: "With ?agent: what it resolves to on the agent's harness and model." },
+      },
+    },
+  },
+});
 const PAUSED = { type: "object", additionalProperties: false, required: ["run_id", "paused", "status"], properties: { run_id: { type: "string" }, paused: { type: "boolean" }, status: ref("schemas/RunStatus") } };
 
 /** POST .../archive and .../unarchive: hide an agent and its runs, or one run, from the lists, and show them again. */
@@ -317,6 +351,29 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
   },
+  "/settings/tools": {
+    get: {
+      operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
+      description: "Each capability that has a choice, and its provider: web_search auto (the harness's own search or the model provider's hosted one, else Exa's keyless search), native (that alone), exa-keyless or parallel; web_fetch kernel or parallel. An agent's definition.tool_settings is over these. GET /tool-catalog says what each resolves to.",
+      responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "providers/1",
+    },
+    put: {
+      operationId: "putToolSettings", tags: ["capabilities"], summary: "Set the providers of web_search and web_fetch",
+      description: `Replaces the settings: a capability the body leaves out takes its default. Kept in the data directory, read by every run launched from then on, and capabilities say so at once. A pick of parallel without PARALLEL_API_KEY resolves unavailable, never to another provider. An unknown capability, a provider not offered for it, and a permission (422 not_yet, "${NOT_YET}") are refused.`,
+      requestBody: { required: true, content: { "application/json": { schema: TOOL_SETTINGS } } },
+      responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider now."), ...errors(400, 401, 415, 422, 429, 500) },
+      "x-agentrun-serve": "providers/1",
+    },
+  },
+  "/tool-catalog": {
+    get: {
+      operationId: "getToolCatalog", tags: ["capabilities"], summary: "The capabilities that have a provider choice, and what each resolves to",
+      parameters: [{ name: "agent", in: "query", required: false, description: "An agent's id: its own settings over the server's, and resolved on its harness and model.", schema: ref("schemas/Id") }],
+      responses: { "200": json(TOOL_CATALOG, "Each capability, its providers, the one in force and what it resolves to."), ...errors(401, 404, 429, 500) },
+      "x-agentrun-serve": "providers/1",
+    },
+  },
   ...archiving("agents", "Agent", ref("parameters/AgentId"), "The agent, with archived_at."),
   ...archiving("runs", "Run", ref("parameters/RunId"), "The run, with archived_at."),
 };
@@ -383,6 +440,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     thinking: { enum: [...THINKING_LEVELS], description: "An agentic revision's thinking level; absent, the model's. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
     harness: { enum: [...HARNESSES], description: "The harness that runs the revision. Absent on a request, pi; every answer names it. One this server does not run saves with a warning, and its runs are 409 agent_not_runnable naming it (capabilities.harnesses).", "x-agentrun-serve": "harness/1" },
+    tool_settings: { ...TOOL_SETTINGS, description: "The agent's own settings of web_search and web_fetch (their provider), over the server's (GET /settings/tools); absent, the server's. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
   },
   AgentCreate: {
     note: { type: "string", maxLength: 2000, description: "What the revision changes, kept with it (GET /agents/{agent_id}/revisions).", "x-agentrun-serve": "definitionbody/1" },
@@ -408,6 +466,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         properties: {
           name: { type: "string" }, summary: { type: "string" }, nodes: { type: "boolean" }, calls: { type: "boolean" }, call_only: { type: "boolean", description: "Only a workflow's call node runs it (pdf_pages, llm): no agentic revision or model node names it." }, available: { type: "boolean" }, missing: { type: "array", items: { type: "string" } },
           harnesses: { type: "array", items: { enum: [...HARNESSES] }, description: "The harnesses that run the tool here; a revision naming it on another harness saves with a warning and its runs are 409 agent_not_runnable.", "x-agentrun-serve": "tool-harness/1" },
+          resolves: { ...RESOLVES, "x-agentrun-serve": "providers/1" },
         },
       },
       "x-agentrun-serve": "serve/1",
@@ -458,6 +517,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept `sealed` under the seal key the server was handed; `unavailable` with none, when nothing is kept.",
       "x-agentrun-serve": "toolkeys/1",
     },
+    tool_permissions: { type: "boolean", description: "Whether a tool setting may carry a permission: false until the tool gate lands, and a save that names one is 422 not_yet.", "x-agentrun-serve": "providers/1" },
   },
   "Features/agents": { revisions: { type: "boolean", description: "`GET /agents/{agent_id}/revisions` and `POST /agents/{agent_id}/current`.", "x-agentrun-serve": "serve/1" } },
   "Features/runs": {

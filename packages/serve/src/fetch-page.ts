@@ -9,7 +9,8 @@ import { defineTool } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { forModel } from "./result.js";
 
-export type Page = { ok: boolean; url: string; status: number; title: string; text: string; links: string[]; refused?: string; error?: string };
+/** `truncated` and `original_chars` (its length in characters) when the text was cut at TEXT_CAP. */
+export type Page = { ok: boolean; url: string; status: number; title: string; text: string; truncated?: true; original_chars?: number; links: string[]; refused?: string; error?: string };
 
 export const FETCH_PAGE_TOOL = "fetch_page";
 /** Under `--faux` only: a module whose default export gives `{ lookup, fetchImpl }` for the fetch (the tests' fake
@@ -21,6 +22,9 @@ export const TITLE_CAP = 500;
 export const TIMEOUT_MS = 30_000;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+/** A page's text as a Page carries it: cut at TEXT_CAP, saying so, with its whole length when `whole` (a text a provider
+ *  cut already has none to give). No paging. */
+export const pageText = (text: string, whole = true): Pick<Page, "text" | "truncated" | "original_chars"> => ({ text: clip(text, TEXT_CAP), ...(text.length > TEXT_CAP ? { truncated: true as const, ...(whole ? { original_chars: text.length } : {}) } : {}) });
 
 /** The page at `url` as a Page. `options` are the guard's resolver and fetch, for a test; a signal ends it early. */
 export async function fetchPage(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Page> {
@@ -34,7 +38,7 @@ export async function fetchPage(url: unknown, options: Omit<PublicFetchOptions, 
     const answer = await publicFetch(url, { ...options, signal });
     if (answer.body === null) return failed({ url: answer.url, status: answer.status, error: `the page answered ${answer.status}` });
     const page = /html/i.test(answer.contentType) ? await readPage(answer.body, answer.url) : { title: "", text: answer.body, links: [] };
-    return { ok: true, url: answer.url, status: answer.status, title: clip(page.title, TITLE_CAP), text: clip(page.text, TEXT_CAP), links: page.links.slice(0, LINKS_CAP) };
+    return { ok: true, url: answer.url, status: answer.status, title: clip(page.title, TITLE_CAP), ...pageText(page.text), links: page.links.slice(0, LINKS_CAP) };
   } catch (error) {
     if (error instanceof BrowserFailureError && error.failure.code === "refused") return failed({ refused: error.message });
     return failed({ error: (error as Error)?.message ?? String(error) });
@@ -60,7 +64,7 @@ export const URL_PARAMETERS = {
 export const fetchPageTool = (options: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">>) =>
   defineTool({
     name: FETCH_PAGE_TOOL,
-    description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters) and the absolute links it holds. A private or local address, a port other than 80 or 443, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
+    description: "Fetch one web page from a public host and read it. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text (cut at 60,000 characters; then truncated is true and original_chars its whole length) and the absolute links it holds. A private or local address, a port other than 80 or 443, a scheme other than http(s), or a page that is not text is refused (ok false, with refused saying why).",
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {

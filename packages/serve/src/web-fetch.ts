@@ -1,18 +1,21 @@
-// web_fetch: fetch_page's Page (fetch-page.ts) plus `via`, the path that served it. Where the run holds Parallel's key,
-// the page is read through Parallel's Extract API (https://docs.parallel.ai/api-reference/extract-beta/extract, about
-// $0.001 a URL); without the key, or when Parallel answers no page (the URL in its `errors`, no content, a 5xx, a
-// timeout), it is fetch_page's guarded direct fetch. A URL goes to Parallel only once the public-host guard's own check
-// passes it: a URL the guard refuses is never sent, and is answered with the direct fetch's refusal. A 401 or 403 means
-// the key is not served: Parallel is not asked again in the run. No request to Parallel is retried: one that failed
-// goes to the direct fetch.
-// The key is the one the server hands the run's process on its decision descriptor (decisions.ts), read once and held
-// in this module's memory: never in an environment, a child or a file.
+// web_fetch: fetch_page's Page (fetch-page.ts) plus `via`, the path that served it. It is the kernel's guarded direct
+// fetch unless the run's plane resolves it to Parallel (tool-plane.ts: the agent's or the server's pick): then the page is
+// read through Parallel's Extract API (https://docs.parallel.ai/api-reference/extract-beta/extract, about $0.001 a URL),
+// and when Parallel answers no page (the URL in its `errors`, no content, a 5xx, a timeout) through the guarded direct
+// fetch. A URL goes to Parallel only once the public-host guard's own check passes it: a URL the guard refuses is never
+// sent, and is answered with the direct fetch's refusal. A 401 or 403 means the key is not served: Parallel is not asked
+// again in the run. No request to Parallel is retried: one that failed goes to the direct fetch. A pick of Parallel the
+// server holds no key for answers a failed Page saying so, never a fetch of another kind.
+// The key is the one the server hands the run's process on its decision descriptor (decisions.ts) when one of its
+// capabilities resolves to Parallel, read once and held in this module's memory: never in an environment, a child or a
+// file.
 import { defineTool } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeys, PARALLEL_KEY_ENV } from "./decisions.js";
-import { clip, fetchOptions, fetchPage, LINKS_CAP, type Page, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_PARAMETERS } from "./fetch-page.js";
+import { clip, fetchOptions, fetchPage, LINKS_CAP, type Page, pageText, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, URL_PARAMETERS } from "./fetch-page.js";
 import { FAUX_ENV } from "./model.js";
 import { forModel } from "./result.js";
+import { isUnavailable, planeOf } from "./tool-plane.js";
 
 export const WEB_FETCH_TOOL = "web_fetch";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
@@ -64,13 +67,14 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
     post,
     async read(url, signal) {
       try {
-        const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: TEXT_CAP } } }, signal);
+        // One character past the cap, so a page Parallel cut shows as cut (its whole length Parallel does not give).
+        const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: TEXT_CAP + 1 } } }, signal);
         if (!response.ok) return void (await response.body?.cancel().catch(() => undefined));
         const { results } = (await response.json()) as { results?: Array<{ url?: unknown; title?: unknown; full_content?: unknown } | null> };
         const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");
         if (!row) return undefined;
         const text = row.full_content as string;
-        return { ok: true, url: row.url as string, status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), text: clip(text, TEXT_CAP), links: linksOf(text) };
+        return { ok: true, url: row.url as string, status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...pageText(text, text.length > TEXT_CAP + 1), links: linksOf(text) };
       } catch {
         return undefined;
       }
@@ -109,16 +113,26 @@ export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
   return (parallel = key === undefined ? null : parallelExtract(key, async (...args) => ((await fauxFetch(env, FAUX_PARALLEL_ENV)) ?? fetch)(...args)));
 }
 
-/** The agent's tool: the WebPage as JSON text. The run's key is read as the tool is made, when the run opens. */
+/** The page at `url` by the provider the run's plane resolves web_fetch to: Parallel's extract (with the direct fetch
+ *  behind it) where it resolves to parallel, the guarded direct fetch otherwise, and a failed Page saying why where it
+ *  is unavailable. */
+export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions = {}): Promise<WebPage | Page> {
+  const resolved = planeOf(env).web_fetch;
+  if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? url : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${resolved.slice("unavailable: ".length)}` };
+  return webFetch(url, { ...options, parallel: resolved === "parallel" ? parallelOf(env) : null });
+}
+
+/** The agent's tool: the WebPage as JSON text. A run whose web_fetch resolves to Parallel reads its key as the tool is
+ *  made, when the run opens. */
 export function webFetchTool(env: NodeJS.ProcessEnv) {
-  const extract = parallelOf(env);
+  if (planeOf(env).web_fetch === "parallel") parallelOf(env);
   return defineTool({
     name: WEB_FETCH_TOOL,
-    description: "Read one web page from a public host. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text as markdown (cut at 60,000 characters), the absolute links it holds, and via: parallel when Parallel's extract read it, direct when it was fetched from the host. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.",
+    description: "Read one web page from a public host. Answers JSON: ok, the final url, the HTTP status, the page's title, its readable text as markdown (cut at 60,000 characters; then truncated is true and original_chars its whole length), the absolute links it holds, and via: parallel when Parallel's extract read it, direct when it was fetched from the host. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.",
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {
-      const page = await webFetch((args as { url?: unknown }).url, { ...(await fetchOptions(env, FAUX_ENV)), parallel: extract, ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
+      const page = await fetchFor(env, (args as { url?: unknown }).url, { ...(await fetchOptions(env, FAUX_ENV)), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
       return forModel(JSON.stringify(page), { details: page });
     },
   });

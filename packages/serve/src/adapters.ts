@@ -1,13 +1,16 @@
 // The adapter a harness id runs on, and whether this server can run it. With a faux harness module (FAUX_HARNESS_ENV)
 // every id runs on run-adapters' faux harness, scripted by the module's `script(spec)`, as `--faux` runs pi on the
 // faux model. Otherwise codex runs on @parcha/agentrun-codex and claude-agent on @parcha/agentrun-claude-agent, each
-// with serve's own model, price and endpoint, under the run's confinement; a package or a pinned CLI that is missing
-// says so with the one line that installs it.
+// with serve's own model, price and endpoint, under the run's confinement, and claude-agent with its own web search
+// where the run's web_search resolves native (Codex's is not bound yet); a package or a pinned CLI that is missing says
+// so with the one line that installs it.
 import { pathToFileURL } from "node:url";
 import type { AgentAdapter, SessionSpec } from "@parcha/agentrun-adapters";
 import { FAUX_HARNESS_ENV } from "./harness.js";
 import type { ModelRef } from "./model.js";
 import type { SkillCheck, SkillFiles } from "./skills.js";
+import { planeOf } from "./tool-plane.js";
+import { NATIVE_SEARCH_ALLOWANCE_TOKENS } from "./cap.js";
 
 /** The one line that installs each harness beside serve. */
 export const INSTALL: Record<string, string> = {
@@ -173,6 +176,14 @@ export async function claudeSkillCheck(load: () => Promise<unknown> = loadClaude
   return typeof claude?.skillProblems === "function" ? (claude.skillProblems as SkillCheck) : undefined;
 }
 
+/** What claude-agent's adapter takes from the run's plane (tool-plane.ts): Claude's own WebSearch, on where web_search
+ *  resolves native, with the input a search request may read in beyond its body (cap.ts), which its proxy adds to that
+ *  request's bound; nothing otherwise, and nothing for another harness (Codex's own search is not bound yet). */
+export function nativeOptions(harness: string, env: NodeJS.ProcessEnv): { webSearch?: true; webSearchAllowance?: number } {
+  if (harness !== "claude-agent" || planeOf(env).web_search !== "native") return {};
+  return { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS };
+}
+
 /** claude-agent's adapter, from `load` (the installed package; a test gives its own). */
 export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load: () => Promise<unknown> = loadClaude): Promise<AgentAdapter> {
   const claude = (await load().catch(() => {
@@ -192,7 +203,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   try {
     const native = { ...needs, model: { ...needs.model, modelId: claudeModelId(needs.model) } };
     // The skills only when there are some: with none, the adapter keeps its Skill tool off.
-    adapter = claude.claudeAgentAdapter({ model: { default: native.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(native), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}) });
+    adapter = claude.claudeAgentAdapter({ model: { default: native.model.modelId }, provider: provider ?? { origin: "", credential: () => "" }, price: priceOf(native), log: harnessLog("claude-agent", env), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...nativeOptions("claude-agent", env) });
   } catch (error) {
     const message = (error as Error).message;
     throw new HarnessUnavailable(message.includes("npm install") ? message : `${message} (${INSTALL["claude-agent"]})`);
@@ -227,8 +238,10 @@ async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<Age
 export async function adapterFor(harness: string, env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
   const faux = env[FAUX_HARNESS_ENV];
   if (faux) {
-    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-adapters/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[] }>]);
+    const [{ fauxAdapter }, module] = await Promise.all([import("@parcha/agentrun-adapters/testing"), import(pathToFileURL(faux).href) as Promise<{ script?: (spec: SessionSpec) => never[]; opened?: (harness: string, options: Record<string, unknown>) => void }>]);
     if (typeof module.script !== "function") throw new Error(`${FAUX_HARNESS_ENV} names ${faux}, which exports no script(spec)`);
+    // The options the harness's own adapter would be built with from the run (its web search), told to the module.
+    module.opened?.(harness, nativeOptions(harness, env));
     return fauxAdapter({ script: module.script });
   }
   if (harness === "codex") return codexOf(env, needs);

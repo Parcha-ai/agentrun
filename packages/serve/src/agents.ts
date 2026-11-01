@@ -98,7 +98,10 @@ export class Agents {
     if (issues.length) throw invalid(issues);
     // The default harness is never stored: naming pi and naming none are one revision.
     const harness = typeof definition.harness === "string" && definition.harness !== DEFAULT_HARNESS ? { harness: definition.harness } : {};
-    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...(note !== undefined ? { note } : {}) };
+    // A capability with nothing set is none: `{web_search: {}}` and no settings are one revision.
+    const kept = Object.entries(isObject(definition.tool_settings) ? definition.tool_settings : {}).filter(([, setting]) => isObject(setting) && Object.keys(setting).length);
+    const set = kept.length ? { toolSettings: Object.fromEntries(kept) as Record<string, Record<string, string>> } : {};
+    const common = { skills: files, tools: (definition.tools as string[] | undefined) ?? [], ...harness, ...set, ...(note !== undefined ? { note } : {}) };
     if (isObject(definition.workflow)) return { kind: "workflow", workflow: definition.workflow as never, ...common };
     return { kind: "agentic", instructions: definition.instructions as string, ...(typeof definition.model === "string" ? { model: definition.model } : {}), ...(typeof definition.thinking === "string" ? { thinking: definition.thinking } : {}), ...common };
   }
@@ -259,7 +262,7 @@ export function definitionOf(agent: Agent, revision: Revision, version: number):
   const body = revision.kind === "agentic"
     ? { instructions: revision.body.instructions, ...(revision.body.model ? { model: revision.body.model } : {}), ...(revision.body.thinking ? { thinking: revision.body.thinking } : {}) }
     : { workflow: revision.body.workflow };
-  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools };
+  return { id: agent.id, version, name: agent.name, ...(agent.description !== undefined ? { description: agent.description } : {}), ...body, harness: harnessOfBody(revision.body), skills: skillNames(Object.keys(revision.body.skills)), tools: revision.body.tools, ...(revision.body.toolSettings ? { tool_settings: revision.body.toolSettings } : {}) };
 }
 
 /** `Agent` as the contract shows it, with its current revision. */
