@@ -28,7 +28,7 @@ Node 22.19 or later and git. On the run's branch, in the agent's repository:
 agentrun-learn check --base main --tools host-tools.json
 ```
 
-It prints `runs/<run id>: ok` and exits 0, or it names each problem by rule and file and exits 1. A bad command line, or a ref that names no commit, exits 2. It gives the same verdict from any folder of the work tree. Everything it prints, text or JSON, is redacted: a value it refuses, or text shaped like a secret, reads `[redacted]` even in a file's name or the branch's name.
+It prints `runs/<run id>: ok` and exits 0, or it names each problem by rule and file and exits 1. A bad command line, or a ref that names no commit, exits 2. It gives the same verdict from any folder of the work tree. Everything it prints, text or JSON, is redacted: a value it refuses, or text shaped like a secret, reads `[redacted]` even in a file's name or the branch's name. A name or detail that holds one in a form it cannot cut out, percent encoded or split by whitespace, prints whole as `[redacted]`.
 
 | Option | What it does |
 | --- | --- |

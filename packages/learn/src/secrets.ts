@@ -35,7 +35,9 @@ function places(text: string, form: string): Span[] {
 /** `text` with each of `values` (as written, as JSON writes it, and in each form the matcher finds as it stands: hex in
  *  any case, base64) and each secret-shaped run replaced by "[redacted]": what the checker prints never holds a secret,
  *  wherever it was found, a file's name and the branch's included. Every form is found in `text` as given, and
- *  overlapping finds are redacted as one, so one value never hides part of another from the search. */
+ *  overlapping finds are redacted as one, so one value never hides part of another from the search. A text that still
+ *  holds a value or a shape after that (a form not found as it stands: percent encoded, split by whitespace, an NFKC
+ *  variant) is redacted whole, never in part. */
 export function redactSecrets(text: string, values: readonly string[]): string {
   const given = values.filter((v) => v.length > 0);
   const forms = new Set(given.flatMap((v) => [v, asJson(v), ...(longEnough(v) ? needlesOf(v).plain : [])]).filter((form) => form.length > 0));
@@ -56,7 +58,8 @@ export function redactSecrets(text: string, values: readonly string[]): string {
     out += `${text.slice(from, start)}[redacted]`;
     from = end;
   }
-  return out + text.slice(from);
+  out += text.slice(from);
+  return valueMatcher(given)(out) || secretShapes(out).length > 0 ? "[redacted]" : out;
 }
 
 /** A value shorter than this matches too much text by chance to be refused. */

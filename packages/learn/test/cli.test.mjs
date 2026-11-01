@@ -242,9 +242,40 @@ test("a value that squeezes to nothing leaves both reports readable", async (t) 
   const { dir, tools } = await repo(t);
   for (const json of [true, false]) {
     const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: " ".repeat(8) });
-    if (json) assert.ok(Array.isArray(JSON.parse(out.stdout).problems), out.stdout);
-    else assert.ok(out.stdout.startsWith(`${BRANCH}: `), out.stdout);
+    if (json) assert.ok(JSON.parse(out.stdout).problems.every((p) => /^[a-z_]+$/.test(p.rule)), out.stdout);
+    else {
+      const [head, ...lines] = out.stdout.trimEnd().split("\n");
+      assert.match(head, /: (ok|\d+ problems?)$/, out.stdout);
+      for (const line of lines) assert.match(line, /^ {2}[a-z_]+ {2}/, out.stdout);
+    }
   }
+});
+
+/** Checks a branch that adds `path`, outside the layout, with STORE_PASS set to `value`: the path is refused, neither
+ *  report holds any of `forms`, and the JSON report names the path as [redacted], whole. */
+async function refusedWhole(t, value, path, forms) {
+  const { dir, tools } = await repo(t, { ...cleanFiles(), [path]: "a file named for a secret\n" });
+  for (const json of [true, false]) {
+    const out = cli(dir, ["check", "--base", "main", "--tools", tools, "--refuse-values-from-env", "STORE_PASS", ...(json ? ["--json"] : [])], { STORE_PASS: value });
+    assert.equal(out.status, 1, out.stdout + out.stderr);
+    const printed = (out.stdout + out.stderr).toLowerCase();
+    for (const form of forms) assert.equal(printed.includes(form.toLowerCase()), false, `${json ? "JSON" : "text"} output holds ${form}`);
+    if (json) assert.deepEqual(found(JSON.parse(out.stdout)), [["secret_value", "[redacted]"], ["outside_layout", "[redacted]"]], out.stdout);
+    else assert.match(out.stdout, /^ {2}secret_value {2}\[redacted\] {2}its path holds/m, out.stdout);
+  }
+}
+
+test("a path holding a value percent-encoded, in mixed case, is refused and printed whole as [redacted]", async (t) => {
+  const value = "Zq9sEcReT77xKp";
+  const percent = [...Buffer.from(value)].map((byte, at) => `%${byte.toString(16)[at % 2 ? "toLowerCase" : "toUpperCase"]()}`).join("");
+  assert.match(percent, /^%5A%71%39%73%45%63/);
+  await refusedWhole(t, value, `learnings/${percent}.md`, [value, Buffer.from(value).toString("hex"), percent]);
+});
+
+test("a path holding a value split by whitespace is refused and printed whole as [redacted]", async (t) => {
+  const value = "Zq9sEcReT77xKp";
+  const split = "Zq9s EcRe T77x Kp";
+  await refusedWhole(t, value, `notes/${split}.txt`, [value, Buffer.from(value).toString("hex"), split, "EcRe T77x"]);
 });
 
 test("over the change cap, no body is read: the count comes first", async (t) => {
