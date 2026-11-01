@@ -8,7 +8,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { AgentHomeError, openStore, openStoreReader } from "../dist/index.js";
-import { REQUEST_COST, runMetricsOf } from "../dist/timeline/index.js";
+import { METRIC_NAMES, REQUEST_COST, runMetricsOf } from "../dist/timeline/index.js";
 import { scratch } from "./support.mjs";
 
 const refused = (code) => (error) => error instanceof AgentHomeError && error.code === code;
@@ -160,6 +160,26 @@ test("runMetricsOf over the run store's entries, every conversation, is what car
   });
   store.carryBack(runId, { state: "completed", metrics: { ...metrics, activeMs: 9000, effort: "medium" } });
   assert.deepEqual(withoutAt(store.runMetrics(runId)), { ...metrics, activeMs: 9000, effort: "medium" });
+  store.close();
+});
+
+test("a run whose model made up tool names keeps its metrics: what runMetricsOf makes of any name, and of any number of names, carryBack takes", async () => {
+  const { dir, store } = await seeded();
+  const { runId } = await store.startRun({ agent: "notes" });
+  const long = "t".repeat(300);
+  const answer = (n, name, model = "claude-opus-5-5") => ({ conversationId: 1, id: 2 * n, kind: "pi.assistant", model: [{ role: "assistant", provider: "anthropic", model, content: [{ type: "toolCall", id: `c${n}`, name, arguments: {} }], stopReason: "toolUse", usage: { input: 10, output: 1, cost: { total: 0.001 } } }] });
+  const result = (n, name, isError = false) => ({ conversationId: 1, id: 2 * n + 1, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: `c${n}`, toolName: name, content: [], isError }] });
+  const records = [answer(1, long), result(1, long), answer(2, ""), result(2, "", true), answer(3, "x\uDC00", "m".repeat(400)), result(3, "x\uDC00")];
+  for (let i = 0; i < 150; i++) records.push(answer(10 + i, `made_up_${i}`, `model-${i}`), result(10 + i, `made_up_${i}`, true));
+  const metrics = runMetricsOf(records);
+  assert.equal(Object.keys(metrics.tools).length, METRIC_NAMES.kept + 1);
+  assert.equal(Object.keys(metrics.models).length, METRIC_NAMES.kept + 1);
+  assert.deepEqual(metrics.tools[`${long.slice(0, 255)}…`], { calls: 1, errors: 0 });
+  // The names as the entries hold them are what the store refuses: a run's end with them would never be written.
+  assert.throws(() => store.carryBack(runId, { state: "completed", metrics: { ...metrics, tools: { [long]: { calls: 1, errors: 0 } } } }), refused("invalid"));
+  store.carryBack(runId, { state: "completed", metrics });
+  assert.deepEqual(withoutAt(store.runMetrics(runId)), metrics);
+  assert.equal(rows(dir, "SELECT COUNT(*) AS n FROM run_tool_metrics")[0].n, METRIC_NAMES.kept + 1, "a row a tool, at most the kept and the rest's");
   store.close();
 });
 

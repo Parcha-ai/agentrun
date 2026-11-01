@@ -3,7 +3,7 @@
 // of every token sum; each tool's calls pair with their results by conversation and call id, as the timeline's do.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
+import { METRIC_NAMES, REQUEST_COST, REQUEST_COST_LATE, REQUEST_COST_PENDING, REQUEST_ENDED, REQUEST_REFUSED, REQUEST_STARTED, runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { assistant, call, custom, inConv, result, user } from "./timeline-support.mjs";
 
 const usage = (input, output, cacheRead = 0, cacheWrite = 0, total = 0.01) => ({ input, output, cacheRead, cacheWrite, totalTokens: input + output, cost: { total } });
@@ -145,4 +145,65 @@ test("an entry read twice counts once, by conversation and id", () => {
   const r = result("c1", "read", "ok");
   const m = runMetricsOf([a, r, a, r]);
   assert.deepEqual([m.requests, m.input, m.tools], [1, 10, { read: { calls: 1, errors: 0 } }]);
+});
+
+test("a tool name past 256 characters is cut to its first 255 and \"…\": the same name is always the same key", () => {
+  const long = `${"x".repeat(250)}_${"y".repeat(49)}`;
+  const entries = [answer([call("c1", long), call("c2", long), call("c3", `${long}z`)], usage(1, 1)), result("c1", long, "ok"), result("c2", long, "no", 0, { isError: true }), result("c3", `${long}z`, "ok")];
+  const key = `${long.slice(0, 255)}…`;
+  assert.deepEqual(runMetricsOf(entries).tools, { [key]: { calls: 3, errors: 1 } }, "two names that differ only past the cut share its key");
+  assert.equal(key.length, METRIC_NAMES.max);
+  // A cut that would end inside a surrogate pair drops its first half, so the key stays well formed.
+  const emoji = `${"x".repeat(254)}😀${"x".repeat(10)}`;
+  const [cut] = Object.keys(runMetricsOf([answer([call("c1", emoji)], usage(1, 1)), result("c1", emoji, "ok")]).tools);
+  assert.equal(cut, `${"x".repeat(254)}…`);
+});
+
+test("past 100 distinct tools a run keeps the 100 with the most calls and sums the rest under \"…other tools\"", () => {
+  const entries = [];
+  for (let i = 0; i < 150; i++) {
+    // Tool t0 is called 3 times, t1 to t99 twice, t100 to t149 once; one of t100's calls failed.
+    const times = i === 0 ? 3 : i < 100 ? 2 : 1;
+    for (let n = 0; n < times; n++) entries.push(answer([call(`c${i}-${n}`, `t${i}`)], usage(1, 1)), result(`c${i}-${n}`, `t${i}`, "ok", 0, { isError: i >= 100 && n === 0 && i % 10 === 0 }));
+  }
+  const { tools } = runMetricsOf(entries);
+  assert.equal(Object.keys(tools).length, METRIC_NAMES.kept + 1);
+  assert.deepEqual(tools.t0, { calls: 3, errors: 0 });
+  assert.deepEqual(tools.t99, { calls: 2, errors: 0 });
+  assert.equal(tools.t100, undefined);
+  assert.deepEqual(tools[METRIC_NAMES.otherTools], { calls: 50, errors: 5 });
+  assert.equal(Object.values(tools).reduce((sum, t) => sum + t.calls, 0), 3 + 99 * 2 + 50, "every call is still counted");
+  // At the bound exactly, nothing is folded.
+  assert.equal(Object.keys(runMetricsOf(entries.slice(0, 2 * (3 + 99 * 2))).tools).length, 100);
+});
+
+test("an empty or missing tool name counts under \"…unnamed tool\"; a name that starts with \"…\" gets another, so it is never one of those", () => {
+  const entries = [
+    answer([call("c1", "")], usage(1, 1)), result("c1", "", "no such tool", 0, { isError: true }),
+    custom("pi.tool-result", undefined, { model: [{ role: "toolResult", toolCallId: "lost", content: [], isError: false }] }),
+    answer([call("c2", METRIC_NAMES.otherTools), call("c3", "…")], usage(1, 1)), result("c2", METRIC_NAMES.otherTools, "ok"), result("c3", "…", "ok"),
+    // A lone surrogate is no text the store keeps the same: it reads as U+FFFD.
+    answer([call("c4", "bad\uD800name")], usage(1, 1)), result("c4", "bad\uD800name", "ok"),
+    answer([call("c5", "  ")], usage(1, 1)), result("c5", "  ", "ok"),
+  ];
+  assert.deepEqual(runMetricsOf(entries).tools, {
+    [METRIC_NAMES.unnamedTool]: { calls: 2, errors: 1 },
+    [`…${METRIC_NAMES.otherTools}`]: { calls: 1, errors: 0 },
+    "……": { calls: 1, errors: 0 },
+    "bad\uFFFDname": { calls: 1, errors: 0 },
+    "  ": { calls: 1, errors: 0 },
+  });
+});
+
+test("model names are kept the same way: cut past 256 characters, the 100 busiest kept and the rest summed under \"…other models\"", () => {
+  const long = "m".repeat(300);
+  const entries = [answer([{ type: "text", text: "a" }], usage(1, 1), { provider: "gateway", model: long }), answer([{ type: "text", text: "b" }], usage(1, 1), { provider: "gateway", model: long })];
+  for (let i = 0; i < 120; i++) entries.push(answer([{ type: "text", text: `${i}` }], usage(1, 1), { provider: "p", model: `m${i}` }));
+  const m = runMetricsOf(entries);
+  const key = `gateway/${"m".repeat(METRIC_NAMES.max - 1 - "gateway/".length)}…`;
+  assert.equal(m.model, key);
+  assert.equal(m.models[key], 2);
+  assert.equal(Object.keys(m.models).length, METRIC_NAMES.kept + 1);
+  assert.equal(m.models[METRIC_NAMES.otherModels], 21, "p/m0 to p/m98 are kept beside the busiest; the last 21 are summed");
+  assert.equal(Object.values(m.models).reduce((a, b) => a + b, 0), m.requests);
 });
