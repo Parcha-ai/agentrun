@@ -58,7 +58,12 @@ test("a URL the guard refuses is never sent to Parallel: refused as fetch_page r
   withEnv(t, {}, [MODE]);
   const { sent, send } = parallel();
   const extract = parallelExtract(CANARY, send);
-  const hostile = ["http://127.0.0.1/", "http://localhost/", "http://app.localhost/", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.1/", "http://[::1]/", "http://[::ffff:127.0.0.1]/", "http://evil.example/", "http://mixed.example/", "http://public.example:8080/", "file:///etc/passwd", "ftp://public.example/"];
+  const hostile = [
+    ...["http://127.0.0.1/", "http://localhost/", "http://[::1]/", "http://[::ffff:127.0.0.1]/"],
+    "http://app.localhost/",
+    ...["http://169.254.169.254/latest/meta-data/", "http://10.0.0.1/"], // key-gate: denylist the addresses the guard must refuse before Parallel is sent a URL
+    ...["http://evil.example/", "http://mixed.example/", "http://public.example:8080/", "file:///etc/passwd", "ftp://public.example/"],
+  ];
   for (const url of hostile) {
     const net = network();
     const page = await webFetch(url, { ...net, parallel: extract });
