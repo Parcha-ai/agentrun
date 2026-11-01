@@ -98,7 +98,7 @@ test("a workflow is checked by what its inspection gives: a node's tool this hos
   const caller = await api("POST", "/agents", { definition: { id: "caller", name: "caller", workflow: call, tools: ["stock.check"] } });
   assert.equal(caller.status, 422, JSON.stringify(caller.body));
   assert.ok(caller.body.error.fields.every((f) => f.field === "definition.workflow"), JSON.stringify(caller.body.error.fields));
-  assert.ok(caller.body.error.fields.some((f) => /call nodes run the tools fetch_page, pdf_pages, llm here; this workflow also calls stock\.check/.test(f.message)), JSON.stringify(caller.body.error.fields));
+  assert.ok(caller.body.error.fields.some((f) => /call nodes run the tools fetch_page, web_fetch, pdf_pages, llm here; this workflow also calls stock\.check/.test(f.message)), JSON.stringify(caller.body.error.fields));
   await nothingSaved(api, "caller");
 });
 

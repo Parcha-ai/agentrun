@@ -75,8 +75,12 @@ const SKIP_REASONS: readonly SkipReason[] = [
 	"host_newer",
 ];
 
-/** One entry that was not written. `path` is as the box named it, with any NUL shown as `\0`. */
-export type Skip = { readonly path: string; readonly reason: SkipReason };
+/**
+ * One entry that was not written. `path` is as the box named it, with any NUL shown as `\0`. A `symlink` or `hardlink`
+ * member also carries `target`, what the link names as the archive gives it (from the header, a GNU long link or a pax
+ * `linkpath`), shown the same way: the link is never created, so a caller that keeps links keeps them as this data.
+ */
+export type Skip = { readonly path: string; readonly reason: SkipReason; readonly target?: string };
 
 /** A count for every reason, all zero. */
 export function noSkips(): Record<SkipReason, number> {
@@ -129,7 +133,7 @@ export type ExtractReceipt = {
 	readonly written: readonly string[];
 	/** The files left as they were because the host's was newer (`keep: "newer"`). */
 	readonly kept: readonly string[];
-	/** Files whose mode lost a bit to the cap: setuid, setgid, sticky, group or world write. */
+	/** Files written whose mode lost a bit to the cap: setuid, setgid, sticky, group or world write. */
 	readonly masked: number;
 	readonly skipped: Readonly<Record<SkipReason, number>>;
 	/** The first `MAX_NAMED_SKIPS` skips, in order. */
@@ -305,9 +309,9 @@ function checksumOk(block: Buffer): boolean {
 	return stored === unsigned || stored === signed;
 }
 
-type Pax = { path?: string; size?: number; mtime?: number };
+type Pax = { path?: string; linkpath?: string; size?: number; mtime?: number };
 
-/** The records of a pax header that matter here (`path`, `size`, `mtime`), or `undefined` when it is malformed. */
+/** The records of a pax header that matter here (`path`, `linkpath`, `size`, `mtime`), or `undefined` if malformed. */
 function readPax(data: Buffer): Pax | undefined {
 	const pax: Pax = {};
 	let at = 0;
@@ -325,6 +329,7 @@ function readPax(data: Buffer): Pax | undefined {
 		const key = record.toString("latin1", 0, equals);
 		const value = record.subarray(equals + 1);
 		if (key === "path") pax.path = decodePath(value);
+		else if (key === "linkpath") pax.linkpath = decodePath(value);
 		else if (key === "size") {
 			const text = value.toString("latin1");
 			if (!/^\d{1,16}$/.test(text) || !Number.isSafeInteger(Number(text))) return undefined;
@@ -336,6 +341,13 @@ function readPax(data: Buffer): Pax | undefined {
 		at += length;
 	}
 	return pax;
+}
+
+/** A GNU long name or long link: its payload without the NULs that end it. */
+function longText(data: Buffer): string {
+	let end = data.length;
+	while (end > 0 && data[end - 1] === 0) end--;
+	return decodePath(data.subarray(0, end));
 }
 
 const padOf = (size: number) => (size % BLOCK === 0 ? 0 : BLOCK - (size % BLOCK));
@@ -375,7 +387,7 @@ class TarExtractor implements Extractor {
 	#trailer = 0;
 	#pax: Pax | undefined;
 	#longName: string | undefined;
-	#longLink = false;
+	#longLink: string | undefined;
 	#entries = 0;
 	/** Bytes of the archive charged to `maxBytes`: header blocks, pax and long-name payloads, member data. */
 	#archiveBytes = 0;
@@ -496,9 +508,13 @@ class TarExtractor implements Extractor {
 		this.#stopped ??= { reason, message };
 	}
 
-	#skip(path: string, reason: SkipReason): void {
+	#skip(path: string, reason: SkipReason, target?: string): void {
 		this.#skipped[reason] += 1;
-		const skip = { path: path.replaceAll("\0", "\\0"), reason };
+		const skip: Skip = {
+			path: path.replaceAll("\0", "\\0"),
+			reason,
+			...(target === undefined ? {} : { target: target.replaceAll("\0", "\\0") }),
+		};
 		if (this.#skips.length < MAX_NAMED_SKIPS) this.#skips.push(skip);
 		this.#onSkip?.(skip);
 	}
@@ -512,21 +528,17 @@ class TarExtractor implements Extractor {
 			} else this.#pax = pax;
 		} else if (type === "L") {
 			if (this.#longName !== undefined) this.#stop("malformed", "two long names in a row");
-			else {
-				let end = data.length;
-				while (end > 0 && data[end - 1] === 0) end--;
-				this.#longName = decodePath(data.subarray(0, end));
-			}
+			else this.#longName = longText(data);
 		} else if (type === "K") {
-			if (this.#longLink) this.#stop("malformed", "two long link names in a row");
-			this.#longLink = true;
+			if (this.#longLink !== undefined) this.#stop("malformed", "two long link names in a row");
+			else this.#longLink = longText(data);
 		}
 	}
 
 	async #header(block: Buffer): Promise<void> {
 		if (block.every((byte) => byte === 0)) {
 			if (++this.#zeroBlocks === 2) {
-				if (this.#pax !== undefined || this.#longName !== undefined || this.#longLink)
+				if (this.#pax !== undefined || this.#longName !== undefined || this.#longLink !== undefined)
 					return this.#stop("malformed", "a header has no member after it");
 				this.#state = { kind: "end" };
 			}
@@ -558,6 +570,7 @@ class TarExtractor implements Extractor {
 			return;
 		}
 		const pax = this.#pax;
+		const longLink = this.#longLink;
 		const named = readCString(block, 0, 100);
 		const prefix = posix ? readCString(block, 345, 155) : Buffer.alloc(0);
 		const path =
@@ -566,7 +579,7 @@ class TarExtractor implements Extractor {
 			decodePath(prefix.length > 0 ? Buffer.concat([prefix, SLASH, named]) : Buffer.from(named));
 		this.#pax = undefined;
 		this.#longName = undefined;
-		this.#longLink = false;
+		this.#longLink = undefined;
 		const regular = type === "0";
 		const directory = type === "5";
 		const length = directory ? 0 : (pax?.size ?? size);
@@ -576,7 +589,9 @@ class TarExtractor implements Extractor {
 		};
 		const typeSkip = regular || directory ? undefined : (TYPE_SKIPS[type] ?? "unsupported");
 		if (typeSkip !== undefined) {
-			this.#skip(path, typeSkip);
+			const linked = type === "1" || type === "2";
+			const target = linked ? (pax?.linkpath ?? longLink ?? decodePath(readCString(block, 157, 100))) : undefined;
+			this.#skip(path, typeSkip, target);
 			return skipData();
 		}
 		const bare = directory ? path.replace(/\/$/, "") : path;
@@ -688,9 +703,7 @@ class TarExtractor implements Extractor {
 	async #place(file: Pending): Promise<void> {
 		this.#state = { kind: "header" };
 		try {
-			const capped = fileMode(file.mode);
-			if ((file.mode & 0o7022) !== 0) this.#masked += 1;
-			await file.out.chmod(capped);
+			await file.out.chmod(fileMode(file.mode));
 			await file.out.utimes(file.mtime, file.mtime);
 			await file.out.close();
 		} catch (error) {
@@ -720,6 +733,7 @@ class TarExtractor implements Extractor {
 		}
 		this.#files += 1;
 		this.#bytes += file.size;
+		if ((file.mode & 0o7022) !== 0) this.#masked += 1;
 		this.#written.push(file.path);
 	}
 }
@@ -810,13 +824,16 @@ export async function removeEntries(
 		onSkip?.({ path: path.replaceAll("\0", "\\0"), reason });
 	};
 	try {
-		for (const path of [...paths].sort().reverse()) {
+		const named: { path: string; segments: readonly Buffer[] }[] = [];
+		for (const path of paths) {
 			const checked = nameProblem(path, root.path.length);
-			if ("reason" in checked) {
-				skip(path, checked.reason);
-				continue;
-			}
-			const above = checked.segments.slice(0, -1);
+			if ("reason" in checked) skip(path, checked.reason);
+			else named.push({ path, segments: checked.segments });
+		}
+		// Deepest first, by the path as checked (`./a/b` is `a/b`): what is in a directory goes before the directory.
+		named.sort((a, b) => b.segments.length - a.segments.length);
+		for (const { path, segments } of named) {
+			const above = segments.slice(0, -1);
 			const reached = above.length === 0 ? { held: root } : await walk(root, above, false);
 			if (reached === undefined) continue;
 			if ("reason" in reached) {
@@ -824,8 +841,11 @@ export async function removeEntries(
 				continue;
 			}
 			try {
-				const at = entryOf(reached.held, checked.segments[checked.segments.length - 1] as Buffer);
-				const there = await lstat(at).catch(() => undefined);
+				const at = entryOf(reached.held, segments[segments.length - 1] as Buffer);
+				const there = await lstat(at).catch((error: unknown) => {
+					if (errnoOf(error) === "ENOENT") return undefined;
+					throw error;
+				});
 				if (there === undefined) continue;
 				if (there.isDirectory()) {
 					const gone = await rmdir(at).then(

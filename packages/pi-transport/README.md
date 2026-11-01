@@ -179,6 +179,7 @@ It refuses `image`, `snapshot`, `cpus`, `memoryMb`, `gpu`, `region` and any `iso
 `dockerBoxes` runs `sleep` for the lifetime in place of the image's own entrypoint, so Docker ends the box. It refuses
 `snapshot`, `region` and any `isolation` but `container`. Docker cannot choose a GPU model: any `gpu` gives the
 container every GPU of the host.
+It alone binds a spec's `mounts` (`[{ source: "/data/run", target: "/workspace/run", readOnly: true }]`, canonical paths used as given, at most 8) with `--mount type=bind`, never `-v`, and refuses a source this machine lacks with `not_found`; `provider.mounts` says whether a provider binds them, and every other one refuses them as `unsupported`.
 
 ### Archil exec
 
@@ -452,6 +453,55 @@ short or flipped is `mismatch`; the directories are removed on success, on failu
 archive next to the tree it is packing (about the size of the files), and the target box for the archive next to the
 tree it unpacks (the same again). A side that streams needs none. The host holds one part in memory at a time.
 
+## A box's archive, unpacked on this machine (`./sync`)
+
+A box is not trusted, so neither is a byte of a tar archive it makes. The host never unpacks one with `tar`:
+`@parcha/pi-transport/sync` reads it with its own reader as it arrives and writes it under one directory.
+
+```ts
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { readStream } from "@parcha/pi-transport";
+import { extractTar } from "@parcha/pi-transport/sync";
+
+const packed = await box.exec(["tar", "-c", "-f", "-", "-C", "/work", "."], undefined, BACKGROUND_CONTEXT);
+if (!packed.ok) throw packed.error;
+const tar = packed.value;
+// Both streams are read: a program whose error pipe fills stops writing its output.
+const [extracted, errors] = await Promise.all([
+	extractTar(tar.stdout, "/data/runs/r1/work", {
+		onSkip: (skip) => console.warn(skip.reason, skip.path, skip.target ?? ""),
+	}),
+	readStream(tar.stderr),
+]);
+const exited = await tar.wait();
+if (!exited.ok || exited.value !== 0) console.warn("tar failed:", new TextDecoder().decode(errors));
+if (extracted.ok && extracted.value.stopped !== undefined) console.warn(extracted.value.stopped.message);
+```
+
+- **Regular files and directories only.** A symbolic or hard link, a device, a pipe or any other member is skipped,
+  counted by reason (`receipt.skipped`, the first 100 by path in `receipt.skips`, each one to `onSkip`), and never
+  created. The skip of a link carries `target`, what the link names, so a caller that keeps links keeps them as data.
+- **Safe names, and only the ones asked for.** A name is refused when it is absolute, holds `.`, `..`, an empty segment
+  or a NUL, or passes 255 bytes a segment or 4095 a path. `admit` decides by path and kind what may be written; a
+  second member of a path is skipped, and a pax global header is not honoured.
+- **Nothing outside the destination.** Every directory is opened from a held handle of the one above with
+  `O_NOFOLLOW`, so a link already in the destination is never followed (`link_in_destination`), and a file never
+  replaces a directory or the other way round (`occupied`). Each file is written under a temporary name and renamed
+  into place; one cut off halfway is removed.
+- **Modes capped.** A file gets at most 0755 (0644 without an execute bit), never setuid, setgid, group or world write;
+  a directory at most 0755. `receipt.masked` counts the files written that lost a bit.
+- **Limits.** The extraction stops cleanly past `maxBytes` of archive (header blocks, pax and long-name payloads and
+  member data, each charged before it is read; default `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` members, written or
+  skipped (default `MAX_PULL_ENTRIES`, 100,000). One pax header or long name holds at most 64 KiB. A bad checksum, a
+  lone zero block or an archive cut short stops it too (`malformed`). What was written before a stop stays, every file
+  whole, and `receipt.stopped` says why.
+
+`openExtractor` is the same reader fed a chunk at a time: `write` until it returns `false`, then `finish`, which waits
+for a write still running. `keep: "newer"` keeps a host file newer than the member. `removeEntries` removes paths
+under a directory by the same walk: a file or a link is unlinked (never what a link names), a directory only when
+empty. A failure of the host's own file system is `transfer_failed`; everything the archive does wrong is in the
+receipt.
+
 ## A run's files between this machine and a box (`./sync`)
 
 A run whose box shares no disk with the host keeps its files on the host and moves them: in when the box starts, back
@@ -461,8 +511,9 @@ after each turn. `@parcha/pi-transport/sync` does both through any `Box`, with t
 ```ts
 import { pullAgentHome, pullDir, seedAgentHome, seedDir } from "@parcha/pi-transport/sync";
 
-await seedDir(box, { from: "/data/runs/r1/work", to: "/run/agentrun/run/work" }, ctx);
 await seedAgentHome(box, { from: "/data/homes/a1", to: "/run/agentrun/home" }, ctx); // learning/ goes read-only
+const seeded = await seedDir(box, { from: "/data/runs/r1/work", to: "/run/agentrun/run/work" }, ctx);
+let mark = seeded.ok ? seeded.value.mark : undefined; // the box's listing, with the SHA-256 of each file sent
 const pulled = await pullDir(box, { from: "/run/agentrun/run/work", to: "/data/runs/r1/work", since: mark, mirrorDeletes: true }, ctx);
 if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
 ```
@@ -471,23 +522,19 @@ if (pulled.ok) mark = pulled.value.mark; // kept for the next pull
   the directory into the box): it is skipped and counted with pipes, sockets and devices. `exclude` leaves paths out,
   `readOnly` sends them without a write bit. Modes are capped at 0755.
 - **Pull.** Incremental by listing: the box lists the directory (kind, size, mode, time to the nanosecond, every path
-  NUL-separated) and a path comes back when it is new or listed differently from the last pull's `mark`. A comparison
-  by time would miss a file restored with an old time, and the box's clock is not the host's; a listing sees both, and
+  NUL-separated) and a path comes back when it is new or listed differently from the `mark` of the seed or the last
+  pull. The box's clock is never compared with the host's: a listing sees a file restored with an old time, and
   deletions. Dotfiles come back like any file. `exclude` is applied to the listing, to deletions and to every member of
   the archive. `mirrorDeletes` removes what the box no longer has: files and links unlinked, a directory only when
-  empty. `keep: "newer"` keeps a host file that is newer than the box's (the default of `pullAgentHome`; `pullDir`
-  defaults to the box winning). `pullAgentHome` never brings back `learning/` and never removes it.
-- **The archive is not trusted.** The host reads it with its own reader (`extractTar`), never with `tar`. It writes
-  regular files and directories only: a symbolic or hard link, a device, a pipe or any other member is skipped, counted
-  by reason (`receipt.skipped`, the first 100 by path in `receipt.skips`, each one to `onSkip`), and never created. A
-  name is refused when it is absolute, holds `.`, `..`, an empty segment or a NUL, or passes 255 bytes a segment or 4095
-  a path. Every directory is opened from a held handle of the one above with `O_NOFOLLOW`, so a link already in the
-  destination is never followed (`link_in_destination`), and each file is written under a temporary name and renamed
-  into place. A file gets at most 0755 (0644 without an execute bit), never setuid, setgid, group or world write; a
-  directory at most 0755. A pull stops cleanly past `maxBytes` of archive (headers, names and member data; default
-  `MAX_PULL_BYTES`, 1 GiB) or `maxEntries` members (default `MAX_PULL_ENTRIES`, 100,000): what was written is whole
-  and in the mark, and `receipt.stopped` says why. The next pull asks for the rest. Two names of one inode in the box
-  both come back as files: the box packs with `--hard-dereference`, and a hard link member is still refused.
+  empty. `pullAgentHome` never brings back `learning/` and never removes it.
+- **A home file another run wrote stays.** `overwrite: "if_unchanged"` (always on in `pullAgentHome`) lets a pulled file
+  replace, or a mirrored deletion remove, the host's copy only while that copy is still the bytes the mark records: the
+  SHA-256 of what was seeded into the box, or of what the last pull wrote. A host copy that changed since (another run's
+  pull, a host edit) wins; the box's file is not fetched, and the skip is counted and named as `host_changed`. The
+  mark keeps the hashes: `seedDir` returns the first one, each pull the next.
+- **The archive is not trusted.** Every pulled member goes through `extractTar` (above), never `tar`. Two names of one
+  inode in the box both come back as files: the box packs with `--hard-dereference`, and a hard link member is still
+  refused.
 
 The box needs `sh`, GNU `tar` and `find`, and `split`, `sha256sum`, `cut`, `wc` and `cat` when it moves files, as the
 movers do. No name is ever put in a shell string: the box reads the list on its standard input.

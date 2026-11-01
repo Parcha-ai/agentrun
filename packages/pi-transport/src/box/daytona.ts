@@ -17,7 +17,7 @@ import {
 	type BoxStatus,
 	isReservedLabel,
 } from "./box.ts";
-import { refuseNetworkFields } from "./network.ts";
+import { refuseMounts, refuseNetworkFields } from "./network.ts";
 
 const DEFAULT_API_URL = "https://app.daytona.io/api";
 const DEFAULT_WORKSPACE = "/tmp/workspace";
@@ -802,7 +802,8 @@ async function waitListed(
  * A spec that names an `image`, `cpus`, `memoryMb` or `gpu` is refused with `unsupported`: a Daytona box has the size
  * of its snapshot, so name a snapshot (the `snapshot` field or option) instead. An `isolation` other than `container`
  * is refused with `unsupported` unless the snapshot is a `linux-vm` and the spec asks for `vm`. A label key that is
- * `pi-transport` or starts with `pi-transport.` is refused with `invalid`; the provider keeps its records there.
+ * `pi-transport` or starts with `pi-transport.` is refused with `invalid`; the provider keeps its records there. Any `mounts`
+ * are refused with `unsupported`: a sandbox cannot bind a path of this machine.
  * `region` is the Daytona target. A box that outlives `maxLifetimeMs` is ended by Daytona (`ttlMinutes`, rounded up to
  * whole minutes).
  */
@@ -823,7 +824,7 @@ export function daytonaBoxes(options: DaytonaBoxesOptions): BoxProvider {
 			if (spec.workspace !== undefined && !spec.workspace.startsWith("/")) {
 				return err(new BoxError("invalid", `the workspace ${spec.workspace} is not an absolute path in the box`));
 			}
-			const refused = refuseNetworkFields(spec, "daytona");
+			const refused = refuseNetworkFields(spec, "daytona") ?? refuseMounts(spec, "daytona");
 			if (refused !== undefined) return err(refused);
 			const reserved = Object.keys(spec.labels ?? {}).find(isReservedLabel);
 			if (reserved !== undefined) {

@@ -2,6 +2,7 @@
 // it into `dest` beside an `outside` directory, and asserts the whole scratch tree: what may be written is, nothing
 // else is, and nothing outside `dest` changes.
 import {
+	chmodSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -16,7 +17,7 @@ import { join } from "node:path";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { excluder } from "../src/home/workspace.ts";
-import { type ExtractOptions, extractTar, removeEntries, type Skip } from "../src/sync/index.ts";
+import { type ExtractOptions, extractTar, openExtractor, removeEntries, type Skip } from "../src/sync/index.ts";
 import { archive, chunked, END, longName, member, pax, tree } from "./sync-support.ts";
 
 process.umask(0o022);
@@ -99,6 +100,46 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 		expect(tree(root)).toEqual({
 			dest: "dir 755",
 			"dest/after": expect.stringMatching(/^file 644 13 /),
+			outside: "dir 755",
+			...OUTSIDE_BEFORE,
+		});
+	});
+
+	it("says what each skipped member was: its kind, its path, and what a link names", async () => {
+		const far = `${"../".repeat(40)}outside/secret`;
+		const { receipt, skips } = await extract(
+			archive(
+				member({ name: "short", type: "2", linkname: "../outside/secret" }),
+				member({ name: "hard", type: "1", linkname: "work/a.txt" }),
+				member({ name: "././@LongLink", type: "K", data: `${far}\0`, magic: "gnu" }),
+				member({ name: "gnu-long", type: "2", linkname: far.slice(0, 100), magic: "gnu" }),
+				pax({ linkpath: far }),
+				member({ name: "pax-long", type: "1", linkname: far.slice(0, 100) }),
+				pax({ linkpath: Buffer.from("a\0b") }),
+				member({ name: "nul", type: "2", linkname: "a" }),
+				member({ name: "././@LongLink", type: "K", data: "stale\0", magic: "gnu" }),
+				member({ name: "plain", data: "x" }),
+				member({ name: "after", type: "2", linkname: "own" }),
+				member({ name: "contiguous", type: "7", data: "not a regular file" }),
+				member({ name: "tty", type: "3", linkname: "not-a-link" }),
+				member({ name: "pipe", type: "6" }),
+			),
+		);
+		expect(skips).toStrictEqual([
+			{ path: "short", reason: "symlink", target: "../outside/secret" },
+			{ path: "hard", reason: "hardlink", target: "work/a.txt" },
+			{ path: "gnu-long", reason: "symlink", target: far },
+			{ path: "pax-long", reason: "hardlink", target: far },
+			{ path: "nul", reason: "symlink", target: "a\\0b" },
+			{ path: "after", reason: "symlink", target: "own" },
+			{ path: "contiguous", reason: "unsupported" },
+			{ path: "tty", reason: "device" },
+			{ path: "pipe", reason: "fifo" },
+		]);
+		expect(receipt.skips).toStrictEqual(skips);
+		expect(tree(root)).toEqual({
+			dest: "dir 755",
+			"dest/plain": expect.stringMatching(/^file 644 1 /),
 			outside: "dir 755",
 			...OUTSIDE_BEFORE,
 		});
@@ -235,6 +276,19 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 		expect(receipt.written.length).toBeLessThan(10);
 	});
 
+	it("charges every header block, and refuses a pax header or long name over 64 KiB", async () => {
+		const empties = Array.from({ length: 20 }, (_, i) => member({ name: `e${i}`, data: "" }));
+		const headers = await extract(archive(...empties), { maxBytes: 10 * 512 });
+		expect(headers.receipt.stopped?.reason).toBe("max_bytes");
+		expect(headers.receipt.written).toHaveLength(10);
+		const big = await extract(archive(pax({ comment: "c".repeat(70_000) }), member({ name: "after", data: "x" })));
+		expect(big.receipt.stopped).toEqual({ reason: "malformed", message: "a x header holds more than 65536 bytes" });
+		expect(big.receipt.written).toEqual([]);
+		const long = await extract(archive(longName("n".repeat(70_000)), member({ name: "after", data: "x" })));
+		expect(long.receipt.stopped).toEqual({ reason: "malformed", message: "a L header holds more than 65536 bytes" });
+		expect(long.receipt.written).toEqual([]);
+	});
+
 	it("stops cleanly at the member limit, counting skipped members too", async () => {
 		const members = Array.from({ length: 50 }, (_, i) =>
 			i % 2 === 0 ? member({ name: `f${i}`, data: "x" }) : member({ name: `l${i}`, type: "2", linkname: "/" }),
@@ -291,7 +345,7 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 	});
 
 	it("writes only what the caller admits, once, and ignores a global header", async () => {
-		const admit = excluder(["/learning"]);
+		const learning = (path: string) => path === "learning" || path.startsWith("learning/");
 		const { skips } = await extract(
 			archive(
 				member({ name: "g", type: "g", data: "30 path=../../outside/global\n" }),
@@ -300,7 +354,7 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 				member({ name: "notes/learning/kept.md", data: "fine" }),
 				member({ name: "notes/learning/kept.md", data: "again" }),
 			),
-			{ admit: (path) => !admit(path) },
+			{ admit: (path) => !learning(path) },
 		);
 		expect(skips.map((skip) => [skip.path, skip.reason])).toEqual([
 			["(global pax header)", "unsupported"],
@@ -311,21 +365,22 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 		expect(Object.keys(tree(dest))).toEqual(["notes", "notes/learning", "notes/learning/kept.md"]);
 	});
 
-	it("keeps a newer host file when asked to, and replaces an older one", async () => {
+	it("keeps a newer host file when asked to, and replaces an older one, counting only its mode as masked", async () => {
 		writeFileSync(join(dest, "newer"), "host");
 		writeFileSync(join(dest, "older"), "host");
 		const { utimesSync } = await import("node:fs");
 		utimesSync(join(dest, "older"), 1_500_000_000, 1_500_000_000);
 		const { receipt } = await extract(
 			archive(
-				member({ name: "newer", data: "box", mtime: 1_600_000_000 }),
-				member({ name: "older", data: "box", mtime: 1_600_000_000 }),
+				member({ name: "newer", data: "box", mtime: 1_600_000_000, mode: 0o666 }),
+				member({ name: "older", data: "box", mtime: 1_600_000_000, mode: 0o666 }),
 			),
 			{ keep: "newer" },
 		);
 		expect(receipt.kept).toEqual(["newer"]);
 		expect(receipt.written).toEqual(["older"]);
 		expect(receipt.skipped.host_newer).toBe(1);
+		expect(receipt.masked).toBe(1);
 	});
 
 	it("stops on a bad checksum, a lone zero block or a cut archive, keeping whole files and no partial one", async () => {
@@ -344,6 +399,21 @@ describe("the extractor refuses what a hostile box can put in an archive", () =>
 		const cut = await extract(whole.subarray(0, 3000));
 		expect(cut.receipt.stopped?.message).toMatch(/cut short/);
 		expect(readdirSync(dest)).toEqual([]);
+	});
+});
+
+describe("an extractor fed a chunk at a time", () => {
+	it("finishes only after a write still running, so that write never uses a closed handle", async () => {
+		const extractor = getOrThrow(await openExtractor(dest));
+		const bytes = archive(member({ name: "deep/er/file", data: Buffer.alloc(4096, 1) }));
+		// A relay that gives up on a write (a stall, an abort) calls finish while the write is still opening the file.
+		const writing = extractor.write(bytes.subarray(0, 512 + 2048));
+		const receipt = await extractor.finish();
+		expect(await writing).toBe(true);
+		expect(receipt.stopped?.message).toMatch(/cut short/);
+		expect(receipt.written).toEqual([]);
+		expect(tree(dest)).toEqual({ deep: "dir 755", "deep/er": "dir 755" });
+		expect(await extractor.write(bytes.subarray(512 + 2048))).toBe(false);
 	});
 });
 
@@ -375,9 +445,30 @@ describe("removeEntries", () => {
 			...OUTSIDE_BEFORE,
 		});
 	});
+
+	it("removes a directory after what is in it, however the paths are spelled", async () => {
+		mkdirSync(join(dest, "a"));
+		writeFileSync(join(dest, "a/b"), "x");
+		const removed = getOrThrow(await removeEntries(dest, ["a", "./a/b"]));
+		expect(removed).toMatchObject({ removed: 2, kept: 0 });
+		expect(tree(dest)).toEqual({});
+	});
+
+	it.skipIf(process.getuid?.() === 0)("fails, never reports success, when an entry cannot be looked at", async () => {
+		mkdirSync(join(dest, "locked"));
+		writeFileSync(join(dest, "locked/f"), "x");
+		chmodSync(join(dest, "locked"), 0o600);
+		try {
+			const removed = await removeEntries(dest, ["locked/f"]);
+			expect(removed.ok ? "ok" : removed.error.code).toBe("transfer_failed");
+		} finally {
+			chmodSync(join(dest, "locked"), 0o755);
+		}
+		expect(readFileSync(join(dest, "locked/f"), "utf8")).toBe("x");
+	});
 });
 
-describe("the sync entry and its patterns", () => {
+describe("the sync entry", () => {
 	it("is the package's ./sync subpath", () => {
 		const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
 			exports: Record<string, unknown>;
@@ -389,13 +480,15 @@ describe("the sync entry and its patterns", () => {
 			default: "./dist/sync/index.js",
 		});
 	});
+});
 
+describe("exclude patterns", () => {
 	it("anchors a pattern that starts with / at the root: /learning is the top-level learning only", () => {
 		const excluded = excluder(["/learning"]);
 		expect(["learning", "learning/rules.md", "learning/a/b"].every(excluded)).toBe(true);
-		expect(
-			["notes/learning", "notes/learning/x", ".learning", "learning.md", "work/.learning/x"].some(excluded),
-		).toBe(false);
+		expect(["notes/learning", "notes/learning/x", ".learning", "learning.md", "work/.learning/x"].some(excluded)).toBe(
+			false,
+		);
 		const anywhere = excluder(["learning"]);
 		expect(anywhere("notes/learning/x")).toBe(true);
 	});
