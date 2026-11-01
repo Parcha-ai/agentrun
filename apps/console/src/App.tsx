@@ -6,15 +6,15 @@ import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView } from "@/lib/mission";
 import { Playground, type StartResult } from "@/components/Playground";
 import { type Agent, toolOffers } from "@/lib/agentForm";
-import { RunsList } from "@/components/RunsList";
+import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SignIn } from "@/components/SignIn";
 import { type AuthMode, authMode, signInProblem, takeSetupCode } from "@/lib/auth";
-import { allPages, type Capabilities, ClientError, createClient } from "@/lib/client";
+import { allPages, type Capabilities, ClientError, createClient, type RunsFilter } from "@/lib/client";
 import { appendRuns } from "@/lib/idempotency";
-import type { Run } from "@/lib/v2";
+import type { Run, RunStatus } from "@/lib/v2";
 
-type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean };
+type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean; status?: RunStatus };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -26,8 +26,20 @@ export function route(h: string = location.hash): Where {
   if (h.startsWith("#/playground")) return { section: "playground" };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
-  m = h.match(/^#\/runs\?agent=([^&]+)$/);
-  return m ? { section: "runs", runsOf: decodeURIComponent(m[1]) } : { section: "runs" };
+  if (!h.startsWith("#/runs?")) return { section: "runs" };
+  // The runs list's filters live in the address, so a reload keeps them: one agent, one state, the archived runs.
+  const q = new URLSearchParams(h.slice("#/runs?".length));
+  const agent = q.get("agent"), status = q.get("status") as RunStatus | null;
+  return { section: "runs", ...(agent ? { runsOf: agent } : {}), ...(status && RUN_STATUSES.includes(status) ? { status } : {}), ...(q.get("archived") === "true" ? { archived: true } : {}) };
+}
+
+/** The runs list's address for these filters. Exported for its test. */
+export function runsHash({ runsOf, status, archived }: { runsOf?: string } & RunsFilter): string {
+  const q = new URLSearchParams();
+  if (runsOf) q.set("agent", runsOf);
+  if (status) q.set("status", status);
+  if (archived) q.set("archived", "true");
+  return `#/runs${q.size ? `?${q}` : ""}`;
 }
 
 /** The setup link's code, taken from the address once per page load and then kept: React may run a state initializer
@@ -101,12 +113,13 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
       setNames(all);
     })().catch(() => {});
   }, [v2]);
+  const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
     if (where.section !== "runs" || where.run) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
     const n = ++asked.current;
     setRuns(null); setError(null);
-    (where.runsOf ? v2.listAgentRuns(where.runsOf) : v2.listRuns())
+    (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, null, runsFilter) : v2.listRuns(50, null, runsFilter))
       .then((r) => { if (n === asked.current) { setRuns(r.runs); setCursor(r.next_cursor); } })
       .catch((e) => { if (n === asked.current) setError(e instanceof ClientError ? `${e.code}: ${e.message}` : String(e)); });
   }, [v2, where]);
@@ -177,7 +190,8 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
         ? where.agent === undefined ? <AgentsPage v2={v2} archived={!!where.archived} go={go} /> : <AgentEditPage key={where.agent ?? "new"} v2={v2} caps={editorCaps} agentId={where.agent} go={go} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList runs={runs} agentName={agentName} error={error} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
-            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor) : v2.listRuns(50, cursor)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
+            filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}
+            onMore={cursor ? () => { const n = asked.current; setMore(true); (where.runsOf ? v2.listAgentRuns(where.runsOf, 50, cursor, runsFilter) : v2.listRuns(50, cursor, runsFilter)).then((r) => { if (n === asked.current) { setRuns((x) => appendRuns(x ?? [], r.runs)); setCursor(r.next_cursor); } }).catch((e) => setError(String(e))).finally(() => setMore(false)); } : undefined} />}
     </Shell>
   );
 }
