@@ -70,8 +70,10 @@ export interface ProviderPolicy {
    *  Absent, or undefined for a body: the session's model. */
   modelOf?(body: Record<string, unknown>): string | undefined;
   /** The input tokens the provider bills for the body `apply` returned that the body does not carry: a prompt it adds
-   *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Absent: none. */
-  serverInputOverhead?(body: Record<string, unknown>): number;
+   *  itself, such as a tool-use system prompt. Added to the body's bytes for `inputTokensMax`. Undefined: the body has
+   *  no input bound the policy can state (a hosted tool that reads pages into the input), so `inputTokensMax` is
+   *  undefined, never 0 or the body's bytes alone. Absent: none. */
+  serverInputOverhead?(body: Record<string, unknown>): number | undefined;
   /** The status a request the runner refused gets: one the client does not retry. Default 400. */
   readonly refusedStatus?: number;
 }
@@ -298,12 +300,15 @@ function baseOf(base: string): string {
  * byte count, plus the input the policy says the provider adds that the body does not carry. A provider's tokenizer is a
  * byte-level BPE, whose every token covers at least one byte of what it encodes, so the text the body carries can never
  * be more tokens than bytes, however dense (CJK, emoji, base64). It is not an average of characters per token, which
- * undercounts dense text. Undefined, never 0, when the policy's figure cannot be read: the input is then unmeasured.
+ * undercounts dense text. Undefined, never 0, when the policy says the body has no bound (its undefined) or its figure
+ * cannot be read (a throw, or no count, which is reported): the input is then unmeasured.
  */
 export function inputTokensMaxOf(policy: ProviderPolicy, body: Record<string, unknown>, sent: string, say: (message: string, detail?: Record<string, unknown>) => void = () => {}): number | undefined {
   try {
-    // Only a policy with no hook adds nothing. A hook's undefined or null is no figure, never 0: the input is unmeasured.
+    // Only a policy with no hook adds nothing. A hook's undefined is its word that the body has no bound: unmeasured,
+    // never 0, and no failure to report. Anything else that is not a count (null, a throw) is reported, and unmeasured too.
     const overhead: unknown = policy.serverInputOverhead ? policy.serverInputOverhead(body) : 0;
+    if (overhead === undefined) return undefined;
     if (typeof overhead !== "number" || !Number.isSafeInteger(overhead) || overhead < 0) throw new Error(`not a token count: ${String(overhead).slice(0, 40)}`);
     return Buffer.byteLength(sent, "utf8") + overhead;
   } catch (error) {

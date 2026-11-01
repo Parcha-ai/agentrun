@@ -3,4 +3,5 @@ export { checkRun, runOf, type Change, type CheckInput, type Problem, type Rule,
 export { MEMO_SECTIONS } from "./formats.js";
 export { checkBranch, RefError, type BranchCheck, type CheckBranchInput } from "./git.js";
 export { NO_TOOL_LIST } from "./tools.js";
+export { GRADE_RUBRIC, gradePrompt, parseVerdict, type GradeChange, type GradeInput, type Verdict, type VerdictItem } from "./grade.js";
 export { REFLECT_MAX_USD, REFLECT_SHARE, REFLECT_UNCAPPED_USD, reflectBudget, reflectPrompt } from "./reflect.js";

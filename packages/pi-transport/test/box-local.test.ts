@@ -178,6 +178,23 @@ describe("local boxes: what a directory cannot give", () => {
 			await made.value.destroy(context);
 		}));
 
+	it("refuses any mount as unsupported, by name, a malformed one as invalid, and makes no box for either", () =>
+		withProvider(async (provider, root) => {
+			expect(provider.mounts).toBeUndefined();
+			const refused = await provider.create(
+				{ maxLifetimeMs: 60_000, mounts: [{ source: root, target: "/workspace/run", readOnly: true }] },
+				context,
+			);
+			expect(refused.ok ? "ok" : refused.error.code).toBe("unsupported");
+			expect(refused.ok ? "" : refused.error.message).toMatch(/a local box takes no mounts/);
+			const malformed = await provider.create(
+				{ maxLifetimeMs: 60_000, mounts: [{ source: "data/run", target: "/workspace/run" }] },
+				context,
+			);
+			expect(malformed.ok ? "ok" : malformed.error.code).toBe("invalid");
+			expect(readdirSync(root)).toEqual([]);
+		}));
+
 	it("refuses a label in the providers' own namespace", () =>
 		withProvider(async (provider) => {
 			const labels = { "pi-transport.facts": "x" };

@@ -1,4 +1,5 @@
-// A skill's own files, read by the model through a host tool. Written for AgentRun.
+// A host's skills, as every adapter that takes them checks them (`skillProblems`), and a skill's own files, read by the
+// model through a host tool. Written for AgentRun.
 //
 // A host that gives a harness skills writes each skill's files under one root (`<root>/<skill>/<path>`). The model reads
 // what SKILL.md points it at through `read_skill_file`, a read-only host tool, and nothing else of the disk: the skill
@@ -10,6 +11,14 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rea
 import { join } from "node:path";
 import type { HostTool } from "./types.js";
 
+/** A skill a host gives a harness, which the model may load: its name, and its files by path, `SKILL.md` among them. */
+export interface HostSkill {
+  /** Lowercase letters, digits and dashes; `SKILL.md`'s front matter names it the same. */
+  name: string;
+  /** Each file's text by its path inside the skill (`SKILL.md`, `reference/sources.md`). */
+  files: Readonly<Record<string, string>>;
+}
+
 /** A skill, as the tool knows it: its name, and the paths of its files. */
 export interface SkillFileList {
   name: string;
@@ -19,6 +28,45 @@ export interface SkillFileList {
 /** The tool's name, as the model calls it. */
 export const READ_SKILL_FILE = "read_skill_file";
 const MAX_BYTES = 1024 * 1024;
+
+const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SKILL_PATH = /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,99}\/){0,4}[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/;
+const SKILL_BYTES = 1024 * 1024;
+
+/** The skills, checked, as every adapter that takes a host's skills checks them when it is made: each a name, a
+ *  `SKILL.md` whose front matter has that name and a description, and files at plain relative paths, 1 MiB in all; or the
+ *  problems. What one harness would refuse or rename (the Claude Agent CLI, Codex) is refused here for all of them. */
+export function skillProblems(skills: readonly HostSkill[]): string[] {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  let bytes = 0;
+  for (const skill of skills) {
+    const name = String(skill?.name ?? "");
+    if (!SKILL_NAME.test(name)) { problems.push(`the skill name ${JSON.stringify(name.slice(0, 80))} is not lowercase letters, digits and dashes`); continue; }
+    if (seen.has(name)) problems.push(`the skill ${name} is given twice`);
+    seen.add(name);
+    const files = skill.files ?? {};
+    const md = files["SKILL.md"];
+    const front = typeof md === "string" ? /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(md)?.[1] : undefined;
+    if (front === undefined) problems.push(`the skill ${name} has no SKILL.md with front matter`);
+    else {
+      if (!new RegExp(`^name:\\s*(['"]?)${name}\\1\\s*$`, "m").test(front)) problems.push(`the skill ${name}'s SKILL.md names it otherwise`);
+      if (!/^description:\s*\S/m.test(front)) problems.push(`the skill ${name}'s SKILL.md has no description`);
+    }
+    // A path that is another's folder (reference, and reference/sources.md) can't be written as both.
+    const paths = new Set(Object.keys(files));
+    for (const folder of new Set([...paths].flatMap((path) => path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))))) {
+      if (paths.has(folder)) problems.push(`the skill ${name}'s ${folder} is both a file and a folder`);
+    }
+    for (const [path, text] of Object.entries(files)) {
+      if (!SKILL_PATH.test(path) || path.split("/").some((part) => part === "." || part === "..")) problems.push(`the skill ${name}'s file ${JSON.stringify(path.slice(0, 80))} is not a plain relative path`);
+      if (typeof text !== "string") problems.push(`the skill ${name}'s file ${path} is not text`);
+      else bytes += Buffer.byteLength(text);
+    }
+  }
+  if (bytes > SKILL_BYTES) problems.push(`the skills hold ${bytes} bytes, more than ${SKILL_BYTES}`);
+  return problems;
+}
 
 /** Why `path` of `skill` is not readable, or undefined: the checks made before any filesystem call. */
 function refusedBeforeDisk(skills: ReadonlyMap<string, ReadonlySet<string>>, skill: unknown, path: unknown): string | undefined {
