@@ -9,9 +9,10 @@
 
 import { VISION_JUDGE } from "./contract.js";
 import type { VisionEnv } from "./env.js";
-import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type Filing, type LookRecord } from "./evidence.js";
+import { blocksSha256, fileLook, fileTold, keptAnswer, lookKey, type LookRecord } from "./evidence.js";
 import { citation, parseCitation } from "./fragments.js";
 import type { CallContext, CallSetup, ImageContent, Json, Usage } from "./host.js";
+import { filingOf } from "./filing.js";
 import { fitImage, type FitLimits, type PixelSize } from "./image.js";
 import { JEV_IMAGE_BYTES, JEV_MAX_EDGE, JEV_MIN_EDGE, JEV_MODEL, JEV_REQUEST_BYTES } from "./limits.js";
 import { aboutMedium, AS_IS, gatherMedia, namesMedia, singleFlight, requestedAbout, throwMiss, type About, type MediaMiss, type MediaRequest } from "./media.js";
@@ -96,7 +97,7 @@ export async function judge(input: unknown, env: VisionEnv | undefined, call: Ca
   const request = checked(input);
   const jev = setup.jev;
   const model = jev?.model ?? JEV_MODEL;
-  const filing: Filing = { conversationId: call.conversationId, label: setup.scope.label, evidence: setup.evidence, onLook: setup.onLook, onMiss: setup.onMiss };
+  const filing = filingOf(call, setup);
   let items: Fitted[] = [];
   const examples: (readonly [string, Fitted])[] = [];
   // The key names every image sent, the examples' too with their references, so a changed example is another judgment.
