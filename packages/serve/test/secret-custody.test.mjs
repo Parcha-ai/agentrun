@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SECRET_NAMES } from "../dist/secrets.js";
+import { BOX_KEYS } from "../dist/boxes.js";
 import { processAlive } from "@parcha/agentrun-adapters/host";
 import { fakeAnthropic } from "@parcha/agentrun-claude-agent/testing";
 import { agent, client, FAUX, flowAgent, follow, scratch } from "./support.mjs";
@@ -24,7 +25,8 @@ const FAUX_JEV = new URL("./fixtures/faux-jev.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const STAND_IN = fileURLToPath(new URL("../../run-adapters-codex/test/fake-app-server.mjs", import.meta.url));
 const CONFINED = existsSync("/usr/bin/setpriv");
-const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY"];
+/** The server's own: its token, and the boxes' keys, which only its box providers read (boxes.ts). */
+const SERVER_ONLY = ["AGENTRUN_TOKEN", "AGENTRUN_API_KEY", ...BOX_KEYS];
 /** Every secret serve and a run's process read: each must be on the launcher's list. */
 /** The decision keys: held by the server like the rest, and handed to a workflow run's process only on its decision
  *  descriptor, for its decision provider (decisions.ts), never with the run's secrets. */
