@@ -1,11 +1,12 @@
-// The webhook: one URL the server POSTs to, signed, when a run comes to need its person and when it ends. Its secret
-// is made by the server, shown once, and kept sealed; a delivery not answered 2xx is tried again, then logged as
-// failed, and a pending one goes on after a restart.
+// The webhook: one URL the server POSTs to when a run comes to need its person and when it ends, signed by the
+// Standard Webhooks spec. Its secret is made by the server, shown once, and kept sealed; a message not answered 2xx is
+// tried again, then logged as failed; a pending one goes on after a restart; a 410 turns the webhook off.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
 import { processAlive } from "@parcha/agentrun-adapters/host";
@@ -14,6 +15,8 @@ import { nextMoment } from "../dist/runs.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { client, FAUX, follow, scratch, serve, startRun, withEnv } from "./support.mjs";
 
+// The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
+const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const sealKey = () => randomBytes(32).toString("base64");
@@ -31,7 +34,7 @@ async function receiver(t, answer = () => 200, down = false) {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
-      got.push({ method: req.method, path: req.url, headers: req.headers, body: Buffer.concat(chunks).toString("utf8") });
+      got.push({ method: req.method, headers: req.headers, body: Buffer.concat(chunks).toString("utf8") });
       void Promise.resolve(answer(got.length)).then((status) => {
         if (!res.destroyed) res.writeHead(status, status >= 300 && status < 400 ? { location: "http://127.0.0.1:1/elsewhere" } : {}).end();
       });
@@ -51,9 +54,19 @@ async function until(check, what, ms = 20_000) {
   }
 }
 
-/** A receiver's own check of a delivery: the HMAC-SHA256 of `<timestamp>.<body>` under `secret`, as `v1=<hex>`. */
-const verifies = (secret, { headers, body }) => headers["x-agentrun-signature"] === `v1=${createHmac("sha256", secret).update(`${headers["x-agentrun-timestamp"]}.${body}`).digest("hex")}`;
-const ofEvent = (got, event) => got.filter((r) => r.headers["x-agentrun-event"] === event);
+/** The spec's verification, as its text gives it: the HMAC-SHA256 of "{id}.{timestamp}.{body}" under the secret's
+ *  base64 bytes, base64, among the header's space-separated `v1,` signatures; a timestamp within 5 minutes. */
+function verifies(secret, { headers, body }, now = Date.now() / 1000) {
+  const [id, timestamp] = [headers["webhook-id"], headers["webhook-timestamp"]];
+  if (!id || !/^\d+$/.test(timestamp ?? "") || Math.abs(now - Number(timestamp)) > 300) return false;
+  const expected = createHmac("sha256", Buffer.from(secret.replace(/^whsec_/, ""), "base64")).update(`${id}.${timestamp}.${body}`).digest();
+  return String(headers["webhook-signature"] ?? "").split(" ").some((part) => {
+    const [version, signature] = part.split(",");
+    const given = Buffer.from(signature ?? "", "base64");
+    return version === "v1" && given.length === expected.length && timingSafeEqual(given, expected);
+  });
+}
+const ofType = (got, type) => got.filter((r) => JSON.parse(r.body).type === type);
 
 async function meetsDocument(api, path, method, status, value) {
   const doc = (await api("GET", "/openapi.json")).body;
@@ -63,98 +76,153 @@ async function meetsDocument(api, path, method, status, value) {
 /** Every file under `dir`, read. */
 const filesIn = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => readFileSync(join(e.parentPath, e.name)));
 
-test("demo: a run that ends and a run that asks its person each POST a signed notice; a wrong secret does not verify; the secret is in no GET and on disk only sealed", async (t) => {
+test("demo: a run that ends and a run that asks its person each POST a Standard Webhooks message the spec's library verifies; a wrong secret does not; the secret is in no GET and on disk only sealed", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const lines = [];
-  const { api, data } = await serve(t, { log: (line) => lines.push(line) });
+  const { api, data, url } = await serve(t, { log: (line) => lines.push(line) });
   assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false });
   const set = await api("PUT", "/settings/webhook", { url: hook.url });
   assert.equal(set.status, 201, JSON.stringify(set.body));
   const { secret } = set.body;
-  assert.match(secret, /^whsec_[A-Za-z0-9_-]{43}$/);
-  assert.deepEqual({ ...set.body, secret: undefined, updated_at: undefined }, { configured: true, url: hook.url, events: ["run.needs_input", "run.ended"], signing: "sealed", secret: undefined, updated_at: undefined });
+  assert.match(secret, /^whsec_[A-Za-z0-9+/]{43}=$/, "whsec_ and 32 bytes in base64");
+  assert.deepEqual({ ...set.body, secret: undefined, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, secret: undefined, updated_at: undefined });
   await meetsDocument(api, "/settings/webhook", "put", "201", set.body);
+  const library = new Webhook(secret);
 
   // A run that answers: one run.ended, when it is carried back.
   const done = await startRun(api, "answers", "hi");
   await follow(api, done.run_id, ["completed"]);
-  const [ended] = await until(() => ofEvent(hook.got, "run.ended").length && ofEvent(hook.got, "run.ended"), "run.ended");
-  const notice = JSON.parse(ended.body);
-  assert.deepEqual(Object.keys(notice).sort(), ["at", "event", "id", "run"]);
-  assert.deepEqual([notice.event, notice.run], ["run.ended", { run_id: done.run_id, agent_id: "answers", status: "completed", title: "hi" }]);
-  assert.match(notice.id, /^evt_[0-9a-f]{32}$/);
+  const [ended] = await until(() => ofType(hook.got, "run.ended").length && ofType(hook.got, "run.ended"), "run.ended");
+  assert.deepEqual(library.verify(ended.body, ended.headers), JSON.parse(ended.body), "the spec's own library verifies it");
+  assert.ok(verifies(secret, ended), "and so does the spec's algorithm, written out");
+  const message = JSON.parse(ended.body);
+  assert.deepEqual(Object.keys(message).sort(), ["data", "timestamp", "type"]);
+  assert.deepEqual(message.data, { run_id: done.run_id, agent_id: "answers", status: "completed", title: "hi", url: `${url}/#/runs/${done.run_id}` });
+  assert.match(ended.headers["webhook-id"], /^msg_[0-9a-f]{32}$/);
   assert.equal(ended.method, "POST");
   assert.equal(ended.headers["content-type"], "application/json");
-  assert.match(ended.headers["x-agentrun-delivery"], /^dlv_[0-9a-f]{32}$/);
-  assert.ok(Math.abs(Number(ended.headers["x-agentrun-timestamp"]) - Date.now() / 1000) < 60, "a timestamp to refuse a replay by");
-  assert.ok(verifies(secret, ended), "the receiver's check with the secret verifies");
-  assert.ok(!verifies(`whsec_${randomBytes(32).toString("base64url")}`, ended), "a wrong secret does not");
-  assert.ok(!verifies(secret, { ...ended, body: ended.body.replace("completed", "failed") }), "nor a changed body");
-  assert.ok(!verifies(secret, { ...ended, headers: { ...ended.headers, "x-agentrun-timestamp": String(Number(ended.headers["x-agentrun-timestamp"]) - 600) } }), "nor another time");
+  for (const wrong of [`whsec_${randomBytes(32).toString("base64")}`]) {
+    assert.ok(!verifies(wrong, ended), "a wrong secret does not verify");
+    assert.throws(() => new Webhook(wrong).verify(ended.body, ended.headers), /verif|signature/i);
+  }
+  assert.throws(() => library.verify(ended.body.replace("completed", "failed"), ended.headers), /verif|signature/i, "nor a changed body");
+  const stale = { ...ended.headers, "webhook-timestamp": String(Number(ended.headers["webhook-timestamp"]) - 600) };
+  assert.throws(() => library.verify(ended.body, stale), /timestamp|old/i, "nor a timestamp ten minutes old: a replay");
+  assert.ok(!verifies(secret, { ...ended, headers: stale }));
 
-  // A run that asks: run.needs_input when it waits for its person, then run.ended once answered.
+  // A run that asks: run.needs_input while it waits for its person (a question), then run.ended once answered.
   const asks = await startRun(api, "asks", "Pick a region.", { tools: ["ask_person"] });
   await follow(api, asks.run_id, ["input_required"]);
-  const [waiting] = await until(() => ofEvent(hook.got, "run.needs_input").length && ofEvent(hook.got, "run.needs_input"), "run.needs_input");
-  assert.deepEqual(JSON.parse(waiting.body).run, { run_id: asks.run_id, agent_id: "asks", status: "input_required", title: "Pick a region." });
-  assert.ok(verifies(secret, waiting));
+  const [waiting] = await until(() => ofType(hook.got, "run.needs_input").length && ofType(hook.got, "run.needs_input"), "run.needs_input");
+  assert.deepEqual(library.verify(waiting.body, waiting.headers).data, { run_id: asks.run_id, agent_id: "asks", status: "input_required", title: "Pick a region.", url: `${url}/#/runs/${asks.run_id}`, pending: { kind: "question" } });
+  assert.ok(!waiting.body.includes("Which region"), "no question text: the API reads it");
   assert.equal((await api("POST", `/runs/${asks.run_id}/messages`, { content: "eu" })).status, 202);
   await follow(api, asks.run_id, ["completed"]);
-  await until(() => ofEvent(hook.got, "run.ended").length === 2, "the second run.ended");
-  assert.deepEqual(hook.got.map((r) => [r.headers["x-agentrun-event"], JSON.parse(r.body).run.run_id]), [["run.ended", done.run_id], ["run.needs_input", asks.run_id], ["run.ended", asks.run_id]], "one each, no more");
+  await until(() => ofType(hook.got, "run.ended").length === 2, "the second run.ended");
+  assert.deepEqual(hook.got.map((r) => [JSON.parse(r.body).type, JSON.parse(r.body).data.run_id]), [["run.ended", done.run_id], ["run.needs_input", asks.run_id], ["run.ended", asks.run_id]], "one each, no more");
+  for (const r of hook.got) library.verify(r.body, r.headers);
 
   const { body: log } = await api("GET", "/settings/webhook/deliveries");
-  assert.deepEqual(log.deliveries.map((d) => [d.event, d.status, d.attempts, d.status_code, d.error]), [["run.ended", "delivered", 1, 200, null], ["run.needs_input", "delivered", 1, 200, null], ["run.ended", "delivered", 1, 200, null]]);
-  assert.deepEqual(log.deliveries.map((d) => d.id), hook.got.map((r) => r.headers["x-agentrun-delivery"]).reverse());
+  assert.deepEqual(log.attempts.map((a) => [a.type, a.status_code, a.error, a.retry_at, a.redelivery]), [["run.ended", 200, null, null, false], ["run.needs_input", 200, null, null, false], ["run.ended", 200, null, null, false]]);
+  assert.deepEqual(log.attempts.map((a) => a.webhook_id), hook.got.map((r) => r.headers["webhook-id"]).reverse());
+  assert.ok(log.attempts.every((a) => Number.isInteger(a.latency_ms) && a.latency_ms >= 0));
   await meetsDocument(api, "/settings/webhook/deliveries", "get", "200", log);
 
   // The secret: in no answer but the first PUT's, in no file of the data directory and in no log line.
   const view = await api("GET", "/settings/webhook");
-  assert.deepEqual({ ...view.body, updated_at: undefined }, { configured: true, url: hook.url, events: ["run.needs_input", "run.ended"], signing: "sealed", updated_at: undefined });
+  assert.deepEqual({ ...view.body, updated_at: undefined }, { configured: true, url: hook.url, signing: "sealed", disabled: null, updated_at: undefined });
   await meetsDocument(api, "/settings/webhook", "get", "200", view.body);
-  const forms = [secret, secret.slice(6), Buffer.from(secret.slice(6), "base64url").toString("hex"), Buffer.from(secret.slice(6), "base64url").toString("base64")];
+  const key = Buffer.from(secret.slice(6), "base64");
+  const forms = [secret, secret.slice(6), key, key.toString("hex"), key.toString("base64url")];
   for (const where of [JSON.stringify(view.body), JSON.stringify(log), lines.join("\n"), ...filesIn(data)]) for (const form of forms) assert.ok(!Buffer.from(where).includes(form), "the secret is nowhere in the clear");
   assert.equal(statSync(join(data, "webhook.json")).mode & 0o777, 0o600);
   assert.equal(statSync(join(data, "webhook-outbox.json")).mode & 0o777, 0o600);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url, events: ["run.ended"] })).body.secret, undefined, "a later PUT keeps the secret and never shows it");
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.secret, undefined, "a later PUT keeps the secret and never shows it");
 });
 
-test("a receiver that is down gets each try, then the delivery is logged as failed; one that fails then answers gets it on a try again; a redirect is not followed", async (t) => {
+test("a receiver that is down gets each try, then the message is logged as failed; one that fails then answers gets it on a try again, under the same webhook-id; a redirect is not followed", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const lines = [];
   const { api } = await serve(t, { webhookRetryMs: [100, 100], log: (line) => lines.push(line) });
   const gone = await receiver(t, () => 200, true);
-  assert.equal((await api("PUT", "/settings/webhook", { url: gone.url, events: ["run.ended"] })).status, 201);
+  assert.equal((await api("PUT", "/settings/webhook", { url: gone.url })).status, 201);
   const down = await startRun(api, "down", "hi");
   await follow(api, down.run_id, ["completed"]);
-  const failed = await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.deliveries.find((d) => d.status === "failed"), "the failed delivery");
-  assert.deepEqual([failed.event, failed.run_id, failed.attempts, failed.status_code, failed.next_attempt_at], ["run.ended", down.run_id, 3, null, null]);
-  assert.match(failed.error, /^not reached: /);
-  assert.ok(lines.some((line) => line.includes("event=webhook") && line.includes("condition=delivery_failed") && line.includes(`delivery=${failed.id}`) && line.includes("attempts=3")), "the log says it failed");
+  const failed = await until(() => lines.find((line) => line.includes("event=webhook") && line.includes("condition=delivery_failed")), "the failed message");
+  assert.ok(failed.includes("attempts=3"), failed);
+  const tries = (await api("GET", "/settings/webhook/deliveries")).body.attempts;
+  assert.equal(tries.length, 3);
+  assert.ok(tries.every((a) => a.status_code === null && /^not reached: /.test(a.error)), JSON.stringify(tries));
+  assert.deepEqual(tries.map((a) => Boolean(a.retry_at)), [false, true, true], "newest first: the last try schedules none");
 
-  // Answered 503, then 200: delivered on the second try, the same delivery.
+  // Answered 503, then 200: delivered on the second try, the same message.
   const flaky = await receiver(t, (n) => (n === 1 ? 503 : 200));
   assert.equal((await api("PUT", "/settings/webhook", { url: flaky.url })).status, 200);
   const again = await startRun(api, "again", "hi");
   await follow(api, again.run_id, ["completed"]);
   await until(() => flaky.got.length === 2, "the try again");
-  assert.equal(flaky.got[0].headers["x-agentrun-delivery"], flaky.got[1].headers["x-agentrun-delivery"]);
-  assert.equal(flaky.got[0].body, flaky.got[1].body, "the same body, signed again");
-  const latest = await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.deliveries.find((d) => d.run_id === again.run_id && d.status !== "pending"), "delivered");
-  assert.deepEqual([latest.status, latest.attempts, latest.status_code, latest.error], ["delivered", 2, 200, null]);
+  assert.equal(flaky.got[0].headers["webhook-id"], flaky.got[1].headers["webhook-id"], "the receiver's idempotency key, the same");
+  assert.equal(flaky.got[0].body, flaky.got[1].body);
 
-  // A redirect is an answer that is not 2xx: tried again, never followed.
+  // A redirect is an answer that is not 2xx: never followed.
   const moved = await receiver(t, () => 302);
   assert.equal((await api("PUT", "/settings/webhook", { url: moved.url })).status, 200);
   const ping = await api("POST", "/settings/webhook/test", {});
   assert.equal(ping.status, 200);
-  assert.deepEqual([ping.body.event, ping.body.status, ping.body.attempts, ping.body.status_code, ping.body.error], ["ping", "failed", 1, 302, "answered 302: a redirect is not followed"]);
-  assert.equal(moved.got.length, 1, "a ping is tried once");
+  assert.deepEqual([ping.body.type, ping.body.status_code, ping.body.error, ping.body.retry_at], ["webhook.test", 302, "answered 302: a redirect is not followed", null]);
+  assert.equal(moved.got.length, 1, "a test send is tried once");
+  assert.deepEqual(JSON.parse(moved.got[0].body).data, {});
   await meetsDocument(api, "/settings/webhook/test", "post", "200", ping.body);
 });
 
-test("a delivery pending when its server stops goes on from the next one, with the same id; a run the next server reads as it already stood notices nothing", async (t) => {
+test("a 410 turns the webhook off, says so and sends nothing more until a PUT sets it again", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  let answer = 410;
+  const hook = await receiver(t, () => answer);
+  const lines = [];
+  const { api } = await serve(t, { webhookRetryMs: [100, 100], log: (line) => lines.push(line) });
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  const first = await startRun(api, "gone", "hi");
+  await follow(api, first.run_id, ["completed"]);
+  const off = await until(async () => (await api("GET", "/settings/webhook")).body.disabled, "off");
+  assert.equal(off.reason, "the receiver answered 410 Gone");
+  assert.ok(lines.some((line) => line.includes("condition=webhook_disabled")), "the log says why");
+  assert.equal(hook.got.length, 1, "no try after the 410");
+  const second = await startRun(api, "quiet", "hi");
+  await follow(api, second.run_id, ["completed"]);
+  await sleep(300);
+  assert.equal(hook.got.length, 1, "off: nothing is sent");
+  answer = 200;
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).body.disabled, null, "a PUT sets it on again");
+  const third = await startRun(api, "back", "hi");
+  await follow(api, third.run_id, ["completed"]);
+  await until(() => hook.got.length === 2, "sent again");
+});
+
+test("redeliver sends a message of the log again, once, under the same webhook-id and body, signed anew", async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
+  const hook = await receiver(t);
+  const { api } = await serve(t);
+  const { body: set } = await api("PUT", "/settings/webhook", { url: hook.url });
+  const run = await startRun(api, "again", "hi");
+  await follow(api, run.run_id, ["completed"]);
+  await until(() => hook.got.length === 1, "run.ended");
+  const id = hook.got[0].headers["webhook-id"];
+  await sleep(1_100);
+  const again = await api("POST", `/settings/webhook/deliveries/${id}/redeliver`, {});
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual([again.body.webhook_id, again.body.status_code, again.body.redelivery], [id, 200, true]);
+  await meetsDocument(api, "/settings/webhook/deliveries/{webhook_id}/redeliver", "post", "200", again.body);
+  assert.equal(hook.got.length, 2);
+  assert.equal(hook.got[1].headers["webhook-id"], id);
+  assert.equal(hook.got[1].body, hook.got[0].body);
+  assert.notEqual(hook.got[1].headers["webhook-timestamp"], hook.got[0].headers["webhook-timestamp"]);
+  new Webhook(set.secret).verify(hook.got[1].body, hook.got[1].headers);
+  assert.equal((await api("POST", "/settings/webhook/deliveries/msg_unknown/redeliver", {})).status, 404);
+});
+
+test("a message pending when its server stops goes on from the next one, under the same webhook-id; a run the next server reads as it already stood notices nothing", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   let answer = 503;
   const hook = await receiver(t, () => answer);
@@ -167,7 +235,7 @@ test("a delivery pending when its server stops goes on from the next one, with t
   const run = await startRun(api, "pending", "hi");
   await follow(api, run.run_id, ["completed"]);
   await until(() => hook.got.length === 1, "the first try");
-  const pending = await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.deliveries.find((d) => d.status === "pending" && d.attempts === 1 && d.next_attempt_at), "pending");
+  await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.attempts[0]?.retry_at, "a try again scheduled");
   await first.close();
   stopped = true;
   answer = 200;
@@ -175,55 +243,44 @@ test("a delivery pending when its server stops goes on from the next one, with t
   t.after(() => next.close());
   api = client(next.baseUrl, next.token);
   await until(() => hook.got.length === 2, "the try after the restart");
-  assert.equal(hook.got[1].headers["x-agentrun-delivery"], pending.id);
-  assert.ok(verifies(set.secret, hook.got[1]), "signed under the same secret, opened by the next server");
-  const delivered = await until(async () => (await api("GET", "/settings/webhook/deliveries")).body.deliveries.find((d) => d.id === pending.id && d.status === "delivered"), "delivered");
-  assert.equal(delivered.attempts, 2);
-  // The run, read by the next server as it already ended, is no new notice.
+  assert.equal(hook.got[1].headers["webhook-id"], hook.got[0].headers["webhook-id"]);
+  new Webhook(set.secret).verify(hook.got[1].body, hook.got[1].headers);
   assert.equal((await api("GET", `/runs/${run.run_id}`)).body.status, "completed");
   await sleep(500);
-  assert.equal(hook.got.length, 2);
+  assert.equal(hook.got.length, 2, "the run, read as it already ended, is no new notice");
 });
 
-test("settings: http or https only, no user or password, known events; no seal key, no webhook; rotate makes a new secret the next delivery is signed with; DELETE removes it", async (t) => {
+test("settings: an http or https URL with no user or password, and nothing else; no seal key, no webhook; DELETE removes it", async (t) => {
   withEnv(t, {}, SEAL);
   const bare = await serve(t);
   const refused = await bare.api("PUT", "/settings/webhook", { url: "https://example.com/hook" });
   assert.equal(refused.status, 409);
   assert.ok(JSON.stringify(refused.body).includes("no_sealing_key"), JSON.stringify(refused.body));
-  assert.deepEqual((await bare.api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended"], at_rest: "unavailable" });
+  assert.deepEqual((await bare.api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "unavailable" });
 
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const { api } = await serve(t);
-  assert.deepEqual((await api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended"], at_rest: "sealed" });
+  assert.deepEqual((await api("GET", "/capabilities")).body.features.webhooks, { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" });
   const withUser = Object.assign(new URL("https://example.com/hook"), { username: "user", password: "pass" }).href;
   for (const [body, field] of [
     [{ url: "ftp://example.com/hook" }, "url"], [{ url: "file:///etc/passwd" }, "url"], [{ url: "not a url" }, "url"], [{ url: withUser }, "url"],
-    [{ url: `https://example.com/${"a".repeat(2048)}` }, "url"], [{}, "url"], [{ url: hook.url, events: [] }, "events"], [{ url: hook.url, events: ["run.started"] }, "events"],
-    [{ url: hook.url, events: ["run.ended", "run.ended"] }, "events"], [{ url: hook.url, secret: "mine" }, "secret"],
+    [{ url: `https://example.com/${"a".repeat(2048)}` }, "url"], [{}, "url"], [{ url: hook.url, events: ["run.ended"] }, "events"], [{ url: hook.url, secret: "mine" }, "secret"],
   ]) {
     const res = await api("PUT", "/settings/webhook", body);
     assert.equal(res.status, 422, JSON.stringify(body));
     assert.ok(JSON.stringify(res.body).includes(`"${field}"`), JSON.stringify(res.body));
   }
-  for (const [method, path] of [["POST", "/settings/webhook/test"], ["POST", "/settings/webhook/rotate"]]) assert.equal((await api(method, path, {})).status, 404, `${path} with no webhook`);
-  const first = (await api("PUT", "/settings/webhook", { url: hook.url })).body.secret;
-  const rotated = await api("POST", "/settings/webhook/rotate", {});
-  assert.equal(rotated.status, 200);
-  assert.notEqual(rotated.body.secret, first);
-  await meetsDocument(api, "/settings/webhook/rotate", "post", "200", rotated.body);
-  const ping = await api("POST", "/settings/webhook/test", {});
-  assert.deepEqual([ping.body.status, ping.body.status_code], ["delivered", 200]);
-  assert.deepEqual(JSON.parse(hook.got[0].body).run, null);
-  assert.ok(verifies(rotated.body.secret, hook.got[0]) && !verifies(first, hook.got[0]), "signed with the new secret, not the old");
+  assert.equal((await api("POST", "/settings/webhook/test", {})).status, 404, "no webhook, no test send");
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+  assert.equal((await api("POST", "/settings/webhook/test", {})).body.status_code, 200);
   assert.equal((await api("DELETE", "/settings/webhook")).status, 204);
   assert.deepEqual((await api("GET", "/settings/webhook")).body, { configured: false });
-  assert.equal((await api("GET", "/settings/webhook/deliveries")).body.deliveries.length, 1, "the log of those done stays");
+  assert.equal((await api("GET", "/settings/webhook/deliveries")).body.attempts.length, 1, "the log stays");
   const quiet = await startRun(api, "quiet", "hi");
   await follow(api, quiet.run_id, ["completed"]);
   await sleep(300);
-  assert.equal(hook.got.length, 1, "no webhook, no delivery");
+  assert.equal(hook.got.length, 1, "no webhook, no message");
 });
 
 /** A server on `data` in a process of its own, killed as a crash does at the test's end at the latest. */
@@ -254,10 +311,10 @@ test("a run that ends while its server stops still gives its notice: kept pendin
   t.after(() => next.close());
   api = client(next.baseUrl, next.token);
   assert.equal((await api("GET", `/runs/${run.run_id}`)).body.status, "completed", "it ended while its server stopped");
-  await until(() => ofEvent(hook.got, "run.ended").some((r) => JSON.parse(r.body).run.run_id === run.run_id), "its run.ended");
+  await until(() => ofType(hook.got, "run.ended").some((r) => JSON.parse(r.body).data.run_id === run.run_id), "its run.ended");
 });
 
-test("a try in flight when its server closes is cut and waited for; nothing is written after, and the next server delivers it; a ping left pending is not tried again", async (t) => {
+test("a try in flight when its server closes is cut and waited for; nothing is written after, and the next server delivers it; a test send left pending is not tried again", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   let release;
   const held = new Promise((resolve) => (release = resolve));
@@ -268,7 +325,7 @@ test("a try in flight when its server closes is cut and waited for; nothing is w
   let stopped = false;
   t.after(() => stopped || first.close());
   let api = client(first.baseUrl, first.token);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url, events: ["run.ended"] })).status, 201);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   const run = await startRun(api, "held", "hi");
   await follow(api, run.run_id, ["completed"]);
   await until(() => hook.got.length === 1, "the held try");
@@ -281,41 +338,36 @@ test("a try in flight when its server closes is cut and waited for; nothing is w
   release();
   await sleep(200);
   assert.equal(readFileSync(outbox, "utf8"), before, "nothing written after the close");
-  const [pending] = JSON.parse(before).deliveries;
-  assert.deepEqual([pending.status, pending.attempts], ["pending", 0]);
-  // A ping an earlier server left in flight: the next one marks it failed and never tries it.
   const left = JSON.parse(before);
-  left.deliveries.push({ ...pending, id: `dlv_${"0".repeat(32)}`, event: "ping", event_id: "evt_ping", run_id: null, body: JSON.stringify({ id: "evt_ping", event: "ping", at: new Date().toISOString(), run: null }) });
+  const [pending] = left.messages;
+  assert.deepEqual([pending.status, pending.attempts], ["pending", 0]);
+  // A test send an earlier server left in flight: the next one marks it failed and never sends it.
+  left.messages.push({ ...pending, id: `msg_${"0".repeat(32)}`, type: "webhook.test", body: JSON.stringify({ type: "webhook.test", timestamp: new Date().toISOString(), data: {} }) });
   writeFileSync(outbox, JSON.stringify(left));
   const next = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
   t.after(() => next.close());
   api = client(next.baseUrl, next.token);
   await until(() => hook.got.length === 2, "the try after the restart");
-  assert.equal(hook.got[1].headers["x-agentrun-delivery"], pending.id);
-  const view = await until(async () => {
-    const { deliveries } = (await api("GET", "/settings/webhook/deliveries")).body;
-    return deliveries.find((d) => d.id === pending.id)?.status === "delivered" && deliveries;
-  }, "delivered");
-  const ping = view.find((d) => d.event === "ping");
-  assert.deepEqual([ping.status, ping.error], ["failed", "the server stopped before its answer"]);
+  assert.equal(hook.got[1].headers["webhook-id"], pending.id);
   await sleep(300);
-  assert.equal(hook.got.length, 2, "the ping is not sent again");
+  assert.equal(hook.got.length, 2, "the test send is not sent again");
+  assert.deepEqual(JSON.parse(readFileSync(outbox, "utf8")).messages.find((m) => m.type === "webhook.test")?.status ?? "failed", "failed");
 });
 
-test("a run stopped, then asked a question on its next turn, gives two needs_input notices with different ids", async (t) => {
+test("a run stopped, then asked a question on its next turn, gives two needs_input notices: different webhook-ids, `stopped` then `question`", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey() }, SEAL);
   const hook = await receiver(t);
   const { api } = await serve(t);
-  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url, events: ["run.needs_input"] })).status, 201);
+  assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   const run = await startRun(api, "ask-later", "Take your time.", { tools: ["ask_person"] });
   await until(async () => (await api("GET", `/runs/${run.run_id}`)).body.status === "working", "the run works");
   await until(async () => (await api("POST", `/runs/${run.run_id}/stop`, {})).body.stopped === true, "the stop");
   await until(() => hook.got.length === 1, "the stop's notice");
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "Ask me now." })).status, 202);
   await until(() => hook.got.length === 2, "the question's notice");
-  const [stop, question] = hook.got.map((r) => JSON.parse(r.body));
-  assert.deepEqual([stop.event, question.event, question.run.status], ["run.needs_input", "run.needs_input", "input_required"]);
-  assert.notEqual(stop.id, question.id, "a new wait, a new id");
+  const [stop, question] = hook.got;
+  assert.deepEqual(hook.got.map((r) => [JSON.parse(r.body).type, JSON.parse(r.body).data.pending]), [["run.needs_input", { kind: "stopped" }], ["run.needs_input", { kind: "question" }]]);
+  assert.notEqual(stop.headers["webhook-id"], question.headers["webhook-id"], "a new wait, a new id");
 });
 
 test("a run waiting for its person when its server dies gives no new notice from the server that adopts its process; its end does", async (t) => {
@@ -325,7 +377,7 @@ test("a run waiting for its person when its server dies gives no new notice from
   const first = await serverProcess(t, data);
   assert.equal((await first.api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
   const run = await startRun(first.api, "asks", "Pick a region.", { tools: ["ask_person"] });
-  await until(() => ofEvent(hook.got, "run.needs_input").length === 1, "the wait's notice");
+  await until(() => ofType(hook.got, "run.needs_input").length === 1, "the wait's notice");
   first.child.kill("SIGKILL");
   await new Promise((resolve) => first.child.once("exit", resolve));
   const { holder } = JSON.parse(readFileSync(join(data, "runs", run.run_id, "run.json"), "utf8"));
@@ -336,10 +388,10 @@ test("a run waiting for its person when its server dies gives no new notice from
   const api = client(next.baseUrl, next.token);
   await follow(api, run.run_id, ["input_required"]);
   await sleep(500);
-  assert.equal(ofEvent(hook.got, "run.needs_input").length, 1, "the same wait, no new notice");
+  assert.equal(ofType(hook.got, "run.needs_input").length, 1, "the same wait, no new notice");
   assert.equal((await api("POST", `/runs/${run.run_id}/messages`, { content: "eu" })).status, 202);
   await follow(api, run.run_id, ["completed"]);
-  await until(() => ofEvent(hook.got, "run.ended").length === 1, "its end's notice");
+  await until(() => ofType(hook.got, "run.ended").length === 1, "its end's notice");
 });
 
 test("when a status is a notice: a change to a wait or an end; a live run adopted with no rows takes its first snapshot silently, and an end it comes to is noticed", () => {
@@ -348,10 +400,8 @@ test("when a status is a notice: a change to a wait or an end; a live run adopte
   assert.deepEqual(nextMoment("input_required", "input_required", 3), { keep: "input_required", notify: false }, "the same wait");
   assert.deepEqual(nextMoment("input_required", "other", 3), { keep: "other", notify: false });
   assert.deepEqual(nextMoment("other", "cancelled", 3), { keep: "cancelled", notify: true });
-  // Adopted live, no rows yet: still unread until rows come; where they stand then is no notice.
   assert.deepEqual(nextMoment("unread", "other", 0), { keep: "unread", notify: false });
   assert.deepEqual(nextMoment("unread", "input_required", 2), { keep: "input_required", notify: false });
-  // An end is carried back by this server: new whatever was read, rows or none (cancelled before its first message landed).
   assert.deepEqual(nextMoment("unread", "cancelled", 0), { keep: "cancelled", notify: true });
   assert.deepEqual(nextMoment("unread", "completed", 4), { keep: "completed", notify: true });
 });

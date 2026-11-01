@@ -184,9 +184,9 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
   { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
   { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
-  { method: "POST", pattern: /^\/settings\/webhook\/rotate$/, name: "rotateWebhookSecret" },
   { method: "POST", pattern: /^\/settings\/webhook\/test$/, name: "testWebhook" },
   { method: "GET", pattern: /^\/settings\/webhook\/deliveries$/, name: "listWebhookDeliveries" },
+  { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
 ];
 
 /** What this server offers. Every flag is present; an off one answers 501 naming it. */
@@ -247,9 +247,9 @@ export function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), 
       /** GET, PUT and DELETE /settings/tool-keys: a tool's key saved by name, kept sealed under the launcher's seal key
        *  (tool-keys.ts); with none handed over, nothing is kept, never in the clear. */
       tool_keys: { routes: true, at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
-      /** /settings/webhook: one URL POSTed, signed, when a run needs its person and when it ends (webhooks.ts); its
-       *  secret kept sealed under the same seal key, so with none no webhook is set. */
-      webhooks: { routes: true, events: [...WEBHOOK_EVENTS], at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
+      /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
+       *  ends (webhooks.ts); its secret kept sealed under the same seal key, so with none no webhook is set. */
+      webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: sealKeyOf(env[SEAL_KEY_ENV]) ? "sealed" : "unavailable" },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
     /** This server's own: where its OpenAPI document is, beside this one. */
@@ -898,12 +898,12 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
       case "deleteWebhook":
         webhooks.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
-      case "rotateWebhookSecret":
-        return send(res, 200, webhooks.rotate());
       case "testWebhook":
         return send(res, 200, await webhooks.test());
       case "listWebhookDeliveries":
-        return send(res, 200, webhooks.deliveriesView());
+        return send(res, 200, webhooks.attemptsView());
+      case "redeliverWebhook":
+        return send(res, 200, await webhooks.redeliver(id));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -955,6 +955,7 @@ async function startHolding(options: ServeOptions, data: string, lock: ServerLoc
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
   owner?.attach(options.publicUrl ?? url);
+  webhooks.attach(options.publicUrl ?? url);
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   return {
     url,

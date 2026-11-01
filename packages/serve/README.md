@@ -303,29 +303,38 @@ pass `AGENTRUN_SEAL_KEY`, or mount a directory at `XDG_CONFIG_HOME`, so a new co
 
 ## Webhooks
 
-One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url, events?}` sets it:
-`url` is an `http` or `https` address (no user or password in it), `events` one or both of `run.needs_input` (a run
-comes to need its person: `input_required`, an `ask_person` or a stop) and `run.ended` (completed, failed or cancelled,
-once carried back), both by default. Each is POSTed as JSON:
+One URL hears of your runs without anyone watching the page. `PUT /v2/settings/webhook` with `{url}` sets it: an `http`
+or `https` address, with no user or password in it. Two kinds of message are POSTed to it: `run.needs_input` when a run
+comes to need its person (`input_required`: an `ask_person` question, or a stopped turn) and `run.ended` when it ends
+(completed, failed or cancelled, once carried back).
 
 ```json
-{ "id": "evt_…", "event": "run.ended", "at": "2026-11-01T12:00:00.000Z",
-  "run": { "run_id": "…", "agent_id": "triage", "status": "completed", "title": "…" } }
+{ "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
+  "data": { "run_id": "…", "agent_id": "triage", "status": "input_required", "title": "…",
+            "url": "https://agents.example.com/#/runs/…", "pending": { "kind": "question" } } }
 ```
 
-with `x-agentrun-event`, `x-agentrun-delivery` (the same on each try), `x-agentrun-timestamp` (Unix seconds) and
-`x-agentrun-signature: v1=<hex>`, the HMAC-SHA256 of `<timestamp>.<body>` under the webhook's secret. A receiver checks
-the signature against the raw body and refuses a timestamp far from its clock, so a replay does not pass. The first `PUT`
-makes the secret (`whsec_…`) and answers `201` with it, once; `GET /v2/settings/webhook` never shows it, and
-`POST /v2/settings/webhook/rotate` makes a new one, shown once. It is kept like a [tool key](#tool-keys): sealed under
-`AGENTRUN_SEAL_KEY` in `DIR/webhook.json` (0600), so with no seal key no webhook is set (`409 no_sealing_key`).
+A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
+or an input, which the API reads (`GET /v2/runs/{id}`). `pending.kind` is `question` (an `ask_person`) or `stopped`.
 
-A delivery not answered 2xx within 10 s is tried again after 10 s, 1 min and 5 min, then logged as failed
-(`event=webhook condition=delivery_failed`). A redirect is not followed: it is an answer that is not 2xx. Pending
-deliveries are kept in `DIR/webhook-outbox.json`, so the next server goes on with them after a restart; a notice can then
-come twice, with the same `id`. `GET /v2/settings/webhook/deliveries` lists the pending ones and the last 50 done, with
-their event, attempts, last status code and error. `POST /v2/settings/webhook/test` delivers a `ping` (its `run` null)
-once and answers how it went. `DELETE /v2/settings/webhook` removes the webhook and drops its pending deliveries.
+Messages are signed by the [Standard Webhooks](https://www.standardwebhooks.com) spec, so a receiver verifies them
+with any of its libraries: `webhook-id` (the same on every try of a message, so it is the receiver's idempotency key),
+`webhook-timestamp` (Unix seconds) and `webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">` under
+the secret's bytes. A receiver checks the signature against the raw body and refuses a timestamp more than 5 minutes
+from its clock, so a replay does not pass. The first `PUT` makes the secret, `whsec_` and 32 random bytes in base64,
+and answers `201` with it, once; `GET /v2/settings/webhook` never shows it. It is kept like a [tool key](#tool-keys):
+sealed under `AGENTRUN_SEAL_KEY` in `DIR/webhook.json` (0600), so with no seal key no webhook is set
+(`409 no_sealing_key`). A new secret is a `DELETE` and a `PUT`.
+
+A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the
+spec's schedule, with jitter: after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, then logged as failed
+(`event=webhook condition=delivery_failed`). A `410 Gone` turns the webhook off (`disabled` in `GET`, and the log says
+why) until a `PUT` sets it again. Pending messages are kept in `DIR/webhook-outbox.json`, so the next server goes on with
+them after a restart; a message can then come twice, under the same `webhook-id`. `GET /v2/settings/webhook/deliveries`
+lists the last 50 attempts (`webhook_id`, type, status code, latency, error, when, and the next try's time), and
+`POST /v2/settings/webhook/deliveries/{webhook_id}/redeliver` sends one of those messages again, once, under the same
+`webhook-id`. `POST /v2/settings/webhook/test` sends a `webhook.test` message once and answers how it went.
+`DELETE /v2/settings/webhook` removes the webhook and drops its pending messages.
 
 ## What it serves
 
@@ -352,7 +361,7 @@ once and answers how it went. `DELETE /v2/settings/webhook` removes the webhook 
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
 | `GET /settings/tool-keys`, `PUT` and `DELETE /settings/tool-keys/{id}` | [Tool keys](#tool-keys), this server's own routes (`x-agentrun-serve: "toolkeys/1"`): each key's fields by name and where each is set, never a value; save one sealed, or forget it. |
-| `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/rotate` and `/test`, `GET /settings/webhook/deliveries` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed; never its secret but once. |
+| `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET /usage` | The runs' cost estimates, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds no dollars, so no sum is ever null, and is counted in `unpriced_runs` (in the total and in each line) so it never passes as $0. |
 
 Home export and import, uploads (`/files`), quotes and `POST /runs/{id}/kill` answer `501 unsupported_here` naming the
