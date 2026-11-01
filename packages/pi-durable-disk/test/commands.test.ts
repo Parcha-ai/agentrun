@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { COMMANDS_MARK, CommandRecorder, reapCommands, reapOrRefuse, type CommandRecord } from "../src/commands.ts";
@@ -466,6 +466,125 @@ describe("command records, from a scripted /proc", () => {
     } finally {
       dir.remove();
     }
+  });
+
+  describe("a record written in another pid namespace", () => {
+    // The reader's /proc: its namespace pid:[200], its PID 1 started at tick 1000, and a process 4300 (start 77, leading
+    // its group) that a record from another namespace names by the same number and start: it must never be signalled.
+    // Records come from pid:[100].
+    const READER = "pid:[200]";
+    const WRITER = "pid:[100]";
+    function setup(name: string) {
+      const dir = scratchRoot(name);
+      const proc = join(dir.root, "proc");
+      const records = join(dir.root, "commands");
+      const stat = (pid: number, pgrp: number, start: number) => `${pid} (cmd) ${["S", "1", String(pgrp), ...Array(16).fill("0"), String(start)].join(" ")}\n`;
+      mkdirSync(join(proc, "sys/kernel/random"), { recursive: true });
+      writeFileSync(join(proc, "sys/kernel/random/boot_id"), "fake-boot\n");
+      mkdirSync(join(proc, "self/ns"), { recursive: true });
+      symlinkSync(READER, join(proc, "self/ns/pid"));
+      writeFileSync(join(proc, "uptime"), "20.00 40.00\n");
+      mkdirSync(join(proc, "1"));
+      writeFileSync(join(proc, "1/stat"), stat(1, 1, 1000));
+      mkdirSync(join(proc, "4300"));
+      writeFileSync(join(proc, "4300/stat"), stat(4300, 4300, 77));
+      mkdirSync(records);
+      const record = (fields: Record<string, unknown>) => {
+        const file = join(records, "4300-77.json");
+        writeFileSync(file, JSON.stringify({ boot: "fake-boot", leader: { pid: 4300, start: 77 }, members: [], pidns: WRITER, ...fields }));
+        return file;
+      };
+      const signals: number[] = [];
+      const kill = (target: number) => void signals.push(target);
+      return { dir, proc, records, record, signals, kill };
+    }
+
+    it("a container restart (the same boot, written before this reader's PID 1 started) is gone: forgotten, nothing signalled", async () => {
+      const { dir, proc, records, record, signals, kill } = setup("commands-ns-restart");
+      try {
+        record({ ticks: 500 });
+        assert.deepEqual(await reapOrRefuse(records, { proc, kill, timeoutMs: 50 }), { signalled: 0, survivors: [] });
+        assert.deepEqual(signals, [], "a process of this namespace with the recorded number and start was signalled");
+        assert.equal(existsSync(records), false, "the previous incarnation's records are forgotten");
+      } finally {
+        dir.remove();
+      }
+    });
+
+    it("a record written after this reader's PID 1 started is unknown: refused by name, kept, nothing signalled", async () => {
+      const { dir, proc, records, record, signals, kill } = setup("commands-ns-after");
+      try {
+        const file = record({ ticks: 1500 });
+        await assert.rejects(reapOrRefuse(records, { proc, kill, timeoutMs: 50 }), (error: unknown) => error instanceof HeldError && error.holder === "commands" && error.exitCode === 76 && /written in another pid namespace/.test(error.message) && error.message.includes(file));
+        assert.deepEqual(signals, []);
+        assert.ok(existsSync(file), "the record stays for the next open");
+      } finally {
+        dir.remove();
+      }
+    });
+
+    it("a record of another boot is gone (a reboot ends every namespace), even when its time would be after this PID 1", async () => {
+      const { dir, proc, records, record, signals, kill } = setup("commands-ns-reboot");
+      try {
+        record({ boot: "other-boot", ticks: 1500 });
+        assert.deepEqual(await reapOrRefuse(records, { proc, kill, timeoutMs: 50 }), { signalled: 0, survivors: [] });
+        assert.deepEqual(signals, []);
+        assert.equal(existsSync(records), false);
+      } finally {
+        dir.remove();
+      }
+    });
+
+    it("a record with no time, or an unparsable one, is unknown: refused, kept, nothing signalled; a mark file the same", async () => {
+      for (const fields of [{}, { ticks: "500" }, { ticks: null }]) {
+        const { dir, proc, records, record, signals, kill } = setup("commands-ns-notime");
+        try {
+          const file = record(fields);
+          await assert.rejects(reapOrRefuse(records, { proc, kill, timeoutMs: 50 }), (error: unknown) => error instanceof HeldError && /another pid namespace/.test(error.message), JSON.stringify(fields));
+          assert.deepEqual(signals, []);
+          assert.ok(existsSync(file));
+        } finally {
+          dir.remove();
+        }
+      }
+      const { dir, proc, records, signals, kill } = setup("commands-ns-mark");
+      try {
+        const token = randomUUID();
+        const mark = join(records, `mark-${token}.json`);
+        writeFileSync(mark, JSON.stringify({ boot: "fake-boot", token, pidns: WRITER }));
+        await assert.rejects(reapOrRefuse(records, { proc, kill, timeoutMs: 50 }), (error: unknown) => error instanceof HeldError && error.message.includes(mark));
+        assert.deepEqual(signals, []);
+        assert.ok(existsSync(mark));
+      } finally {
+        dir.remove();
+      }
+    });
+
+    it("the recorder writes its namespace and the write's time in boot ticks into each mark and record", () => {
+      const { dir, proc, records } = setup("commands-ns-stamp");
+      try {
+        rmSync(records, { recursive: true });
+        mkdirSync(join(proc, "4200/task/4200"), { recursive: true });
+        writeFileSync(join(proc, "4200/stat"), `4200 (cmd) ${["S", "1", "4200", ...Array(16).fill("0"), "10"].join(" ")}\n`);
+        writeFileSync(join(proc, "4200/task/4200/children"), "4300 ");
+        const uid = process.getuid!();
+        writeFileSync(join(proc, "4300/status"), `Name:\tcmd\nState:\tS (x)\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+        const recorder = new CommandRecorder(records, { proc, instance: 4200 });
+        writeFileSync(join(proc, "4300/stat"), `4300 (cmd) ${["S", "4200", "4300", ...Array(16).fill("0"), "77"].join(" ")}\n`);
+        writeFileSync(join(proc, "4300/environ"), `${COMMANDS_MARK}=${recorder.token}\0`);
+        recorder.started();
+        recorder.scan();
+        recorder.close();
+        const mark = JSON.parse(readFileSync(join(records, `mark-${recorder.token}.json`), "utf8"));
+        const written = JSON.parse(readFileSync(join(records, "4300-77.json"), "utf8"));
+        for (const r of [mark, written]) {
+          assert.equal(r.pidns, READER);
+          assert.equal(r.ticks, 2000, "/proc/uptime's 20.00 s at USER_HZ 100");
+        }
+      } finally {
+        dir.remove();
+      }
+    });
   });
 
   it("an open refuses the run while a process a killed incarnation left is still alive, and keeps its record", async () => {

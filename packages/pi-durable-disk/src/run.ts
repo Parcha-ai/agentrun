@@ -15,7 +15,7 @@ import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/
 import { acquire, type AcquireOptions, type ArchilHost, type Claim, type RunRef } from "./claim.ts";
 import { reapOrRefuse } from "./commands.ts";
 import { archilEnv } from "./env.ts";
-import { EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
+import { BoxUnavailableError, EXIT_DATAERR, EXIT_FENCED, EXIT_SOFTWARE, FencedError, HeldError, ownWriteFenced, PdaError } from "./errors.ts";
 import { openArchilStore, type ArchilStore, type Profile } from "./store.ts";
 import { LeaseWatchdog } from "./watchdog.ts";
 import {
@@ -30,6 +30,7 @@ import {
   RUN_JSON,
   RunRecordError,
   writeRunRecord,
+  type BoxMode,
   type ClaimDir,
   type PersistRecord,
   type RunHolder,
@@ -134,6 +135,14 @@ export interface OpenRunLeaseOptions {
    * defaults to `local`, `host` and `bootId` to this machine's. The supervisor hands it back to the driver to stop it.
    */
   readonly holder?: Readonly<Record<string, JsonValue>>;
+  /**
+   * The box this open's run actually runs in, as the host resolved it for this launch (serve's capabilities.box.mode):
+   * recorded as run.json's `box.mode` exactly as given, never probed, so the next open can tell a switch from the record.
+   * Whatever the switch, the commands reap runs on this host, outside any box, before anything of this incarnation runs,
+   * and holds the open while a process the last incarnation's commands left is alive. Whether a switch may proceed at all
+   * (a run leaving its box) is the host's to refuse before it opens. Absent: nothing is recorded.
+   */
+  readonly boxMode?: BoxMode;
   readonly lease?: LeaseOptions;
   /**
    * The instance runs in a cgroup of its own (a systemd unit, a container). When the lease lapses, the watchdog then
@@ -694,6 +703,7 @@ class Lease implements RunLease {
         heartbeatAt: now,
         updatedAt: now,
         detail: null,
+        ...(this.#options.boxMode === undefined ? {} : { box: { mode: this.#options.boxMode } }),
       })));
     });
     // Two self-fences: a timer on this thread, and a watchdog thread for when this thread is stuck in a FUSE request.
@@ -946,6 +956,8 @@ class Lease implements RunLease {
 }
 
 async function openLease(ref: RunRef, options: OpenRunLeaseOptions, step: Step, afterClaim?: AfterClaimHook): Promise<Lease> {
+  // No box to run in: nothing of the run is claimed, run or written (a host that launched it so has a bug; serve holds it).
+  if (options.boxMode === "unavailable") throw new BoxUnavailableError();
   const context = options.context ?? BACKGROUND_CONTEXT;
   leaseOf(options.lease);
   let holder: RunHolder;
