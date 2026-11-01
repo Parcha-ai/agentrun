@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import { agentFixture, archivedAgents, editorCaps, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
+import { ANALYTICS } from "@/lib/analytics.sample";
 import type { Run } from "@/lib/v2";
 
 // An agent's own page: its current revision's settings in the header, its runs, and a workflow agent's graph, read-only.
@@ -13,11 +14,14 @@ const runsOf = (slug: string) => recorded<{ runs: Run[] }>(`agent.${slug}.runs`)
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string };
-async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab }: Opts = {}) {
+type Opts = { runs?: Run[]; next?: string | null; more?: () => Promise<{ runs: Run[]; next_cursor: string | null }>; tab?: string; stats?: () => Promise<unknown> };
+/** By default the server's stats carry no analytics, as an older server's. */
+async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, more, tab, stats = async () => ({}) }: Opts = {}) {
   const went: string[] = [];
   const asked: string[] = [];
+  const statsAsked: string[] = [];
   const v2 = {
+    agentStats: async (id: string, from?: string) => { statsAsked.push(`stats ${id}${from ? ` from ${from}` : ""}`); return stats(); },
     getAgent: async (id: string) => { asked.push(`agent ${id}`); return { agent, etag: null }; },
     listAgentRuns: async (id: string, _limit: number, cursor?: string | null, archived?: boolean) => {
       asked.push(`runs ${id}${cursor ? ` after ${cursor}` : ""}${archived ? " archived" : ""}`);
@@ -33,7 +37,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
   const tabs = () => [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
   const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling?.textContent;
-  return { host, went, asked, click, button, tabs, fact };
+  return { host, went, asked, statsAsked, click, button, tabs, fact };
 }
 
 describe("AgentPage", () => {
@@ -137,5 +141,39 @@ describe("AgentPage", () => {
     expect(page.host.querySelectorAll('ul[aria-label="Runs"] a').length).toBe(2);
     await page.click(/^Agents$/);
     expect(page.went).toEqual(["#/agents?archived=true"]);
+  });
+
+  it("shows an Analytics tab only when the server's stats for this agent carry analytics", async () => {
+    const page = await open(agentFixture("invoice-checker"), { stats: async () => ({ analytics: ANALYTICS }) });
+    expect(page.tabs()).toEqual(["Runs", "Analytics"]);
+    expect(page.statsAsked).toEqual(["stats invoice-checker"]);
+    await page.click(/^Analytics$/);
+    expect(page.went).toEqual(["#/agents/invoice-checker/analytics"]);
+    act(() => root?.unmount());
+    // An older server's stats have no analytics, and one without stats fails them: no tab, and nothing in its place.
+    for (const stats of [async () => ({ agents: 1 }), async () => { throw new Error("no route GET /v2/stats"); }]) {
+      const older = await open(agentFixture("invoice-checker"), { stats });
+      expect(older.tabs()).toEqual(["Runs"]);
+      expect(older.host.textContent).not.toMatch(/analytics/i);
+      act(() => root?.unmount());
+    }
+  });
+
+  it("opens the address's Analytics tab once the stats say it is there, and Runs on a server without it", async () => {
+    let answer!: (v: unknown) => void;
+    let calls = 0;
+    // The page's read waits; the tab's own read, once it opens, answers at once.
+    const page = await open(agentFixture("invoice-checker"), { tab: "analytics", stats: () => (++calls === 1 ? new Promise((r) => (answer = r)) : Promise.resolve({ analytics: ANALYTICS })) });
+    // Waiting for the stats: no other tab's content is read meanwhile.
+    expect(page.host.querySelector('ul[aria-label="Runs"]')).toBeNull();
+    expect(page.asked).toEqual(["agent invoice-checker"]);
+    await act(async () => { answer({ analytics: ANALYTICS }); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(page.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Analytics");
+    expect(page.host.querySelector('ul[aria-label="Totals"]')).toBeTruthy();
+    act(() => root?.unmount());
+    const older = await open(agentFixture("invoice-checker"), { tab: "analytics" });
+    expect(older.host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Runs");
+    expect(older.host.querySelector('ul[aria-label="Runs"]')).toBeTruthy();
   });
 });

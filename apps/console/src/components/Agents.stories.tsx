@@ -5,6 +5,7 @@ import { AgentsList } from "@/components/AgentsList";
 import { Shell } from "@/components/Shell";
 import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisionsOf } from "@/fixtures";
 import { saveError } from "@/lib/agentForm";
+import { ANALYTICS } from "@/lib/analytics.sample";
 import { ClientError } from "@/lib/client";
 
 // The agents surface on agents and refusals AgentRun Server returned (src/fixtures), in the shell.
@@ -20,9 +21,13 @@ const page = (node: React.ReactNode) => <Shell active="agents">{node}</Shell>;
 const editor = (slug: string, extra: Partial<React.ComponentProps<typeof AgentEditor>> = {}) =>
   page(<AgentEditor agent={agentFixture(slug)} revisions={revisionsOf(slug)} caps={editorCaps} onSave={async () => null} onMakeCurrent={noop} onArchive={noop} onReload={noop} onBack={noop} {...extra} />);
 
-// An agent's page over its recorded agent and runs.
-const agentPage = (slug: string, { runs = true, tab }: { runs?: boolean; tab?: "workflow" } = {}) => {
-  const v2 = { getAgent: async () => ({ agent: agentFixture(slug), etag: null }), listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }) };
+// An agent's page over its recorded agent and runs; with `analytics`, a server whose stats carry the sample analytics.
+const agentPage = (slug: string, { runs = true, tab, analytics = false }: { runs?: boolean; tab?: "workflow" | "analytics"; analytics?: boolean } = {}) => {
+  const v2 = {
+    getAgent: async () => ({ agent: agentFixture(slug), etag: null }),
+    listAgentRuns: async () => (runs ? recorded<unknown>(`agent.${slug}.runs`).body : { runs: [], next_cursor: null }),
+    agentStats: async () => (analytics ? { analytics: ANALYTICS } : {}),
+  };
   return page(<AgentPage v2={v2 as never} agentId={slug} defaultModel={editorCaps.defaultModel} go={noop} tab={tab} />);
 };
 
@@ -34,6 +39,7 @@ export const ListError: Story = { render: () => page(<AgentsList agents={null} e
 export const AgentRuns: Story = { render: () => agentPage("invoice-checker") };
 export const AgentNoRuns: Story = { render: () => agentPage("invoice-checker", { runs: false }) };
 export const AgentWorkflowGraph: Story = { render: () => agentPage("support-triage", { tab: "workflow" }) };
+export const AgentAnalytics: Story = { render: () => agentPage("invoice-checker", { tab: "analytics", analytics: true }) };
 export const NewAgent: Story = { render: () => page(<AgentEditor agent={null} caps={editorCaps} onSave={async () => null} onBack={noop} />) };
 export const EditContext: Story = { render: () => editor("invoice-checker") };
 export const EditTools: Story = { render: () => editor("invoice-checker", { step: "tools" }) };

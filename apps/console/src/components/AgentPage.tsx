@@ -1,6 +1,7 @@
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, Bot, Pencil, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AnalyticsTab } from "@/components/AgentAnalytics";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
@@ -14,12 +15,15 @@ import { cn } from "@/lib/utils";
 import type { Run } from "@/lib/v2";
 
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void };
+/** What the server gives beside the agent: `analytics`, once its stats are read (an older server has none). */
+type Server = { analytics: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
  *  is one entry here. */
-const TABS: { id: string; label: string; shows: (a: Agent) => boolean; Body: (p: TabProps) => JSX.Element }[] = [
+const TABS: { id: string; label: string; shows: (a: Agent, server: Server) => boolean; Body: (p: TabProps) => JSX.Element }[] = [
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
+  { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
 const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
@@ -32,10 +36,13 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; agentId: string; defaultModel?: string; go: (hash: string) => void; tab?: string }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Whether the server's stats carry analytics: undefined until read; a server that answers none, or fails, has none.
+  const [analytics, setAnalytics] = useState<boolean | undefined>(undefined);
   useEffect(() => {
     let live = true;
-    setAgent(null); setError(null);
+    setAgent(null); setError(null); setAnalytics(undefined);
     v2.getAgent(agentId).then((r) => { if (live) setAgent(r.agent); }, (e) => { if (live) setError(problemOf(e)); });
+    v2.agentStats(agentId).then((r) => { if (live) setAnalytics(r.analytics !== undefined); }, () => { if (live) setAnalytics(false); });
     return () => { live = false; };
   }, [v2, agentId]);
   if (error) return <p className="m-8 border p-4 font-mono text-[13px] text-destructive-text" role="alert">The agent could not be read: {error}</p>;
@@ -48,8 +55,10 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; 
     ...(workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", d.model ?? (defaultModel ? `${defaultModel} (default)` : "default")], ["Thinking", d.thinking ?? "default"]] as [string, string][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
   ];
-  const tabs = TABS.filter((t) => t.shows(agent));
+  const tabs = TABS.filter((t) => t.shows(agent, { analytics: analytics === true }));
   const at = tabs.find((t) => t.id === tab) ?? tabs[0];
+  // An address on a tab the server may still give: wait for its answer rather than open another tab meanwhile.
+  const waiting = tab === "analytics" && analytics === undefined;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="border-b px-5 py-4 md:px-8">
@@ -79,7 +88,9 @@ export function AgentPage({ v2, agentId, defaultModel, go, tab }: { v2: Client; 
           </button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8"><at.Body agent={agent} v2={v2} go={go} /></div>
+      <div className="min-h-0 flex-1 overflow-auto px-5 py-6 md:px-8">
+        {waiting ? <p className="py-12 text-center font-mono text-[13px] text-muted-foreground">Loading...</p> : <at.Body agent={agent} v2={v2} go={go} />}
+      </div>
     </div>
   );
 }
