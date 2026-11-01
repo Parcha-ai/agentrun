@@ -207,6 +207,46 @@ describe("boxHost: secrets ride the launch frame, never env or argv", () => {
     assert.deepEqual(provider.leaks(TOKEN), [], "the secret went nowhere");
   });
 
+  it("an empty set of secrets is none, whatever the user: root with {} or with a function that gives undefined or {} starts with no frame; root with a secret is refused before any box, given as an object or by a function", async () => {
+    for (const [why, secrets] of [
+      ["an empty object", {}],
+      ["a function that gives undefined", () => undefined],
+      ["a function that gives an empty object", () => ({})],
+    ] as const) {
+      const provider = withFd();
+      runs(provider);
+      const driver = host(provider, { user: "root", secrets });
+      const handle = await start(driver);
+      const launch = provider.boxes[0]!.launches[0]!;
+      assert.equal(launch.spec.user, "root", why);
+      assert.equal(launch.spec.secrets, undefined, `${why}: no frame`);
+      assert.equal(await driver.status(handle), "running", why);
+    }
+    const provider = withFd();
+    runs(provider);
+    await assert.rejects(host(provider, { user: "root", secrets: { AGENTRUN_RUN_TOKEN: TOKEN } }).start(REF, "", { attempt: 1 }), code("INVALID_ARGUMENT"), "an object: refused before any call");
+    assert.equal(provider.calls.length, 0);
+    await assert.rejects(host(provider, { user: "root", secrets: () => ({ AGENTRUN_RUN_TOKEN: TOKEN }) }).start(REF, "", { attempt: 1 }), (e: unknown) => code("INVALID_ARGUMENT")(e) && !(e as Error).message.includes(TOKEN), "a function: refused once asked");
+    assert.equal(provider.callsOf("create").length, 0, "no box is made");
+    assert.deepEqual(provider.leaks(TOKEN), []);
+  });
+
+  it("a box adopted never asks the secrets function, on this driver or a new one", async () => {
+    const provider = withFd();
+    runs(provider);
+    let asks = 0;
+    const secrets = () => (asks++, { AGENTRUN_RUN_TOKEN: TOKEN });
+    const first = await host(provider, { user: "agent", secrets }).start(REF, "", { attempt: 1 });
+    assert.equal(asks, 1, "asked once, for the launch");
+    for (const driver of [host(provider, { user: "agent", secrets }), host(provider, { user: "agent", secrets })]) {
+      const again = await start(driver);
+      assert.deepEqual(again, { ...first, adopted: true });
+      assert.equal((await start(driver)).adopted, true);
+    }
+    assert.equal(asks, 1, "never asked for a box adopted");
+    assert.equal(provider.callsOf("launch").length, 1);
+  });
+
   it("the secrets are asked for before any box is made: a secrets function that fails makes nothing", async () => {
     const provider = withFd();
     runs(provider);

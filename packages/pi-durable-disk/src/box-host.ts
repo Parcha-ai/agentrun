@@ -104,6 +104,8 @@ const OWN_FLAGS = new Set(["--dir", "--id", "--app", "--serve", "--serve-host", 
 const LIVE: ReadonlySet<string> = new Set(["starting", "running", "restarting"]);
 
 const launchName = (attempt: number) => `pdd-run-a${attempt}`;
+/** The secrets a launch carries: none when there are no names, so an empty set never makes a frame. */
+const framedOf = (secrets: Readonly<Record<string, string>> | undefined) => (secrets !== undefined && Object.keys(secrets).length > 0 ? secrets : undefined);
 const resolved = <T>(value: PerStart<T>, start: BoxStart): Promise<T> =>
   Promise.resolve(typeof value === "function" ? (value as (start: BoxStart) => T | Promise<T>)(start) : value);
 
@@ -238,11 +240,15 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       restartDelayMs: 1_000,
       terminalExits: [...TERMINAL_EXITS],
     });
-    // The launcher's own check of the spec, before any call to the provider: a spec it refuses never boots a box. A driver
-    // that may carry secrets is checked as one that does.
+    // The launcher's own check of the spec, before any call to the provider: a spec it refuses never boots a box. It judges
+    // the secrets this launch would carry, empty meaning none: given as an object, they are known now; a function's are
+    // judged again once asked (below), which happens only for a launch, never for a box adopted.
     const placeholder = { driver: "box", provider: provider.name, box: "-", run, attempt: n, launch: { v: 1, name } } satisfies Handle;
-    const refused = l.launchSpecError(name, specFor(placeholder, options.secrets === undefined ? undefined : { SECRET: "-" }));
-    if (refused) throw new BoxHostError("INVALID_ARGUMENT", `the launcher refuses this start: ${refused.message}`, { cause: refused });
+    const check = (secrets: Readonly<Record<string, string>> | undefined) => {
+      const refused = l.launchSpecError(name, specFor(placeholder, secrets));
+      if (refused) throw new BoxHostError("INVALID_ARGUMENT", `the launcher refuses this start: ${refused.message}`, { cause: refused });
+    };
+    check(typeof options.secrets === "function" ? undefined : framedOf(options.secrets));
     /** The box is ended (or said not to be), and the start fails with `error`. */
     const fail = async (box: Box, error: BoxHostError): Promise<never> => {
       if (await destroy(box, bounded(callTimeoutMs))) throw error;
@@ -263,8 +269,8 @@ export function boxHost(options: BoxHostOptions): HostDriver & Required<Pick<Hos
       return { ...handleOf(live.box, run, n), adopted: true };
     }
     // What the launch carries is asked for now, before any box is made: a function that fails leaves no box behind.
-    const secrets = await resolved(options.secrets, begun);
-    const framed = secrets !== undefined && Object.keys(secrets).length > 0 ? secrets : undefined;
+    const framed = framedOf(await resolved(options.secrets, begun));
+    check(framed);
     const files = await resolved(options.files ?? [], begun);
     let box: Box | undefined = kept?.box;
     if (!box) {
