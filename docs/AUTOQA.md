@@ -45,7 +45,7 @@ there and never print it.
 | `AGENT_MODEL_BASE_URL`, `AGENT_MODEL_API_KEY`, `AGENT_MODEL` | Gateway for the pi and codex harnesses (OpenAI Responses). Point them at your gateway (its `/v1` base URL) and set `AGENT_MODEL` to a small, cheap model for smokes. |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` | The claude-agent harness only, on Anthropic Messages. Your gateway may serve `/v1/messages` too. |
 | `AGENTRUN_MAX_RUNS` | Cap concurrent runs (3 is plenty for QA). |
-| `PARALLEL_API_KEY`, `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`, `TYPESAFE_API_KEY` | Optional. They unlock web_fetch via Parallel, the `browser` tool, and Jev decisions. Without them those rows are UNTESTED. |
+| `PARALLEL_API_KEY`, `BROWSERBASE_API_KEY` + `BROWSERBASE_PROJECT_ID`, `TYPESAFE_API_KEY` | Optional. They unlock web_fetch via Parallel, the `browser` tool, and Jev decisions. Without a key, only the checks that need it are UNTESTED: web_fetch's direct fetch and its private-host refusal need none and always run. |
 
 Stop the server with SIGTERM to its exact PID. A busy run gets the drain timeout, then resumes at the next start.
 
@@ -75,17 +75,18 @@ Each row: entry point, then what makes it pass.
    host default.
 6. **Agent edit**: `PUT /v2/agents/{id}/definition` with `If-Match: <home_etag>` → a new revision. A stale If-Match
    → 412. `tools:["bash"]` → 422. Check `GET /v2/agents/{id}/revisions`.
-7. **Agent archive**: archive → hidden from `GET /agents`, listed under `?archived=true`. A new run → 409
+7. **Agent archive**: archive → hidden from `GET /v2/agents`, listed under `?archived=true`. A new run → 409
    `agent_not_runnable`. Then unarchive.
 8. **Runs per harness × effort**: `POST /v2/agents/{id}/runs {input:{content}, effort:"low"|"medium"}`. Poll
-   `GET /v2/runs/{id}` to a terminal status (cap 300 s). Then check `GET /runs/{id}/timeline` (`final: true`),
-   `cost.usd`, `GET /runs/{id}/files` and `GET /runs/{id}/files/<path>`. Use a task that needs two files (two tool
+   `GET /v2/runs/{id}` to a terminal status (cap 300 s). Then check `GET /v2/runs/{id}/timeline` (`final: true`),
+   `cost.usd`, `GET /v2/runs/{id}/files` and `GET /v2/runs/{id}/files/<path>`. Use a task that needs two files (two tool
    calls in one turn): see the open findings.
-9. **Spend cap**: `max_cost_usd: 0.01` on a small model → `failed`, `error.code: spend_cap_reached`, `result: null`, no
-   files.
-10. **Cancel**: start a multi-step run, `POST /runs/{id}/cancel` after its first tool_use → `cancelled` within a few
-    seconds. Then `POST /runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content` only.
-11. **Follow-up**: `POST /runs/{id}/messages {content}` to a completed agentic run → back to `completed`. The
+9. **Spend cap**: a priced model and a `max_cost_usd` below its first request's worst case (see the caveats; `0.01` is
+   below it for most models) → `failed`, `error.code: spend_cap_reached`, `result: null`, no files. Check the worst
+   case first: a cap the first request fits under lets the run go on, and the check proves nothing.
+10. **Cancel**: start a multi-step run, `POST /v2/runs/{id}/cancel` after its first tool_use → `cancelled` within a few
+    seconds. Then `POST /v2/runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content` only.
+11. **Follow-up**: `POST /v2/runs/{id}/messages {content}` to a completed agentic run → back to `completed`. The
     timeline's user_message count goes up by exactly one and the original rows stay first.
 12. **Kernel durability, process crash**: during a multi-step run, take `holder.pid` from
     `DIR/runs/<id>/run.json`. Check that its ppid is the server and its cmdline names the run dir, then `kill -KILL`
@@ -99,10 +100,10 @@ Each row: entry point, then what makes it pass.
     `parallel` with the key). A loopback URL and the link-local cloud metadata address → `refused: … not a public
     host`.
 15. **Workflow run**: create an agent from `packages/dsl/skills/author/examples/review-release-notes.json`, run it on
-    its `.input.json` → `completed`, with `result.output.changes` length 2. `GET /runs/{id}/graph` → `totals`.
+    its `.input.json` → `completed`, with `result.output.changes` length 2. `GET /v2/runs/{id}/graph` → `totals`.
 16. **Stats/analytics**: `GET /v2/stats` → `analytics.{totals,time,by_harness_effort,by_day,by_source,tools}`.
     `?agent=&from=&to=` filters; a malformed `from` → 400. `GET /v2/usage` → `total_usd`, `unpriced_runs`.
-17. **Run archive**: `POST /runs/{id}/archive` → gone from `GET /runs`, listed under `?archived=true`, still readable
+17. **Run archive**: `POST /v2/runs/{id}/archive` → gone from `GET /v2/runs`, listed under `?archived=true`, still readable
     by id, and `stats.archived.runs` goes up.
 18. **Tool keys**: `GET /v2/settings/tool-keys` → field names with `set`/`source`, never a value. Do not PUT real
     keys.
@@ -123,9 +124,10 @@ Each row: entry point, then what makes it pass.
   all model traffic through your gateway.
 - The claude-agent adapter maps the CLI's Haiku slot to the session model (`ANTHROPIC_DEFAULT_HAIKU_MODEL = model`),
   so no Haiku traffic leaves a claude-agent run.
-- Spend-cap worst case is the model's whole output ceiling at its output price. That is a cent or two for one request
-  to a small model at low effort, and can be more than a dollar for one request to a model with a large output
-  ceiling, so a cap under that refuses the first request.
+- Spend-cap worst case is the request's input bound at the dearer of the model's input and cache-write prices, plus its
+  whole output ceiling at its output price. That is a cent or two for one request to a small model at low effort, and
+  can be more than a dollar for one request to a model with a large output ceiling, so a cap under that refuses the
+  first request. A model with no price under a cap is refused outright.
 - A run cut by a crash, a drain or a stop reads `cost.usd: null` from then on. Mission Control shows those runs as
   "N runs unknown". That is documented behaviour, not a QA failure.
 - At these task sizes a periodic pass costs cents on small models.
