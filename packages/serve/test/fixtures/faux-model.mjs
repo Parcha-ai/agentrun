@@ -76,6 +76,8 @@ export default function reply(context, faux) {
     const ms = first.includes("Take your time") ? 60_000 : first.includes("Answer soon") ? 1_500 : 0;
     return ms ? slow(faux, ms, "").then((m) => (m.stopReason === "aborted" ? m : submit)) : submit;
   }
+  // A follow-up that asks the person: the question its turn ends on.
+  if (users.length > 1 && last === "Ask me now.") return answered ? faux.message("Asked.") : faux.message(faux.toolCall("ask_person", { question: "Which one?" }), { stopReason: "toolUse" });
   // Asks the person through ask_person; for an agent without it the call fails, and the reply goes on without asking.
   if (first.includes("Pick a region")) {
     if (users.length === 1 && !answered) return faux.message(faux.toolCall("ask_person", { question: "Which region should I use?" }), { stopReason: "toolUse" });
