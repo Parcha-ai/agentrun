@@ -2,7 +2,7 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, fsyncSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { open, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { Json } from "./validate.js";
 
 /** The server's own file in each run's directory: the run's title, input and how it was asked to run. */
@@ -15,6 +15,11 @@ export const RUN_CANCELLED = "cancelled";
 export const RUN_LAUNCHING = "launching";
 /** Why a run fails whose launch mark a start finds (`error.details.reason`, openapi.ts). */
 export const LAUNCH_LOST = "server_lost_at_launch";
+
+export const HOMES_DIR = "homes";
+/** Paths in an agent's home that only the host writes (another component owns them): read through the API, never written through it. */
+export const HOME_HOST_OWNED = ["learning"];
+export const homeOf = (data: string, agentId: string): string => join(data, HOMES_DIR, agentId);
 
 /** The file parsed as JSON, or null when it is missing, unreadable, or not whole JSON (a half-written file). */
 export const readJson = (path: string): Promise<Json | null> =>
@@ -33,13 +38,13 @@ export async function writeWhole(path: string, text: string, mode = 0o600): Prom
   await rename(temp, path);
 }
 
-/** Writes `text` to `path` whole and durably: the temporary file is synced before the rename, and the directory after it,
- *  so once this resolves a crash, even of the machine, leaves the new text in place, never the old or none. */
-export async function writeDurable(path: string, text: string, mode = 0o600): Promise<void> {
+/** Writes `text` (or bytes) to `path` whole and durably: the temporary file is synced before the rename, and the
+ *  directory after it, so once this resolves a crash, even of the machine, leaves the new text in place, never the old or
+ *  none. `temp` is the temporary file, created only if nothing is there yet: a link planted at it is never written through. */
+export async function writeDurable(path: string, text: string | Uint8Array, mode = 0o600, temp = tempOf(path)): Promise<void> {
   // Its own temporary file: a box's record can be let go by two settlements at once (a run's archive and its agent's).
-  const temp = tempOf(path);
-  const bytes = Buffer.from(text);
-  const file = await open(temp, "w", mode);
+  const bytes = typeof text === "string" ? Buffer.from(text) : text;
+  const file = await open(temp, "wx", mode);
   try {
     // Every byte, or an error: a short write (a disk nearly full) is never synced and renamed as if whole.
     for (let at = 0; at < bytes.length; ) {
@@ -54,7 +59,10 @@ export async function writeDurable(path: string, text: string, mode = 0o600): Pr
     throw error;
   }
   await file.close();
-  await rename(temp, path);
+  await rename(temp, path).catch(async (error) => {
+    await unlink(temp).catch(() => {});
+    throw error;
+  });
   const dir = await open(dirname(path), "r");
   try {
     await dir.sync();
