@@ -62,12 +62,23 @@ describe("demo: a new agent with its default tools", () => {
 
 describe("the Tools step and call-only tools", () => {
   const agent = (tools: string[]): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools } });
-  it("offers no call-only tool, to a new agent or an existing one", () => {
+  it("offers no call-only tool to an agentic agent, new or existing", () => {
     for (const a of [null, agent(["read"])]) {
       const html = renderToStaticMarkup(createElement(AgentEditor, { agent: a, caps: CAPS, step: "tools" }));
       for (const name of CALL_ONLY) expect(html, `${name}, ${a ? "existing" : "new"}`).not.toContain(`value="${name}"`);
       expect(html).toContain('value="web_fetch"');
     }
+  });
+  it("a workflow agent still picks them: its call nodes need them listed in its revision's tools", () => {
+    const flow: Agent = { agent_id: "triage", kind: "workflow", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Triage", harness: "pi", skills: [], tools: ["llm"], workflow: { v: 2, name: "triage", schemas: {}, root: { node: "chain", steps: [] } } } };
+    const html = renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps: CAPS, step: "tools" }));
+    for (const name of CALL_ONLY) {
+      const box = html.match(new RegExp(`<input[^>]*value="${name}"[^>]*>`))?.[0] ?? "";
+      expect(box, name).not.toBe("");
+      expect(box, name).not.toContain("disabled");
+    }
+    expect(html.match(/<input[^>]*value="llm"[^>]*>/)?.[0]).toContain('checked=""');
+    expect(html).not.toContain("Workflow-only");
   });
   it("an existing agent that names one shows it as workflow-only, ticked so it can be unticked, never dropped silently", () => {
     const html = renderToStaticMarkup(createElement(AgentEditor, { agent: agent(["read", "pdf_pages"]), caps: CAPS, step: "tools" }));
