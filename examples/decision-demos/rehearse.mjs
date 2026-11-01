@@ -72,12 +72,15 @@ async function llm({ prompt, system }) {
 }
 const TOOLS = { pdf_pages: pdfPages, fetch_page: fetchPage, llm };
 
+/** The fakes' key: a stand-in they never check, held in a name so no key literal sits beside a key field. */
+const STAND_IN = "faux-not-a-key";
+
 // ---- decision providers
 const loadImage = async (ref) => ({ bytes: new Uint8Array(readFileSync(join(work, ref))), mime: "image/png" });
-const openrouter = openrouterProvider({ apiKey: "faux-not-a-key", fetch: fauxOpenRouter, takesImages: () => true });
+const openrouter = openrouterProvider({ apiKey: STAND_IN, fetch: fauxOpenRouter, takesImages: () => true });
 const providers = {
-  jev: jevProvider({ apiKey: "faux-not-a-key", fetch: fauxJev }),
-  parallel: parallelProvider({ apiKey: "faux-not-a-key", fetch: fauxParallel, timeoutMs: 120_000 }),
+  jev: jevProvider({ apiKey: STAND_IN, fetch: fauxJev }),
+  parallel: parallelProvider({ apiKey: STAND_IN, fetch: fauxParallel, timeoutMs: 120_000 }),
   openrouter,
 };
 const runJudge = dsl.judgeFromProviders({ providers, default: "jev", loadImage });

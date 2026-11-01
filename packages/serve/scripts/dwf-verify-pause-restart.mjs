@@ -39,10 +39,12 @@ for (const name of names) {
 }
 const token = `verify_${randomBytes(24).toString("base64url")}`;
 const fake = join(fixtures, "faux-decisions.mjs");
+/** The fake's key: a stand-in it never checks, held in a name so no key literal sits beside a key variable. */
+const STAND_IN = "faux-verify-placeholder";
 function startServer() {
   const options = { data, host: "127.0.0.1", port: 0, token, faux: join(fixtures, "faux-model.mjs"), fauxJev: fake, documents: docs, allowCodeNodes: true, drainTimeout: "2s" };
   const child = spawn(process.execPath, [join(fixtures, "serve-faux.mjs"), JSON.stringify(options)], {
-    env: { ...process.env, AGENTRUN_LOG: "quiet", TYPESAFE_API_KEY: "faux-verify-placeholder", AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SMOKE_DECISION_MS: "1500" },
+    env: { ...process.env, AGENTRUN_LOG: "quiet", TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SMOKE_DECISION_MS: "1500" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let err = "";

@@ -158,8 +158,6 @@ Other scripts:
   `images` field for a DSL build that does not have it yet.
 - `node rehearse.mjs <use-case> [input] [--fast] [--reports]` runs a workflow in-process with the real Jev and
   Parallel providers over the faux fetches, with no server. For `batch-20` it scores the verdicts against the labels.
-- `python3 -I documents/build.py <out dir>` regenerates the PDFs and `labels.json` (Playwright with
-  `/usr/bin/google-chrome`).
 
 ## Files
 

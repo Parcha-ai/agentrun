@@ -4,7 +4,7 @@ Every company, person, officer, Secretary of State, bank, address, file number a
 
 24 PDFs: certificates and articles of incorporation, IRS EIN confirmation letters in the CP 575 layout, and bank account verification letters. Twelve are clean, eight have a defect you can see on page 1, and four make up a KYB packet for one company. `labels.json` holds the ground truth for each file (type, company, jurisdiction, issuer, the date as shown, EIN, valid, defects, page count) and the two KYB packets with the outcome each should get.
 
-Rebuild them with `python3 -I build.py <this directory>`. The script launches its own headless Chrome through Playwright (`/usr/bin/google-chrome`) and renders HTML to Letter-size PDFs.
+Each was rendered from HTML to a Letter-size PDF in headless Chrome; the PDFs are the source here, each listed with its SHA-256 in the repository's ASSETS.md.
 
 ## Clean
 

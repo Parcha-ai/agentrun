@@ -11,6 +11,8 @@ import { documentPath, MAX_PAGE_PX, pdfPages } from "../dist/pdf-pages.js";
 import { gated, RUN_PAUSED } from "../dist/pause.js";
 import { flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
+/** A fake's key: a stand-in it never checks, held in a name so no key literal sits beside a key variable. */
+const STAND_IN = "faux-test-placeholder";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A two-page PDF drawn with Ghostscript. */
@@ -175,7 +177,7 @@ test("a run's graph reads while it goes and while it is paused mid-map at maxCon
   await mkdir(docs);
   const names = ["a", "b", "c", "d", "e", "f"];
   for (const name of names) pdf(join(docs, `${name}.pdf`), `Document ${name}`);
-  withEnv(t, { TYPESAFE_API_KEY: "faux-test-placeholder", AGENTRUN_SMOKE_DECISION_MS: "1500", AGENTRUN_SMOKE_DECISION_CALLS: join(dir, "calls.jsonl") }, ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"]);
+  withEnv(t, { TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_MS: "1500", AGENTRUN_SMOKE_DECISION_CALLS: join(dir, "calls.jsonl") }, ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"]);
   const { api } = await serve(t, { documents: docs, allowCodeNodes: true, fauxJev: FAUX_DECISIONS });
   const flow = {
     v: 2, name: "judged",

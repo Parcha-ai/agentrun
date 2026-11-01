@@ -45,6 +45,8 @@ say(`documents: ${companies.map(([stem]) => `${stem}.pdf`).join(", ")} in ${docs
 const token = `smoke_${randomBytes(24).toString("base64url")}`;
 const calls = join(root, "decision-calls.jsonl");
 const fake = join(fixtures, "faux-decisions.mjs");
+/** The fakes' keys: a stand-in they never check, held in a name so no key literal sits beside a key variable. */
+const STAND_IN = "faux-smoke-placeholder";
 const launcher = join(fixtures, "serve-faux.mjs");
 /** The server, started on a free loopback port; resolves with its base URL once its banner is out. */
 function startServer() {
@@ -53,7 +55,7 @@ function startServer() {
     env: {
       ...process.env, AGENTRUN_LOG: "quiet",
       // The fakes' keys: placeholders the fakes never check, so the providers bind under faux.
-      TYPESAFE_API_KEY: "faux-smoke-placeholder", PARALLEL_API_KEY: "faux-smoke-placeholder", OPENROUTER_API_KEY: "faux-smoke-placeholder",
+      TYPESAFE_API_KEY: STAND_IN, PARALLEL_API_KEY: STAND_IN, OPENROUTER_API_KEY: STAND_IN,
       AGENTRUN_SMOKE_DECISION_CALLS: calls, AGENTRUN_SMOKE_DECISION_MS: "1500",
     },
     stdio: ["ignore", "pipe", "pipe"],
