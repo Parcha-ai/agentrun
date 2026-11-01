@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { EditorCaps } from "@/components/AgentEditor";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
+import { KeysPage } from "@/components/KeysPage";
 import { LiveRun } from "@/components/LiveRun";
 import { MissionControl } from "@/components/MissionControl";
 import { missionFrom, type MissionView } from "@/lib/mission";
@@ -14,7 +15,7 @@ import { allPages, type Capabilities, ClientError, createClient } from "@/lib/cl
 import { appendRuns } from "@/lib/idempotency";
 import type { Run } from "@/lib/v2";
 
-type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean };
+type Where = { section: Section; run?: string; agent?: string | null; runsOf?: string; archived?: boolean; settings?: "keys" };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   let m = h.match(/^#\/runs\/([^/?]+)$/);
@@ -24,6 +25,9 @@ export function route(h: string = location.hash): Where {
   if (m) return { section: "agents", agent: decodeURIComponent(m[1]) };
   if (h.startsWith("#/agents")) return { section: "agents", archived: /[?&]archived=true\b/.test(h) };
   if (h.startsWith("#/playground")) return { section: "playground" };
+  // Settings, a page per address: #/settings/keys (and #/settings) for now; a later one is one more name here.
+  m = h.match(/^#\/settings(?:\/(keys))?$/);
+  if (m) return { section: "settings", settings: (m[1] ?? "keys") as "keys" };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
   m = h.match(/^#\/runs\?agent=([^&]+)$/);
@@ -114,7 +118,7 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   const c = caps as unknown as { harnesses: EditorCaps["harnesses"]; tools?: unknown; features?: { thinking?: string[] }; models?: { default?: string } } | null;
   // The server lists its tools as objects (name, available, missing; an older one as names): the editor takes both.
   const editorCaps: EditorCaps = { harnesses: c?.harnesses ?? [], tools: toolOffers(c?.tools), thinking: c?.features?.thinking ?? [], defaultModel: c?.models?.default };
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/" }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", mission: "#/", settings: "#/settings/keys" }[s]);
   // The agents both start screens pick from, every page of them.
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [revs, setRevs] = useState<{ revision: string; version: number; current: boolean; note: string | null }[]>([]);
@@ -161,13 +165,15 @@ function Console({ v2, onSignedOut }: { v2: ReturnType<typeof createClient>; onS
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   return (
-    <Shell active={where.section} onNavigate={nav} onSignOut={() => {
+    <Shell active={where.section} settings={!!caps?.features?.tool_keys?.routes} onNavigate={nav} onSignOut={() => {
       // The card comes back only once the server ended the session: a sign-out that did not reach it says so instead.
       v2.signOut().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
     }}>
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-[13px] text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {where.section === "playground" && startError
         ? <div className="m-8 border p-4" role="alert"><p className="font-mono text-[13px] text-destructive-text">The agents could not be read: {startError}</p><button type="button" className="caps mt-3 border px-3 py-2 text-[12px] hover:bg-accent" onClick={() => setRetry((n) => n + 1)}>Try again</button></div>
+        : where.section === "settings"
+        ? <KeysPage v2={v2} atRest={caps?.features?.tool_keys?.at_rest} />
         : where.section === "mission"
         ? <MissionControl view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)} />
         : where.section === "playground"

@@ -13,6 +13,10 @@ describe("route", () => {
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
   });
+  it("opens Settings → Tool keys at its own address, and at #/settings", () => {
+    expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
+    expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
+  });
 });
 
 // A server without GET /v2/stats (or one that fails it) says so on the page, never a "Loading..." that never ends.
@@ -67,5 +71,44 @@ describe("App, Mission Control after a failed read", () => {
     expect(statsCalls).toBe(2);
     expect(host.textContent).toContain("Mission Control");
     expect(host.textContent).not.toContain("could not be read");
+  });
+});
+
+// Settings shows only on a server with the tool keys routes, so the console never offers a page its server lacks.
+describe("App, Settings", () => {
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const keys = { keys: [{ id: "monid", label: "Monid", fields: [{ name: "MONID_API_KEY", set: false, source: null }], unlocks: ["monid.run"], harnesses: ["pi"] }], reenter: null };
+  async function open(features: Record<string, unknown>, hash: string) {
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true });
+      if (path === "/v2/capabilities") return json(200, { harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
+      if (path === "/v2/settings/tool-keys") return json(200, keys);
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = hash;
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.querySelector('nav[aria-label="Navigation"] button') && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    const nav = () => [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
+    return { host, nav };
+  }
+
+  it("has no Settings in the nav when the server has no features.tool_keys", async () => {
+    const page = await open({}, "#/runs");
+    expect(page.nav()).toContain("Runs");
+    expect(page.nav()).not.toContain("Settings");
+  });
+
+  it("shows Settings when the server has the routes, and #/settings/keys opens Tool keys", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
+    expect(page.nav()).toContain("Settings");
+    expect(page.host.querySelector('[aria-current="page"]')?.textContent?.trim()).toBe("Settings");
+    expect(page.host.querySelector("h1")?.textContent).toBe("Tool keys");
+    expect(page.host.textContent).toContain("MONID_API_KEYnot set");
   });
 });

@@ -2,7 +2,7 @@ import type { Stats } from "./mission";
 import type { Agent, Definition } from "./agentForm";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow } from "./v2";
+import type { ApiError, Run, RunFiles, TimelinePage, TimelineRow, ToolKeys, ToolKeysFeature } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 export type FieldIssue = { field: string; reason: string; message: string };
@@ -23,7 +23,7 @@ export class ClientError extends Error {
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean } } };
+export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The console's client for `agentrun.v2/0`, on the page's own origin: the server's HttpOnly cookie is the session, and
@@ -112,6 +112,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     validateWorkflow: (body: { workflow: unknown; tools?: string[] }, signal?: AbortSignal) => call<WorkflowCheck>("POST", "/workflows/validate", { body, signal }),
     /** A run file's URL on this origin (a rendered page's image), for an <img>: the session cookie goes with it. */
     fileUrl: (id: string, path: string) => `${base}${run(id)}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
+    /** The tool keys and where each field is set, never a value (a serve extension; 404 on a server without it). */
+    listToolKeys: () => call<ToolKeys>("GET", "/settings/tool-keys"),
+    /** Saves the given fields of one key (204); its other fields stay. No Idempotency-Key: the same PUT twice is the same
+     *  state, and the server keeps no record of a body that holds the values. */
+    saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
+    removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
     stop: (id: string) => call<unknown>("POST", `${run(id)}/stop`, { body: {} }),
     cancel: (id: string) => call<unknown>("POST", `${run(id)}/cancel`, { body: {} }),
   };
